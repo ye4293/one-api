@@ -9,6 +9,7 @@ import (
 )
 
 func SetApiRouter(router *gin.Engine) {
+	router.Use(middleware.CORS())
 	apiRouter := router.Group("/api")
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
