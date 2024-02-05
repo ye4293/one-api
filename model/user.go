@@ -3,12 +3,13 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"gorm.io/gorm"
-	"strings"
 )
 
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
@@ -37,6 +38,11 @@ func GetMaxUserId() int {
 	var user User
 	DB.Last(&user)
 	return user.Id
+}
+
+func GetTotalUserCount() (count int64, err error) {
+	err = DB.Model(&User{}).Count(&count).Error
+	return count, err
 }
 
 func GetAllUsers(startIdx int, num int) (users []*User, err error) {

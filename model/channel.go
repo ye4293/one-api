@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -29,6 +30,11 @@ type Channel struct {
 	UsedQuota          int64   `json:"used_quota" gorm:"bigint;default:0"`
 	ModelMapping       *string `json:"model_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
+}
+
+func GetTotalChannelCount() (count int64, err error) {
+	err = DB.Model(&Channel{}).Count(&count).Error
+	return count, err
 }
 
 func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {

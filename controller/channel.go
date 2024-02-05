@@ -1,13 +1,14 @@
 package controller
 
 import (
+	"net/http"
+	"strconv"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strconv"
-	"strings"
 )
 
 func GetAllChannels(c *gin.Context) {
@@ -15,6 +16,9 @@ func GetAllChannels(c *gin.Context) {
 	if p < 0 {
 		p = 0
 	}
+	currentPage := p
+	pageSize := config.ItemsPerPage //前端默认10条
+	total, err := model.GetTotalChannelCount()
 	channels, err := model.GetAllChannels(p*config.ItemsPerPage, config.ItemsPerPage, false)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -26,7 +30,12 @@ func GetAllChannels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    channels,
+		"data": gin.H{
+			"list":        channels,
+			"currentPage": currentPage,
+			"pageSize":    pageSize,
+			"total":       total,
+		},
 	})
 	return
 }

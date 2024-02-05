@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -29,6 +30,11 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	var err error
 	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
 	return tokens, err
+}
+
+func GetTotalUserTokensCount(userId int) (count int64, err error) {
+	err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&count).Error
+	return count, err
 }
 
 func SearchUserTokens(userId int, keyword string) (tokens []*Token, err error) {

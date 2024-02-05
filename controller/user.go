@@ -60,7 +60,6 @@ func Login(c *gin.Context) {
 		return
 	}
 	setupLogin(&user, c)
-	Getmenus(c)
 }
 
 // setup session & cookies and then return user info
@@ -186,7 +185,10 @@ func GetAllUsers(c *gin.Context) {
 	if p < 0 {
 		p = 0
 	}
+	currentPage := p
+	pageSize := config.ItemsPerPage //前端默认10条
 	users, err := model.GetAllUsers(p*config.ItemsPerPage, config.ItemsPerPage)
+	total, err := model.GetTotalUserCount()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -197,7 +199,12 @@ func GetAllUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    users,
+		"data": gin.H{
+			"list":        users,
+			"currentPage": currentPage,
+			"pageSize":    pageSize,
+			"total":       total,
+		},
 	})
 	return
 }
