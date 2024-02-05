@@ -3,13 +3,14 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -59,6 +60,7 @@ func Login(c *gin.Context) {
 		return
 	}
 	setupLogin(&user, c)
+	Getmenus(c)
 }
 
 // setup session & cookies and then return user info
