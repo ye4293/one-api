@@ -54,10 +54,10 @@ const TokensTable = () => {
     const { success, message, data } = res.data;
     if (success) {
       if (startIdx === 0) {
-        setTokens(data);
+        setTokens(data.list);
       } else {
         let newTokens = [...tokens];
-        newTokens.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data);
+        newTokens.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
         setTokens(newTokens);
       }
     } else {

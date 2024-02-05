@@ -62,10 +62,10 @@ const ChannelsTable = () => {
     const { success, message, data } = res.data;
     if (success) {
       if (startIdx === 0) {
-        setChannels(data);
+        setChannels(data.list);
       } else {
         let newChannels = [...channels];
-        newChannels.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data);
+        newChannels.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
         setChannels(newChannels);
       }
     } else {

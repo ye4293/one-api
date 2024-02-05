@@ -31,10 +31,10 @@ const UsersTable = () => {
     const { success, message, data } = res.data;
     if (success) {
       if (startIdx === 0) {
-        setUsers(data);
+        setUsers(data.list);
       } else {
         let newUsers = users;
-        newUsers.push(...data);
+        newUsers.push(...data.list);
         setUsers(newUsers);
       }
     } else {
