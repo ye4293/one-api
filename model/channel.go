@@ -32,21 +32,26 @@ type Channel struct {
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 }
 
-func GetTotalChannelCount() (count int64, err error) {
-	err = DB.Model(&Channel{}).Count(&count).Error
-	return count, err
+func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int64, err error) {
+	// 首先计算频道总数
+	err = DB.Model(&Channel{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
+
+	offset := (page - 1) * pageSize
+
+	// 获取当前页面的频道列表，忽略key字段
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("key").Find(&channels).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回频道列表、总数以及可能的错误信息
+	return channels, total, nil
 }
-
-func GetCurrentChannels(page int, pageSize int) ([]*Channel, error) {
-    var channels []*Channel
-    var err error
-    offset := (page - 1) * pageSize
-
-    err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("key").Find(&channels).Error
-
-    return channels, err
-}
-
 
 func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {
 	var channels []*Channel

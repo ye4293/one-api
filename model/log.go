@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -75,6 +76,55 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 	}
 }
 
+func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
+	var tx *gorm.DB
+
+	// 根据日志类型筛选
+	if logType == LogTypeUnknown {
+		tx = DB
+	} else {
+		tx = DB.Where("type = ?", logType)
+	}
+
+	// 进一步根据提供的参数筛选日志
+	if modelName != "" {
+		tx = tx.Where("model_name = ?", modelName)
+	}
+	if username != "" {
+		tx = tx.Where("username = ?", username)
+	}
+	if tokenName != "" {
+		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", startTimestamp)
+	}
+	if endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", endTimestamp)
+	}
+	if channel != 0 {
+		tx = tx.Where("channel_id = ?", channel)
+	}
+
+	// 首先计算满足条件的总数
+	err = tx.Model(&Log{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算起始索引。第一页的起始索引为0。
+	offset := (page - 1) * pageSize
+
+	// 然后获取满足条件的日志数据
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回日志数据、总数以及错误信息
+	return logs, total, nil
+}
+
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int) (logs []*Log, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
@@ -102,6 +152,49 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	}
 	err = tx.Order("id desc").Limit(num).Offset(startIdx).Find(&logs).Error
 	return logs, err
+}
+
+func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, page int, pageSize int) (logs []*Log, total int64, err error) {
+	var tx *gorm.DB
+
+	// 筛选基于用户ID和日志类型
+	if logType == LogTypeUnknown {
+		tx = DB.Where("user_id = ?", userId)
+	} else {
+		tx = DB.Where("user_id = ? AND type = ?", userId, logType)
+	}
+
+	// 进一步根据提供的参数筛选日志
+	if modelName != "" {
+		tx = tx.Where("model_name = ?", modelName)
+	}
+	if tokenName != "" {
+		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", startTimestamp)
+	}
+	if endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", endTimestamp)
+	}
+
+	// 首先计算满足条件的总数
+	err = tx.Model(&Log{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
+	offset := (page - 1) * pageSize
+
+	// 然后获取满足条件的日志数据
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回日志数据、总数以及错误信息
+	return logs, total, nil
 }
 
 func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int) (logs []*Log, err error) {

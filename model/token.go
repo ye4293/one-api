@@ -32,18 +32,26 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	return tokens, err
 }
 
-func GetCurrentUserTokens(userId int, page int, pageSize int) ([]*Token, error) {
-	var tokens []*Token
-	var err error
-	offset := (page - 1) * pageSize
-	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(pageSize).Offset(offset).Find(&tokens).Error
-	return tokens, err
+func GetUserTokensAndCount(userId int, page int, pageSize int) (tokens []*Token, total int64, err error) {
+    // 首先计算特定用户的令牌总数
+    err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&total).Error
+    if err != nil {
+        return nil, 0, err
+    }
+
+    // 计算起始索引，基于page和pageSize。第一页的起始索引为0。
+    offset := (page - 1) * pageSize
+
+    // 获取当前页面的用户令牌列表
+    err = DB.Where("user_id = ?", userId).Order("id desc").Limit(pageSize).Offset(offset).Find(&tokens).Error
+    if err != nil {
+        return nil, total, err
+    }
+
+    // 返回用户令牌列表、总数以及可能的错误信息
+    return tokens, total, nil
 }
 
-func GetTotalUserTokensCount(userId int) (count int64, err error) {
-	err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&count).Error
-	return count, err
-}
 
 func SearchUserTokens(userId int, keyword string) (tokens []*Token, err error) {
 	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", keyword+"%").Find(&tokens).Error

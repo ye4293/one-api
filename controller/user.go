@@ -187,10 +187,7 @@ func GetAllUsers(c *gin.Context) {
 	}
 	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
 	currentPage := page
-	// pageSize := config.ItemsPerPage //前端默认10条
-	// users, err := model.GetAllUsers(page*config.ItemsPerPage, config.ItemsPerPage)
-	users, err := model.GetCurrentPageUsers(page, pagesize)
-	total, err := model.GetTotalUserCount()
+	users, total, err := model.GetCurrentPageUsersAndCount(page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

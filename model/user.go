@@ -40,17 +40,24 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
-func GetTotalUserCount() (count int64, err error) {
-	err = DB.Model(&User{}).Count(&count).Error
-	return count, err
-}
+func GetCurrentPageUsersAndCount(page int, pageSize int) (users []*User, total int64, err error) {
+	// 首先计算用户总数
+	err = DB.Model(&User{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-func GetCurrentPageUsers(page int, pageSize int) (users []*User, err error) {
+	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
 	offset := (page - 1) * pageSize
 
+	// 获取当前页面的用户列表，忽略密码字段
 	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("password").Find(&users).Error
+	if err != nil {
+		return nil, total, err
+	}
 
-	return users, err
+	// 返回用户列表、总数以及可能的错误信息
+	return users, total, nil
 }
 
 func GetAllUsers(startIdx int, num int) (users []*User, err error) {

@@ -18,8 +18,7 @@ func GetAllTokens(c *gin.Context) {
 	}
 	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
 	currentPage := page
-	tokens, err := model.GetCurrentUserTokens(userId, page, pagesize)
-	total, err := model.GetTotalUserTokensCount(userId)
+	tokens, total, err := model.GetUserTokensAndCount(userId, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

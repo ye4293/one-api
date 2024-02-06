@@ -17,9 +17,7 @@ func GetAllChannels(c *gin.Context) {
 	}
 	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
 	currentPage := page
-	total, err := model.GetTotalChannelCount()
-	// channels, err := model.GetAllChannels(p*config.ItemsPerPage, config.ItemsPerPage, false)
-	channels, err := model.GetCurrentChannels(page, pagesize)
+	channels, total, err := model.GetChannelsAndCount(page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
