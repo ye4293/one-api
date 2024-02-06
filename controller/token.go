@@ -42,7 +42,21 @@ func GetAllTokens(c *gin.Context) {
 func SearchTokens(c *gin.Context) {
 	userId := c.GetInt("id")
 	keyword := c.Query("keyword")
-	tokens, err := model.SearchUserTokens(userId, keyword)
+
+	pageStr := c.Query("page")
+	pageSizeStr := c.Query("pagesize")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	pagesize, err := strconv.Atoi(pageSizeStr)
+	if err != nil || pagesize <= 0 {
+		pagesize = 10
+	}
+	currentPage := page
+	tokens, total, err := model.SearchUserTokensAndCount(userId, keyword, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -53,7 +67,12 @@ func SearchTokens(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    tokens,
+		"data": gin.H{
+			"list":        tokens,
+			"currentPage": currentPage,
+			"pageSize":    pagesize,
+			"total":       total,
+		},
 	})
 	return
 }

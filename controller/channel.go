@@ -28,7 +28,7 @@ func GetAllChannels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data": gin.H{
+		"data": map[string]interface{}{
 			"list":        channels,
 			"currentPage": currentPage,
 			"pageSize":    pagesize,
@@ -40,7 +40,20 @@ func GetAllChannels(c *gin.Context) {
 
 func SearchChannels(c *gin.Context) {
 	keyword := c.Query("keyword")
-	channels, err := model.SearchChannels(keyword)
+	pageStr := c.Query("page")
+	pageSizeStr := c.Query("pagesize")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	pagesize, err := strconv.Atoi(pageSizeStr)
+	if err != nil || pagesize <= 0 {
+		pagesize = 10
+	}
+	currentPage := page
+	channels, total, err := model.SearchChannelsAndCount(keyword, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -51,11 +64,15 @@ func SearchChannels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    channels,
+		"data": gin.H{
+			"list":        channels,
+			"currentPage": currentPage,
+			"pageSize":    pagesize,
+			"total":       total,
+		},
 	})
 	return
 }
-
 func GetChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {

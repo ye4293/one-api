@@ -210,7 +210,20 @@ func GetAllUsers(c *gin.Context) {
 
 func SearchUsers(c *gin.Context) {
 	keyword := c.Query("keyword")
-	users, err := model.SearchUsers(keyword)
+	pageStr := c.Query("page")
+	pageSizeStr := c.Query("pagesize")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	pagesize, err := strconv.Atoi(pageSizeStr)
+	if err != nil || pagesize <= 0 {
+		pagesize = 10
+	}
+	currentPage := page
+	users, total, err := model.SearchUsersAndCount(keyword, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -221,7 +234,12 @@ func SearchUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    users,
+		"data": gin.H{
+			"list":        users,
+			"currentPage": currentPage,
+			"pageSize":    pagesize,
+			"total":       total,
+		},
 	})
 	return
 }

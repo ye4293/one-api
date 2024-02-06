@@ -65,6 +65,30 @@ func GetAllUsers(startIdx int, num int) (users []*User, err error) {
 	return users, err
 }
 
+func SearchUsersAndCount(keyword string, page int, pageSize int) (users []*User, total int64, err error) {
+	likeKeyword := "%" + keyword + "%"
+	query := DB.Omit("password")
+
+	if !common.UsingPostgreSQL {
+		query = query.Where("id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?", keyword, likeKeyword, likeKeyword, likeKeyword)
+	} else {
+		query = query.Where("username LIKE ? or email LIKE ? or display_name LIKE ?", likeKeyword, likeKeyword, likeKeyword)
+	}
+
+	// 先计算总数
+	err = query.Model(&User{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * pageSize
+
+	// 分页查询
+	err = query.Offset(offset).Limit(pageSize).Find(&users).Error
+	return users, total, err
+}
+
 func SearchUsers(keyword string) (users []*User, err error) {
 	if !common.UsingPostgreSQL {
 		err = DB.Omit("password").Where("id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?", keyword, keyword+"%", keyword+"%", keyword+"%").Find(&users).Error

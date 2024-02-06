@@ -33,25 +33,41 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 }
 
 func GetUserTokensAndCount(userId int, page int, pageSize int) (tokens []*Token, total int64, err error) {
-    // 首先计算特定用户的令牌总数
-    err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&total).Error
-    if err != nil {
-        return nil, 0, err
-    }
+	// 首先计算特定用户的令牌总数
+	err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-    // 计算起始索引，基于page和pageSize。第一页的起始索引为0。
-    offset := (page - 1) * pageSize
+	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
+	offset := (page - 1) * pageSize
 
-    // 获取当前页面的用户令牌列表
-    err = DB.Where("user_id = ?", userId).Order("id desc").Limit(pageSize).Offset(offset).Find(&tokens).Error
-    if err != nil {
-        return nil, total, err
-    }
+	// 获取当前页面的用户令牌列表
+	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(pageSize).Offset(offset).Find(&tokens).Error
+	if err != nil {
+		return nil, total, err
+	}
 
-    // 返回用户令牌列表、总数以及可能的错误信息
-    return tokens, total, nil
+	// 返回用户令牌列表、总数以及可能的错误信息
+	return tokens, total, nil
 }
+func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int) (tokens []*Token, total int64, err error) {
+	// 用于LIKE查询的关键词格式
+	likeKeyword := keyword + "%"
 
+	// 先计算满足条件的总数据量
+	err = DB.Model(&Token{}).Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算分页的偏移量
+	offset := (page - 1) * pageSize
+
+	// 获取满足条件的数据的子集
+	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Offset(offset).Limit(pageSize).Find(&tokens).Error
+	return tokens, total, err
+}
 
 func SearchUserTokens(userId int, keyword string) (tokens []*Token, err error) {
 	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", keyword+"%").Find(&tokens).Error
