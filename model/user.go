@@ -29,7 +29,7 @@ type User struct {
 	Quota            int    `json:"quota" gorm:"type:int;default:0"`
 	UsedQuota        int    `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount     int    `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group            string `json:"group" gorm:"type:varchar(32);default:'default'"`
+	Group            string `json:"group" gorm:"type:varchar(32);default:'Lv1"`
 	AffCode          string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	InviterId        int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 }
@@ -43,6 +43,14 @@ func GetMaxUserId() int {
 func GetTotalUserCount() (count int64, err error) {
 	err = DB.Model(&User{}).Count(&count).Error
 	return count, err
+}
+
+func GetCurrentPageUsers(page int, pageSize int) (users []*User, err error) {
+	offset := (page - 1) * pageSize
+
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("password").Find(&users).Error
+
+	return users, err
 }
 
 func GetAllUsers(startIdx int, num int) (users []*User, err error) {

@@ -37,6 +37,17 @@ func GetTotalChannelCount() (count int64, err error) {
 	return count, err
 }
 
+func GetCurrentChannels(page int, pageSize int) ([]*Channel, error) {
+    var channels []*Channel
+    var err error
+    offset := (page - 1) * pageSize
+
+    err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("key").Find(&channels).Error
+
+    return channels, err
+}
+
+
 func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {
 	var channels []*Channel
 	var err error

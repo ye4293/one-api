@@ -181,13 +181,15 @@ func Register(c *gin.Context) {
 }
 
 func GetAllUsers(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 0 {
+		page = 0
 	}
-	currentPage := p
-	pageSize := config.ItemsPerPage //前端默认10条
-	users, err := model.GetAllUsers(p*config.ItemsPerPage, config.ItemsPerPage)
+	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
+	currentPage := page
+	// pageSize := config.ItemsPerPage //前端默认10条
+	// users, err := model.GetAllUsers(page*config.ItemsPerPage, config.ItemsPerPage)
+	users, err := model.GetCurrentPageUsers(page, pagesize)
 	total, err := model.GetTotalUserCount()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -202,7 +204,7 @@ func GetAllUsers(c *gin.Context) {
 		"data": gin.H{
 			"list":        users,
 			"currentPage": currentPage,
-			"pageSize":    pageSize,
+			"pageSize":    pagesize,
 			"total":       total,
 		},
 	})

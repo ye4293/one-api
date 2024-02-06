@@ -6,20 +6,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/model"
 )
 
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 0 {
+		page = 0
 	}
-	currentPage := p
-	pageSize := config.ItemsPerPage //前端默认10条
-	tokens, err := model.GetAllUserTokens(userId, p*config.ItemsPerPage, config.ItemsPerPage)
+	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
+	currentPage := page
+	tokens, err := model.GetCurrentUserTokens(userId, page, pagesize)
 	total, err := model.GetTotalUserTokensCount(userId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -34,7 +33,7 @@ func GetAllTokens(c *gin.Context) {
 		"data": gin.H{
 			"list":        tokens,
 			"currentPage": currentPage,
-			"pageSize":    pageSize,
+			"pageSize":    pagesize,
 			"total":       total,
 		},
 	})

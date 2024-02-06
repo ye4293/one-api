@@ -32,6 +32,14 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	return tokens, err
 }
 
+func GetCurrentUserTokens(userId int, page int, pageSize int) ([]*Token, error) {
+	var tokens []*Token
+	var err error
+	offset := (page - 1) * pageSize
+	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(pageSize).Offset(offset).Find(&tokens).Error
+	return tokens, err
+}
+
 func GetTotalUserTokensCount(userId int) (count int64, err error) {
 	err = DB.Model(&Token{}).Where("user_id = ?", userId).Count(&count).Error
 	return count, err

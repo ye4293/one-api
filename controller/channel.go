@@ -6,20 +6,20 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/model"
 )
 
 func GetAllChannels(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 0 {
+		page = 0
 	}
-	currentPage := p
-	pageSize := config.ItemsPerPage //前端默认10条
+	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
+	currentPage := page
 	total, err := model.GetTotalChannelCount()
-	channels, err := model.GetAllChannels(p*config.ItemsPerPage, config.ItemsPerPage, false)
+	// channels, err := model.GetAllChannels(p*config.ItemsPerPage, config.ItemsPerPage, false)
+	channels, err := model.GetCurrentChannels(page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -33,7 +33,7 @@ func GetAllChannels(c *gin.Context) {
 		"data": gin.H{
 			"list":        channels,
 			"currentPage": currentPage,
-			"pageSize":    pageSize,
+			"pageSize":    pagesize,
 			"total":       total,
 		},
 	})
