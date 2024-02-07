@@ -54,6 +54,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.POST("/", controller.CreateUser)
 				adminRoute.POST("/manage", controller.ManageUser)
 				adminRoute.PUT("/", controller.UpdateUser)
+				adminRoute.POST("/batchdelete", controller.BatchDelteUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
 			}
 		}
@@ -76,6 +77,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/update_balance/:id", controller.UpdateChannelBalance)
 			channelRoute.POST("/", controller.AddChannel)
 			channelRoute.PUT("/", controller.UpdateChannel)
+			channelRoute.POST("/batchdelete", controller.BatchDelteChannel)
 			channelRoute.DELETE("/disabled", controller.DeleteDisabledChannel)
 			channelRoute.DELETE("/:id", controller.DeleteChannel)
 		}
@@ -87,6 +89,7 @@ func SetApiRouter(router *gin.Engine) {
 			tokenRoute.GET("/:id", controller.GetToken)
 			tokenRoute.POST("/", controller.AddToken)
 			tokenRoute.PUT("/", controller.UpdateToken)
+			tokenRoute.POST("/batchdelete", controller.BatchDeleteToken)
 			tokenRoute.DELETE("/:id", controller.DeleteToken)
 		}
 		redemptionRoute := apiRouter.Group("/redemption")

@@ -169,6 +169,43 @@ func AddToken(c *gin.Context) {
 	return
 }
 
+func BatchDeleteToken(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for deletion",
+		})
+		return
+	}
+
+	// 假设 userId 是从上下文中获取的当前用户ID
+	userId := c.GetInt("id")
+	err := model.DeleteTokensByIds(request.Ids, userId)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Tokens deleted successfully",
+	})
+}
+
 func DeleteToken(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")

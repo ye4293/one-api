@@ -493,6 +493,62 @@ func UpdateSelf(c *gin.Context) {
 	return
 }
 
+func BatchDelteUser(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for deletion",
+		})
+		return
+	}
+	myRole := c.GetInt("role")
+
+	// 对于每个ID，检查当前用户是否有权限删除
+	for _, id := range request.Ids {
+		originUser, err := model.GetUserById(id, false)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		if myRole <= originUser.Role {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无权删除同权限等级或更高权限等级的用户",
+			})
+			return
+		}
+	}
+
+	// 如果所有检查都通过，则执行批量删除
+	err := model.DeleteUsersByIds(request.Ids)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "用户删除成功",
+	})
+}
+
 func DeleteUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {

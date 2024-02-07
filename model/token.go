@@ -163,6 +163,27 @@ func (token *Token) Delete() error {
 	return err
 }
 
+func DeleteTokensByIds(ids []int, userId int) error {
+	// 检查ids和userId是否有效
+	if len(ids) == 0 || userId == 0 {
+		return errors.New("ids列表为空或userId无效")
+	}
+
+	// 构造查询条件，只删除属于userId的且ID在ids列表中的token
+	// 这里使用了GORM的Delete方法进行批量删除
+	result := DB.Where("id IN ? AND user_id = ?", ids, userId).Delete(&Token{})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// 可选：检查删除的行数是否与预期相符，这取决于你的具体需求
+	if result.RowsAffected != int64(len(ids)) {
+		return errors.New("未能删除所有指定的tokens")
+	}
+
+	return nil
+}
+
 func DeleteTokenById(id int, userId int) (err error) {
 	// Why we need userId here? In case user want to delete other's token.
 	if id == 0 || userId == 0 {

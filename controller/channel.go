@@ -152,6 +152,40 @@ func DeleteChannel(c *gin.Context) {
 	return
 }
 
+func BatchDelteChannel(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for deletion",
+		})
+		return
+	}
+	err := model.BatchDeleteChannel(request.Ids)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	// 返回成功响应
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Channels deleted successfully",
+	})
+}
+
 func DeleteDisabledChannel(c *gin.Context) {
 	rows, err := model.DeleteDisabledChannel()
 	if err != nil {

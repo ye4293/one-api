@@ -129,6 +129,23 @@ func DeleteUserById(id int) (err error) {
 	return user.Delete()
 }
 
+func DeleteUsersByIds(ids []int) error {
+
+	// 假设有一个全局的DB对象用于数据库操作
+	// 这里使用了GORM的Delete方法，其中`id IN (?)`是SQL语句的一部分，用于匹配IDs列表中的任何ID
+	result := DB.Where("id IN (?)", ids).Delete(&User{})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// 如果你需要检查是否所有的用户都被成功删除（比如有些ID可能不存在），你可以检查result.RowsAffected
+	if result.RowsAffected != int64(len(ids)) {
+		return errors.New("并非所有指定的用户都被删除")
+	}
+
+	return nil
+}
+
 func (user *User) Insert(inviterId int) error {
 	var err error
 	if user.Password != "" {

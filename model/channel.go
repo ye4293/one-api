@@ -203,6 +203,31 @@ func (channel *Channel) Delete() error {
 	return err
 }
 
+func BatchDeleteChannel(ids []int) error {
+	// 开始一个事务
+	tx := DB.Begin()
+
+	// 检查事务是否开始成功
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	// 批量删除所有渠道的Abilities
+	if err := tx.Where("channel_id IN ?", ids).Delete(&Ability{}).Error; err != nil {
+		tx.Rollback() // 如果出错，回滚事务
+		return err
+	}
+
+	// 批量删除渠道本身
+	if err := tx.Where("id IN ?", ids).Delete(&Channel{}).Error; err != nil {
+		tx.Rollback() // 如果出错，回滚事务
+		return err
+	}
+
+	// 提交事务
+	return tx.Commit().Error
+}
+
 func UpdateChannelStatusById(id int, status int) {
 	err := UpdateAbilityStatus(id, status == common.ChannelStatusEnabled)
 	if err != nil {
