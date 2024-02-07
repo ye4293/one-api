@@ -51,6 +51,7 @@ func GetUserTokensAndCount(userId int, page int, pageSize int) (tokens []*Token,
 	// 返回用户令牌列表、总数以及可能的错误信息
 	return tokens, total, nil
 }
+
 func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int) (tokens []*Token, total int64, err error) {
 	// 用于LIKE查询的关键词格式
 	likeKeyword := keyword + "%"
@@ -65,7 +66,7 @@ func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int
 	offset := (page - 1) * pageSize
 
 	// 获取满足条件的数据的子集
-	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Offset(offset).Limit(pageSize).Find(&tokens).Error
+	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Order("id DESC").Offset(offset).Limit(pageSize).Find(&tokens).Error
 	return tokens, total, err
 }
 

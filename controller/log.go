@@ -44,12 +44,20 @@ func GetAllLogs(c *gin.Context) {
 }
 
 func GetUserLogs(c *gin.Context) {
-	page, _ := strconv.Atoi(c.Query("page"))
-	if page < 0 {
-		page = 0
+	pageStr := c.Query("page")
+	pageSizeStr := c.Query("pagesize")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
 	}
-	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
+
+	pagesize, err := strconv.Atoi(pageSizeStr)
+	if err != nil || pagesize <= 0 {
+		pagesize = 10
+	}
 	currentPage := page
+
 	userId := c.GetInt("id")
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)

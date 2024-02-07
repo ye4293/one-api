@@ -85,7 +85,7 @@ func SearchUsersAndCount(keyword string, page int, pageSize int) (users []*User,
 	offset := (page - 1) * pageSize
 
 	// 分页查询
-	err = query.Offset(offset).Limit(pageSize).Find(&users).Error
+	err = query.Order("id DESC").Offset(offset).Limit(pageSize).Find(&users).Error
 	return users, total, err
 }
 

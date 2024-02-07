@@ -28,7 +28,7 @@ func GetAllChannels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data": map[string]interface{}{
+		"data": gin.H{
 			"list":        channels,
 			"currentPage": currentPage,
 			"pageSize":    pagesize,

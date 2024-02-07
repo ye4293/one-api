@@ -65,28 +65,29 @@ func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {
 }
 
 func SearchChannelsAndCount(keyword string, page int, pageSize int) (channels []*Channel, total int64, err error) {
-    keyCol := "`key`"
-    
-    // 用于LIKE查询的关键词格式
-    likeKeyword := "%" + keyword + "%"
+	keyCol := "`key`"
 
-    // 计算满足条件的频道总数
-    err = DB.Model(&Channel{}).Where("id = ? OR name LIKE ? OR "+keyCol+" = ?", helper.String2Int(keyword), likeKeyword, keyword).Count(&total).Error
-    if err != nil {
-        return nil, 0, err
-    }
+	// 用于LIKE查询的关键词格式
+	likeKeyword := "%" + keyword + "%"
 
-    // 计算分页的偏移量
-    offset := (page - 1) * pageSize
+	// 计算满足条件的频道总数
+	err = DB.Model(&Channel{}).Where("id = ? OR name LIKE ? OR "+keyCol+" = ?", helper.String2Int(keyword), likeKeyword, keyword).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-    // 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
-    err = DB.Omit("key").Where("id = ? OR name LIKE ? OR "+keyCol+" = ?", helper.String2Int(keyword), likeKeyword, keyword).Offset(offset).Limit(pageSize).Find(&channels).Error
-    if err != nil {
-        return nil, total, err
-    }
+	// 计算分页的偏移量
+	offset := (page - 1) * pageSize
 
-    // 返回频道列表的子集、总数以及可能的错误信息
-    return channels, total, nil
+	// 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
+	// 添加Order方法以按照id字段进行降序排列
+	err = DB.Omit("key").Where("id = ? OR name LIKE ? OR "+keyCol+" = ?", helper.String2Int(keyword), likeKeyword, keyword).Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回频道列表的子集、总数以及可能的错误信息
+	return channels, total, nil
 }
 
 func SearchChannels(keyword string) (channels []*Channel, err error) {
