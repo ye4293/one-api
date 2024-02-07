@@ -21,22 +21,25 @@ function renderRole(role) {
 
 const UsersTable = () => {
   const [users, setUsers] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searching, setSearching] = useState(false);
 
   const loadUsers = async (startIdx) => {
-    const res = await API.get(`/api/user/?p=${startIdx}`);
+    const res = await API.get(`/api/user/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
     const { success, message, data } = res.data;
     if (success) {
-      if (startIdx === 0) {
-        setUsers(data.list);
-      } else {
-        let newUsers = users;
-        newUsers.push(...data.list);
-        setUsers(newUsers);
-      }
+      setUsers(data.list || []);
+      setTotal(data.total || 0);
+      // if (startIdx === 0) {
+      //   setUsers(data.list);
+      // } else {
+      //   let newUsers = users;
+      //   newUsers.push(...data.list);
+      //   setUsers(newUsers);
+      // }
     } else {
       showError(message);
     }
@@ -45,16 +48,17 @@ const UsersTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-      if (activePage === Math.ceil(users.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadUsers(activePage - 1);
-      }
+      // if (activePage === Math.ceil(users.length / ITEMS_PER_PAGE) + 1) {
+      //   // In this case we have to load more data and then append them.
+      //   await loadUsers(activePage - 1);
+      // }
+      await loadUsers(activePage);
       setActivePage(activePage);
     })();
   };
 
   useEffect(() => {
-    loadUsers(0)
+    loadUsers(1)
       .then()
       .catch((reason) => {
         showError(reason);
@@ -108,7 +112,7 @@ const UsersTable = () => {
   const searchUsers = async () => {
     if (searchKeyword === '') {
       // if keyword is blank, load files instead.
-      await loadUsers(0);
+      await loadUsers(1);
       setActivePage(1);
       return;
     }
@@ -116,7 +120,8 @@ const UsersTable = () => {
     const res = await API.get(`/api/user/search?keyword=${searchKeyword}`);
     const { success, message, data } = res.data;
     if (success) {
-      setUsers(data);
+      setUsers(data.list || []);
+      setTotal(data.total || 0);
       setActivePage(1);
     } else {
       showError(message);
@@ -218,12 +223,7 @@ const UsersTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {users
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((user, idx) => {
+          {users.map((user, idx) => {
               if (user.deleted) return <></>;
               return (
                 <Table.Row key={user.id}>
@@ -329,8 +329,8 @@ const UsersTable = () => {
                 size='small'
                 siblingRange={1}
                 totalPages={
-                  Math.ceil(users.length / ITEMS_PER_PAGE) +
-                  (users.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
+                  Math.ceil(total / ITEMS_PER_PAGE) +
+                  (total % ITEMS_PER_PAGE === 0 ? 1 : 0)
                 }
               />
             </Table.HeaderCell>

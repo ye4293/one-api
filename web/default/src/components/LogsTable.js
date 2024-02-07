@@ -43,6 +43,7 @@ function renderType(type) {
 
 const LogsTable = () => {
   const [logs, setLogs] = useState([]);
+  const [total, setTotal] = useState(0);
   const [showStat, setShowStat] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
@@ -110,20 +111,22 @@ const LogsTable = () => {
     let localStartTimestamp = Date.parse(start_timestamp) / 1000;
     let localEndTimestamp = Date.parse(end_timestamp) / 1000;
     if (isAdminUser) {
-      url = `/api/log/?p=${startIdx}&type=${logType}&username=${username}&token_name=${token_name}&model_name=${model_name}&start_timestamp=${localStartTimestamp}&end_timestamp=${localEndTimestamp}&channel=${channel}`;
+      url = `/api/log/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}&type=${logType}&username=${username}&token_name=${token_name}&model_name=${model_name}&start_timestamp=${localStartTimestamp}&end_timestamp=${localEndTimestamp}&channel=${channel}`;
     } else {
-      url = `/api/log/self/?p=${startIdx}&type=${logType}&token_name=${token_name}&model_name=${model_name}&start_timestamp=${localStartTimestamp}&end_timestamp=${localEndTimestamp}`;
+      url = `/api/log/self/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}&type=${logType}&token_name=${token_name}&model_name=${model_name}&start_timestamp=${localStartTimestamp}&end_timestamp=${localEndTimestamp}`;
     }
     const res = await API.get(url);
     const { success, message, data } = res.data;
     if (success) {
-      if (startIdx === 0) {
-        setLogs(data);
-      } else {
-        let newLogs = [...logs];
-        newLogs.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data);
-        setLogs(newLogs);
-      }
+      setLogs(data.list || []);
+      setTotal(data.total || 0);
+      // if (startIdx === 0) {
+      //   setLogs(data);
+      // } else {
+      //   let newLogs = [...logs];
+      //   newLogs.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data);
+      //   setLogs(newLogs);
+      // }
     } else {
       showError(message);
     }
@@ -132,10 +135,11 @@ const LogsTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-      if (activePage === Math.ceil(logs.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadLogs(activePage - 1);
-      }
+      // if (activePage === Math.ceil(logs.length / ITEMS_PER_PAGE) + 1) {
+      //   // In this case we have to load more data and then append them.
+      //   await loadLogs(activePage - 1);
+      // }
+      await loadLogs(activePage);
       setActivePage(activePage);
     })();
   };
@@ -143,7 +147,7 @@ const LogsTable = () => {
   const refresh = async () => {
     setLoading(true);
     setActivePage(1);
-    await loadLogs(0);
+    await loadLogs(1);
   };
 
   useEffect(() => {
@@ -153,7 +157,7 @@ const LogsTable = () => {
   const searchLogs = async () => {
     if (searchKeyword === '') {
       // if keyword is blank, load files instead.
-      await loadLogs(0);
+      await loadLogs(1);
       setActivePage(1);
       return;
     }
@@ -334,12 +338,7 @@ const LogsTable = () => {
           </Table.Header>
 
           <Table.Body>
-            {logs
-              .slice(
-                (activePage - 1) * ITEMS_PER_PAGE,
-                activePage * ITEMS_PER_PAGE
-              )
-              .map((log, idx) => {
+            {logs.map((log, idx) => {
                 if (log.deleted) return <></>;
                 return (
                   <Table.Row key={log.id}>
@@ -387,8 +386,8 @@ const LogsTable = () => {
                   size='small'
                   siblingRange={1}
                   totalPages={
-                    Math.ceil(logs.length / ITEMS_PER_PAGE) +
-                    (logs.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
+                    Math.ceil(total / ITEMS_PER_PAGE) +
+                    (total % ITEMS_PER_PAGE === 0 ? 1 : 0)
                   }
                 />
               </Table.HeaderCell>

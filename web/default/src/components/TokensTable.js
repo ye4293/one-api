@@ -42,6 +42,7 @@ function renderStatus(status) {
 
 const TokensTable = () => {
   const [tokens, setTokens] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -50,16 +51,18 @@ const TokensTable = () => {
   const [targetTokenIdx, setTargetTokenIdx] = useState(0);
 
   const loadTokens = async (startIdx) => {
-    const res = await API.get(`/api/token/?p=${startIdx}`);
+    const res = await API.get(`/api/token/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
     const { success, message, data } = res.data;
     if (success) {
-      if (startIdx === 0) {
-        setTokens(data.list);
-      } else {
-        let newTokens = [...tokens];
-        newTokens.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
-        setTokens(newTokens);
-      }
+      setTokens(data.list || []);
+      setTotal(data.total || 0);
+      // if (startIdx === 0) {
+      //   setTokens(data.list);
+      // } else {
+      //   let newTokens = [...tokens];
+      //   newTokens.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
+      //   setTokens(newTokens);
+      // }
     } else {
       showError(message);
     }
@@ -68,17 +71,18 @@ const TokensTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-      if (activePage === Math.ceil(tokens.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadTokens(activePage - 1);
-      }
+      // if (activePage === Math.ceil(tokens.length / ITEMS_PER_PAGE) + 1) {
+      //   // In this case we have to load more data and then append them.
+      //   await loadTokens(activePage - 1);
+      // }
+      await loadTokens(activePage);
       setActivePage(activePage);
     })();
   };
 
   const refresh = async () => {
     setLoading(true);
-    await loadTokens(activePage - 1);
+    await loadTokens(activePage);
   };
 
   const onCopy = async (type, key) => {
@@ -160,7 +164,7 @@ const TokensTable = () => {
   }
 
   useEffect(() => {
-    loadTokens(0)
+    loadTokens(1)
       .then()
       .catch((reason) => {
         showError(reason);
@@ -203,7 +207,7 @@ const TokensTable = () => {
   const searchTokens = async () => {
     if (searchKeyword === '') {
       // if keyword is blank, load files instead.
-      await loadTokens(0);
+      await loadTokens(1);
       setActivePage(1);
       return;
     }
@@ -211,7 +215,8 @@ const TokensTable = () => {
     const res = await API.get(`/api/token/search?keyword=${searchKeyword}`);
     const { success, message, data } = res.data;
     if (success) {
-      setTokens(data);
+      setTokens(data.list || []);
+      setTotal(data.total || 0);
       setActivePage(1);
     } else {
       showError(message);
@@ -313,12 +318,7 @@ const TokensTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {tokens
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((token, idx) => {
+          {tokens.map((token, idx) => {
               if (token.deleted) return <></>;
               return (
                 <Table.Row key={token.id}>
@@ -434,8 +434,8 @@ const TokensTable = () => {
                 size='small'
                 siblingRange={1}
                 totalPages={
-                  Math.ceil(tokens.length / ITEMS_PER_PAGE) +
-                  (tokens.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
+                  Math.ceil(total / ITEMS_PER_PAGE) +
+                  (total % ITEMS_PER_PAGE === 0 ? 1 : 0)
                 }
               />
             </Table.HeaderCell>

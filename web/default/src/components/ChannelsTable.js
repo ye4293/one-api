@@ -50,6 +50,7 @@ function renderBalance(type, balance) {
 
 const ChannelsTable = () => {
   const [channels, setChannels] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -58,16 +59,22 @@ const ChannelsTable = () => {
   const [showPrompt, setShowPrompt] = useState(shouldShowPrompt("channel-test"));
 
   const loadChannels = async (startIdx) => {
-    const res = await API.get(`/api/channel/?p=${startIdx}`);
+    const res = await API.get(`/api/channel/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
     const { success, message, data } = res.data;
     if (success) {
-      if (startIdx === 0) {
-        setChannels(data.list);
-      } else {
-        let newChannels = [...channels];
-        newChannels.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
-        setChannels(newChannels);
-      }
+      setChannels(data.list || []);
+      setTotal(data.total || 0);
+      // if (startIdx === 1) {
+      //   setChannels(data.list);
+      // } else {
+      //   let newChannels = [...channels];
+      //   data.list && data.list.forEach(item => {
+      //     const isDuplicate = newChannels.some(obj => obj.id === item.id)
+      //     if (!isDuplicate) newChannels.push(item)
+      //   })
+      //   // newChannels.splice(startIdx * ITEMS_PER_PAGE, data.length, ...data.list);
+      //   setChannels(newChannels);
+      // }
     } else {
       showError(message);
     }
@@ -76,21 +83,22 @@ const ChannelsTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-      if (activePage === Math.ceil(channels.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadChannels(activePage - 1);
-      }
+      // if (activePage === Math.ceil(channels.length / ITEMS_PER_PAGE) + 1) {
+      //   // In this case we have to load more data and then append them.
+      //   await loadChannels(activePage);
+      // }
+      await loadChannels(activePage);
       setActivePage(activePage);
     })();
   };
 
   const refresh = async () => {
     setLoading(true);
-    await loadChannels(activePage - 1);
+    await loadChannels(activePage);
   };
 
   useEffect(() => {
-    loadChannels(0)
+    loadChannels(1)
       .then()
       .catch((reason) => {
         showError(reason);
@@ -199,7 +207,7 @@ const ChannelsTable = () => {
   const searchChannels = async () => {
     if (searchKeyword === '') {
       // if keyword is blank, load files instead.
-      await loadChannels(0);
+      await loadChannels(1);
       setActivePage(1);
       return;
     }
@@ -207,7 +215,8 @@ const ChannelsTable = () => {
     const res = await API.get(`/api/channel/search?keyword=${searchKeyword}`);
     const { success, message, data } = res.data;
     if (success) {
-      setChannels(data);
+      setChannels(data.list || []);
+      setTotal(data.total || 0);
       setActivePage(1);
     } else {
       showError(message);
@@ -401,12 +410,7 @@ const ChannelsTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {channels
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((channel, idx) => {
+          {channels.map((channel, idx) => {
               if (channel.deleted) return <></>;
               return (
                 <Table.Row key={channel.id}>
@@ -548,8 +552,8 @@ const ChannelsTable = () => {
                 size='small'
                 siblingRange={1}
                 totalPages={
-                  Math.ceil(channels.length / ITEMS_PER_PAGE) +
-                  (channels.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
+                  Math.ceil(total / ITEMS_PER_PAGE) +
+                  (total % ITEMS_PER_PAGE === 0 ? 1 : 0)
                 }
               />
               <Button size='small' onClick={refresh} loading={loading}>刷新</Button>

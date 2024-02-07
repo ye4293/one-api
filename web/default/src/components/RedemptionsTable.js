@@ -29,22 +29,25 @@ function renderStatus(status) {
 
 const RedemptionsTable = () => {
   const [redemptions, setRedemptions] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searching, setSearching] = useState(false);
 
   const loadRedemptions = async (startIdx) => {
-    const res = await API.get(`/api/redemption/?p=${startIdx}`);
+    const res = await API.get(`/api/redemption/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
     const { success, message, data } = res.data;
     if (success) {
-      if (startIdx === 0) {
-        setRedemptions(data);
-      } else {
-        let newRedemptions = redemptions;
-        newRedemptions.push(...data);
-        setRedemptions(newRedemptions);
-      }
+      setRedemptions(data.list || []);
+      setTotal(data.total || 0);
+      // if (startIdx === 0) {
+      //   setRedemptions(data);
+      // } else {
+      //   let newRedemptions = redemptions;
+      //   newRedemptions.push(...data);
+      //   setRedemptions(newRedemptions);
+      // }
     } else {
       showError(message);
     }
@@ -53,16 +56,17 @@ const RedemptionsTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-      if (activePage === Math.ceil(redemptions.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadRedemptions(activePage - 1);
-      }
+      // if (activePage === Math.ceil(redemptions.length / ITEMS_PER_PAGE) + 1) {
+      //   // In this case we have to load more data and then append them.
+      //   await loadRedemptions(activePage - 1);
+      // }
+      await loadRedemptions(activePage);
       setActivePage(activePage);
     })();
   };
 
   useEffect(() => {
-    loadRedemptions(0)
+    loadRedemptions(1)
       .then()
       .catch((reason) => {
         showError(reason);
@@ -105,7 +109,7 @@ const RedemptionsTable = () => {
   const searchRedemptions = async () => {
     if (searchKeyword === '') {
       // if keyword is blank, load files instead.
-      await loadRedemptions(0);
+      await loadRedemptions(1);
       setActivePage(1);
       return;
     }
@@ -215,12 +219,7 @@ const RedemptionsTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {redemptions
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((redemption, idx) => {
+          {redemptions.map((redemption, idx) => {
               if (redemption.deleted) return <></>;
               return (
                 <Table.Row key={redemption.id}>
@@ -305,8 +304,8 @@ const RedemptionsTable = () => {
                 size='small'
                 siblingRange={1}
                 totalPages={
-                  Math.ceil(redemptions.length / ITEMS_PER_PAGE) +
-                  (redemptions.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
+                  Math.ceil(total / ITEMS_PER_PAGE) +
+                  (total % ITEMS_PER_PAGE === 0 ? 1 : 0)
                 }
               />
             </Table.HeaderCell>
