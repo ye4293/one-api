@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 )
@@ -648,8 +649,9 @@ func init() {
 
 func ListModels(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"object": "list",
-		"data":   openAIModels,
+		"data":    openAIModels,
+		"success": true,
+		"message": "",
 	})
 }
 
