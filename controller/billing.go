@@ -4,7 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/relay/channel/openai"
+	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
 
 func GetSubscription(c *gin.Context) {
@@ -22,13 +22,15 @@ func GetSubscription(c *gin.Context) {
 	} else {
 		userId := c.GetInt("id")
 		remainQuota, err = model.GetUserQuota(userId)
-		usedQuota, err = model.GetUserUsedQuota(userId)
+		if err != nil {
+			usedQuota, err = model.GetUserUsedQuota(userId)
+		}
 	}
 	if expiredTime <= 0 {
 		expiredTime = 0
 	}
 	if err != nil {
-		Error := openai.Error{
+		Error := relaymodel.Error{
 			Message: err.Error(),
 			Type:    "upstream_error",
 		}
@@ -70,7 +72,7 @@ func GetUsage(c *gin.Context) {
 		quota, err = model.GetUserUsedQuota(userId)
 	}
 	if err != nil {
-		Error := openai.Error{
+		Error := relaymodel.Error{
 			Message: err.Error(),
 			Type:    "one_api_error",
 		}

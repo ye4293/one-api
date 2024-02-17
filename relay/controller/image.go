@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 	"io"
 	"net/http"
@@ -28,7 +29,7 @@ func isWithinRange(element string, value int) bool {
 	return value >= min && value <= max
 }
 
-func RelayImageHelper(c *gin.Context, relayMode int) *openai.ErrorWithStatusCode {
+func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
 	imageModel := "dall-e-2"
 	imageSize := "1024x1024"
 
@@ -84,7 +85,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *openai.ErrorWithStatusCode
 	}
 
 	// Number of generated images validation
-	if isWithinRange(imageModel, imageRequest.N) == false {
+	if !isWithinRange(imageModel, imageRequest.N) {
 		// channel not azure
 		if channelType != common.ChannelTypeAzure {
 			return openai.ErrorWrapper(errors.New("invalid value of n"), "n_not_within_range", http.StatusBadRequest)
