@@ -2,6 +2,9 @@ package controller
 
 import (
 	"fmt"
+	"net/http"
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -10,8 +13,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/util"
-	"net/http"
-	"strconv"
 )
 
 // https://platform.openai.com/docs/api-reference/chat
@@ -42,7 +43,7 @@ func Relay(c *gin.Context) {
 			c.Redirect(http.StatusTemporaryRedirect, fmt.Sprintf("%s?retry=%d", c.Request.URL.Path, retryTimes-1))
 		} else {
 			if err.StatusCode == http.StatusTooManyRequests {
-				err.Error.Message = "当前分组上游负载已饱和，请稍后再试"
+				err.Error.Message = "The current group upstream load is saturated, please try again later."
 			}
 			err.Error.Message = helper.MessageWithRequestId(err.Error.Message, requestId)
 			c.JSON(err.StatusCode, gin.H{
