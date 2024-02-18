@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -12,7 +13,13 @@ import (
 	"net/http"
 )
 
+// https://help.aliyun.com/zh/dashscope/developer-reference/api-details
+
 type Adaptor struct {
+}
+
+func (a *Adaptor) Init(meta *util.RelayMeta) {
+
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
@@ -29,8 +36,8 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	if meta.IsStream {
 		req.Header.Set("X-DashScope-SSE", "enable")
 	}
-	if c.GetString("plugin") != "" {
-		req.Header.Set("X-DashScope-Plugin", c.GetString("plugin"))
+	if c.GetString(common.ConfigKeyPlugin) != "" {
+		req.Header.Set("X-DashScope-Plugin", c.GetString(common.ConfigKeyPlugin))
 	}
 	return nil
 }
