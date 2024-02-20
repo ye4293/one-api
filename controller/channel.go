@@ -42,6 +42,7 @@ func SearchChannels(c *gin.Context) {
 	keyword := c.Query("keyword")
 	pageStr := c.Query("page")
 	pageSizeStr := c.Query("pagesize")
+	statusStr := c.Query("status") // 获取status参数
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -52,8 +53,15 @@ func SearchChannels(c *gin.Context) {
 	if err != nil || pagesize <= 0 {
 		pagesize = 10
 	}
+
+	// 将status字符串转换为int
+	status, err := strconv.Atoi(statusStr)
+	if err != nil || (status != 1 && status != 2) {
+		status = 1 // 默认值
+	}
+
 	currentPage := page
-	channels, total, err := model.SearchChannelsAndCount(keyword, page, pagesize)
+	channels, total, err := model.SearchChannelsAndCount(keyword, status, page, pagesize) // 将status作为参数传递
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -73,6 +81,7 @@ func SearchChannels(c *gin.Context) {
 	})
 	return
 }
+
 func GetChannel(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {

@@ -212,6 +212,7 @@ func SearchUsers(c *gin.Context) {
 	keyword := c.Query("keyword")
 	pageStr := c.Query("page")
 	pageSizeStr := c.Query("pagesize")
+	statusStr := c.Query("status") // 获取状态参数
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -222,8 +223,13 @@ func SearchUsers(c *gin.Context) {
 	if err != nil || pagesize <= 0 {
 		pagesize = 10
 	}
+
+	status, err := strconv.Atoi(statusStr) // 将状态参数转换为int
+	if err != nil || (status != 1 && status != 2) {
+		status = 1 // 默认值
+	}
 	currentPage := page
-	users, total, err := model.SearchUsersAndCount(keyword, page, pagesize)
+	users, total, err := model.SearchUsersAndCount(keyword, page, pagesize, status) // 将状态参数传递给函数
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

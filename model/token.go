@@ -52,12 +52,13 @@ func GetUserTokensAndCount(userId int, page int, pageSize int) (tokens []*Token,
 	return tokens, total, nil
 }
 
-func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int) (tokens []*Token, total int64, err error) {
+func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int, status int) (tokens []*Token, total int64, err error) {
 	// 用于LIKE查询的关键词格式
 	likeKeyword := keyword + "%"
 
 	// 先计算满足条件的总数据量
-	err = DB.Model(&Token{}).Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Count(&total).Error
+	// 加入对状态的查询条件
+	err = DB.Model(&Token{}).Where("user_id = ? AND status = ?", userId, status).Where("name LIKE ?", likeKeyword).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -66,7 +67,8 @@ func SearchUserTokensAndCount(userId int, keyword string, page int, pageSize int
 	offset := (page - 1) * pageSize
 
 	// 获取满足条件的数据的子集
-	err = DB.Where("user_id = ?", userId).Where("name LIKE ?", likeKeyword).Order("id DESC").Offset(offset).Limit(pageSize).Find(&tokens).Error
+	// 同样加入对状态的查询条件
+	err = DB.Where("user_id = ? AND status = ?", userId, status).Where("name LIKE ?", likeKeyword).Order("id DESC").Offset(offset).Limit(pageSize).Find(&tokens).Error
 	return tokens, total, err
 }
 

@@ -65,14 +65,16 @@ func GetAllUsers(startIdx int, num int) (users []*User, err error) {
 	return users, err
 }
 
-func SearchUsersAndCount(keyword string, page int, pageSize int) (users []*User, total int64, err error) {
+func SearchUsersAndCount(keyword string, page int, pageSize int, status int) (users []*User, total int64, err error) {
 	likeKeyword := "%" + keyword + "%"
 	query := DB.Omit("password")
 
 	if !common.UsingPostgreSQL {
-		query = query.Where("id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?", keyword, likeKeyword, likeKeyword, likeKeyword)
+		// Add status to the query condition
+		query = query.Where("(id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?) AND status = ?", keyword, likeKeyword, likeKeyword, likeKeyword, status)
 	} else {
-		query = query.Where("username LIKE ? or email LIKE ? or display_name LIKE ?", likeKeyword, likeKeyword, likeKeyword)
+		// Add status to the query condition for PostgreSQL
+		query = query.Where("(username LIKE ? or email LIKE ? or display_name LIKE ?) AND status = ?", likeKeyword, likeKeyword, likeKeyword, status)
 	}
 
 	// 先计算总数

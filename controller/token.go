@@ -45,6 +45,7 @@ func SearchTokens(c *gin.Context) {
 
 	pageStr := c.Query("page")
 	pageSizeStr := c.Query("pagesize")
+	statusStr := c.Query("status")
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -55,8 +56,14 @@ func SearchTokens(c *gin.Context) {
 	if err != nil || pagesize <= 0 {
 		pagesize = 10
 	}
+
+	status, err := strconv.Atoi(statusStr)
+	if err != nil || (status != 1 && status != 2) {
+		status = 1 // 默认值
+	}
+
 	currentPage := page
-	tokens, total, err := model.SearchUserTokensAndCount(userId, keyword, page, pagesize)
+	tokens, total, err := model.SearchUserTokensAndCount(userId, keyword, page, pagesize, status)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
