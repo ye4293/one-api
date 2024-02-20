@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/helper"
 	"gorm.io/gorm"
@@ -25,6 +26,58 @@ func GetAllRedemptions(startIdx int, num int) ([]*Redemption, error) {
 	var err error
 	err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
 	return redemptions, err
+}
+
+func GetAllRedemptionsAndCount(page int, pageSize int) (redemptions []*Redemption, total int64, err error) {
+	// 首先计算Redemption记录的总数
+	err = DB.Model(&Redemption{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
+	offset := (page - 1) * pageSize
+
+	// 获取当前页面的Redemption列表
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&redemptions).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回Redemption列表、总数以及可能的错误信息
+	return redemptions, total, nil
+}
+
+func SearchRedemptionsAndCount(keyword string, status *int, page int, pageSize int) (redemptions []*Redemption, total int64, err error) {
+	// 用于LIKE查询的关键词格式
+	likeKeyword := "%" + keyword + "%"
+
+	// 构建基础查询
+	baseQuery := DB.Model(&Redemption{}).Where("id = ? OR name LIKE ?", keyword, likeKeyword)
+
+	// 如果status不为nil，加入status作为查询条件
+	if status != nil {
+		baseQuery = baseQuery.Where("status = ?", *status)
+	}
+
+	// 计算满足条件的Redemption记录总数
+	err = baseQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算分页的偏移量
+	offset := (page - 1) * pageSize
+
+	// 获取满足条件的Redemption列表的子集，并应用分页参数
+	// 添加Order方法以按照id字段进行降序排列
+	err = baseQuery.Order("id DESC").Offset(offset).Limit(pageSize).Find(&redemptions).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回Redemption列表的子集、总数以及可能的错误信息
+	return redemptions, total, nil
 }
 
 func SearchRedemptions(keyword string) (redemptions []*Redemption, err error) {

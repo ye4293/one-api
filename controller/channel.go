@@ -54,10 +54,12 @@ func SearchChannels(c *gin.Context) {
 		pagesize = 10
 	}
 
-	// 将status字符串转换为int
-	status, err := strconv.Atoi(statusStr)
-	if err != nil || (status != 1 && status != 2) {
-		status = 1 // 默认值
+	var status *int
+	if statusStr != "" {
+		statusInt, err := strconv.Atoi(statusStr)
+		if err == nil && (statusInt == 1 || statusInt == 2) {
+			status = &statusInt
+		}
 	}
 
 	currentPage := page

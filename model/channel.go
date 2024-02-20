@@ -65,34 +65,39 @@ func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {
 	return channels, err
 }
 
-func SearchChannelsAndCount(keyword string, status int, page int, pageSize int) (channels []*Channel, total int64, err error) {
-    keyCol := "`key`"
+func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int) (channels []*Channel, total int64, err error) {
+	keyCol := "`key`"
 
-    // 用于LIKE查询的关键词格式
-    likeKeyword := "%" + keyword + "%"
+	// 用于LIKE查询的关键词格式
+	likeKeyword := "%" + keyword + "%"
 
-    // 计算满足条件的频道总数
-    // 加入status作为查询条件
-    err = DB.Model(&Channel{}).Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?) AND status = ?", helper.String2Int(keyword), likeKeyword, keyword, status).Count(&total).Error
-    if err != nil {
-        return nil, 0, err
-    }
+	// 构建基础查询
+	baseQuery := DB.Model(&Channel{}).Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?)", helper.String2Int(keyword), likeKeyword, keyword)
 
-    // 计算分页的偏移量
-    offset := (page - 1) * pageSize
+	// 如果status不为nil，加入status作为查询条件
+	if status != nil {
+		baseQuery = baseQuery.Where("status = ?", *status)
+	}
 
-    // 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
-    // 添加Order方法以按照id字段进行降序排列
-    // 加入status作为查询条件
-    err = DB.Omit("key").Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?) AND status = ?", helper.String2Int(keyword), likeKeyword, keyword, status).Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
-    if err != nil {
-        return nil, total, err
-    }
+	// 计算满足条件的频道总数
+	err = baseQuery.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
 
-    // 返回频道列表的子集、总数以及可能的错误信息
-    return channels, total, nil
+	// 计算分页的偏移量
+	offset := (page - 1) * pageSize
+
+	// 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
+	// 添加Order方法以按照id字段进行降序排列
+	err = baseQuery.Omit("key").Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回频道列表的子集、总数以及可能的错误信息
+	return channels, total, nil
 }
-
 
 func SearchChannels(keyword string) (channels []*Channel, err error) {
 	keyCol := "`key`"
@@ -102,7 +107,6 @@ func SearchChannels(keyword string) (channels []*Channel, err error) {
 	err = DB.Omit("key").Where("id = ? or name LIKE ? or "+keyCol+" = ?", helper.String2Int(keyword), keyword+"%", keyword).Find(&channels).Error
 	return channels, err
 }
-
 
 func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	channel := Channel{Id: id}
