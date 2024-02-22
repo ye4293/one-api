@@ -186,9 +186,17 @@ func DeleteRedemption(c *gin.Context) {
 }
 
 func UpdateRedemption(c *gin.Context) {
-	statusOnly := c.Query("status_only")
-	redemption := model.Redemption{}
-	err := c.ShouldBindJSON(&redemption)
+
+	type RedemptionUpdate struct {
+		Id         int    `json:"id"`
+		Name       string `json:"name"`
+		Quota      int    `json:"quota"`
+		StatusOnly *bool  `json:"status_only"`
+		Status     int    `json:"status"`
+	}
+
+	var redemptionupdate RedemptionUpdate
+	err := c.ShouldBindJSON(&redemptionupdate)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -196,7 +204,7 @@ func UpdateRedemption(c *gin.Context) {
 		})
 		return
 	}
-	cleanRedemption, err := model.GetRedemptionById(redemption.Id)
+	cleanRedemption, err := model.GetRedemptionById(redemptionupdate.Id)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -204,12 +212,12 @@ func UpdateRedemption(c *gin.Context) {
 		})
 		return
 	}
-	if statusOnly != "" {
-		cleanRedemption.Status = redemption.Status
+	if redemptionupdate.StatusOnly != nil && *redemptionupdate.StatusOnly {
+		cleanRedemption.Status = redemptionupdate.Status
 	} else {
-		// If you add more fields, please also update redemption.Update()
-		cleanRedemption.Name = redemption.Name
-		cleanRedemption.Quota = redemption.Quota
+		// If you add more fields, please also update token.Update()
+		cleanRedemption.Name = redemptionupdate.Name
+		cleanRedemption.Quota = redemptionupdate.Quota
 	}
 	err = cleanRedemption.Update()
 	if err != nil {
