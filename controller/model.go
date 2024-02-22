@@ -107,12 +107,10 @@ func init() {
 
 func ListModels(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"data":    openAIModels,
-		"success": true,
-		"message": "",
+		"object": "list",
+		"data":   openAIModels,
 	})
 }
-
 func RetrieveModel(c *gin.Context) {
 	modelId := c.Param("model")
 	if model, ok := openAIModelsMap[modelId]; ok {

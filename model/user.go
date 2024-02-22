@@ -120,6 +120,7 @@ func GetUserById(id int, selectAll bool) (*User, error) {
 	return &user, err
 }
 
+
 func GetUserIdByAffCode(affCode string) (int, error) {
 	if affCode == "" {
 		return 0, errors.New("affCode 为空！")

@@ -1,8 +1,9 @@
 package model
 
 import (
-	"github.com/songquanpeng/one-api/common"
 	"strings"
+
+	"github.com/songquanpeng/one-api/common"
 )
 
 type Ability struct {
@@ -81,4 +82,22 @@ func (channel *Channel) UpdateAbilities() error {
 
 func UpdateAbilityStatus(channelId int, status bool) error {
 	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
+}
+
+func FindEnabledModelsByGroup(group string) ([]string, error) {
+	var models []string
+
+	// 构建查询，选择不同的model，确保enabled为true，属于给定的group
+	// 并且按照priority降序排列
+	err := DB.Model(&Ability{}).
+		Select("DISTINCT model").
+		Where("`group` = ? AND enabled = ?", group, true).
+		Order("priority DESC").
+		Pluck("model", &models).Error // 使用Pluck来选择model列，填充到models切片中
+
+	if err != nil {
+		return nil, err
+	}
+
+	return models, nil
 }

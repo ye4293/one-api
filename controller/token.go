@@ -235,10 +235,19 @@ func DeleteToken(c *gin.Context) {
 }
 
 func UpdateToken(c *gin.Context) {
+	type TokenUpdate struct {
+		Id             int    `json:"id"`
+		Name           string `json:"name"`
+		ExpiredTime    int64  `json:"expired_time"`
+		RemainQuota    int    `json:"remain_quota"`
+		UnlimitedQuota bool   `json:"unlimited_quota"`
+		StatusOnly     *bool  `json:"status_only"`
+		Status         int    `json:"status"`
+	}
+
+	var tokenupdate TokenUpdate
 	userId := c.GetInt("id")
-	statusOnly := c.Query("status_only")
-	token := model.Token{}
-	err := c.ShouldBindJSON(&token)
+	err := c.ShouldBindJSON(&tokenupdate)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -246,14 +255,14 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
-	if len(token.Name) > 30 {
+	if len(tokenupdate.Name) > 30 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "令牌名称过长",
 		})
 		return
 	}
-	cleanToken, err := model.GetTokenByIds(token.Id, userId)
+	cleanToken, err := model.GetTokenByIds(tokenupdate.Id, userId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -261,7 +270,7 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
-	if token.Status == common.TokenStatusEnabled {
+	if tokenupdate.Status == common.TokenStatusEnabled {
 		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= helper.GetTimestamp() && cleanToken.ExpiredTime != -1 {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -277,14 +286,14 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
-	if statusOnly != "" {
-		cleanToken.Status = token.Status
+	if tokenupdate.StatusOnly != nil && *tokenupdate.StatusOnly {
+		cleanToken.Status = tokenupdate.Status
 	} else {
 		// If you add more fields, please also update token.Update()
-		cleanToken.Name = token.Name
-		cleanToken.ExpiredTime = token.ExpiredTime
-		cleanToken.RemainQuota = token.RemainQuota
-		cleanToken.UnlimitedQuota = token.UnlimitedQuota
+		cleanToken.Name = tokenupdate.Name
+		cleanToken.ExpiredTime = tokenupdate.ExpiredTime
+		cleanToken.RemainQuota = tokenupdate.RemainQuota
+		cleanToken.UnlimitedQuota = tokenupdate.UnlimitedQuota
 	}
 	err = cleanToken.Update()
 	if err != nil {

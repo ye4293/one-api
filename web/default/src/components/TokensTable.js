@@ -98,7 +98,7 @@ const TokensTable = () => {
     let encodedServerAddress = encodeURIComponent(serverAddress);
     const nextLink = localStorage.getItem('chat_link');
     let nextUrl;
-  
+
     if (nextLink) {
       nextUrl = nextLink + `/#/?settings={"key":"sk-${key}","url":"${serverAddress}"}`;
     } else {
@@ -132,7 +132,7 @@ const TokensTable = () => {
     let serverAddress = '';
     if (status) {
       status = JSON.parse(status);
-      serverAddress = status.server_address; 
+      serverAddress = status.server_address;
     }
     if (serverAddress === '') {
       serverAddress = window.location.origin;
@@ -140,7 +140,7 @@ const TokensTable = () => {
     let encodedServerAddress = encodeURIComponent(serverAddress);
     const chatLink = localStorage.getItem('chat_link');
     let defaultUrl;
-  
+
     if (chatLink) {
       defaultUrl = chatLink + `/#/?settings={"key":"sk-${key}","url":"${serverAddress}"}`;
     } else {
@@ -151,15 +151,15 @@ const TokensTable = () => {
       case 'ama':
         url = `ama://set-api-key?server=${encodedServerAddress}&key=sk-${key}`;
         break;
-  
+
       case 'opencat':
         url = `opencat://team/join?domain=${encodedServerAddress}&token=sk-${key}`;
         break;
-        
+
       default:
         url = defaultUrl;
     }
-  
+
     window.open(url, '_blank');
   }
 
@@ -172,7 +172,7 @@ const TokensTable = () => {
   }, []);
 
   const manageToken = async (id, action, idx) => {
-    let data = { id };
+    let data = { id, status_only: true };
     let res;
     switch (action) {
       case 'delete':
@@ -180,11 +180,11 @@ const TokensTable = () => {
         break;
       case 'enable':
         data.status = 1;
-        res = await API.put('/api/token/?status_only=true', data);
+        res = await API.put('/api/token/', data);
         break;
       case 'disable':
         data.status = 2;
-        res = await API.put('/api/token/?status_only=true', data);
+        res = await API.put('/api/token/', data);
         break;
     }
     const { success, message } = res.data;
@@ -319,105 +319,105 @@ const TokensTable = () => {
 
         <Table.Body>
           {tokens.map((token, idx) => {
-              if (token.deleted) return <></>;
-              return (
-                <Table.Row key={token.id}>
-                  <Table.Cell>{token.name ? token.name : '无'}</Table.Cell>
-                  <Table.Cell>{renderStatus(token.status)}</Table.Cell>
-                  <Table.Cell>{renderQuota(token.used_quota)}</Table.Cell>
-                  <Table.Cell>{token.unlimited_quota ? '无限制' : renderQuota(token.remain_quota, 2)}</Table.Cell>
-                  <Table.Cell>{renderTimestamp(token.created_time)}</Table.Cell>
-                  <Table.Cell>{token.expired_time === -1 ? '永不过期' : renderTimestamp(token.expired_time)}</Table.Cell>
-                  <Table.Cell>
-                    <div>
+            if (token.deleted) return <></>;
+            return (
+              <Table.Row key={token.id}>
+                <Table.Cell>{token.name ? token.name : '无'}</Table.Cell>
+                <Table.Cell>{renderStatus(token.status)}</Table.Cell>
+                <Table.Cell>{renderQuota(token.used_quota)}</Table.Cell>
+                <Table.Cell>{token.unlimited_quota ? '无限制' : renderQuota(token.remain_quota, 2)}</Table.Cell>
+                <Table.Cell>{renderTimestamp(token.created_time)}</Table.Cell>
+                <Table.Cell>{token.expired_time === -1 ? '永不过期' : renderTimestamp(token.expired_time)}</Table.Cell>
+                <Table.Cell>
+                  <div>
                     <Button.Group color='green' size={'small'}>
-                        <Button
-                          size={'small'}
-                          positive
-                          onClick={async () => {
-                            await onCopy('', token.key);
-                          }}
-                        >
-                          复制
-                        </Button>
-                        <Dropdown
-                          className='button icon'
-                          floating
-                          options={COPY_OPTIONS.map(option => ({
-                            ...option,
-                            onClick: async () => {
-                              await onCopy(option.value, token.key);
-                            }
-                          }))}
-                          trigger={<></>}
-                        />
-                      </Button.Group>
-                      {' '}
-                      <Button.Group color='blue' size={'small'}>
-                        <Button
-                            size={'small'}
-                            positive
-                            onClick={() => {     
-                              onOpenLink('', token.key);       
-                            }}>
-                            聊天
-                          </Button>
-                          <Dropdown   
-                            className="button icon"       
-                            floating
-                            options={OPEN_LINK_OPTIONS.map(option => ({
-                              ...option,
-                              onClick: async () => {
-                                await onOpenLink(option.value, token.key);
-                              }
-                            }))}       
-                            trigger={<></>}   
-                          />
-                      </Button.Group>
-                      {' '}
-                      <Popup
-                        trigger={
-                          <Button size='small' negative>
-                            删除
-                          </Button>
-                        }
-                        on='click'
-                        flowing
-                        hoverable
-                      >
-                        <Button
-                          negative
-                          onClick={() => {
-                            manageToken(token.id, 'delete', idx);
-                          }}
-                        >
-                          删除令牌 {token.name}
-                        </Button>
-                      </Popup>
                       <Button
                         size={'small'}
-                        onClick={() => {
-                          manageToken(
-                            token.id,
-                            token.status === 1 ? 'disable' : 'enable',
-                            idx
-                          );
+                        positive
+                        onClick={async () => {
+                          await onCopy('', token.key);
                         }}
                       >
-                        {token.status === 1 ? '禁用' : '启用'}
+                        复制
                       </Button>
+                      <Dropdown
+                        className='button icon'
+                        floating
+                        options={COPY_OPTIONS.map(option => ({
+                          ...option,
+                          onClick: async () => {
+                            await onCopy(option.value, token.key);
+                          }
+                        }))}
+                        trigger={<></>}
+                      />
+                    </Button.Group>
+                    {' '}
+                    <Button.Group color='blue' size={'small'}>
                       <Button
                         size={'small'}
-                        as={Link}
-                        to={'/token/edit/' + token.id}
-                      >
-                        编辑
+                        positive
+                        onClick={() => {
+                          onOpenLink('', token.key);
+                        }}>
+                        聊天
                       </Button>
-                    </div>
-                  </Table.Cell>
-                </Table.Row>
-              );
-            })}
+                      <Dropdown
+                        className="button icon"
+                        floating
+                        options={OPEN_LINK_OPTIONS.map(option => ({
+                          ...option,
+                          onClick: async () => {
+                            await onOpenLink(option.value, token.key);
+                          }
+                        }))}
+                        trigger={<></>}
+                      />
+                    </Button.Group>
+                    {' '}
+                    <Popup
+                      trigger={
+                        <Button size='small' negative>
+                          删除
+                        </Button>
+                      }
+                      on='click'
+                      flowing
+                      hoverable
+                    >
+                      <Button
+                        negative
+                        onClick={() => {
+                          manageToken(token.id, 'delete', idx);
+                        }}
+                      >
+                        删除令牌 {token.name}
+                      </Button>
+                    </Popup>
+                    <Button
+                      size={'small'}
+                      onClick={() => {
+                        manageToken(
+                          token.id,
+                          token.status === 1 ? 'disable' : 'enable',
+                          idx
+                        );
+                      }}
+                    >
+                      {token.status === 1 ? '禁用' : '启用'}
+                    </Button>
+                    <Button
+                      size={'small'}
+                      as={Link}
+                      to={'/token/edit/' + token.id}
+                    >
+                      编辑
+                    </Button>
+                  </div>
+                </Table.Cell>
+              </Table.Row>
+            );
+          })}
         </Table.Body>
 
         <Table.Footer>
