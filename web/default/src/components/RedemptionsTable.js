@@ -74,7 +74,7 @@ const RedemptionsTable = () => {
   }, []);
 
   const manageRedemption = async (id, action, idx) => {
-    let data = { id };
+    let data = { id,status_only:true };
     let res;
     switch (action) {
       case 'delete':
@@ -82,11 +82,11 @@ const RedemptionsTable = () => {
         break;
       case 'enable':
         data.status = 1;
-        res = await API.put('/api/redemption/?status_only=true', data);
+        res = await API.put('/api/redemption/', data);
         break;
       case 'disable':
         data.status = 2;
-        res = await API.put('/api/redemption/?status_only=true', data);
+        res = await API.put('/api/redemption/', data);
         break;
     }
     const { success, message } = res.data;
