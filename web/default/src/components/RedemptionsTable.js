@@ -117,7 +117,8 @@ const RedemptionsTable = () => {
     const res = await API.get(`/api/redemption/search?keyword=${searchKeyword}`);
     const { success, message, data } = res.data;
     if (success) {
-      setRedemptions(data);
+      setRedemptions(data.list || []);
+      setTotal(data.total || 0);
       setActivePage(1);
     } else {
       showError(message);
