@@ -62,7 +62,7 @@ func SearchRedemptions(c *gin.Context) {
 	}
 
 	currentPage := page
-	channels, total, err := model.SearchRedemptionsAndCount(keyword, status, page, pagesize) // 将status作为参数传递
+	channels, total, err := model.SearchRedemptionsAndCount(keyword, status, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -183,6 +183,41 @@ func DeleteRedemption(c *gin.Context) {
 		"message": "",
 	})
 	return
+}
+
+func BatchDeleteRedemption(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for deletion",
+		})
+		return
+	}
+
+	err := model.DeleteRedemptionsByIds(request.Ids)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Redemptions deleted successfully",
+	})
 }
 
 func UpdateRedemption(c *gin.Context) {

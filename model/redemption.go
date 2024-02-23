@@ -168,3 +168,18 @@ func DeleteRedemptionById(id int) (err error) {
 	}
 	return redemption.Delete()
 }
+
+func DeleteRedemptionsByIds(ids []int) error {
+	// 检查ids是否有效
+	if len(ids) == 0 {
+		return errors.New("ids列表为空")
+	}
+
+	// 构造查询条件，只删除ID在ids列表中的redemption
+	result := DB.Where("id IN ?", ids).Delete(&Redemption{})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	return nil
+}
