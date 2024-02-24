@@ -3,11 +3,12 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -77,7 +78,7 @@ func SendEmailVerification(c *gin.Context) {
 	if err := common.Validate.Var(email, "required,email"); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -130,7 +131,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	if err := common.Validate.Var(email, "required,email"); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -175,7 +176,7 @@ func ResetPassword(c *gin.Context) {
 	if req.Email == "" || req.Token == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}

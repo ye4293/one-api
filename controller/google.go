@@ -46,7 +46,7 @@ type GoogleOAuthResponse struct {
 
 func GetGoogleUserInfoByCode(code string) (*GoogleUser, error) {
 	if code == "" {
-		return nil, errors.New("无效的参数")
+		return nil, errors.New("Invalid parameter")
 	}
 
 	values := map[string]string{

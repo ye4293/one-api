@@ -33,7 +33,7 @@ func Login(c *gin.Context) {
 	err := json.NewDecoder(c.Request.Body).Decode(&loginRequest)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 			"success": false,
 		})
 		return
@@ -42,7 +42,7 @@ func Login(c *gin.Context) {
 	password := loginRequest.Password
 	if username == "" || password == "" {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 			"success": false,
 		})
 		return
@@ -128,7 +128,7 @@ func Register(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -398,7 +398,7 @@ func UpdateUser(c *gin.Context) {
 	if err != nil || updatedUser.Id == 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -462,7 +462,7 @@ func UpdateSelf(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -632,7 +632,7 @@ func CreateUser(c *gin.Context) {
 	if err != nil || user.Username == "" || user.Password == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}
@@ -688,7 +688,7 @@ func ManageUser(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无效的参数",
+			"message": "Invalid parameter",
 		})
 		return
 	}

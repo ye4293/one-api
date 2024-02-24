@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strconv"
-	"time"
 )
 
 type wechatLoginResponse struct {
@@ -21,7 +22,7 @@ type wechatLoginResponse struct {
 
 func getWeChatIdByCode(code string) (string, error) {
 	if code == "" {
-		return "", errors.New("无效的参数")
+		return "", errors.New("Invalid parameter")
 	}
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/wechat/user?code=%s", config.WeChatServerAddress, code), nil)
 	if err != nil {

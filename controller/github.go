@@ -32,7 +32,7 @@ type GitHubUser struct {
 
 func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if code == "" {
-		return nil, errors.New("无效的参数")
+		return nil, errors.New("Invalid parameter")
 	}
 	values := map[string]string{"client_id": config.GitHubClientId, "client_secret": config.GitHubClientSecret, "code": code}
 	jsonData, err := json.Marshal(values)
