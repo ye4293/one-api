@@ -255,6 +255,13 @@ func (user *User) FillUserByGitHubId() error {
 	return nil
 }
 
+func (user *User) FillUserByGoogleId() error {
+	if user.GoogleId == "" {
+		return errors.New("Google id 为空！")
+	}
+	DB.Where(User{GoogleId: user.GoogleId}).First(user)
+	return nil
+}
 func (user *User) FillUserByWeChatId() error {
 	if user.WeChatId == "" {
 		return errors.New("WeChat id 为空！")
@@ -285,6 +292,10 @@ func IsGitHubIdAlreadyTaken(githubId string) bool {
 
 func IsUsernameAlreadyTaken(username string) bool {
 	return DB.Where("username = ?", username).Find(&User{}).RowsAffected == 1
+}
+
+func IsGoogleIdAlreadyTaken(GoogleId string) bool {
+	return DB.Where("google_id = ?", GoogleId).Find(&User{}).RowsAffected == 1
 }
 
 func ResetUserPasswordByEmail(email string, password string) error {
