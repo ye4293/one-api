@@ -64,7 +64,7 @@ func Relay(c *gin.Context) {
 func RelayNotImplemented(c *gin.Context) {
 	err := model.Error{
 		Message: "API not implemented",
-		Type:    "one_api_error",
+		Type:    "api_error",
 		Param:   "",
 		Code:    "api_not_implemented",
 	}

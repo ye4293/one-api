@@ -1,11 +1,12 @@
 package config
 
 import (
-	"github.com/songquanpeng/one-api/common/helper"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/songquanpeng/one-api/common/helper"
 
 	"github.com/google/uuid"
 )
@@ -30,11 +31,11 @@ var OptionMapRWMutex sync.RWMutex
 var ItemsPerPage = 10
 var MaxRecentItems = 100
 
-
 var PasswordLoginEnabled = true
 var PasswordRegisterEnabled = true
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
+var GogleOAuthEnabled = false
 var WeChatAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
@@ -65,6 +66,10 @@ var SMTPToken = ""
 
 var GitHubClientId = ""
 var GitHubClientSecret = ""
+
+var GoogleClientId = ""
+var GoogleClientSecret = ""
+var GoogleRedirectUri = ""
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""

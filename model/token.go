@@ -87,23 +87,23 @@ func SearchUserTokens(userId int, keyword string) (tokens []*Token, err error) {
 
 func ValidateUserToken(key string) (token *Token, err error) {
 	if key == "" {
-		return nil, errors.New("未提供令牌")
+		return nil, errors.New("Token not provided")
 	}
 	token, err = CacheGetTokenByKey(key)
 	if err != nil {
 		logger.SysError("CacheGetTokenByKey failed: " + err.Error())
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errors.New("无效的令牌")
+			return nil, errors.New("Token not provided")
 		}
-		return nil, errors.New("令牌验证失败")
+		return nil, errors.New("Token verification failed")
 	}
 	if token.Status == common.TokenStatusExhausted {
-		return nil, errors.New("该令牌额度已用尽")
+		return nil, errors.New("The token quota has been exhausted")
 	} else if token.Status == common.TokenStatusExpired {
-		return nil, errors.New("该令牌已过期")
+		return nil, errors.New("The token has expired")
 	}
 	if token.Status != common.TokenStatusEnabled {
-		return nil, errors.New("该令牌状态不可用")
+		return nil, errors.New("The token status is not available")
 	}
 	if token.ExpiredTime != -1 && token.ExpiredTime < helper.GetTimestamp() {
 		if !common.RedisEnabled {
@@ -113,7 +113,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 				logger.SysError("failed to update token status" + err.Error())
 			}
 		}
-		return nil, errors.New("该令牌已过期")
+		return nil, errors.New("The token has expired")
 	}
 	if !token.UnlimitedQuota && token.RemainQuota <= 0 {
 		if !common.RedisEnabled {
@@ -124,7 +124,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 				logger.SysError("failed to update token status" + err.Error())
 			}
 		}
-		return nil, errors.New("该令牌额度已用尽")
+		return nil, errors.New("The token quota has been exhausted")
 	}
 	return token, nil
 }
@@ -185,12 +185,6 @@ func DeleteTokensByIds(ids []int, userId int) error {
 	if result.Error != nil {
 		return result.Error
 	}
-
-	// 可选：检查删除的行数是否与预期相符，这取决于你的具体需求
-	if result.RowsAffected != int64(len(ids)) {
-		return errors.New("未能删除所有指定的tokens")
-	}
-
 	return nil
 }
 
