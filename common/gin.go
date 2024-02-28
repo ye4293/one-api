@@ -3,10 +3,27 @@ package common
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/gin-gonic/gin"
 	"io"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
+
+const KeyRequestBody = "key_request_body"
+
+func GetRequestBody(c *gin.Context) ([]byte, error) {
+	requestBody, _ := c.Get(KeyRequestBody)
+	if requestBody != nil {
+		return requestBody.([]byte), nil
+	}
+	requestBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = c.Request.Body.Close()
+	c.Set(KeyRequestBody, requestBody)
+	return requestBody.([]byte), nil
+}
 
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	requestBody, err := io.ReadAll(c.Request.Body)

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -15,8 +18,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
 )
 
 // https://platform.openai.com/docs/api-reference/chat
@@ -53,8 +54,8 @@ func Relay(c *gin.Context) {
 	go processChannelRelayError(ctx, channelId, channelName, bizErr)
 	requestId := c.GetString(logger.RequestIdKey)
 	retryTimes := config.RetryTimes
-	if !shouldRetry(bizErr.StatusCode) {
-		logger.Errorf(ctx, "relay error happen, but status code is %d, won't retry in this case", bizErr.StatusCode)
+	if !shouldRetry(c, bizErr.StatusCode) {
+		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
@@ -68,6 +69,8 @@ func Relay(c *gin.Context) {
 			continue
 		}
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		requestBody, err := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		bizErr = relay(c, relayMode)
 		if bizErr == nil {
 			return
@@ -88,7 +91,10 @@ func Relay(c *gin.Context) {
 	}
 }
 
-func shouldRetry(statusCode int) bool {
+func shouldRetry(c *gin.Context, statusCode int) bool {
+	if _, ok := c.Get("specific_channel_id"); ok {
+		return false
+	}
 	if statusCode == http.StatusTooManyRequests {
 		return true
 	}
