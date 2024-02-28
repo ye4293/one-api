@@ -26,11 +26,7 @@ func GetRequestBody(c *gin.Context) ([]byte, error) {
 }
 
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
-	requestBody, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return err
-	}
-	err = c.Request.Body.Close()
+	requestBody, err := GetRequestBody(c)
 	if err != nil {
 		return err
 	}
