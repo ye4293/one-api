@@ -12,17 +12,18 @@ import (
 )
 
 type Token struct {
-	Id             int    `json:"id"`
-	UserId         int    `json:"user_id"`
-	Key            string `json:"key" gorm:"type:char(48);uniqueIndex"`
-	Status         int    `json:"status" gorm:"default:1"`
-	Name           string `json:"name" gorm:"index" `
-	CreatedTime    int64  `json:"created_time" gorm:"bigint"`
-	AccessedTime   int64  `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime    int64  `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota    int    `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota bool   `json:"unlimited_quota" gorm:"default:false"`
-	UsedQuota      int    `json:"used_quota" gorm:"default:0"` // used quota
+	Id                   int    `json:"id"`
+	UserId               int    `json:"user_id"`
+	Key                  string `json:"key" gorm:"type:char(48);uniqueIndex"`
+	Status               int    `json:"status" gorm:"default:1"`
+	Name                 string `json:"name" gorm:"index" `
+	CreatedTime          int64  `json:"created_time" gorm:"bigint"`
+	AccessedTime         int64  `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime          int64  `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota          int    `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota       bool   `json:"unlimited_quota" gorm:"default:false"`
+	UsedQuota            int    `json:"used_quota" gorm:"default:0"` // used quota
+	TokenRemindThreshold int    `json:"token_remind_threshold"`
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -253,9 +254,26 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	if err != nil {
 		return err
 	}
+	if !token.UnlimitedQuota && token.RemainQuota-quota < token.TokenRemindThreshold {
+		go func() {
+			email, err := GetUserEmail(token.UserId)
+			if err != nil {
+				logger.SysError("failed to fetch user email: " + err.Error())
+			}
+			prompt := "您的令牌额度即将用尽"
+			if email != "" {
+				err = common.SendEmail(prompt, email,
+					fmt.Sprintf("%s，当前令牌 %s剩余额度为 %d,已经达到您设定的阈值%d", prompt, token.Name, token.RemainQuota, token.TokenRemindThreshold))
+				if err != nil {
+					logger.SysError("failed to send email" + err.Error())
+				}
+			}
+		}()
+	}
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
 		return errors.New("令牌额度不足")
 	}
+	user, err := GetUserById(token.UserId, false)
 	userQuota, err := GetUserQuota(token.UserId)
 	if err != nil {
 		return err
@@ -263,7 +281,7 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	if userQuota < quota {
 		return errors.New("用户额度不足")
 	}
-	quotaTooLow := userQuota >= config.QuotaRemindThreshold && userQuota-quota < config.QuotaRemindThreshold
+	quotaTooLow := userQuota >= user.UserRemindThreshold && userQuota-quota < user.UserRemindThreshold
 	noMoreQuota := userQuota-quota <= 0
 	if quotaTooLow || noMoreQuota {
 		go func() {
@@ -276,9 +294,8 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 				prompt = "您的额度已用尽"
 			}
 			if email != "" {
-				topUpLink := fmt.Sprintf("%s/topup", config.ServerAddress)
 				err = common.SendEmail(prompt, email,
-					fmt.Sprintf("%s，当前剩余额度为 %d，为了不影响您的使用，请及时充值。<br/>充值链接：<a href='%s'>%s</a>", prompt, userQuota, topUpLink, topUpLink))
+					fmt.Sprintf("%s，当前剩余额度为 %d，已经达到您设定的阈值%d", prompt, userQuota, user.UserRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
 				}
