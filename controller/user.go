@@ -478,10 +478,11 @@ func UpdateSelf(c *gin.Context) {
 	}
 
 	cleanUser := model.User{
-		Id:          c.GetInt("id"),
-		Username:    user.Username,
-		Password:    user.Password,
-		DisplayName: user.DisplayName,
+		Id:                  c.GetInt("id"),
+		Username:            user.Username,
+		Password:            user.Password,
+		DisplayName:         user.DisplayName,
+		UserRemindThreshold: user.UserRemindThreshold,
 	}
 	if user.Password == "$I_LOVE_U" {
 		user.Password = "" // rollback to what it should be

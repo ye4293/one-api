@@ -159,7 +159,7 @@ func (token *Token) Insert() error {
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() error {
 	var err error
-	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota").Updates(token).Error
+	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "token_remind_threshold", "unlimited_quota").Updates(token).Error
 	return err
 }
 

@@ -236,13 +236,14 @@ func DeleteToken(c *gin.Context) {
 
 func UpdateToken(c *gin.Context) {
 	type TokenUpdate struct {
-		Id             int    `json:"id"`
-		Name           string `json:"name"`
-		ExpiredTime    int64  `json:"expired_time"`
-		RemainQuota    int    `json:"remain_quota"`
-		UnlimitedQuota bool   `json:"unlimited_quota"`
-		StatusOnly     *bool  `json:"status_only"`
-		Status         int    `json:"status"`
+		Id                   int    `json:"id"`
+		Name                 string `json:"name"`
+		ExpiredTime          int64  `json:"expired_time"`
+		RemainQuota          int    `json:"remain_quota"`
+		UnlimitedQuota       bool   `json:"unlimited_quota"`
+		StatusOnly           *bool  `json:"status_only"`
+		Status               int    `json:"status"`
+		TokenRemindThreshold int    `json:"token_remind_threshold"`
 	}
 
 	var tokenupdate TokenUpdate
@@ -293,6 +294,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.Name = tokenupdate.Name
 		cleanToken.ExpiredTime = tokenupdate.ExpiredTime
 		cleanToken.RemainQuota = tokenupdate.RemainQuota
+		cleanToken.TokenRemindThreshold = tokenupdate.TokenRemindThreshold
 		cleanToken.UnlimitedQuota = tokenupdate.UnlimitedQuota
 	}
 	err = cleanToken.Update()
