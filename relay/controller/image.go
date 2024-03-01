@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -216,7 +217,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if quota != 0 {
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
-			duration := time.Since(startTime).Seconds() // 计算总耗时
+			rowDuration := time.Since(startTime).Seconds() // 计算总耗时
+			duration := math.Round(rowDuration*1000) / 1000
 			model.RecordConsumeLog(c.Request.Context(), userId, channelId, 0, 0, imageModel, tokenName, quota, logContent, duration)
 			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 			channelId := c.GetInt("channel_id")

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -207,7 +208,8 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	quotaDelta := quota - preConsumedQuota
 	defer func(ctx context.Context) {
-		duration := time.Since(startTime).Seconds() // 计算总耗时
+		rowDuration := time.Since(startTime).Seconds() // 计算总耗时
+		duration := math.Round(rowDuration*1000) / 1000
 		go util.PostConsumeQuota(ctx, tokenId, quotaDelta, quota, userId, channelId, modelRatio, groupRatio, audioModel, tokenName, duration)
 	}(c.Request.Context())
 

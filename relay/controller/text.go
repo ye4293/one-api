@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -99,7 +100,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		return respErr
 	}
 
-	duration := time.Now().Sub(startTime).Seconds()
+	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
+	duration := math.Round(rowDuration*1000) / 1000
 	// post-consume quota
 	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration)
 	return nil
