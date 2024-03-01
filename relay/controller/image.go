@@ -2,19 +2,20 @@ package controller
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,6 +33,8 @@ func isWithinRange(element string, value int) bool {
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
 	imageModel := "dall-e-2"
 	imageSize := "1024x1024"
+
+	startTime := time.Now()
 
 	tokenId := c.GetInt("token_id")
 	channelType := c.GetInt("channel")
@@ -171,28 +174,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	var textResponse openai.ImageResponse
 
-	defer func(ctx context.Context) {
-		if resp.StatusCode != http.StatusOK {
-			return
-		}
-		err := model.PostConsumeTokenQuota(tokenId, quota)
-		if err != nil {
-			logger.SysError("error consuming token remain quota: " + err.Error())
-		}
-		err = model.CacheUpdateUserQuota(userId)
-		if err != nil {
-			logger.SysError("error update user quota cache: " + err.Error())
-		}
-		if quota != 0 {
-			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
-			model.RecordConsumeLog(ctx, userId, channelId, 0, 0, imageModel, tokenName, quota, logContent)
-			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
-			channelId := c.GetInt("channel_id")
-			model.UpdateChannelUsedQuota(channelId, quota)
-		}
-	}(c.Request.Context())
-
 	responseBody, err := io.ReadAll(resp.Body)
 
 	if err != nil {
@@ -214,13 +195,34 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	c.Writer.WriteHeader(resp.StatusCode)
 
+	defer resp.Body.Close()
+
+	// 将响应体内容写入到客户端
 	_, err = io.Copy(c.Writer, resp.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "copy_response_body_failed", http.StatusInternalServerError)
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
+
+	if resp.StatusCode == http.StatusOK {
+		// 执行扣费逻辑
+		err := model.PostConsumeTokenQuota(tokenId, quota)
+		if err != nil {
+			logger.SysError("error consuming token remain quota: " + err.Error())
+		}
+		err = model.CacheUpdateUserQuota(userId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+		if quota != 0 {
+			tokenName := c.GetString("token_name")
+			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+			duration := time.Since(startTime).Seconds() // 计算总耗时
+			model.RecordConsumeLog(c.Request.Context(), userId, channelId, 0, 0, imageModel, tokenName, quota, logContent, duration)
+			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
+			channelId := c.GetInt("channel_id")
+			model.UpdateChannelUsedQuota(channelId, quota)
+		}
 	}
+
 	return nil
 }

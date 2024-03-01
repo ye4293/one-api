@@ -38,36 +38,40 @@ func relay(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	}
 	return err
 }
-
 func Relay(c *gin.Context) {
 	ctx := c.Request.Context()
 	relayMode := constant.Path2RelayMode(c.Request.URL.Path)
 	bizErr := relay(c, relayMode)
+	requestId := c.GetString(logger.RequestIdKey) // 确保在函数开始就获取requestId
+
 	if bizErr == nil {
 		return
 	}
+
 	channelId := c.GetInt("channel_id")
 	lastFailedChannelId := channelId
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 	go processChannelRelayError(ctx, channelId, channelName, bizErr)
-	requestId := c.GetString(logger.RequestIdKey)
+
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode) {
-		logger.Errorf(ctx, "relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
+		logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
 	}
+
 	for i := retryTimes; i > 0; i-- {
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
 			break
 		}
-		logger.Infof(ctx, "using channel #%d to retry (remain times %d)", channel.Id, i)
 		if channel.Id == lastFailedChannelId {
 			continue
 		}
+		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
@@ -75,11 +79,14 @@ func Relay(c *gin.Context) {
 		if bizErr == nil {
 			return
 		}
-		channelId := c.GetInt("channel_id")
+
+		channelId = c.GetInt("channel_id")
 		lastFailedChannelId = channelId
-		channelName := c.GetString("channel_name")
+		channelName = c.GetString("channel_name")
 		go processChannelRelayError(ctx, channelId, channelName, bizErr)
 	}
+
+	// 如果所有尝试都失败，不处理耗时记录
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "当前分组上游负载已饱和，请稍后再试"
