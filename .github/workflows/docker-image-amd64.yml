@@ -22,7 +22,10 @@ jobs:
 
       - name: Save version info
         run: |
-          git describe --tags > VERSION 
+          VERSION=$(git describe --tags --always || echo "0.0.0-unknown")
+          echo "VERSION=$VERSION" > VERSION
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v2
