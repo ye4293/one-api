@@ -192,7 +192,7 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPriority bool) (*Channel, error) {
 	if !config.MemoryCacheEnabled {
 		return GetRandomSatisfiedChannel(group, model)
 	}
@@ -205,23 +205,28 @@ func CacheGetRandomSatisfiedChannel(group string, model string) (*Channel, error
 		return nil, errors.New("channel not found")
 	}
 
-	// 筛选出同一最高优先级的渠道
-	maxPriority := channels[0].GetPriority()
-	for _, channel := range channels {
-		if channel.GetPriority() > maxPriority {
-			maxPriority = channel.GetPriority()
+	var filteredChannels []*Channel
+	if ignoreFirstPriority {
+		// 如果忽略最高优先级，则将所有渠道视为候选
+		filteredChannels = channels
+	} else {
+		// 筛选出同一最高优先级的渠道
+		maxPriority := channels[0].GetPriority()
+		for _, channel := range channels {
+			if channel.GetPriority() > maxPriority {
+				maxPriority = channel.GetPriority()
+			}
 		}
-	}
-	var maxPriorityChannels []*Channel
-	for _, channel := range channels {
-		if channel.GetPriority() == maxPriority {
-			maxPriorityChannels = append(maxPriorityChannels, channel)
+		for _, channel := range channels {
+			if channel.GetPriority() == maxPriority {
+				filteredChannels = append(filteredChannels, channel)
+			}
 		}
 	}
 
-	// 计算同优先级渠道的总权重
+	// 计算候选渠道的总权重
 	totalWeight := 0
-	for _, channel := range maxPriorityChannels {
+	for _, channel := range filteredChannels {
 		weight := int(*channel.GetWeight())
 		if weight <= 0 {
 			weight = 1
@@ -236,7 +241,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string) (*Channel, error
 
 	// 根据权重随机选择渠道
 	currentWeight := 0
-	for _, channel := range maxPriorityChannels {
+	for _, channel := range filteredChannels {
 		weight := int(*channel.GetWeight())
 		if weight <= 0 {
 			weight = 1
