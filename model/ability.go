@@ -1,7 +1,10 @@
 package model
 
 import (
+	"errors"
+	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/songquanpeng/one-api/common"
 )
@@ -15,7 +18,6 @@ type Ability struct {
 }
 
 func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
-	ability := Ability{}
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -23,21 +25,52 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 		trueVal = "true"
 	}
 
-	var err error = nil
+	// 获取同优先级下所有可用的渠道及其权重
+	var channels []Channel
 	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model)
-	channelQuery := DB.Where(groupCol+" = ? and model = ? and enabled = "+trueVal+" and priority = (?)", group, model, maxPrioritySubQuery)
-	if common.UsingSQLite || common.UsingPostgreSQL {
-		err = channelQuery.Order("RANDOM()").First(&ability).Error
-	} else {
-		err = channelQuery.Order("RAND()").First(&ability).Error
-	}
+
+	err := DB.Table("channels").
+		Joins("JOIN abilities ON channels.id = abilities.channel_id").
+		Where("`abilities`.`group` = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = (?)", group, model, trueVal, maxPrioritySubQuery).
+		Find(&channels).Error
+
 	if err != nil {
 		return nil, err
 	}
-	channel := Channel{}
-	channel.Id = ability.ChannelId
-	err = DB.First(&channel, "id = ?", ability.ChannelId).Error
-	return &channel, err
+
+	totalWeight := 0
+	for _, channel := range channels {
+		// 检查 weight 值，如果小于等于 0，则将其设置为 1
+		weight := int(*channel.Weight)
+		if weight <= 0 {
+			weight = 1
+		}
+		totalWeight += weight
+	}
+
+	if totalWeight == 0 || len(channels) == 0 {
+		return nil, errors.New("no channels available with the required priority and weight")
+	}
+
+	// 生成一个随机权重阈值
+	randSource := rand.NewSource(time.Now().UnixNano())
+	randGen := rand.New(randSource)
+	weightThreshold := randGen.Intn(totalWeight) + 1
+
+	currentWeight := 0
+	for _, channel := range channels {
+		// 同样地，检查并调整 weight 值
+		weight := int(*channel.Weight)
+		if weight <= 0 {
+			weight = 1
+		}
+		currentWeight += weight
+		if currentWeight >= weightThreshold {
+			return &channel, nil
+		}
+	}
+
+	return nil, errors.New("unable to select a channel based on weight")
 }
 
 func (channel *Channel) AddAbilities() error {

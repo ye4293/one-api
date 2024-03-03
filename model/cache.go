@@ -4,15 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/logger"
 	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
 )
 
 var (
@@ -195,23 +196,58 @@ func CacheGetRandomSatisfiedChannel(group string, model string) (*Channel, error
 	if !config.MemoryCacheEnabled {
 		return GetRandomSatisfiedChannel(group, model)
 	}
+
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
+
 	channels := group2model2channels[group][model]
 	if len(channels) == 0 {
 		return nil, errors.New("channel not found")
 	}
-	endIdx := len(channels)
-	// choose by priority
-	firstChannel := channels[0]
-	if firstChannel.GetPriority() > 0 {
-		for i := range channels {
-			if channels[i].GetPriority() != firstChannel.GetPriority() {
-				endIdx = i
-				break
-			}
+
+	// 筛选出同一最高优先级的渠道
+	maxPriority := channels[0].GetPriority()
+	for _, channel := range channels {
+		if channel.GetPriority() > maxPriority {
+			maxPriority = channel.GetPriority()
 		}
 	}
-	idx := rand.Intn(endIdx)
-	return channels[idx], nil
+	var maxPriorityChannels []*Channel
+	for _, channel := range channels {
+		if channel.GetPriority() == maxPriority {
+			maxPriorityChannels = append(maxPriorityChannels, channel)
+		}
+	}
+
+	// 计算同优先级渠道的总权重
+	totalWeight := 0
+	for _, channel := range maxPriorityChannels {
+		weight := int(*channel.GetWeight())
+		if weight <= 0 {
+			weight = 1
+		}
+		totalWeight += weight
+	}
+
+	// 生成一个随机权重阈值
+	randSource := rand.NewSource(time.Now().UnixNano())
+	randGen := rand.New(randSource)
+	weightThreshold := randGen.Intn(totalWeight) + 1
+
+	// 根据权重随机选择渠道
+	currentWeight := 0
+	for _, channel := range maxPriorityChannels {
+		weight := int(*channel.GetWeight())
+		if weight <= 0 {
+			weight = 1
+		}
+		currentWeight += weight
+		if currentWeight >= weightThreshold {
+			return channel, nil
+		}
+	}
+
+	// 理论上不应该到达这里，因为总是应该能找到一个渠道
+	// 但为了防止潜在的错误，还是返回一个错误
+	return nil, errors.New("failed to select a channel based on weight")
 }

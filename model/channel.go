@@ -141,6 +141,14 @@ func (channel *Channel) GetPriority() int64 {
 	return *channel.Priority
 }
 
+func (channel *Channel) GetWeight() *uint {
+	if channel.Weight == nil {
+		defaultWeight := uint(1) // 定义默认权重值为1
+		return &defaultWeight    // 返回指向默认权重值的指针
+	}
+	return channel.Weight // 直接返回Weight字段的值
+}
+
 func (channel *Channel) GetBaseURL() string {
 	if channel.BaseURL == nil {
 		return ""
