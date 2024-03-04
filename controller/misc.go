@@ -93,7 +93,7 @@ func SendEmailVerification(c *gin.Context) {
 		if !allowed {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "管理员启用了邮箱域名白名单，您的邮箱地址的域名不在白名单中",
+				"message": "The administrator has enabled the email domain name whitelist, and the domain name of your email address is not in the whitelist.",
 			})
 			return
 		}
@@ -101,16 +101,16 @@ func SendEmailVerification(c *gin.Context) {
 	if model.IsEmailAlreadyTaken(email) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "邮箱地址已被占用",
+			"message": "Email address is already occupied",
 		})
 		return
 	}
 	code := common.GenerateVerificationCode(6)
 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
-	subject := fmt.Sprintf("%s邮箱验证邮件", config.SystemName)
-	content := fmt.Sprintf("<p>您好，你正在进行%s邮箱验证。</p>"+
-		"<p>您的验证码为: <strong>%s</strong></p>"+
-		"<p>验证码 %d 分钟内有效，如果不是本人操作，请忽略。</p>", config.SystemName, code, common.VerificationValidMinutes)
+	subject := fmt.Sprintf("%s's email verification email", config.SystemName)
+	content := fmt.Sprintf("<p>hello,you are verifying email on %s </p>"+
+		"<p>your code is <strong>%s</strong></p>"+
+		"<p>code is valid within %d minutes.</p>", config.SystemName, code, common.VerificationValidMinutes)
 	err := common.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -138,18 +138,18 @@ func SendPasswordResetEmail(c *gin.Context) {
 	if !model.IsEmailAlreadyTaken(email) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "该邮箱地址未注册",
+			"message": "This email address is not registered",
 		})
 		return
 	}
 	code := common.GenerateVerificationCode(0)
 	common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
 	link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", config.ServerAddress, email, code)
-	subject := fmt.Sprintf("%s密码重置", config.SystemName)
-	content := fmt.Sprintf("<p>您好，你正在进行%s密码重置。</p>"+
-		"<p>点击 <a href='%s'>此处</a> 进行密码重置。</p>"+
-		"<p>如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> %s </p>"+
-		"<p>重置链接 %d 分钟内有效，如果不是本人操作，请忽略。</p>", config.SystemName, link, link, common.VerificationValidMinutes)
+	subject := fmt.Sprintf("%s password reset", config.SystemName)
+	content := fmt.Sprintf("<p>hello, you are in the process of %s password reset.</p>"+
+		"<p>Click <a href='%s'>here</a> to reset your password.</p>"+
+		"<p>If the link cannot be clicked, please try clicking the link below or copying it to your browser to open: <br> %s </p>"+
+		"<p>Reset link valid for %d minutes</p>", config.SystemName, link, link, common.VerificationValidMinutes)
 	err := common.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -183,7 +183,7 @@ func ResetPassword(c *gin.Context) {
 	if !common.VerifyCodeWithKey(req.Email, req.Token, common.PasswordResetPurpose) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "重置链接非法或已过期",
+			"message": "The reset link is illegal or expired",
 		})
 		return
 	}
