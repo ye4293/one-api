@@ -39,7 +39,7 @@ func Getmenus(c *gin.Context) {
 		if accessToken == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "无权进行此操作，未登录且未提供 access token",
+				"message": "Not authorized for this operation, not logged in and no access token provided",
 			})
 			c.Abort()
 			return

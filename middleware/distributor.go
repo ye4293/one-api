@@ -28,16 +28,16 @@ func Distribute() func(c *gin.Context) {
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
-				abortWithMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithMessage(c, http.StatusBadRequest, "Invalid channel Id")
 				return
 			}
 			channel, err = model.GetChannelById(id, true)
 			if err != nil {
-				abortWithMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithMessage(c, http.StatusBadRequest, "Invalid channel Id")
 				return
 			}
 			if channel.Status != common.ChannelStatusEnabled {
-				abortWithMessage(c, http.StatusForbidden, "该渠道已被禁用")
+				abortWithMessage(c, http.StatusForbidden, "The channel has been disabled")
 				return
 			}
 		} else {
@@ -45,7 +45,7 @@ func Distribute() func(c *gin.Context) {
 			var modelRequest ModelRequest
 			err := common.UnmarshalBodyReusable(c, &modelRequest)
 			if err != nil {
-				abortWithMessage(c, http.StatusBadRequest, "无效的请求")
+				abortWithMessage(c, http.StatusBadRequest, "Invalid request")
 				return
 			}
 			if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
@@ -71,10 +71,10 @@ func Distribute() func(c *gin.Context) {
 			requestModel = modelRequest.Model
 			channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
 			if err != nil {
-				message := fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道", userGroup, modelRequest.Model)
+				message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
 				if channel != nil {
 					logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-					message = "数据库一致性已被破坏，请联系管理员"
+					message = "Database consistency has been violated, please contact the administrator"
 				}
 				abortWithMessage(c, http.StatusServiceUnavailable, message)
 				return

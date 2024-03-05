@@ -1,12 +1,13 @@
 package middleware
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strings"
 )
 
 func authHelper(c *gin.Context, minRole int) {
@@ -21,7 +22,7 @@ func authHelper(c *gin.Context, minRole int) {
 		if accessToken == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "无权进行此操作，未登录且未提供 access token",
+				"message": "Not authorized for this operation, not logged in and no access token provided",
 			})
 			c.Abort()
 			return
@@ -36,7 +37,7 @@ func authHelper(c *gin.Context, minRole int) {
 		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "无权进行此操作，access token 无效",
+				"message": "Not authorized to perform this operation, access token is invalid",
 			})
 			c.Abort()
 			return
@@ -45,7 +46,7 @@ func authHelper(c *gin.Context, minRole int) {
 	if status.(int) == common.UserStatusDisabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "用户已被封禁",
+			"message": "User has been banned",
 		})
 		c.Abort()
 		return
@@ -53,7 +54,7 @@ func authHelper(c *gin.Context, minRole int) {
 	if role.(int) < minRole {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无权进行此操作，权限不足",
+			"message": "You do not have permission to perform this operation. Insufficient permissions.",
 		})
 		c.Abort()
 		return
@@ -100,7 +101,7 @@ func TokenAuth() func(c *gin.Context) {
 			return
 		}
 		if !userEnabled {
-			abortWithMessage(c, http.StatusForbidden, "用户已被封禁")
+			abortWithMessage(c, http.StatusForbidden, "User has been banned")
 			return
 		}
 		c.Set("id", token.UserId)
@@ -110,7 +111,7 @@ func TokenAuth() func(c *gin.Context) {
 			if model.IsAdmin(token.UserId) {
 				c.Set("specific_channel_id", parts[1])
 			} else {
-				abortWithMessage(c, http.StatusForbidden, "普通用户不支持指定渠道")
+				abortWithMessage(c, http.StatusForbidden, "Ordinary users do not support designated channels")
 				return
 			}
 		}
