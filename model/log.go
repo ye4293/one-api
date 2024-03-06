@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -36,19 +37,6 @@ const (
 	LogTypeManage
 	LogTypeSystem
 )
-
-// updateLogDurationByRequestId 函数用于通过RequestId更新日志记录的Duration字段
-func UpdateLogDurationByRequestId(requestId string, duration float64) error {
-	// 使用全局变量DB来访问数据库
-	result := DB.Model(&Log{}).Where("request_id = ?", requestId).Update("duration", duration)
-	if result.Error != nil {
-		// 如果更新出错，返回错误
-		return result.Error
-	}
-
-	// 如果没有错误，返回nil表示成功
-	return nil
-}
 
 func RecordLog(userId int, logType int, content string) {
 	if logType == LogTypeConsume && !config.LogConsumeEnabled {
@@ -141,35 +129,6 @@ func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp i
 	return logs, total, nil
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int) (logs []*Log, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = DB
-	} else {
-		tx = DB.Where("type = ?", logType)
-	}
-	if modelName != "" {
-		tx = tx.Where("model_name = ?", modelName)
-	}
-	if username != "" {
-		tx = tx.Where("username = ?", username)
-	}
-	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
-	if channel != 0 {
-		tx = tx.Where("channel_id = ?", channel)
-	}
-	err = tx.Order("id desc").Limit(num).Offset(startIdx).Find(&logs).Error
-	return logs, err
-}
-
 func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, page int, pageSize int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
@@ -204,36 +163,13 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
+	err = tx.Select("id, request_id, user_id, created_at, type, username, token_name, model_name, quota, prompt_tokens, completion_tokens, channel_id, duration").Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
 	if err != nil {
 		return nil, total, err
 	}
 
 	// 返回日志数据、总数以及错误信息
 	return logs, total, nil
-}
-
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int) (logs []*Log, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = DB.Where("user_id = ?", userId)
-	} else {
-		tx = DB.Where("user_id = ? and type = ?", userId, logType)
-	}
-	if modelName != "" {
-		tx = tx.Where("model_name = ?", modelName)
-	}
-	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
-	err = tx.Order("id desc").Limit(num).Offset(startIdx).Omit("id").Find(&logs).Error
-	return logs, err
 }
 
 func SearchAllLogs(keyword string) (logs []*Log, err error) {
@@ -331,4 +267,104 @@ func SearchLogsByDayAndModel(userId, start, end int) (LogStatistics []*LogStatis
 	`, userId, start, end).Scan(&LogStatistics).Error
 
 	return LogStatistics, err
+}
+
+type ModelQuota struct {
+	Date      string
+	ModelName string
+	Quota     float64
+}
+
+func GetAllUsersLogsQuoteAndSum(days int) ([]ModelQuota, int, error) {
+	// 计算起始时间
+	startTime := time.Now().AddDate(0, 0, -days)
+
+	var modelQuotas []ModelQuota
+
+	// 第一步：查询每一天的不同ModelName的Quota之和
+	if err := DB.Table("logs").
+		Select("DATE(FROM_UNIXTIME(created_at)) as date, model_name, SUM(quota) as quota").
+		Where("created_at >= ?", startTime.Unix()).
+		Group("DATE(FROM_UNIXTIME(created_at)), model_name").
+		Find(&modelQuotas).Error; err != nil {
+		return nil, 0, err
+	}
+	for i := range modelQuotas {
+		modelQuotas[i].Quota = float64(modelQuotas[i].Quota) / 500000
+	}
+	// 第二步：计算总和
+	var totalQuota int
+	if err := DB.Table("logs").
+		Where("created_at >= ?", startTime.Unix()).
+		Select("SUM(quota) as quota").
+		Row().Scan(&totalQuota); err != nil {
+		return nil, 0, err
+	}
+
+	return modelQuotas, totalQuota, nil
+}
+
+func GetUsersLogsQuoteAndSum(userId int, days int) ([]ModelQuota, int, error) {
+	// 计算起始时间
+	startTime := time.Now().AddDate(0, 0, -days)
+
+	var modelQuotas []ModelQuota
+
+	// 第一步：查询每一天的不同ModelName的Quota之和
+	if err := DB.Table("logs").
+		Select("DATE(FROM_UNIXTIME(created_at)) as date, model_name, SUM(quota) as quota").
+		Where("created_at >= ?", startTime.Unix()).
+		Group("DATE(FROM_UNIXTIME(created_at)), model_name").
+		Find(&modelQuotas).Error; err != nil {
+		return nil, 0, err
+	}
+	for i := range modelQuotas {
+		modelQuotas[i].Quota = float64(modelQuotas[i].Quota) / 500000
+	}
+	// 第二步：计算总和
+	var totalQuota int
+	if err := DB.Table("logs").
+		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
+		Select("SUM(quota) as quota").
+		Row().Scan(&totalQuota); err != nil {
+		return nil, 0, err
+	}
+
+	return modelQuotas, totalQuota, nil
+}
+
+func GetAllUsersLogsCount(days int) (int, error) {
+	// 计算起始时间
+	startTime := time.Now().AddDate(0, 0, -days)
+
+	// 定义变量来存储总数量
+	var totalCount int
+
+	// 查询指定时间范围内的日志条目总数量
+	if err := DB.Table("logs").
+		Where("created_at >= ?", startTime.Unix()).
+		Select("COUNT(*) as count").
+		Row().Scan(&totalCount); err != nil {
+		return 0, err
+	}
+
+	return totalCount, nil
+}
+
+func GetUserLogsCount(userId int, days int) (int, error) {
+	// 计算起始时间
+	startTime := time.Now().AddDate(0, 0, -days)
+
+	// 定义变量来存储总数量
+	var totalCount int
+
+	// 查询指定用户和时间范围内的日志条目总数量
+	if err := DB.Table("logs").
+		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
+		Select("COUNT(*) as count").
+		Row().Scan(&totalCount); err != nil {
+		return 0, err
+	}
+
+	return totalCount, nil
 }

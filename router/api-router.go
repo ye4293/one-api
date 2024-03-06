@@ -119,5 +119,8 @@ func SetApiRouter(router *gin.Engine) {
 		}
 		menuRoute := apiRouter.Group("/menus")
 		menuRoute.GET("/", controller.Getmenus)
+		dashBoardRoute := apiRouter.Group("/dashboard")
+		dashBoardRoute.GET("/", middleware.AdminAuth(), controller.GetAdminDashboard)
+		dashBoardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard2)
 	}
 }
