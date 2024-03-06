@@ -270,69 +270,116 @@ func SearchLogsByDayAndModel(userId, start, end int) (LogStatistics []*LogStatis
 }
 
 type ModelQuota struct {
-	Date      string
 	ModelName string
 	Quota     float64
 }
 
-func GetAllUsersLogsQuoteAndSum(days int) ([]ModelQuota, int, error) {
+type DateQuotaSummary struct {
+	Date        string
+	ModelQuotas []ModelQuota
+}
+
+func GetAllUsersLogsQuoteAndSum(days int) ([]DateQuotaSummary, float64, error) {
 	// 计算起始时间
 	startTime := time.Now().AddDate(0, 0, -days)
 
-	var modelQuotas []ModelQuota
+	// 用于存储查询结果
+	var results []struct {
+		Date      string
+		ModelName string
+		Quota     float64
+	}
 
-	// 第一步：查询每一天的不同ModelName的Quota之和
+	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
 	if err := DB.Table("logs").
-		Select("DATE(FROM_UNIXTIME(created_at)) as date, model_name, SUM(quota) as quota").
+		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
 		Where("created_at >= ?", startTime.Unix()).
-		Group("DATE(FROM_UNIXTIME(created_at)), model_name").
-		Find(&modelQuotas).Error; err != nil {
+		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
+		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
+		Find(&results).Error; err != nil {
 		return nil, 0, err
 	}
-	for i := range modelQuotas {
-		modelQuotas[i].Quota = float64(modelQuotas[i].Quota) / 500000
+
+	// 创建一个map来按日期聚合数据
+	dateQuotaMap := make(map[string][]ModelQuota)
+	for _, result := range results {
+		dateQuotaMap[result.Date] = append(dateQuotaMap[result.Date], ModelQuota{
+			ModelName: result.ModelName,
+			Quota:     result.Quota,
+		})
 	}
-	// 第二步：计算总和
-	var totalQuota int
+
+	// 将map转换为切片
+	var dateQuotas []DateQuotaSummary
+	for date, quotas := range dateQuotaMap {
+		dateQuotas = append(dateQuotas, DateQuotaSummary{
+			Date:        date,
+			ModelQuotas: quotas,
+		})
+	}
+
+	// 计算总和
+	var totalQuotaSum float64
 	if err := DB.Table("logs").
 		Where("created_at >= ?", startTime.Unix()).
 		Select("SUM(quota) as quota").
-		Row().Scan(&totalQuota); err != nil {
+		Row().Scan(&totalQuotaSum); err != nil {
 		return nil, 0, err
 	}
 
-	return modelQuotas, totalQuota, nil
+	return dateQuotas, totalQuotaSum, nil
 }
 
-func GetUsersLogsQuoteAndSum(userId int, days int) ([]ModelQuota, int, error) {
+func GetUsersLogsQuoteAndSum(userId int, days int) ([]DateQuotaSummary, float64, error) {
 	// 计算起始时间
 	startTime := time.Now().AddDate(0, 0, -days)
 
-	var modelQuotas []ModelQuota
+	// 用于存储查询结果
+	var results []struct {
+		Date      string
+		ModelName string
+		Quota     float64
+	}
 
-	// 第一步：查询每一天的不同ModelName的Quota之和
+	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
 	if err := DB.Table("logs").
-		Select("DATE(FROM_UNIXTIME(created_at)) as date, model_name, SUM(quota) as quota").
-		Where("created_at >= ?", startTime.Unix()).
-		Group("DATE(FROM_UNIXTIME(created_at)), model_name").
-		Find(&modelQuotas).Error; err != nil {
+		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
+		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
+		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
+		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
+		Find(&results).Error; err != nil {
 		return nil, 0, err
 	}
-	for i := range modelQuotas {
-		modelQuotas[i].Quota = float64(modelQuotas[i].Quota) / 500000
+
+	// 创建一个map来按日期聚合数据
+	dateQuotaMap := make(map[string][]ModelQuota)
+	for _, result := range results {
+		dateQuotaMap[result.Date] = append(dateQuotaMap[result.Date], ModelQuota{
+			ModelName: result.ModelName,
+			Quota:     result.Quota,
+		})
 	}
-	// 第二步：计算总和
-	var totalQuota int
+
+	// 将map转换为切片
+	var dateQuotas []DateQuotaSummary
+	for date, quotas := range dateQuotaMap {
+		dateQuotas = append(dateQuotas, DateQuotaSummary{
+			Date:        date,
+			ModelQuotas: quotas,
+		})
+	}
+
+	// 计算总和
+	var totalQuotaSum float64
 	if err := DB.Table("logs").
 		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
 		Select("SUM(quota) as quota").
-		Row().Scan(&totalQuota); err != nil {
+		Row().Scan(&totalQuotaSum); err != nil {
 		return nil, 0, err
 	}
 
-	return modelQuotas, totalQuota, nil
+	return dateQuotas, totalQuotaSum, nil
 }
-
 func GetAllUsersLogsCount(days int) (int, error) {
 	// 计算起始时间
 	startTime := time.Now().AddDate(0, 0, -days)
