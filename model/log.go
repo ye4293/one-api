@@ -421,7 +421,7 @@ func GetAllUsersLogsCount(days int) (int, error) {
 
 	// 查询指定时间范围内的日志条目总数量
 	if err := DB.Table("logs").
-		Where("created_at >= ? AND type = ? AND user_id =?", startTime.Unix(), 2).
+		Where("created_at >= ? AND type = ? ", startTime.Unix(), 2).
 		Select("COUNT(*) as count").
 		Row().Scan(&totalCount); err != nil {
 		return 0, err
@@ -439,7 +439,7 @@ func GetUserLogsCount(userId int, days int) (int, error) {
 
 	// 查询指定用户和时间范围内的日志条目总数量
 	if err := DB.Table("logs").
-		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
+		Where("user_id = ? AND created_at >= ? AND type=?", userId, startTime.Unix(), 2).
 		Select("COUNT(*) as count").
 		Row().Scan(&totalCount); err != nil {
 		return 0, err
