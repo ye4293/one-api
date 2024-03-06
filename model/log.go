@@ -293,7 +293,7 @@ func GetAllUsersLogsQuoteAndSum(days int) ([]DateQuotaSummary, float64, error) {
 	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
 	if err := DB.Table("logs").
 		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
-		Where("created_at >= ?", startTime.Unix()).
+		Where("created_at >= ? AND type = ?", startTime.Unix(), 2).
 		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
 		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
 		Find(&results).Error; err != nil {
@@ -344,7 +344,7 @@ func GetUsersLogsQuoteAndSum(userId int, days int) ([]DateQuotaSummary, float64,
 	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
 	if err := DB.Table("logs").
 		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
-		Where("user_id = ? AND created_at >= ?", userId, startTime.Unix()).
+		Where("user_id = ? AND created_at >= ? AND type =?", userId, startTime.Unix(), 2).
 		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
 		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
 		Find(&results).Error; err != nil {
