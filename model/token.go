@@ -14,19 +14,19 @@ import (
 )
 
 type Token struct {
-	Id                   int       `json:"id"`
-	UserId               int       `json:"user_id"`
-	Key                  string    `json:"key" gorm:"type:char(48);uniqueIndex"`
-	Status               int       `json:"status" gorm:"default:1"`
-	Name                 string    `json:"name" gorm:"index" `
-	CreatedTime          int64     `json:"created_time" gorm:"bigint"`
-	AccessedTime         int64     `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime          int64     `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota          int       `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota       bool      `json:"unlimited_quota" gorm:"default:false"`
-	UsedQuota            int       `json:"used_quota" gorm:"default:0"` // used quota
-	TokenRemindThreshold int       `json:"token_remind_threshold"`
-	TokenLastNoticeTime  time.Time `json:"token_last_notice_time"`
+	Id                   int    `json:"id"`
+	UserId               int    `json:"user_id"`
+	Key                  string `json:"key" gorm:"type:char(48);uniqueIndex"`
+	Status               int    `json:"status" gorm:"default:1"`
+	Name                 string `json:"name" gorm:"index" `
+	CreatedTime          int64  `json:"created_time" gorm:"bigint"`
+	AccessedTime         int64  `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime          int64  `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota          int    `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota       bool   `json:"unlimited_quota" gorm:"default:false"`
+	UsedQuota            int    `json:"used_quota" gorm:"default:0"` // used quota
+	TokenRemindThreshold int    `json:"token_remind_threshold"`
+	TokenLastNoticeTime  int64  `json:"token_last_notice_time"`
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -266,8 +266,11 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 		go func() {
 			// 检查令牌是否可以发送邮件
 			if val, ok := lastTokenNoticeTimeMap.Load(tokenId); ok {
-				if lastTime, ok := val.(time.Time); ok && time.Since(lastTime) < time.Hour {
-					return // 如果上次发送时间小于一小时，则不发送邮件
+				if lastTimeUnix, ok := val.(int64); ok {
+					lastTime := time.Unix(lastTimeUnix, 0)
+					if time.Since(lastTime) < time.Hour {
+						return // 如果上次发送时间小于一小时，则不发送邮件
+					}
 				}
 			}
 			email, err := GetUserEmail(token.UserId)
@@ -285,7 +288,7 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 				}
 			}
 			// 更新令牌上次发送时间
-			lastTokenNoticeTimeMap.Store(tokenId, time.Now())
+			lastTokenNoticeTimeMap.Store(tokenId, time.Now().Unix())
 		}()
 	}
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
@@ -305,8 +308,11 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 		go func() {
 			// 检查用户是否可以发送邮件
 			if val, ok := lastUserNoticeTimeMap.Load(token.UserId); ok {
-				if lastTime, ok := val.(time.Time); ok && time.Since(lastTime) < time.Hour {
-					return // 如果上次发送时间小于一小时，则不发送邮件
+				if lastTimeUnix, ok := val.(int64); ok {
+					lastTime := time.Unix(lastTimeUnix, 0)
+					if time.Since(lastTime) < time.Hour {
+						return // 如果上次发送时间小于一小时，则不发送邮件
+					}
 				}
 			}
 			email, err := GetUserEmail(token.UserId)
@@ -327,7 +333,7 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 				}
 			}
 			// 更新用户上次发送时间
-			lastUserNoticeTimeMap.Store(token.UserId, time.Now())
+			lastUserNoticeTimeMap.Store(token.UserId, time.Now().Unix())
 		}()
 	}
 	if !token.UnlimitedQuota {
