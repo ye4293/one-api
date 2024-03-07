@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -12,18 +14,19 @@ import (
 )
 
 type Token struct {
-	Id                   int    `json:"id"`
-	UserId               int    `json:"user_id"`
-	Key                  string `json:"key" gorm:"type:char(48);uniqueIndex"`
-	Status               int    `json:"status" gorm:"default:1"`
-	Name                 string `json:"name" gorm:"index" `
-	CreatedTime          int64  `json:"created_time" gorm:"bigint"`
-	AccessedTime         int64  `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime          int64  `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota          int    `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota       bool   `json:"unlimited_quota" gorm:"default:false"`
-	UsedQuota            int    `json:"used_quota" gorm:"default:0"` // used quota
-	TokenRemindThreshold int    `json:"token_remind_threshold"`
+	Id                   int       `json:"id"`
+	UserId               int       `json:"user_id"`
+	Key                  string    `json:"key" gorm:"type:char(48);uniqueIndex"`
+	Status               int       `json:"status" gorm:"default:1"`
+	Name                 string    `json:"name" gorm:"index" `
+	CreatedTime          int64     `json:"created_time" gorm:"bigint"`
+	AccessedTime         int64     `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime          int64     `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota          int       `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota       bool      `json:"unlimited_quota" gorm:"default:false"`
+	UsedQuota            int       `json:"used_quota" gorm:"default:0"` // used quota
+	TokenRemindThreshold int       `json:"token_remind_threshold"`
+	TokenLastNoticeTime  time.Time `json:"token_last_notice_time"`
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -132,7 +135,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 
 func GetTokenByIds(id int, userId int) (*Token, error) {
 	if id == 0 || userId == 0 {
-		return nil, errors.New("id 或 userId 为空！")
+		return nil, errors.New("id or userId is empty!")
 	}
 	token := Token{Id: id, UserId: userId}
 	var err error = nil
@@ -142,7 +145,7 @@ func GetTokenByIds(id int, userId int) (*Token, error) {
 
 func GetTokenById(id int) (*Token, error) {
 	if id == 0 {
-		return nil, errors.New("id 为空！")
+		return nil, errors.New("id is empty!")
 	}
 	token := Token{Id: id}
 	var err error = nil
@@ -177,7 +180,7 @@ func (token *Token) Delete() error {
 func DeleteTokensByIds(ids []int, userId int) error {
 	// 检查ids和userId是否有效
 	if len(ids) == 0 || userId == 0 {
-		return errors.New("ids列表为空或userId无效")
+		return errors.New("The ids list is empty or the userId is invalid")
 	}
 
 	// 构造查询条件，只删除属于userId的且ID在ids列表中的token
@@ -192,7 +195,7 @@ func DeleteTokensByIds(ids []int, userId int) error {
 func DeleteTokenById(id int, userId int) (err error) {
 	// Why we need userId here? In case user want to delete other's token.
 	if id == 0 || userId == 0 {
-		return errors.New("id 或 userId 为空！")
+		return errors.New("id or userId is empty!")
 	}
 	token := Token{Id: id, UserId: userId}
 	err = DB.Where(token).First(&token).Error
@@ -204,7 +207,7 @@ func DeleteTokenById(id int, userId int) (err error) {
 
 func IncreaseTokenQuota(id int, quota int) (err error) {
 	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+		return errors.New("quota cannot be a negative number！")
 	}
 	if config.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, quota)
@@ -226,7 +229,7 @@ func increaseTokenQuota(id int, quota int) (err error) {
 
 func DecreaseTokenQuota(id int, quota int) (err error) {
 	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+		return errors.New("quota cannot be a negative number!")
 	}
 	if config.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, -quota)
@@ -246,6 +249,11 @@ func decreaseTokenQuota(id int, quota int) (err error) {
 	return err
 }
 
+var (
+	lastTokenNoticeTimeMap sync.Map // 用于存储tokenID和上次通知时间的映射
+	lastUserNoticeTimeMap  sync.Map // 用于存储userID和上次通知时间的映射
+)
+
 func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -256,22 +264,32 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	}
 	if !token.UnlimitedQuota && token.RemainQuota-quota < token.TokenRemindThreshold {
 		go func() {
+			// 检查令牌是否可以发送邮件
+			if val, ok := lastTokenNoticeTimeMap.Load(tokenId); ok {
+				if lastTime, ok := val.(time.Time); ok && time.Since(lastTime) < time.Hour {
+					return // 如果上次发送时间小于一小时，则不发送邮件
+				}
+			}
 			email, err := GetUserEmail(token.UserId)
 			if err != nil {
 				logger.SysError("failed to fetch user email: " + err.Error())
+				return
 			}
-			prompt := "您的令牌额度即将用尽"
+			prompt := "Your token quota is about to be exhausted"
 			if email != "" {
 				err = common.SendEmail(prompt, email,
-					fmt.Sprintf("%s，当前令牌 %s剩余额度为 %d,已经达到您设定的阈值%d", prompt, token.Name, token.RemainQuota, token.TokenRemindThreshold))
+					fmt.Sprintf("%s, the current remaining balance of token %s is %d, which has reached the threshold %d you set.", prompt, token.Name, token.RemainQuota, token.TokenRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
+					return
 				}
 			}
+			// 更新令牌上次发送时间
+			lastTokenNoticeTimeMap.Store(tokenId, time.Now())
 		}()
 	}
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
-		return errors.New("令牌额度不足")
+		return errors.New("Insufficient token amount")
 	}
 	user, err := GetUserById(token.UserId, false)
 	userQuota, err := GetUserQuota(token.UserId)
@@ -279,27 +297,37 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 		return err
 	}
 	if userQuota < quota {
-		return errors.New("用户额度不足")
+		return errors.New("Insufficient user quota")
 	}
 	quotaTooLow := userQuota >= user.UserRemindThreshold && userQuota-quota < user.UserRemindThreshold
 	noMoreQuota := userQuota-quota <= 0
 	if quotaTooLow || noMoreQuota {
 		go func() {
+			// 检查用户是否可以发送邮件
+			if val, ok := lastUserNoticeTimeMap.Load(token.UserId); ok {
+				if lastTime, ok := val.(time.Time); ok && time.Since(lastTime) < time.Hour {
+					return // 如果上次发送时间小于一小时，则不发送邮件
+				}
+			}
 			email, err := GetUserEmail(token.UserId)
 			if err != nil {
 				logger.SysError("failed to fetch user email: " + err.Error())
+				return
 			}
-			prompt := "您的额度即将用尽"
+			prompt := "Your quota is about to be exhausted"
 			if noMoreQuota {
-				prompt = "您的额度已用尽"
+				prompt = "Your quota has been exhausted"
 			}
 			if email != "" {
 				err = common.SendEmail(prompt, email,
-					fmt.Sprintf("%s，当前剩余额度为 %d，已经达到您设定的阈值%d", prompt, userQuota, user.UserRemindThreshold))
+					fmt.Sprintf("%s, the current remaining balance is %d, which has reached the threshold %d you set", prompt, userQuota, user.UserRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
+					return
 				}
 			}
+			// 更新用户上次发送时间
+			lastUserNoticeTimeMap.Store(token.UserId, time.Now())
 		}()
 	}
 	if !token.UnlimitedQuota {
