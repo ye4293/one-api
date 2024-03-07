@@ -3,7 +3,6 @@ package model
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -26,7 +25,7 @@ type Token struct {
 	UnlimitedQuota       bool   `json:"unlimited_quota" gorm:"default:false"`
 	UsedQuota            int    `json:"used_quota" gorm:"default:0"` // used quota
 	TokenRemindThreshold int    `json:"token_remind_threshold"`
-	TokenLastNoticeTime  int64  `json:"token_last_notice_time"`
+	TokenLastNoticeTime  int64  `json:"token_last_notice_time" gorm:"default:0"`
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -249,11 +248,6 @@ func decreaseTokenQuota(id int, quota int) (err error) {
 	return err
 }
 
-var (
-	lastTokenNoticeTimeMap sync.Map // 用于存储tokenID和上次通知时间的映射
-	lastUserNoticeTimeMap  sync.Map // 用于存储userID和上次通知时间的映射
-)
-
 func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -262,21 +256,16 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	if err != nil {
 		return err
 	}
+	currentTime := time.Now().Unix()
+
+	// 检查令牌是否可以发送邮件
 	if !token.UnlimitedQuota && token.RemainQuota-quota < token.TokenRemindThreshold {
-		go func() {
-			// 检查令牌是否可以发送邮件
-			if val, ok := lastTokenNoticeTimeMap.Load(tokenId); ok {
-				if lastTimeUnix, ok := val.(int64); ok {
-					lastTime := time.Unix(lastTimeUnix, 0)
-					if time.Since(lastTime) < time.Hour {
-						return // 如果上次发送时间小于一小时，则不发送邮件
-					}
-				}
-			}
-			email, err := GetUserEmail(token.UserId)
+		if currentTime-token.TokenLastNoticeTime > 3600 { // 3600秒等于1小时
+			var email string
+			email, err = GetUserEmail(token.UserId)
 			if err != nil {
 				logger.SysError("failed to fetch user email: " + err.Error())
-				return
+				return err
 			}
 			prompt := "Your token quota is about to be exhausted"
 			if email != "" {
@@ -284,41 +273,45 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 					fmt.Sprintf("%s, the current remaining balance of token %s is %d, which has reached the threshold %d you set.", prompt, token.Name, token.RemainQuota, token.TokenRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
-					return
+					return err
+				}
+				// 更新令牌上次发送时间
+				err = UpdateTokenLastNoticeTime(tokenId, currentTime)
+				if err != nil {
+					return err
 				}
 			}
-			// 更新令牌上次发送时间
-			lastTokenNoticeTimeMap.Store(tokenId, time.Now().Unix())
-		}()
+		}
 	}
+
 	if !token.UnlimitedQuota && token.RemainQuota < quota {
 		return errors.New("Insufficient token amount")
 	}
-	user, err := GetUserById(token.UserId, false)
-	userQuota, err := GetUserQuota(token.UserId)
+
+	user, err := GetUserById(token.UserId, true)
+	if err != nil {
+		return err
+	}
+	var userQuota int
+	userQuota, err = GetUserQuota(token.UserId)
 	if err != nil {
 		return err
 	}
 	if userQuota < quota {
 		return errors.New("Insufficient user quota")
 	}
+
 	quotaTooLow := userQuota >= user.UserRemindThreshold && userQuota-quota < user.UserRemindThreshold
 	noMoreQuota := userQuota-quota <= 0
+
+	// 检查用户是否可以发送邮件
 	if quotaTooLow || noMoreQuota {
-		go func() {
-			// 检查用户是否可以发送邮件
-			if val, ok := lastUserNoticeTimeMap.Load(token.UserId); ok {
-				if lastTimeUnix, ok := val.(int64); ok {
-					lastTime := time.Unix(lastTimeUnix, 0)
-					if time.Since(lastTime) < time.Hour {
-						return // 如果上次发送时间小于一小时，则不发送邮件
-					}
-				}
-			}
-			email, err := GetUserEmail(token.UserId)
+		if currentTime-user.UserLastNoticeTime > 3600 { // 3600秒等于1小时
+			var email string
+			email, err = GetUserEmail(token.UserId)
 			if err != nil {
 				logger.SysError("failed to fetch user email: " + err.Error())
-				return
+				return err
 			}
 			prompt := "Your quota is about to be exhausted"
 			if noMoreQuota {
@@ -329,13 +322,17 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 					fmt.Sprintf("%s, the current remaining balance is %d, which has reached the threshold %d you set", prompt, userQuota, user.UserRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
-					return
+					return err
+				}
+				// 更新用户上次发送时间
+				err = UpdateUserLastNoticeTime(token.UserId, currentTime)
+				if err != nil {
+					return err
 				}
 			}
-			// 更新用户上次发送时间
-			lastUserNoticeTimeMap.Store(token.UserId, time.Now().Unix())
-		}()
+		}
 	}
+
 	if !token.UnlimitedQuota {
 		err = DecreaseTokenQuota(tokenId, quota)
 		if err != nil {
@@ -344,6 +341,17 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 	}
 	err = DecreaseUserQuota(token.UserId, quota)
 	return err
+}
+
+func UpdateTokenLastNoticeTime(tokenId int, lastNoticeTime int64) error {
+	// 实现更新数据库中token的TokenLastNoticeTime字段的逻辑
+	return DB.Model(&Token{}).Where("id = ?", tokenId).Update("token_last_notice_time", lastNoticeTime).Error
+}
+
+// UpdateUserLastNoticeTime 更新用户的最后通知时间
+func UpdateUserLastNoticeTime(userId int, lastNoticeTime int64) error {
+	// 实现更新数据库中用户的UserLastNoticeTime字段的逻辑
+	return DB.Model(&User{}).Where("id = ?", userId).Update("user_last_notice_time", lastNoticeTime).Error
 }
 
 func PostConsumeTokenQuota(tokenId int, quota int) (err error) {
