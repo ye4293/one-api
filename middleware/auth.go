@@ -7,6 +7,7 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/blacklist"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -43,11 +44,14 @@ func authHelper(c *gin.Context, minRole int) {
 			return
 		}
 	}
-	if status.(int) == common.UserStatusDisabled {
+	if status.(int) == common.UserStatusDisabled || blacklist.IsUserBanned(id.(int)) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "User has been banned",
 		})
+		session := sessions.Default(c)
+		session.Clear()
+		_ = session.Save()
 		c.Abort()
 		return
 	}

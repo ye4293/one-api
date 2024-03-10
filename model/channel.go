@@ -54,12 +54,15 @@ func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int
 	return channels, total, nil
 }
 
-func GetAllChannels(startIdx int, num int, selectAll bool) ([]*Channel, error) {
+func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {
 	var channels []*Channel
 	var err error
-	if selectAll {
+	switch scope {
+	case "all":
 		err = DB.Order("id desc").Find(&channels).Error
-	} else {
+	case "disabled":
+		err = DB.Order("id desc").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&channels).Error
+	default:
 		err = DB.Order("id desc").Limit(num).Offset(startIdx).Omit("key").Find(&channels).Error
 	}
 	return channels, err

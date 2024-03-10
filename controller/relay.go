@@ -14,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/middleware"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -45,14 +46,14 @@ func Relay(c *gin.Context) {
 		requestBody, _ := common.GetRequestBody(c)
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
 	}
+	channelId := c.GetInt("channel_id")
 	bizErr := relay(c, relayMode)
 	requestId := c.GetString(logger.RequestIdKey) // 确保在函数开始就获取requestId
 
 	if bizErr == nil {
+		monitor.Emit(channelId, true)
 		return
 	}
-
-	channelId := c.GetInt("channel_id")
 	lastFailedChannelId := channelId
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
@@ -125,7 +126,9 @@ func processChannelRelayError(ctx context.Context, channelId int, channelName st
 	logger.Errorf(ctx, "relay error (channel #%d): %s", channelId, err.Message)
 	// https://platform.openai.com/docs/guides/error-codes/api-errors
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		disableChannel(channelId, channelName, err.Message)
+		monitor.DisableChannel(channelId, channelName, err.Message)
+	} else {
+		monitor.Emit(channelId, false)
 	}
 }
 

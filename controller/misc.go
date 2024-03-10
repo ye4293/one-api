@@ -8,6 +8,7 @@ import (
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -111,7 +112,7 @@ func SendEmailVerification(c *gin.Context) {
 	content := fmt.Sprintf("<p>hello,you are verifying email on %s </p>"+
 		"<p>your code is <strong>%s</strong></p>"+
 		"<p>code is valid within %d minutes.</p>", config.SystemName, code, common.VerificationValidMinutes)
-	err := common.SendEmail(subject, email, content)
+	err := message.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -150,7 +151,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 		"<p>Click <a href='%s'>here</a> to reset your password.</p>"+
 		"<p>If the link cannot be clicked, please try clicking the link below or copying it to your browser to open: <br> %s </p>"+
 		"<p>Reset link valid for %d minutes</p>", config.SystemName, link, link, common.VerificationValidMinutes)
-	err := common.SendEmail(subject, email, content)
+	err := message.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

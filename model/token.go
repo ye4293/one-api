@@ -9,6 +9,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/message"
 	"gorm.io/gorm"
 )
 
@@ -269,7 +270,7 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 			}
 			prompt := "Your token quota is about to be exhausted"
 			if email != "" {
-				err = common.SendEmail(prompt, email,
+				err = message.SendEmail(prompt, email,
 					fmt.Sprintf("%s, the current remaining balance of token %s is %d, which has reached the threshold %d you set.", prompt, token.Name, token.RemainQuota, token.TokenRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
@@ -318,7 +319,7 @@ func PreConsumeTokenQuota(tokenId int, quota int) (err error) {
 				prompt = "Your quota has been exhausted"
 			}
 			if email != "" {
-				err = common.SendEmail(prompt, email,
+				err = message.SendEmail(prompt, email,
 					fmt.Sprintf("%s, the current remaining balance is %d, which has reached the threshold %d you set", prompt, userQuota, user.UserRemindThreshold))
 				if err != nil {
 					logger.SysError("failed to send email" + err.Error())
