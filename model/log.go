@@ -417,7 +417,7 @@ func GetAllUsersLogsCount(days int) (int, error) {
 	startTime := time.Now().AddDate(0, 0, -days)
 
 	// 定义变量来存储总数量
-	var totalCount int
+	totalCount := 0
 
 	// 查询指定时间范围内的日志条目总数量
 	if err := DB.Table("logs").
@@ -435,7 +435,7 @@ func GetUserLogsCount(userId int, days int) (int, error) {
 	startTime := time.Now().AddDate(0, 0, -days)
 
 	// 定义变量来存储总数量
-	var totalCount int
+	totalCount := 0
 
 	// 查询指定用户和时间范围内的日志条目总数量
 	if err := DB.Table("logs").
