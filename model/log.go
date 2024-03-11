@@ -3,7 +3,6 @@ package model
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -320,19 +319,14 @@ func GetAllUsersLogsQuoteAndSum(days int) ([]DateQuotaSummary, float64, error) {
 		})
 	}
 
-	// 将map转换为切片
+	// 将map转换为切片，并确保即使没有结果，也能为每个日期返回一个条目
 	var dateQuotas []DateQuotaSummary
-	for date, quotas := range dateQuotaMap {
+	for _, date := range allDates {
 		dateQuotas = append(dateQuotas, DateQuotaSummary{
 			Date:        date,
-			ModelQuotas: quotas,
+			ModelQuotas: dateQuotaMap[date], // 这将添加一个空切片或者含有数据的切片
 		})
 	}
-
-	// 排序dateQuotas以确保日期顺序
-	sort.Slice(dateQuotas, func(i, j int) bool {
-		return dateQuotas[i].Date < dateQuotas[j].Date
-	})
 
 	// 计算总和
 	var totalQuotaSum float64
@@ -341,6 +335,11 @@ func GetAllUsersLogsQuoteAndSum(days int) ([]DateQuotaSummary, float64, error) {
 		Select("SUM(quota) as quota").
 		Row().Scan(&totalQuotaSum); err != nil {
 		return nil, 0, err
+	}
+
+	// 如果数据库返回的是NULL，确保将总和设置为0
+	if totalQuotaSum != totalQuotaSum { // 利用 NaN 不等于自身的特性来检查
+		totalQuotaSum = 0
 	}
 
 	return dateQuotas, totalQuotaSum, nil
@@ -365,12 +364,13 @@ func GetUsersLogsQuoteAndSum(userId int, days int) ([]DateQuotaSummary, float64,
 	}
 
 	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
-	if err := DB.Table("logs").
+	err := DB.Table("logs").
 		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
 		Where("created_at >= ? AND type = ? AND user_id = ?", startTime.Unix(), 2, userId).
 		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
 		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
-		Find(&results).Error; err != nil {
+		Find(&results).Error
+	if err != nil {
 		return nil, 0, err
 	}
 
@@ -395,18 +395,13 @@ func GetUsersLogsQuoteAndSum(userId int, days int) ([]DateQuotaSummary, float64,
 		})
 	}
 
-	// 排序dateQuotas以确保日期顺序
-	// （这一步可能是多余的，因为我们已经按照日期顺序添加了日期）
-	sort.Slice(dateQuotas, func(i, j int) bool {
-		return dateQuotas[i].Date < dateQuotas[j].Date
-	})
-
 	// 计算总和
 	var totalQuotaSum float64
-	if err := DB.Table("logs").
+	err = DB.Table("logs").
 		Where("created_at >= ? AND type = ? AND user_id = ?", startTime.Unix(), 2, userId).
 		Select("SUM(quota) as quota").
-		Row().Scan(&totalQuotaSum); err != nil {
+		Row().Scan(&totalQuotaSum)
+	if err != nil {
 		return nil, 0, err
 	}
 

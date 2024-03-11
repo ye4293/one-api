@@ -10,7 +10,7 @@ import (
 
 func GetAdminDashboard(c *gin.Context) {
 	days, _ := strconv.Atoi(c.Query("days"))
-	modelQuotes, totalQuota, err := model.GetAllUsersLogsQuoteAndSum(days)
+	dataQuotes, totalQuota, err := model.GetAllUsersLogsQuoteAndSum(days)
 	if err != nil {
 		return
 	}
@@ -24,7 +24,7 @@ func GetAdminDashboard(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"dailyquotes": modelQuotes,
+			"dailyquotes": dataQuotes,
 			"totalquote":  totalQuotaFloat,
 			"totalcount":  totalCount,
 		},
