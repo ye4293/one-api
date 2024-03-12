@@ -37,13 +37,20 @@ func GetUserDashboard2(c *gin.Context) {
 	days, _ := strconv.Atoi(c.Query("days"))
 	modelQuotes, totalQuota, err := model.GetUsersLogsQuoteAndSum(userId, days)
 	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "1",
+		})
 		return
 	}
 	totalCount, err := model.GetUserLogsCount(userId, days)
 	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "2",
+		})
 		return
 	}
-
 	totalQuotaFloat := float64(totalQuota) / 500000.0
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
