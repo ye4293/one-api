@@ -28,13 +28,13 @@ type User struct {
 	WeChatId            string `json:"wechat_id" gorm:"column:wechat_id;index"`
 	VerificationCode    string `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
 	AccessToken         string `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
-	Quota               int    `json:"quota" gorm:"type:int;default:0"`
-	UsedQuota           int    `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
+	Quota               int64  `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota           int64  `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount        int    `json:"request_count" gorm:"type:int;default:0;"`               // request number
 	Group               string `json:"group" gorm:"type:varchar(32);default:'Lv1"`
 	AffCode             string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	InviterId           int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	UserRemindThreshold int    `json:"user_remind_threshold"`
+	UserRemindThreshold int64  `json:"user_remind_threshold"`
 	UserLastNoticeTime  int64  `json:"user_last_notice_time" gorm:"default:0"`
 }
 
@@ -358,12 +358,12 @@ func ValidateAccessToken(token string) (user *User) {
 	return nil
 }
 
-func GetUserQuota(id int) (quota int, err error) {
+func GetUserQuota(id int) (quota int64, err error) {
 	err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
 	return quota, err
 }
 
-func GetUserUsedQuota(id int) (quota int, err error) {
+func GetUserUsedQuota(id int) (quota int64, err error) {
 	err = DB.Model(&User{}).Where("id = ?", id).Select("used_quota").Find(&quota).Error
 	return quota, err
 }
@@ -383,7 +383,7 @@ func GetUserGroup(id int) (group string, err error) {
 	return group, err
 }
 
-func IncreaseUserQuota(id int, quota int) (err error) {
+func IncreaseUserQuota(id int, quota int64) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -394,12 +394,12 @@ func IncreaseUserQuota(id int, quota int) (err error) {
 	return increaseUserQuota(id, quota)
 }
 
-func increaseUserQuota(id int, quota int) (err error) {
+func increaseUserQuota(id int, quota int64) (err error) {
 	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota + ?", quota)).Error
 	return err
 }
 
-func DecreaseUserQuota(id int, quota int) (err error) {
+func DecreaseUserQuota(id int, quota int64) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -410,7 +410,7 @@ func DecreaseUserQuota(id int, quota int) (err error) {
 	return decreaseUserQuota(id, quota)
 }
 
-func decreaseUserQuota(id int, quota int) (err error) {
+func decreaseUserQuota(id int, quota int64) (err error) {
 	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota - ?", quota)).Error
 	return err
 }
@@ -420,7 +420,7 @@ func GetRootUserEmail() (email string) {
 	return email
 }
 
-func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
+func UpdateUserUsedQuotaAndRequestCount(id int, quota int64) {
 	if config.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
 		addNewRecord(BatchUpdateTypeRequestCount, id, 1)
@@ -429,7 +429,7 @@ func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
 	updateUserUsedQuotaAndRequestCount(id, quota, 1)
 }
 
-func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
+func updateUserUsedQuotaAndRequestCount(id int, quota int64, count int) {
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
 			"used_quota":    gorm.Expr("used_quota + ?", quota),
@@ -441,7 +441,7 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	}
 }
 
-func updateUserUsedQuota(id int, quota int) {
+func updateUserUsedQuota(id int, quota int64) {
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
 			"used_quota": gorm.Expr("used_quota + ?", quota),

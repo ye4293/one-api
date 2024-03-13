@@ -55,7 +55,7 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
-func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int, content string, duration float64) {
+func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64) {
 	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content))
 	if !config.LogConsumeEnabled {
 		return
@@ -70,7 +70,7 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 		CompletionTokens: completionTokens,
 		TokenName:        tokenName,
 		ModelName:        modelName,
-		Quota:            quota,
+		Quota:            int(quota),
 		ChannelId:        channelId,
 		Duration:         duration,
 	}
@@ -182,7 +182,7 @@ func SearchUserLogs(userId int, keyword string) (logs []*Log, err error) {
 	return logs, err
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int) (quota int) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int) (quota int64) {
 	tx := DB.Table("logs").Select("ifnull(sum(quota),0)")
 	if username != "" {
 		tx = tx.Where("username = ?", username)

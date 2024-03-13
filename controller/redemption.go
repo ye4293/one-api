@@ -225,7 +225,7 @@ func UpdateRedemption(c *gin.Context) {
 	type RedemptionUpdate struct {
 		Id         int    `json:"id"`
 		Name       string `json:"name"`
-		Quota      int    `json:"quota"`
+		Quota      int64  `json:"quota"`
 		StatusOnly *bool  `json:"status_only"`
 		Status     int    `json:"status"`
 	}

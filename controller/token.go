@@ -239,11 +239,11 @@ func UpdateToken(c *gin.Context) {
 		Id                   int    `json:"id"`
 		Name                 string `json:"name"`
 		ExpiredTime          int64  `json:"expired_time"`
-		RemainQuota          int    `json:"remain_quota"`
+		RemainQuota          int64  `json:"remain_quota"`
 		UnlimitedQuota       bool   `json:"unlimited_quota"`
 		StatusOnly           *bool  `json:"status_only"`
 		Status               int    `json:"status"`
-		TokenRemindThreshold int    `json:"token_remind_threshold"`
+		TokenRemindThreshold int64  `json:"token_remind_threshold"`
 	}
 
 	var tokenupdate TokenUpdate
