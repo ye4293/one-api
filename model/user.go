@@ -133,6 +133,17 @@ func GetUserIdByAffCode(affCode string) (int, error) {
 	return user.Id, err
 }
 
+func GetUserByEmail(email string) (*User, error) {
+	if email == "" {
+		return nil, errors.New("email 为空！")
+	}
+	var user User
+	err := DB.Where("email = ?", email).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
 func DeleteUserById(id int) (err error) {
 	if id == 0 {
 		return errors.New("id 为空！")

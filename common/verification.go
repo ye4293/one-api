@@ -1,10 +1,12 @@
 package common
 
 import (
-	"github.com/google/uuid"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type verificationValue struct {
@@ -29,6 +31,22 @@ func GenerateVerificationCode(length int) string {
 		return code
 	}
 	return code[:length]
+}
+
+func GeneratePassword() string {
+	source := rand.NewSource(time.Now().UnixNano()) // 使用当前时间作为种子
+	random := rand.New(source)                      // 创建一个新的局部随机数生成器
+
+	var letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	var passwordLength = 8
+	var password []byte
+
+	for i := 0; i < passwordLength; i++ {
+		randomIndex := random.Intn(len(letters))
+		password = append(password, letters[randomIndex])
+	}
+
+	return string(password)
 }
 
 func RegisterVerificationCodeWithKey(key string, code string, purpose string) {

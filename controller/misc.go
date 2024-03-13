@@ -143,15 +143,54 @@ func SendPasswordResetEmail(c *gin.Context) {
 		})
 		return
 	}
-	code := common.GenerateVerificationCode(0)
-	common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-	link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", config.ServerAddress, email, code)
+	newPassword := common.GeneratePassword()
+	err := model.ResetUserPasswordByEmail(email, newPassword)
+	if err != nil {
+		return
+	}
+
+	// common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
+	// link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", config.ServerAddress, email, newPassword)
+
 	subject := fmt.Sprintf("%s password reset", config.SystemName)
-	content := fmt.Sprintf("<p>hello, you are in the process of %s password reset.</p>"+
-		"<p>Click <a href='%s'>here</a> to reset your password.</p>"+
-		"<p>If the link cannot be clicked, please try clicking the link below or copying it to your browser to open: <br> %s </p>"+
-		"<p>Reset link valid for %d minutes</p>", config.SystemName, link, link, common.VerificationValidMinutes)
-	err := message.SendEmail(subject, email, content)
+	// content := fmt.Sprintf("<p>hello, you are in the process of %s password reset.</p>"+
+	// 	"<p>your new password is %s<br>  </p>", config.SystemName, newPassword)
+	content := fmt.Sprintf(`
+	<html>
+	<head>
+		<style>
+			body {
+				font-family: Arial, sans-serif;
+				margin: 20px;
+				padding: 0;
+				color: #333;
+			}
+			.content {
+				background-color: #f4f4f4;
+				padding: 20px;
+				border-radius: 5px;
+			}
+			a {
+				color: #007bff;
+				text-decoration: none;
+			}
+			a:hover {
+				text-decoration: underline;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="content">
+			<h2>Hello,</h2>
+			<p>You are in the process of %s password reset.</p>
+			<p>Your new password is: <strong>%s</strong></p>
+			<p>Please change your password after logging in.</p>
+		</div>
+	</body>
+	</html>
+	`, config.SystemName, newPassword)
+
+	err = message.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
