@@ -117,3 +117,15 @@ func GenerateCallbackUrl(userId int) string {
 	CallbackUrl := "https://api.cryptapi.io/?userid=" + userIdStr + "&timestamp=" + timestampStr
 	return CallbackUrl
 }
+func getAdress() {
+
+}
+func GetQrcode() {
+	userId := c.GetInt("id")
+	order:=Model.CreateOrder()
+	if err = Mode.CreateOrder(userId)
+	//创建一笔订单
+	//构建请求参数
+	//获取结果
+	//返回结果
+}
