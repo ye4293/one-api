@@ -1,12 +1,13 @@
 package config
 
 import (
-	"github.com/songquanpeng/one-api/common/env"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
 	"github.com/google/uuid"
+	"github.com/songquanpeng/one-api/common/env"
 )
 
 var SystemName = "EZLINK AI"
@@ -68,7 +69,7 @@ var GitHubClientSecret = ""
 
 var GoogleClientId = "677844314191-58e12jjntkvieprf2ilv4dc4ocrr5q41.apps.googleusercontent.com"
 var GoogleClientSecret = "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"
-var GoogleRedirectUri = "http://localhost:3000/login/google"
+var GoogleRedirectUri = "http://localhost:3000/oauth/google/callback"
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""

@@ -29,6 +29,7 @@ func InitOptionMap() {
 	config.OptionMap["PasswordRegisterEnabled"] = strconv.FormatBool(config.PasswordRegisterEnabled)
 	config.OptionMap["EmailVerificationEnabled"] = strconv.FormatBool(config.EmailVerificationEnabled)
 	config.OptionMap["GitHubOAuthEnabled"] = strconv.FormatBool(config.GitHubOAuthEnabled)
+	config.OptionMap["GoogleOAuthEnabled"] = strconv.FormatBool(config.GoogleOAuthEnabled)
 	config.OptionMap["WeChatAuthEnabled"] = strconv.FormatBool(config.WeChatAuthEnabled)
 	config.OptionMap["TurnstileCheckEnabled"] = strconv.FormatBool(config.TurnstileCheckEnabled)
 	config.OptionMap["RegisterEnabled"] = strconv.FormatBool(config.RegisterEnabled)
@@ -131,6 +132,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.EmailVerificationEnabled = boolValue
 		case "GitHubOAuthEnabled":
 			config.GitHubOAuthEnabled = boolValue
+		case "GoogleOAuthEnabled":
+			config.GoogleOAuthEnabled = boolValue
 		case "WeChatAuthEnabled":
 			config.WeChatAuthEnabled = boolValue
 		case "TurnstileCheckEnabled":
@@ -169,6 +172,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.SMTPToken = value
 	case "ServerAddress":
 		config.ServerAddress = value
+	case "GoogleClientId":
+		config.GoogleClientId = value
 	case "GitHubClientId":
 		config.GitHubClientId = value
 	case "GitHubClientSecret":
