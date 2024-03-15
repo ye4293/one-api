@@ -1,12 +1,12 @@
 package config
 
 import (
+	"github.com/google/uuid"
 	"github.com/songquanpeng/one-api/common/env"
 	"os"
 	"strconv"
 	"sync"
 	"time"
-	"github.com/google/uuid"
 )
 
 var SystemName = "EZLINK AI"
@@ -112,6 +112,8 @@ var ValidThemes = map[string]bool{
 	"default": true,
 	"berry":   true,
 }
+var CryptCallbackUrl = ""
+var ReceiveAdress = ""
 
 // All duration's unit is seconds
 // Shouldn't larger then RateLimitKeyExpirationDuration

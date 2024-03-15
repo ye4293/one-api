@@ -75,6 +75,8 @@ func InitOptionMap() {
 	config.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(config.QuotaPerUnit, 'f', -1, 64)
 	config.OptionMap["RetryTimes"] = strconv.Itoa(config.RetryTimes)
 	config.OptionMap["Theme"] = config.Theme
+	config.OptionMap["CryptCallbackUrl"] = ""
+	config.OptionMap["ReceiveAdress"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -221,6 +223,10 @@ func updateOptionMap(key string, value string) (err error) {
 		config.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "Theme":
 		config.Theme = value
+	case "CryptCallbackUrl":
+		config.CryptCallbackUrl = value
+	case "ReceiveAdress":
+		config.ReceiveAdress = value
 	}
 	return err
 }

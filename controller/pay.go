@@ -8,8 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/model"
 )
 
+var Pubkey = "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC3FT0Ym8b3myVxhQW7ESuuu6lo\ndGAsUJs4fq+Ey//jm27jQ7HHHDmP1YJO7XE7Jf/0DTEJgcw4EZhJFVwsk6d3+4fy\nBsn0tKeyGMiaE6cVkX0cy6Y85o8zgc/CwZKc0uw6d5siAo++xl2zl+RGMXCELQVE\nox7pp208zTvown577wIDAQAB\n-----END PUBLIC KEY-----"
+
+type Pay struct{}
 type PayRequestFront struct {
 	Id     int     `json:"id"`
 	Chain  string  `json:"chain"`
@@ -120,12 +124,32 @@ func GenerateCallbackUrl(userId int) string {
 func getAdress() {
 
 }
-func GetQrcode() {
+func (pay *Pay) GetQrcode(c *gin.Context) {
+	//创建一笔订单
 	userId := c.GetInt("id")
-	order:=Model.CreateOrder()
-	if err = Mode.CreateOrder(userId)
+	coin := c.DefaultQuery("coin", "polygon_usdt")
+	err := model.CreateOrder(userId, coin)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"message": err,
+			"success": true,
+		})
+	}
 	//创建一笔订单
 	//构建请求参数
 	//获取结果
 	//返回结果
+}
+func getPayChannle(c *gin.Context) {
+	data := make(map[string][]string, 5)
+	data["usdt"] = []string{"polygon", "bsc"}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "success",
+		"success": true,
+		"data":    data,
+	})
+	return
+}
+func buildQuery() {
+
 }
