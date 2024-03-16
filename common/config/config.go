@@ -113,7 +113,7 @@ var ValidThemes = map[string]bool{
 	"berry":   true,
 }
 var CryptCallbackUrl = ""
-var ReceiveAdress = ""
+var AddressOut = ""
 
 // All duration's unit is seconds
 // Shouldn't larger then RateLimitKeyExpirationDuration

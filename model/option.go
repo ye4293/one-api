@@ -76,7 +76,7 @@ func InitOptionMap() {
 	config.OptionMap["RetryTimes"] = strconv.Itoa(config.RetryTimes)
 	config.OptionMap["Theme"] = config.Theme
 	config.OptionMap["CryptCallbackUrl"] = ""
-	config.OptionMap["ReceiveAdress"] = ""
+	config.OptionMap["AddressOut"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -225,8 +225,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.Theme = value
 	case "CryptCallbackUrl":
 		config.CryptCallbackUrl = value
-	case "ReceiveAdress":
-		config.ReceiveAdress = value
+	case "AddressOut":
+		config.AddressOut = value
 	}
 	return err
 }

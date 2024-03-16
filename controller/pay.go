@@ -124,21 +124,15 @@ func GenerateCallbackUrl(userId int) string {
 func getAdress() {
 
 }
-func (pay *Pay) GetQrcode(c *gin.Context) {
-	//创建一笔订单
+func GetQrcode(c *gin.Context) {
 	userId := c.GetInt("id")
-	coin := c.DefaultQuery("coin", "polygon_usdt")
-	err := model.CreateOrder(userId, coin)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": err,
-			"success": true,
-		})
-	}
-	//创建一笔订单
-	//构建请求参数
-	//获取结果
-	//返回结果
+	ticker := c.DefaultQuery("ticker", "polygon/usdt")
+	qrcode := model.GetQrcode(ticker, userId)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "success",
+		"success": true,
+		"data":    qrcode,
+	})
 }
 func getPayChannle(c *gin.Context) {
 	data := make(map[string][]string, 5)
@@ -150,6 +144,12 @@ func getPayChannle(c *gin.Context) {
 	})
 	return
 }
-func buildQuery() {
-
+func CryptCallback(c *gin.Context) {
+	var respons model.CryptCallbackResponse
+	if err := c.ShouldBindQuery(&respons); err != nil {
+		panic(err)
+	}
+	model.HandleCryptCallback(respons)
+	c.String(http.StatusOK, "ok")
+	return
 }

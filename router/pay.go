@@ -10,12 +10,12 @@ import (
 func SetPayRouter(router *gin.Engine) {
 	apiRouter := router.Group("/")
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
-	apiRouter.Use(middleware.GlobalAPIRateLimit())
-	apiRouter.Use(middleware.CryptCallbackAuth())
+	//apiRouter.Use(middleware.GlobalAPIRateLimit())
+	//apiRouter.Use(middleware.CryptCallbackAuth())
 	{
-		apiRouter.GET("/dashboard/billing/subscription", controller.GetSubscription)
-		apiRouter.GET("/v1/dashboard/billing/subscription", controller.GetSubscription)
-		apiRouter.GET("/dashboard/billing/usage", controller.GetUsage)
-		apiRouter.GET("/v1/dashboard/billing/usage", controller.GetUsage)
+		apiRouter.GET("/order/list", controller.GetSubscription)
+		apiRouter.GET("/order/search", controller.GetSubscription)
+		apiRouter.GET("/pay/get_qrcode", controller.GetQrcode)
+		apiRouter.GET("/crypt/callback", controller.CryptCallback)
 	}
 }
