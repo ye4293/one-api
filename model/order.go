@@ -1,75 +1,72 @@
 package model
 
 import (
-	"encoding/json"
-	"fmt"
-
-	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
-	"github.com/songquanpeng/one-api/common/logger"
-	"gorm.io/gorm"
+	"sync"
 )
-
-var CallbackUrl = "ddddddddddd"
-var ReceviveAdress = "dddddddddd"
-var BaseUrl = "https://api.cryptapi.io"
 
 type Order struct {
 	Id         int    `json:"id"`
-	UserId     int    `json:"user_id" gorm:"type:int;index"`
-	OrderId    string `json:"order_id" gorm:"type:varchar(32);index"`
+	UserId     string    `json:"user_id" gorm:"type:varchar(20);index"`
+	Uuid       string `json:"uuid" gorm:"type:varchar(100);index"`
 	Status     int    `json:"status" gorm:"default:1"`
 	Ticker     string `json:"ticker" gorm:"type:varchar(20)"`
 	AddressOut string `json:"adress_out" gorm:"type:varchar(100);default:''"`
 	AddressIn  string `json:"adress_in" gorm:"type:varchar(100);default:''"`
-	//CallbackUrl        string  `json:"callback_url" gorm:"type:varchar(100)"`
 	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
 	UpdatedTime        int64   `json:"updated_time" gorm:"bigint"`
 	FeeCoin            float64 `json:"free_coin" gorm:"type:decimal(20,6);default:0"`
 	ValueCoin          float64 `json:"value_coin" gorm:"type:decimal(20,6);default:0"`
 	ValueForwardedCoin float64 `json:"value_forwarded_coin" gorm:"type:decimal(20,6);default:0"`
 	Extra              string  `json:"extra" gorm:"type:text"`
-	//Params             string  `json:"params" gorm:"type:text"`
 }
-
-func CreateOrUpdateOrder(response CryptCallbackResponse) int {
-
+var lock sync.Mutex
+func CreateOrUpdateOrder(response CryptCallbackResponse) error {
+    lock.Lock()
+	defer lock.Unlock()
 	status := CryptResponseResult[response.Result]
+	//userId,err:=Decrypt(response.UserId)
 	//先查询订单
 	order := Order{
 		UserId:     response.UserId,
-		OrderId:    response.OrderId,
+		Uuid:       response.Uuid,
 		Status:     status,
 		Ticker:     response.Coin,
 		AddressOut: response.AddressOut,
 		AddressIn:  response.AddressIn,
-		//CallbackUrl:        respons.Call,
 		FeeCoin:            response.FeeCoin,
 		ValueCoin:          response.ValueCoin,
 		ValueForwardedCoin: response.ValueForwardedCoin,
 		CreatedTime:        helper.GetTimestamp(),
 		UpdatedTime:        helper.GetTimestamp(),
 	}
-	err := DB.FirstOrCreate(&order, Order{OrderId: response.OrderId, UserId: response.UserId})
+	err := DB.FirstOrCreate(&order, Order{Uuid: response.Uuid}).Error
 	if err != nil {
-		panic(err)
+		return err
 	}
+	
 	if order.Status < status {
-		UpdateOrder(order.OrderId, Order{Status: status})
+		err=UpdateOrder(order.Uuid, Order{
+			Status: status,
+			UpdatedTime:helper.GetTimestamp(),
+		})
+		if err!=nil{
+			return err
+		}
 	}
-	return order.Id
+	return nil
 }
 
-func UpdateOrder(orderId string, order Order) {
-	var err error
-	err = DB.Model(&Order{OrderId: orderId}).Updates(order).Error
+func UpdateOrder(uuid string, order Order) error{
+	err := DB.Model(&Order{}).Where("uuid=?",uuid).Updates(order).Error
 	if err != nil {
-		panic(err)
+		return err
 	}
+	return nil
 }
 
-func SearchOrdersAndCount(orderId string, userId, status *int, page int, pageSize int) (orders []*Order, total int64, err error) {
+
+func SearchOrdersAndCount(uuid string, userId, status *int, page int, pageSize int) (orders []*Order, total int64, err error) {
 	// 构建基础查询
 	baseQuery := DB.Model(&Order{})
 	// 如果status不为nil，加入status作为查询条件
@@ -79,8 +76,8 @@ func SearchOrdersAndCount(orderId string, userId, status *int, page int, pageSiz
 	if userId != nil {
 		baseQuery = baseQuery.Where("user_id = ?", *userId)
 	}
-	if orderId != "" {
-		baseQuery = baseQuery.Where("order_id = ?", orderId)
+	if uuid != "" {
+		baseQuery = baseQuery.Where("uuid = ?", uuid)
 	}
 
 	// 计算满足条件的频道总数

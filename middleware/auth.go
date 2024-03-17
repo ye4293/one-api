@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -124,36 +125,17 @@ func TokenAuth() func(c *gin.Context) {
 }
 func CryptCallbackAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		sinkey := c.Request.Header.Get("x-ca-signature")
-		key = strings.TrimPrefix(key, "Bearer ")
-		key = strings.TrimPrefix(key, "sk-")
-		parts := strings.Split(key, "-")
-		key = parts[0]
-		token, err := model.ValidateUserToken(key)
+		signature := c.Request.Header.Get("x-ca-signature")
+        url:= "https://" + c.Request.Host + c.Request.URL.String()
+		err := model.VerifyCryptCallbackSignature(url,signature)
 		if err != nil {
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return
 		}
-		userEnabled, err := model.CacheIsUserEnabled(token.UserId)
-		if err != nil {
-			abortWithMessage(c, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !userEnabled {
-			abortWithMessage(c, http.StatusForbidden, "User has been banned")
-			return
-		}
-		c.Set("id", token.UserId)
-		c.Set("token_id", token.Id)
-		c.Set("token_name", token.Name)
-		if len(parts) > 1 {
-			if model.IsAdmin(token.UserId) {
-				c.Set("specific_channel_id", parts[1])
-			} else {
-				abortWithMessage(c, http.StatusForbidden, "Ordinary users do not support designated channels")
-				return
-			}
-		}
 		c.Next()
 	}
 }
+
+
+
+
