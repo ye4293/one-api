@@ -109,7 +109,7 @@ func SendEmailVerification(c *gin.Context) {
 	}
 	code := common.GenerateVerificationCode(6)
 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
-	subject := fmt.Sprintf("%s's email verification email", config.SystemName)
+	subject := fmt.Sprintf("%s's verification email", config.SystemName)
 	content := fmt.Sprintf("<p>hello,you are verifying email on %s </p>"+
 		"<p>your code is <strong>%s</strong></p>"+
 		"<p>code is valid within %d minutes.</p>", config.SystemName, code, common.VerificationValidMinutes)

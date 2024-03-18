@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -50,5 +52,24 @@ func CryptCallback(c *gin.Context) {
 	if err != nil {
 		c.String(http.StatusUnauthorized, err.Error())
 	}
-	c.String(http.StatusOK, "ok")
+	userId := response.UserId
+	addAmount := response.ValueCoin
+	if response.Result == "3" {
+		err := model.IncreaseUserQuota(userId, int64(addAmount*500000))
+		if err != nil {
+			return
+		}
+		//send email and back message
+		email, err := model.GetUserEmail(userId)
+		if err != nil {
+			return
+		}
+		subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
+		content := fmt.Sprintf("<p>hello,You have successfully recharged %s$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", response.ValueCoin)
+		err = message.SendEmail(subject, email, content)
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+		})
+	}
 }

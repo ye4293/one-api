@@ -1,24 +1,23 @@
 package model
 
 import (
-
-
-	"encoding/json"
-	"fmt"
-	"github.com/songquanpeng/one-api/common/logger"
-	"io"
-	"net/http"
 	"crypto"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
-	"errors"
-	"encoding/base64"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"time"
+
+	"github.com/songquanpeng/one-api/common/logger"
 )
 
 var Pubkey = "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC3FT0Ym8b3myVxhQW7ESuuu6lo\ndGAsUJs4fq+Ey//jm27jQ7HHHDmP1YJO7XE7Jf/0DTEJgcw4EZhJFVwsk6d3+4fy\nBsn0tKeyGMiaE6cVkX0cy6Y85o8zgc/CwZKc0uw6d5siAo++xl2zl+RGMXCELQVE\nox7pp208zTvown577wIDAQAB\n-----END PUBLIC KEY-----"
@@ -40,7 +39,7 @@ type QrcodeResponse struct {
 	Status     string `json:"status"` // admin, util
 }
 type CryptCallbackResponse struct {
-	UserId             string  `form:"user_id"        json:"user_id"`
+	UserId             int     `form:"user_id"        json:"user_id"`
 	Uuid               string  `form:"uuid"           json:"uuid"`
 	AddressIn          string  `form:"address_in"     json:"address_in"`
 	AddressOut         string  `form:"address_out"    json:"address_out"`
