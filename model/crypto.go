@@ -176,17 +176,16 @@ func GetAddress(ticker string, userId int, params map[string]string) (*CreateRes
 	baseCallbackURL := "https://api.okkchat.top/api/crypt/callback"
 	callbackParams := url.Values{}
 	callbackParams.Add("user_id", strconv.Itoa(userId))
-	// 注意：这里我们直接构建callback URL，然后对整个URL进行编码
+	// 正确地构建并编码回调URL
 	encodedCallbackURL := baseCallbackURL + "?" + callbackParams.Encode()
-	encodedCallbackURL = url.QueryEscape(encodedCallbackURL)
 
 	// 准备请求的其他参数
 	requestParams := url.Values{}
 	requestParams.Add("multi_token", "1")
 	requestParams.Add("callback", encodedCallbackURL)
 	// 确保从params中提取email和address，或者如果它们作为函数参数传入，直接使用
-	requestParams.Add("address", params["address"])
-	requestParams.Add("email", params["email"])
+	requestParams.Add("address", "0x936f34289406ACA7F7ebC63AeF1cF16286559b1a")
+	requestParams.Add("email", "ye4293@gmail.com")
 
 	// 构建最终的请求URL
 	requestURL := CryptHost + ticker + "/create/?" + requestParams.Encode()
