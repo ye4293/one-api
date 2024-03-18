@@ -72,5 +72,5 @@ func CryptCallback(c *gin.Context) {
 			"message": "",
 		})
 	}
-	c.String("ok")
+	c.String(http.StatusOK, "ok")
 }
