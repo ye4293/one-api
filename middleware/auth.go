@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/blacklist"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -126,8 +127,11 @@ func TokenAuth() func(c *gin.Context) {
 func CryptCallbackAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		signature := c.Request.Header.Get("x-ca-signature")
-        url:= "https://" + c.Request.Host + c.Request.URL.String()
-		err := model.VerifyCryptCallbackSignature(url,signature)
+		url := "https://" + c.Request.Host + c.Request.URL.String()
+		err := model.VerifyCryptCallbackSignature(url, signature)
+		logger.SysLog("crypt-signature:" + signature)
+		logger.SysLog("crypt-url:" + url)
+		logger.SysLog("crypt-err:" + err.Error())
 		if err != nil {
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return
@@ -135,7 +139,3 @@ func CryptCallbackAuth() func(c *gin.Context) {
 		c.Next()
 	}
 }
-
-
-
-
