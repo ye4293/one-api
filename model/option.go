@@ -42,6 +42,9 @@ func InitOptionMap() {
 	config.OptionMap["ChannelDisableThreshold"] = strconv.FormatFloat(config.ChannelDisableThreshold, 'f', -1, 64)
 	config.OptionMap["EmailDomainRestrictionEnabled"] = strconv.FormatBool(config.EmailDomainRestrictionEnabled)
 	config.OptionMap["EmailDomainWhitelist"] = strings.Join(config.EmailDomainWhitelist, ",")
+	config.OptionMap["CryptPaymentEnabled"] = strconv.FormatBool(config.CryptPaymentEnabled)
+	config.OptionMap["CryptCallbackUrl"] = ""
+	config.OptionMap["AddressOut"] = ""
 	config.OptionMap["SMTPServer"] = ""
 	config.OptionMap["SMTPFrom"] = ""
 	config.OptionMap["SMTPPort"] = strconv.Itoa(config.SMTPPort)
@@ -154,6 +157,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.DisplayInCurrencyEnabled = boolValue
 		case "DisplayTokenStatEnabled":
 			config.DisplayTokenStatEnabled = boolValue
+		case "CryptPaymentEnabled":
+			config.CryptPaymentEnabled = boolValue
 		}
 	}
 	switch key {
@@ -226,6 +231,10 @@ func updateOptionMap(key string, value string) (err error) {
 		config.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "Theme":
 		config.Theme = value
+	case "CryptCallbackUrl":
+		config.CryptCallbackUrl = value
+	case "AddressOut":
+		config.AddressOut = value
 	}
 	return err
 }

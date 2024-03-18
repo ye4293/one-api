@@ -23,7 +23,7 @@ type LoginRequest struct {
 func Login(c *gin.Context) {
 	if !config.PasswordLoginEnabled {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了密码登录",
+			"message": "The administrator has turned off password login",
 			"success": false,
 		})
 		return
@@ -71,7 +71,7 @@ func setLoginSession(user *model.User, c *gin.Context) {
 	err := session.Save()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "无法保存会话信息，请重试",
+			"message": "Unable to save session information, please try again",
 			"success": false,
 		})
 		return
@@ -88,7 +88,7 @@ func setupLogin(user *model.User, c *gin.Context) {
 	err := session.Save()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "无法保存会话信息，请重试",
+			"message": "Unable to save session information, please try again",
 			"success": false,
 		})
 		return
@@ -127,14 +127,14 @@ func Logout(c *gin.Context) {
 func Register(c *gin.Context) {
 	if !config.RegisterEnabled {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了新用户注册",
+			"message": "The administrator has closed new user registration",
 			"success": false,
 		})
 		return
 	}
 	if !config.PasswordRegisterEnabled {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册",
+			"message": "The administrator has turned off registration through password. Please use third-party account verification to register.",
 			"success": false,
 		})
 		return
@@ -151,7 +151,7 @@ func Register(c *gin.Context) {
 	if err := common.Validate.Struct(&user); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "输入不合法 " + err.Error(),
+			"message": "Input is illegal " + err.Error(),
 		})
 		return
 	}
@@ -159,14 +159,14 @@ func Register(c *gin.Context) {
 		if user.Email == "" || user.VerificationCode == "" {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "管理员开启了邮箱验证，请输入邮箱地址和验证码",
+				"message": "The administrator has enabled email verification. Please enter your email address and verification code.",
 			})
 			return
 		}
 		if !common.VerifyCodeWithKey(user.Email, user.VerificationCode, common.EmailVerificationPurpose) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "验证码错误或已过期",
+				"message": "The verification code is wrong or expired",
 			})
 			return
 		}
@@ -291,7 +291,7 @@ func GetUser(c *gin.Context) {
 	if myRole <= user.Role && myRole != common.RoleRootUser {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无权获取同级或更高等级用户的信息",
+			"message": "Do not have the right to obtain information about users of the same level or higher",
 		})
 		return
 	}

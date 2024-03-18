@@ -125,4 +125,9 @@ func SetApiRouter(router *gin.Engine) {
 		dashBoardRoute.GET("/", middleware.AdminAuth(), controller.GetAdminDashboard)
 		dashBoardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard2)
 	}
+	cryptoaiRoute := apiRouter.Group("/")
+	cryptoaiRoute.GET("/pay/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)
+	cryptoaiRoute.GET("/pay/get_channel", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetPayChannel)
+	cryptoaiRoute.GET("/crypt/callback", middleware.CryptCallbackAuth(), controller.CryptCallback)
+
 }

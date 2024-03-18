@@ -93,6 +93,14 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "CryptPaymentEnabled":
+		if option.Value == "true" && (config.AddressOut == "" || config.CryptCallbackUrl == "") {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无法启用 cryptoai支付，请先填入 服务器回调地址 和钱包收款地址！",
+			})
+			return
+		}
 	}
 	err = model.UpdateOption(option.Key, option.Value)
 	if err != nil {
