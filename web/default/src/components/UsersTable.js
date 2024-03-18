@@ -29,11 +29,7 @@ const UsersTable = () => {
   const [orderBy, setOrderBy] = useState('');
 
   const loadUsers = async (startIdx) => {
-<<<<<<< HEAD
     const res = await API.get(`/api/user/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
-=======
-    const res = await API.get(`/api/user/?p=${startIdx}&order=${orderBy}`);
->>>>>>> upstream/main
     const { success, message, data } = res.data;
     if (success) {
       setUsers(data.list || []);
@@ -53,28 +49,17 @@ const UsersTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-<<<<<<< HEAD
       // if (activePage === Math.ceil(users.length / ITEMS_PER_PAGE) + 1) {
       //   // In this case we have to load more data and then append them.
       //   await loadUsers(activePage - 1);
       // }
       await loadUsers(activePage);
-=======
-      if (activePage === Math.ceil(users.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadUsers(activePage - 1, orderBy);
-      }
->>>>>>> upstream/main
       setActivePage(activePage);
     })();
   };
 
   useEffect(() => {
-<<<<<<< HEAD
     loadUsers(1)
-=======
-    loadUsers(0, orderBy)
->>>>>>> upstream/main
       .then()
       .catch((reason) => {
         showError(reason);
