@@ -131,8 +131,8 @@ func CryptCallbackAuth() func(c *gin.Context) {
 		err := model.VerifyCryptCallbackSignature(url, signature)
 		logger.SysLog("crypt-signature:" + signature)
 		logger.SysLog("crypt-url:" + url)
-		logger.SysLog("crypt-err:" + err.Error())
 		if err != nil {
+			logger.SysLog("crypt-err:" + err.Error())
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return
 		}
