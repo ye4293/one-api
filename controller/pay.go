@@ -65,7 +65,7 @@ func CryptCallback(c *gin.Context) {
 			return
 		}
 		subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
-		content := fmt.Sprintf("<p>hello,You have successfully recharged %s$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", response.ValueCoin)
+		content := fmt.Sprintf("<p>hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", response.ValueCoin)
 		err = message.SendEmail(subject, email, content)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,

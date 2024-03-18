@@ -210,6 +210,7 @@ func GetQrcode(ticker string, userId int) (*QrcodeResponse, error) {
 
 	params := map[string]string{
 		"user_id": fmt.Sprintf("%d", userId),
+		"test_id": "aaaaa",
 	}
 	addressInfo, err := GetAddress(ticker, params)
 	if err != nil {
