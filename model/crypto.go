@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/logger"
@@ -189,11 +190,13 @@ func CryptGetRequest(url string, params map[string]string) []byte {
 	logger.SysLog(fmt.Sprintf("url=%s;result: %s", url, string(b)))
 	return b
 }
-func GetAddress(ticker string, params map[string]string) (*CreateResponse, error) {
-	// callback := config.OptionMap["CryptCallbackUrl"]
-	// address := config.OptionMap["AddressOut"]
+func GetAddress(ticker string, userId int, params map[string]string) (*CreateResponse, error) {
+	// 将userId添加到callback URL中
+	callbackURL := "https://api.okkchat.top/api/crypt/callback?userid=" + strconv.Itoa(userId)
+
+	// 其他参数保持不变
 	params["multi_token"] = "1"
-	params["callback"] = "https://api.okkchat.top/api/crypt/callback"
+	params["callback"] = callbackURL
 	params["address"] = "0x936f34289406ACA7F7ebC63AeF1cF16286559b1a"
 	params["email"] = "ye4293@gmail.com"
 	url := CryptHost + ticker + "/create/?"
@@ -205,14 +208,15 @@ func GetAddress(ticker string, params map[string]string) (*CreateResponse, error
 	}
 	return &addressInfo, nil
 }
+
 func GetQrcode(ticker string, userId int) (*QrcodeResponse, error) {
 	//base64EncodeEncyptUserId,err:= Encrypt(fmt.Sprintf("%d", userId))
 
-	params := map[string]string{
-		"user_id": fmt.Sprintf("%d", userId),
-		"test_id": "aaaaa",
-	}
-	addressInfo, err := GetAddress(ticker, params)
+	// params := map[string]string{
+	// 	"user_id": fmt.Sprintf("%d", userId),
+	// }
+
+	addressInfo, err := GetAddress(ticker, userId, map[string]string{})
 	if err != nil {
 		return nil, err
 	}
