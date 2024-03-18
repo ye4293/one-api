@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -139,70 +140,64 @@ var CryptResponseResult = map[string]int{
 	"done":     4,
 }
 
-func CryptGetRequest(url string, params map[string]string) []byte {
-	request, err := http.NewRequest("GET", url, nil)
+func CryptGetRequest(requestURL string) ([]byte, error) {
+	request, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	//请求头部信息
-	//Set时候，如果原来这一项已存在，后面的就修改已有的
-	//Add时候，如果原本不存在，则添加，如果已存在，就不做任何修改
-	//最终服务端获取的应该是token2
-	// request.Header.Set("User-Agent", "自定义浏览器1...")
-	// request.Header.Set("User-Agent", "自定义浏览器2...")
-	// request.Header.Add("Host", "www.xxx.com")
+	// 设置请求头部信息，如果需要的话
+	// request.Header.Set("User-Agent", "自定义浏览器...")
+	// request.Header.Set("Authorization", "Bearer token...")
 
-	// //header:  map[User-Agent:[自定义浏览器2...]]
-	// request.Header.Add("name", "alnk")
-	// request.Header.Add("name", "alnk2")
-
-	// //header:  map[Name:[alnk alnk2] User-Agent:[自定义浏览器2...]]
-	// request.Header.Add("Authorization", "token1...") //token
-
-	// fmt.Println("header: ", request.Header)
-
-	//url参数
-	query := request.URL.Query()
-	for key, value := range params {
-		query.Add(key, value)
-	}
-
-	// query.Add("id", "1")
-	// query.Add("id", "2")
-	// query.Add("name", "wan")
-	request.URL.RawQuery = query.Encode()
-	logger.SysLog(fmt.Sprintf("request.URL: %s", request.URL)) //request.URL:  https://xxx/instance?id=1&id=2&name=wan
-
-	//发送请求给服务端,实例化一个客户端
+	// 发送请求给服务端,实例化一个客户端
 	client := &http.Client{}
 	res, err := client.Do(request)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer res.Body.Close()
 
-	//服务端返回数据
+	// 服务端返回数据
 	b, err := io.ReadAll(res.Body)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	logger.SysLog(fmt.Sprintf("url=%s;result: %s", url, string(b)))
-	return b
-}
-func GetAddress(ticker string, userId int, params map[string]string) (*CreateResponse, error) {
-	// 将userId添加到callback URL中
-	callbackURL := "https://api.okkchat.top/api/crypt/callback?userid=" + strconv.Itoa(userId)
 
-	// 其他参数保持不变
-	params["multi_token"] = "1"
-	params["callback"] = callbackURL
-	params["address"] = "0x936f34289406ACA7F7ebC63AeF1cF16286559b1a"
-	params["email"] = "ye4293@gmail.com"
-	url := CryptHost + ticker + "/create/?"
-	response := CryptGetRequest(url, params)
+	// 记录日志
+	logger.SysLog(fmt.Sprintf("Request URL: %s; Response: %s", requestURL, string(b)))
+
+	// 返回响应体的字节切片和错误
+	return b, nil
+}
+
+func GetAddress(ticker string, userId int, params map[string]string) (*CreateResponse, error) {
+	// 构建callback URL并进行编码
+	baseCallbackURL := "https://api.okkchat.top/api/crypt/callback"
+	callbackParams := url.Values{}
+	callbackParams.Add("user_id", strconv.Itoa(userId))
+	// 注意：这里我们直接构建callback URL，然后对整个URL进行编码
+	encodedCallbackURL := baseCallbackURL + "?" + callbackParams.Encode()
+	encodedCallbackURL = url.QueryEscape(encodedCallbackURL)
+
+	// 准备请求的其他参数
+	requestParams := url.Values{}
+	requestParams.Add("multi_token", "1")
+	requestParams.Add("callback", encodedCallbackURL)
+	// 确保从params中提取email和address，或者如果它们作为函数参数传入，直接使用
+	requestParams.Add("address", params["address"])
+	requestParams.Add("email", params["email"])
+
+	// 构建最终的请求URL
+	requestURL := CryptHost + ticker + "/create/?" + requestParams.Encode()
+
+	// 发起请求
+	response, err := CryptGetRequest(requestURL) // 假设CryptGetRequest函数现在只接受URL作为参数，并返回响应和错误
+	if err != nil {
+		return nil, err
+	}
 	var addressInfo CreateResponse
-	err := json.Unmarshal(response, &addressInfo)
+	err = json.Unmarshal(response, &addressInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -210,12 +205,7 @@ func GetAddress(ticker string, userId int, params map[string]string) (*CreateRes
 }
 
 func GetQrcode(ticker string, userId int) (*QrcodeResponse, error) {
-	//base64EncodeEncyptUserId,err:= Encrypt(fmt.Sprintf("%d", userId))
-
-	// params := map[string]string{
-	// 	"user_id": fmt.Sprintf("%d", userId),
-	// }
-
+	// 获取地址信息
 	addressInfo, err := GetAddress(ticker, userId, map[string]string{})
 	if err != nil {
 		return nil, err
@@ -223,13 +213,23 @@ func GetQrcode(ticker string, userId int) (*QrcodeResponse, error) {
 	if addressInfo.Status != "success" {
 		return nil, errors.New("create address error")
 	}
-	url := CryptHost + ticker + "/qrcode/?"
-	response := CryptGetRequest(url, map[string]string{"address": addressInfo.AddressIn})
+
+	// 构建请求URL，包括所需的查询参数
+	url := fmt.Sprintf("%s%s/qrcode/?address=%s", CryptHost, ticker, url.QueryEscape(addressInfo.AddressIn))
+
+	// 调用CryptGetRequest函数，传入完整的URL
+	response, err := CryptGetRequest(url)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析响应体到QrcodeResponse结构体
 	var qrcodeInfo QrcodeResponse
 	err = json.Unmarshal(response, &qrcodeInfo)
 	if err != nil {
 		return nil, err
 	}
+
 	return &qrcodeInfo, nil
 }
 
