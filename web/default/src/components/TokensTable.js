@@ -52,11 +52,7 @@ const TokensTable = () => {
   const [orderBy, setOrderBy] = useState('');
 
   const loadTokens = async (startIdx) => {
-<<<<<<< HEAD
     const res = await API.get(`/api/token/?page=${startIdx}&pagesize=${ITEMS_PER_PAGE}`);
-=======
-    const res = await API.get(`/api/token/?p=${startIdx}&order=${orderBy}`);
->>>>>>> upstream/main
     const { success, message, data } = res.data;
     if (success) {
       setTokens(data.list || []);
@@ -76,18 +72,11 @@ const TokensTable = () => {
 
   const onPaginationChange = (e, { activePage }) => {
     (async () => {
-<<<<<<< HEAD
       // if (activePage === Math.ceil(tokens.length / ITEMS_PER_PAGE) + 1) {
       //   // In this case we have to load more data and then append them.
       //   await loadTokens(activePage - 1);
       // }
       await loadTokens(activePage);
-=======
-      if (activePage === Math.ceil(tokens.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadTokens(activePage - 1, orderBy);
-      }
->>>>>>> upstream/main
       setActivePage(activePage);
     })();
   };
@@ -176,11 +165,7 @@ const TokensTable = () => {
   }
 
   useEffect(() => {
-<<<<<<< HEAD
     loadTokens(1)
-=======
-    loadTokens(0, orderBy)
->>>>>>> upstream/main
       .then()
       .catch((reason) => {
         showError(reason);
