@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 )
 
@@ -173,7 +174,7 @@ func CryptGetRequest(requestURL string) ([]byte, error) {
 
 func GetAddress(ticker string, userId int, params map[string]string) (*CreateResponse, error) {
 	// 构建callback URL并进行编码
-	baseCallbackURL := "https://api.okkchat.top/api/crypt/callback"
+	baseCallbackURL := config.CryptCallbackUrl
 	callbackParams := url.Values{}
 	callbackParams.Add("user_id", strconv.Itoa(userId))
 	// 正确地构建并编码回调URL
@@ -184,7 +185,7 @@ func GetAddress(ticker string, userId int, params map[string]string) (*CreateRes
 	requestParams.Add("multi_token", "1")
 	requestParams.Add("callback", encodedCallbackURL)
 	// 确保从params中提取email和address，或者如果它们作为函数参数传入，直接使用
-	requestParams.Add("address", "0x936f34289406ACA7F7ebC63AeF1cF16286559b1a")
+	requestParams.Add("address", config.AddressOut)
 	requestParams.Add("email", "ye4293@gmail.com")
 
 	// 构建最终的请求URL
@@ -243,8 +244,8 @@ func GetConvert() {
 func GetLogs() {
 
 }
-func HandleCryptCallback(respons CryptCallbackResponse,username string) error {
-	return CreateOrUpdateOrder(respons,username)
+func HandleCryptCallback(respons CryptCallbackResponse, username string) error {
+	return CreateOrUpdateOrder(respons, username)
 }
 func VerifyCryptCallbackSignature(message, signature string) error {
 	//

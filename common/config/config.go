@@ -38,9 +38,9 @@ var WeChatAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
 
-var CryptPaymentEnabled = true
-var CryptCallbackUrl = "https://api.okkchat.top/api/crypt/callback"
-var AddressOut = "0x936f34289406ACA7F7ebC63AeF1cF16286559b1a"
+var CryptPaymentEnabled = false
+var CryptCallbackUrl = ""
+var AddressOut = ""
 
 var EmailDomainRestrictionEnabled = false
 var EmailDomainWhitelist = []string{
