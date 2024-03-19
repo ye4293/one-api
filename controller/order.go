@@ -70,5 +70,4 @@ func GetUserOrders(c *gin.Context) {
 		},
 	})
 	return
-
 }

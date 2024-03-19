@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	"github.com/songquanpeng/one-api/common/helper"
-	"gorm.io/gorm"
 )
 
 type Order struct {
@@ -72,20 +71,19 @@ func UpdateOrder(uuid string, order Order) error {
 }
 
 func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
-	var tx *gorm.DB
 	// 进一步根据提供的参数筛选日志
 	if username != "" {
-		tx = tx.Where("username = ?", username)
+		DB = DB.Where("username = ?", username)
 	}
 	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
+		DB = DB.Where("created_at >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
+		DB = DB.Where("created_at <= ?", endTimestamp)
 	}
 
 	// 首先计算满足条件的总数
-	err = tx.Model(&Order{}).Count(&total).Error
+	err = DB.Model(&Order{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -94,7 +92,7 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
 	if err != nil {
 		return nil, total, err
 	}
@@ -105,19 +103,18 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 }
 
 func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
-	var tx *gorm.DB
 	// 进一步根据提供的参数筛选日志
-	tx = tx.Where("user_id = ?", userId)
+	DB = DB.Where("user_id = ?", userId)
 	
 	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
+		DB = DB.Where("created_at >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
+		DB = DB.Where("created_at <= ?", endTimestamp)
 	}
 
 	// 首先计算满足条件的总数
-	err = tx.Model(&Order{}).Count(&total).Error
+	err = DB.Model(&Order{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -126,7 +123,7 @@ func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
 	if err != nil {
 		return nil, total, err
 	}
