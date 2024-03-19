@@ -97,7 +97,7 @@ func UpdateOption(c *gin.Context) {
 		if option.Value == "true" && (config.AddressOut == "" || config.CryptCallbackUrl == "") {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "无法启用 cryptoai支付，请先填入 服务器回调地址 和钱包收款地址！",
+				"message": "无法启用 cryptai支付，请先填入 服务器回调地址 和钱包收款地址！",
 			})
 			return
 		}

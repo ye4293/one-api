@@ -34,7 +34,6 @@ var PasswordLoginEnabled = true
 var PasswordRegisterEnabled = true
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
-var GoogleOAuthEnabled = true
 var WeChatAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
@@ -71,6 +70,7 @@ var SMTPToken = ""
 var GitHubClientId = ""
 var GitHubClientSecret = ""
 
+var GoogleOAuthEnabled = true
 var GoogleClientId = "677844314191-58e12jjntkvieprf2ilv4dc4ocrr5q41.apps.googleusercontent.com"
 var GoogleClientSecret = "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"
 var GoogleRedirectUri = "http://localhost:3000/oauth/google/callback"

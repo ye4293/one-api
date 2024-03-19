@@ -4,19 +4,21 @@ import (
 	"sync"
 
 	"github.com/songquanpeng/one-api/common/helper"
+	"gorm.io/gorm"
 )
 
 type Order struct {
 	Id                 int     `json:"id"`
+	Username           string  `json:"username" gorm:"unique;index" validate:"max=12"`
 	UserId             int     `json:"user_id" gorm:"type:varchar(20);index"`
 	Uuid               string  `json:"uuid" gorm:"type:varchar(100);index"`
 	Status             int     `json:"status" gorm:"default:1"`
 	Ticker             string  `json:"ticker" gorm:"type:varchar(20)"`
-	AddressOut         string  `json:"adress_out" gorm:"type:varchar(100);default:''"`
-	AddressIn          string  `json:"adress_in" gorm:"type:varchar(100);default:''"`
+	AddressOut         string  `json:"address_out" gorm:"type:varchar(100);default:''"`
+	AddressIn          string  `json:"address_in" gorm:"type:varchar(100);default:''"`
 	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
 	UpdatedTime        int64   `json:"updated_time" gorm:"bigint"`
-	FeeCoin            float64 `json:"free_coin" gorm:"type:decimal(20,6);default:0"`
+	FeeCoin            float64 `json:"fee_coin" gorm:"type:decimal(20,6);default:0"`
 	ValueCoin          float64 `json:"value_coin" gorm:"type:decimal(20,6);default:0"`
 	ValueForwardedCoin float64 `json:"value_forwarded_coin" gorm:"type:decimal(20,6);default:0"`
 	Extra              string  `json:"extra" gorm:"type:text"`
@@ -24,7 +26,7 @@ type Order struct {
 
 var lock sync.Mutex
 
-func CreateOrUpdateOrder(response CryptCallbackResponse) error {
+func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	status := CryptResponseResult[response.Result]
@@ -32,6 +34,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse) error {
 	//先查询订单
 	order := Order{
 		UserId:             response.UserId,
+		Username:           username,
 		Uuid:               response.Uuid,
 		Status:             status,
 		Ticker:             response.Coin,
@@ -68,36 +71,66 @@ func UpdateOrder(uuid string, order Order) error {
 	return nil
 }
 
-func SearchOrdersAndCount(uuid string, userId, status *int, page int, pageSize int) (orders []*Order, total int64, err error) {
-	// 构建基础查询
-	baseQuery := DB.Model(&Order{})
-	// 如果status不为nil，加入status作为查询条件
-	if status != nil {
-		baseQuery = baseQuery.Where("status = ?", *status)
+func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
+	var tx *gorm.DB
+	// 进一步根据提供的参数筛选日志
+	if username != "" {
+		tx = tx.Where("username = ?", username)
 	}
-	if userId != nil {
-		baseQuery = baseQuery.Where("user_id = ?", *userId)
+	if startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", startTimestamp)
 	}
-	if uuid != "" {
-		baseQuery = baseQuery.Where("uuid = ?", uuid)
+	if endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 
-	// 计算满足条件的频道总数
-	err = baseQuery.Count(&total).Error
+	// 首先计算满足条件的总数
+	err = tx.Model(&Order{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// 计算分页的偏移量
+	// 计算起始索引。第一页的起始索引为0。
 	offset := (page - 1) * pageSize
 
-	// 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
-	// 添加Order方法以按照id字段进行降序排列
-	err = baseQuery.Order("id DESC").Offset(offset).Limit(pageSize).Find(&orders).Error
+	// 然后获取满足条件的日志数据
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
 	if err != nil {
 		return nil, total, err
 	}
 
-	// 返回频道列表的子集、总数以及可能的错误信息
+	// 返回日志数据、总数以及错误信息
+	return orders, total, nil
+
+}
+
+func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
+	var tx *gorm.DB
+	// 进一步根据提供的参数筛选日志
+	tx = tx.Where("user_id = ?", userId)
+	
+	if startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", startTimestamp)
+	}
+	if endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", endTimestamp)
+	}
+
+	// 首先计算满足条件的总数
+	err = tx.Model(&Order{}).Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 计算起始索引。第一页的起始索引为0。
+	offset := (page - 1) * pageSize
+
+	// 然后获取满足条件的日志数据
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	// 返回日志数据、总数以及错误信息
 	return orders, total, nil
 }

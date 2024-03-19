@@ -130,4 +130,8 @@ func SetApiRouter(router *gin.Engine) {
 	cryptoaiRoute.GET("/pay/get_channel", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetPayChannel)
 	cryptoaiRoute.GET("/crypt/callback", middleware.CryptCallbackAuth(), controller.CryptCallback)
 
+	orderRoute := apiRouter.Group("/order")
+	orderRoute.GET("/", middleware.AdminAuth(), controller.GetAllOrders)
+	orderRoute.GET("/self", middleware.UserAuth(), controller.GetUserOrders)
+
 }

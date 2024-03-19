@@ -42,9 +42,6 @@ func InitOptionMap() {
 	config.OptionMap["ChannelDisableThreshold"] = strconv.FormatFloat(config.ChannelDisableThreshold, 'f', -1, 64)
 	config.OptionMap["EmailDomainRestrictionEnabled"] = strconv.FormatBool(config.EmailDomainRestrictionEnabled)
 	config.OptionMap["EmailDomainWhitelist"] = strings.Join(config.EmailDomainWhitelist, ",")
-	config.OptionMap["CryptPaymentEnabled"] = strconv.FormatBool(config.CryptPaymentEnabled)
-	config.OptionMap["CryptCallbackUrl"] = ""
-	config.OptionMap["AddressOut"] = ""
 	config.OptionMap["SMTPServer"] = ""
 	config.OptionMap["SMTPFrom"] = ""
 	config.OptionMap["SMTPPort"] = strconv.Itoa(config.SMTPPort)
@@ -79,6 +76,9 @@ func InitOptionMap() {
 	config.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(config.QuotaPerUnit, 'f', -1, 64)
 	config.OptionMap["RetryTimes"] = strconv.Itoa(config.RetryTimes)
 	config.OptionMap["Theme"] = config.Theme
+	config.OptionMap["CryptPaymentEnabled"] = strconv.FormatBool(config.CryptPaymentEnabled)
+	config.OptionMap["CryptCallbackUrl"] = ""
+	config.OptionMap["AddressOut"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }

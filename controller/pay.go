@@ -51,13 +51,14 @@ func CryptCallback(c *gin.Context) {
 		c.String(http.StatusUnauthorized, err.Error())
 		return
 	}
-	err := model.HandleCryptCallback(response)
+	userId := response.UserId
+	username := model.GetUsernameById(userId)
+	err := model.HandleCryptCallback(response, username)
 	if err != nil {
 		logger.SysLog("failed to handle callback")
 		c.String(http.StatusUnauthorized, err.Error())
 		return
 	}
-	userId := response.UserId
 	addAmount := response.ValueCoin
 	err = model.IncreaseUserQuota(userId, int64(addAmount*500000))
 	if err != nil {
@@ -76,10 +77,5 @@ func CryptCallback(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-
 	c.String(http.StatusOK, "ok")
 }
