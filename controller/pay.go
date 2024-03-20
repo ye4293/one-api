@@ -59,23 +59,6 @@ func CryptCallback(c *gin.Context) {
 		c.String(http.StatusUnauthorized, err.Error())
 		return
 	}
-	addAmount := response.ValueCoin
-	err = model.IncreaseUserQuota(userId, int64(addAmount*500000))
-	if err != nil {
-		logger.SysLog("failed to increase user quote")
-		return
-	}
-	//send email and back message
-	email, err := model.GetUserEmail(userId)
-	if err != nil {
-		logger.SysLog("failed to get user email")
-		return
-	}
-	subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
-	content := fmt.Sprintf("<p>hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", addAmount)
-	err = message.SendEmail(subject, email, content)
-	if err != nil {
-		return
-	}
+
 	c.String(http.StatusOK, "ok")
 }
