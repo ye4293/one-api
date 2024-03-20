@@ -76,10 +76,10 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 		DB = DB.Where("username = ?", username)
 	}
 	if startTimestamp != 0 {
-		DB = DB.Where("created_at >= ?", startTimestamp)
+		DB = DB.Where("created_time >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		DB = DB.Where("created_at <= ?", endTimestamp)
+		DB = DB.Where("created_time <= ?", endTimestamp)
 	}
 
 	// 首先计算满足条件的总数
@@ -105,14 +105,13 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
 	// 进一步根据提供的参数筛选日志
 	DB = DB.Where("user_id = ?", userId)
-	
+
 	if startTimestamp != 0 {
-		DB = DB.Where("created_at >= ?", startTimestamp)
+		DB = DB.Where("created_time >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		DB = DB.Where("created_at <= ?", endTimestamp)
+		DB = DB.Where("created_time <= ?", endTimestamp)
 	}
-
 	// 首先计算满足条件的总数
 	err = DB.Model(&Order{}).Count(&total).Error
 	if err != nil {
