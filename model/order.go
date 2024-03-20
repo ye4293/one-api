@@ -62,7 +62,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 		if err != nil {
 			return err
 		}
-		if order.Status == 3 {
+		if status == 3 {
 			AfterSuccess(response)
 
 		}
@@ -73,22 +73,22 @@ func AfterSuccess(response CryptCallbackResponse) {
 	userId := response.UserId
 	addAmount := response.ValueCoin
 	err := IncreaseUserQuota(userId, int64(addAmount*500000))
-		if err != nil {
-			logger.SysLog("failed to increase user quote")
-			return
-		}
-		//send email and back message
-		email, err := GetUserEmail(userId)
-		if err != nil {
-			logger.SysLog("failed to get user email")
-			return
-		}
-		subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
-		content := fmt.Sprintf("<p>hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", addAmount)
-		err = message.SendEmail(subject, email, content)
-		if err != nil {
-			return
-		}
+	if err != nil {
+		logger.SysLog("failed to increase user quote")
+		return
+	}
+	//send email and back message
+	email, err := GetUserEmail(userId)
+	if err != nil {
+		logger.SysLog("failed to get user email")
+		return
+	}
+	subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
+	content := fmt.Sprintf("<p>hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", addAmount)
+	err = message.SendEmail(subject, email, content)
+	if err != nil {
+		return
+	}
 
 }
 
