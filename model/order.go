@@ -8,7 +8,7 @@ import (
 
 type Order struct {
 	Id                 int     `json:"id"`
-	Username            string `json:"username" gorm:"unique;index" validate:"max=12"`
+	Username           string  `json:"username" gorm:"index" validate:"max=12"`
 	UserId             int     `json:"user_id" gorm:"type:varchar(20);index"`
 	Uuid               string  `json:"uuid" gorm:"type:varchar(100);index"`
 	Status             int     `json:"status" gorm:"default:1"`
