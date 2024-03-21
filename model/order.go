@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/message"
+	"gorm.io/gorm"
 )
 
 type Order struct {
@@ -35,48 +37,63 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 	status := CryptResponseResult[response.Result]
 	//userId,err:=Decrypt(response.UserId)
 	//先查询订单
-	order := Order{
-		UserId:             response.UserId,
-		Username:           username,
-		Uuid:               response.Uuid,
-		Status:             status,
-		Ticker:             response.Coin,
-		AddressOut:         response.AddressOut,
-		AddressIn:          response.AddressIn,
-		FeeCoin:            response.FeeCoin,
-		ValueCoin:          response.ValueCoin,
-		ValueForwardedCoin: response.ValueForwardedCoin,
-		CreatedTime:        helper.GetTimestamp(),
-		UpdatedTime:        helper.GetTimestamp(),
-	}
-	err := DB.FirstOrCreate(&order, Order{Uuid: response.Uuid}).Error
-	if err != nil {
-		return err
-	}
+	var order Order
+	if err := DB.Where("uuid = ?", response.Uuid).First(&order).Error; err != nil {
+		//如果没有订单
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			//支付成功
+			if status == 3 {
+				DB.Transaction(func(tx *gorm.DB) error {
+					// 创建一笔订单
+					if err = DB.Create(&Order{
+						UserId:             response.UserId,
+						Username:           username,
+						Uuid:               response.Uuid,
+						Status:             status,
+						Ticker:             response.Coin,
+						AddressOut:         response.AddressOut,
+						AddressIn:          response.AddressIn,
+						FeeCoin:            response.FeeCoin,
+						ValueCoin:          response.ValueCoin,
+						ValueForwardedCoin: response.ValueForwardedCoin,
+						CreatedTime:        helper.GetTimestamp(),
+						UpdatedTime:        helper.GetTimestamp(),
+					}).Error; err != nil {
+						return err
+					}
+					//更新余额
+					addAmount := response.ValueCoin
+					err = IncreaseUserQuota(response.UserId, int64(addAmount*500000))
+					if err != nil {
+						return err
+					}
+					// 返回 nil 提交事务
+					return nil
+				})
 
-	if order.Status < status {
-		err = UpdateOrder(order.Uuid, Order{
-			Status:      status,
-			UpdatedTime: helper.GetTimestamp(),
-		})
-		if err != nil {
+				//crypt支付成功处理一下其它
+				AfterChargeSuccess(response.UserId)
+			}
+
+		} else {
 			return err
 		}
-		if status == 3 {
-			AfterSuccess(response)
 
+	} else {
+		if order.Status < status {
+			err = UpdateOrder(order.Uuid, Order{
+				Status:      status,
+				UpdatedTime: helper.GetTimestamp(),
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
-func AfterSuccess(response CryptCallbackResponse) {
-	userId := response.UserId
-	addAmount := response.ValueCoin
-	err := IncreaseUserQuota(userId, int64(addAmount*500000))
-	if err != nil {
-		logger.SysLog("failed to increase user quote")
-		return
-	}
+func AfterChargeSuccess(userId int) {
+	
 	//send email and back message
 	email, err := GetUserEmail(userId)
 	if err != nil {
