@@ -43,6 +43,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			//支付成功
 			if status == 3 {
+				var addAmount float64
 				DB.Transaction(func(tx *gorm.DB) error {
 					// 创建一笔订单
 					if err = DB.Create(&Order{
@@ -72,7 +73,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 				})
 
 				//crypt支付成功处理一下其它
-				AfterChargeSuccess(response.UserId)
+				AfterChargeSuccess(response.UserId, addAmount)
 			}
 
 		} else {
@@ -92,8 +93,8 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 	}
 	return nil
 }
-func AfterChargeSuccess(userId int) {
-	
+func AfterChargeSuccess(userId int, addAmount float64) {
+
 	//send email and back message
 	email, err := GetUserEmail(userId)
 	if err != nil {
