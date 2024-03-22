@@ -119,7 +119,7 @@ func UpdateOrder(uuid string, order Order) error {
 }
 
 func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
-	var tx *gorm.DB
+	tx := DB
 	// 进一步根据提供的参数筛选日志
 	if username != "" {
 		tx = tx.Where("username = ?", username)
@@ -152,7 +152,7 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 }
 
 func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
-	var tx *gorm.DB
+	tx := DB
 	// 进一步根据提供的参数筛选日志
 	tx = tx.Where("user_id = ?", userId)
 
