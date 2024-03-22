@@ -119,19 +119,20 @@ func UpdateOrder(uuid string, order Order) error {
 }
 
 func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
+	var tx *gorm.DB
 	// 进一步根据提供的参数筛选日志
 	if username != "" {
-		DB = DB.Where("username = ?", username)
+		tx = tx.Where("username = ?", username)
 	}
 	if startTimestamp != 0 {
-		DB = DB.Where("created_time >= ?", startTimestamp)
+		tx = tx.Where("created_time >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		DB = DB.Where("created_time <= ?", endTimestamp)
+		tx = tx.Where("created_time <= ?", endTimestamp)
 	}
 
 	// 首先计算满足条件的总数
-	err = DB.Model(&Order{}).Count(&total).Error
+	err = tx.Model(&Order{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -140,7 +141,7 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
 	if err != nil {
 		return nil, total, err
 	}
@@ -151,17 +152,18 @@ func GetAllBillsAndCount(page int, pageSize int, username string, startTimestamp
 }
 
 func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int64, endTimestamp int64) (orders []*Order, total int64, err error) {
+	var tx *gorm.DB
 	// 进一步根据提供的参数筛选日志
-	DB = DB.Where("user_id = ?", userId)
+	tx = tx.Where("user_id = ?", userId)
 
 	if startTimestamp != 0 {
-		DB = DB.Where("created_time >= ?", startTimestamp)
+		tx = tx.Where("created_time >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		DB = DB.Where("created_time <= ?", endTimestamp)
+		tx = tx.Where("created_time <= ?", endTimestamp)
 	}
 	// 首先计算满足条件的总数
-	err = DB.Model(&Order{}).Count(&total).Error
+	err = tx.Model(&Order{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -170,7 +172,7 @@ func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
+	err = tx.Order("id desc").Limit(pageSize).Offset(offset).Find(&orders).Error
 	if err != nil {
 		return nil, total, err
 	}
