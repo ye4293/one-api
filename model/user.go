@@ -144,6 +144,13 @@ func GetUserByEmail(email string) (*User, error) {
 	}
 	return &user, nil
 }
+
+func GetUserByEmail2(email string) (user *User, err error) {
+	user = &User{}
+	err = DB.Where("email = ?", email).First(user).Error
+	return user, err
+}
+
 func DeleteUserById(id int) (err error) {
 	if id == 0 {
 		return errors.New("id 为空！")
@@ -474,3 +481,4 @@ func GetUsernameById(id int) (username string) {
 	DB.Model(&User{}).Where("id = ?", id).Select("username").Find(&username)
 	return username
 }
+

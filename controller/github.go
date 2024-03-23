@@ -160,6 +160,7 @@ func GitHubOAuth(c *gin.Context) {
 		})
 		return
 	}
+	
 	setupLogin(&user, c)
 }
 

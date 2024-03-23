@@ -9,12 +9,19 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
-
-	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+)
+
+const (
+	GoogleOAuthURL = "https://accounts.google.com/o/oauth2/auth"
+	GetTokenUrl    = "https://accounts.google.com/o/oauth2/token"
+	GetUserUrl     = "https://www.googleapis.com/oauth2/v1/userinfo"
 )
 
 type GoogleTokenResult struct {
@@ -26,27 +33,37 @@ type GoogleTokenResult struct {
 }
 
 type GoogleUser struct {
-	ID            string `json:"id"`
-	Email         string `json:"email"`
-	VerifiedEmail bool   `json:"verified_email"`
-	Picture       string `json:"picture"`
+	GoogleId string `json:"id"`
+	Name     string `json:"name"`
+	Email    string `json:"email"`
 }
 
-const (
-	GoogleOAuthURL = "https://accounts.google.com/o/oauth2/auth"
-	Scope          = "https://www.googleapis.com/auth/userinfo.email"
-	GetTokenUrl    = "https://accounts.google.com/o/oauth2/token"
-	GetUserUrl     = "https://www.googleapis.com/oauth2/v1/userinfo"
-)
-
 func GoogleOAuth(c *gin.Context) {
-	oAuthUrl := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&scope=%s&response_type=code", GoogleOAuthURL, config.GoogleClientId, config.GoogleRedirectUri, Scope)
-	c.Redirect(302, oAuthUrl)
+	Scope := "https://www.googleapis.com/auth/userinfo.email%20https://www.googleapis.com/auth/userinfo.profile"
+
+	// 从配置中获取重定向URI
+	redirectURI := config.GoogleRedirectUri
+	//防止CSRF攻击
+	state := c.Query("state")
+
+	// 构建OAuth URL，不包含client_secret
+	oAuthUrl := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&scope=%s&response_type=code&access_type=offline&state=%s", GoogleOAuthURL, config.GoogleClientId, redirectURI, Scope, state)
+	logger.SysLog(fmt.Sprintf("oAuthUrl: %s\n", string(oAuthUrl)))
+	// 重定向用户到OAuth URL
+	c.Redirect(http.StatusFound, oAuthUrl)
 }
 
 func GoogleOAuthCallback(c *gin.Context) {
 	code := c.Query("code")
-
+	session := sessions.Default(c)
+	state := c.Query("state")
+	if state == "" || session.Get("oauth_state") == nil || state != session.Get("oauth_state").(string) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "state is empty or not same",
+		})
+		return
+	}
 	if !config.GoogleOAuthEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -54,26 +71,29 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
+	tokenResult, err := GetTokenByCode(code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	googleUser, err := GetGoogleUserInfoByToken(tokenResult.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	user, err := model.GetUserByEmail2(googleUser.Email)
 
-	tokenResult, err := getTokenByCode(code)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-	googleUser, err := getUserInfoByToken(tokenResult.AccessToken)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-	user, err := model.GetUserByEmail(googleUser.Email)
+	//判断用户是否已经通过此邮箱进行了注册
+
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if config.RegisterEnabled {
 			user.Username = "google_" + strconv.Itoa(model.GetMaxUserId()+1)
-			user.DisplayName = "Google User"
+			user.DisplayName = googleUser.Name
 
 			user.Email = googleUser.Email
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
+			user.GoogleId = googleUser.GoogleId
 
 			if err := user.Insert(0); err != nil {
 				c.JSON(http.StatusOK, gin.H{
@@ -90,6 +110,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 			return
 		}
 	}
+	//如果是已经被注册过
 	if user.Status != common.UserStatusEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "用户已被封禁",
@@ -97,10 +118,20 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
+	user.GoogleId = googleUser.GoogleId
+	err = user.Update(false)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	
 	setupLogin(user, c)
 }
 
-func getTokenByCode(code string) (*GoogleTokenResult, error) {
+func GetTokenByCode(code string) (*GoogleTokenResult, error) {
 	redirect_url := fmt.Sprintf("%s/api/oauth/google/callback", config.ServerAddress)
 	data := url.Values{}
 	data.Set("client_id", config.GoogleClientId)
@@ -120,6 +151,8 @@ func getTokenByCode(code string) (*GoogleTokenResult, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	logger.SysLog(fmt.Sprintf("getTokenResult: %s\n", string(getTokenResult)))
 	var tokenResult GoogleTokenResult
 	err = json.Unmarshal(getTokenResult, &tokenResult)
 	if err != nil {
@@ -128,7 +161,7 @@ func getTokenByCode(code string) (*GoogleTokenResult, error) {
 	return &tokenResult, nil
 }
 
-func getUserInfoByToken(token string) (*GoogleUser, error) {
+func GetGoogleUserInfoByToken(token string) (*GoogleUser, error) {
 	req, err := http.NewRequest("GET", GetUserUrl, nil)
 	if err != nil {
 		return nil, err
@@ -147,6 +180,7 @@ func getUserInfoByToken(token string) (*GoogleUser, error) {
 	if err != nil {
 		return nil, err
 	}
+	logger.SysLog(fmt.Sprintf("userInfo: %s\n", string(userInfo)))
 	var user GoogleUser
 	err = json.Unmarshal(userInfo, &user)
 	if err != nil {
