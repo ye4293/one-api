@@ -30,6 +30,20 @@ type GitHubUser struct {
 	Email string `json:"email"`
 }
 
+var GithubOAuthUrl = "https://github.com/login/oauth/authorize"
+
+func GithubOAuth(c *gin.Context) {
+
+	//防止CSRF攻击
+	state := c.Query("state")
+
+	// 构建OAuth URL，不包含client_secret
+	oAuthUrl := fmt.Sprintf("%s?client_id=%s&scope=%s&state=%s", GithubOAuthUrl, config.GitHubClientId, "user:email", state)
+	logger.SysLog(fmt.Sprintf("oAuthUrl: %s\n", string(oAuthUrl)))
+	// 重定向用户到OAuth URL
+	c.Redirect(http.StatusFound, oAuthUrl)
+}
+
 func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if code == "" {
 		return nil, errors.New("Invalid parameter")
@@ -81,7 +95,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	return &githubUser, nil
 }
 
-func GitHubOAuth(c *gin.Context) {
+func GithubOAuthCallback(c *gin.Context) {
 	session := sessions.Default(c)
 	state := c.Query("state")
 	if state == "" || session.Get("oauth_state") == nil || state != session.Get("oauth_state").(string) {
@@ -160,7 +174,7 @@ func GitHubOAuth(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	setupLogin(&user, c)
 }
 
