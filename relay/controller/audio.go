@@ -1,4 +1,4 @@
-gitpackage controller
+package controller
 
 import (
 	"bufio"
