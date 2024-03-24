@@ -110,9 +110,9 @@ func SendEmailVerification(c *gin.Context) {
 	code := common.GenerateVerificationCode(6)
 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
 	subject := fmt.Sprintf("%s's verification email", config.SystemName)
-	content := fmt.Sprintf("<p>hello,you are verifying email on %s </p>"+
+	content := fmt.Sprintf("<p>Hello,you are verifying email on %s </p>"+
 		"<p>your code is <strong>%s</strong></p>"+
-		"<p>code is valid within %d minutes.</p>", config.SystemName, code, common.VerificationValidMinutes)
+		"<p>Code is valid within %d minutes.</p>", config.SystemName, code, common.VerificationValidMinutes)
 	err := message.SendEmail(subject, email, content)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -154,7 +154,7 @@ func SendPasswordResetEmail(c *gin.Context) {
 	// link := fmt.Sprintf("%s/user/reset?email=%s&token=%s", config.ServerAddress, email, newPassword)
 
 	subject := fmt.Sprintf("%s password reset", config.SystemName)
-	// content := fmt.Sprintf("<p>hello, you are in the process of %s password reset.</p>"+
+	// content := fmt.Sprintf("<p>Hello, you are in the process of %s password reset.</p>"+
 	// 	"<p>your new password is %s<br>  </p>", config.SystemName, newPassword)
 	content := fmt.Sprintf(`
 	<html>

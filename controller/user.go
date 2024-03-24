@@ -12,6 +12,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -473,9 +474,12 @@ func UpdateUser(c *gin.Context) {
 }
 
 func UpdateSelf(c *gin.Context) {
+	// body, err := io.ReadAll(c.Request.Body)
+	// logger.SysLog(fmt.Sprintf("body:%s", string(body)))
 	var user model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("err:%s", err))
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "Invalid parameter",

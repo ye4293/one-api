@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -156,6 +157,13 @@ func GithubOAuthCallback(c *gin.Context) {
 					"success": false,
 					"message": err.Error(),
 				})
+				return
+			}
+			email := githubUser.Email
+			subject := fmt.Sprintf("%s's register notification email", config.SystemName)
+			content := fmt.Sprintf("<p>hello,You have successfully registered an account in %s, Please update your username and password as well as the warning threshold in your personal settings as soon as possible</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", config.SystemName)
+			err = message.SendEmail(subject, email, content)
+			if err != nil {
 				return
 			}
 		} else {

@@ -14,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
 	"gorm.io/gorm"
 )
@@ -102,6 +103,13 @@ func GoogleOAuthCallback(c *gin.Context) {
 				})
 				return
 			}
+			email := googleUser.Email
+			subject := fmt.Sprintf("%s's register notification email", config.SystemName)
+			content := fmt.Sprintf("<p>hello,You have successfully registered an account in %s, Please update your username and password as well as the warning threshold in your personal settings as soon as possible</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", config.SystemName)
+			err = message.SendEmail(subject, email, content)
+			if err != nil {
+				return
+			}
 		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -127,7 +135,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	setupLogin(user, c)
 }
 
