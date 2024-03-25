@@ -16,6 +16,7 @@ type Order struct {
 	Id                 int     `json:"id"`
 	Username           string  `json:"username" gorm:"index" validate:"max=12"`
 	UserId             int     `json:"user_id" gorm:"type:varchar(20);index"`
+	Type               string  `json:"type"`
 	Uuid               string  `json:"uuid" gorm:"type:varchar(100);index"`
 	Status             int     `json:"status" gorm:"default:1"`
 	Ticker             string  `json:"ticker" gorm:"type:varchar(20)"`
@@ -49,6 +50,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 					if err = DB.Create(&Order{
 						UserId:             response.UserId,
 						Username:           username,
+						Type:               "Crypto",
 						Uuid:               response.Uuid,
 						Status:             status,
 						Ticker:             response.Coin,
@@ -102,7 +104,7 @@ func AfterChargeSuccess(userId int, addAmount float64) {
 		return
 	}
 	subject := fmt.Sprintf("%s's recharge notification email", config.SystemName)
-	content := fmt.Sprintf("<p>hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", addAmount)
+	content := fmt.Sprintf("<p>Hello,You have successfully recharged %f$</p>"+"<p>Congratulations on getting one step closer to the AI world!</p>", addAmount)
 	err = message.SendEmail(subject, email, content)
 	if err != nil {
 		return
@@ -180,7 +182,3 @@ func GetUserBillsAndCount(page int, pageSize int, userId int, startTimestamp int
 	// 返回日志数据、总数以及错误信息
 	return orders, total, nil
 }
-
-
-
-

@@ -138,7 +138,8 @@ func GetTokenStatus(c *gin.Context) {
 	})
 }
 
-func AddToken(c *gin.Context) {
+func AddToken(c *gin.Context) {、
+	
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
 	if err != nil {
