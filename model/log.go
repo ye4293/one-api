@@ -307,8 +307,8 @@ func GetUserUsageAndTokenAndCount(userId int, timestamp int64) (UsageData, error
 }
 
 type HourlyData struct {
-	Hour   int   `json:"hour"`
-	Amount int64 `json:"amount"`
+	Hour   string `json:"hour"`
+	Amount int64  `json:"amount"`
 }
 
 func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
@@ -316,20 +316,20 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 初始化每个小时的数据为0
+	// 初始化每个小时的数据为0，格式化小时为 "00", "01", ... "23"
 	for i := 0; i < 24; i++ {
-		hourlyData = append(hourlyData, HourlyData{Hour: i, Amount: 0})
+		hourlyData = append(hourlyData, HourlyData{Hour: fmt.Sprintf("%02d", i), Amount: 0})
 	}
 
 	// 根据target选择要查询的字段
 	var field string
 	switch target {
 	case "quota":
-		field = "COALESCE(SUM(quota), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(SUM(quota), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	case "token":
-		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	case "count":
-		field = "COALESCE(COUNT(*), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(COUNT(*), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	default:
 		return nil, errors.New("invalid target")
 	}
@@ -347,8 +347,11 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 
 	// 更新hourlyData中的数据
 	for _, result := range results {
-		if result.Hour >= 0 && result.Hour < 24 {
-			hourlyData[result.Hour].Amount = result.Amount
+		for i, h := range hourlyData {
+			if h.Hour == result.Hour {
+				hourlyData[i].Amount = result.Amount
+				break
+			}
 		}
 	}
 
@@ -360,20 +363,20 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 初始化每个小时的数据为0
+	// 初始化每个小时的数据为0，格式化小时为 "00", "01", ... "23"
 	for i := 0; i < 24; i++ {
-		hourlyData = append(hourlyData, HourlyData{Hour: i, Amount: 0})
+		hourlyData = append(hourlyData, HourlyData{Hour: fmt.Sprintf("%02d", i), Amount: 0})
 	}
 
 	// 根据target选择要查询的字段
 	var field string
 	switch target {
 	case "quota":
-		field = "COALESCE(SUM(quota), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(SUM(quota), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	case "token":
-		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	case "count":
-		field = "COALESCE(COUNT(*), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+		field = "COALESCE(COUNT(*), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
 	default:
 		return nil, errors.New("invalid target")
 	}
@@ -391,8 +394,11 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 
 	// 更新hourlyData中的数据
 	for _, result := range results {
-		if result.Hour >= 0 && result.Hour < 24 {
-			hourlyData[result.Hour].Amount = result.Amount
+		for i, h := range hourlyData {
+			if h.Hour == result.Hour {
+				hourlyData[i].Amount = result.Amount
+				break
+			}
 		}
 	}
 
