@@ -9,57 +9,78 @@ import (
 )
 
 func GetAdminDashboard(c *gin.Context) {
-	days, _ := strconv.Atoi(c.Query("days"))
-	dataQuotes, totalQuota, err := model.GetAllUsersLogsQuoteAndSum(days)
+	timestamp, _ := strconv.ParseInt(c.Query("time"), 10, 64)
+	usageData, err := model.GetAllUsageAndTokenAndCount(timestamp)
 	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
 		return
 	}
-	totalCount, err := model.GetAllUsersLogsCount(days)
-	if err != nil {
-		return
-	}
-
-	totalQuotaFloat := float64(totalQuota) / 500000.0
 	c.JSON(http.StatusOK, gin.H{
+		"date":    usageData,
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"dailyquotes": dataQuotes,
-			"totalquote":  totalQuotaFloat,
-			"totalcount":  totalCount,
-		},
+	})
+	return
+
+}
+
+func GetUserDashboard(c *gin.Context) {
+	userId := c.GetInt("id")
+	timestamp, _ := strconv.ParseInt(c.Query("time"), 10, 64)
+	usageData, err := model.GetUserUsageAndTokenAndCount(userId, timestamp)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"date":    usageData,
+		"success": true,
+		"message": "",
 	})
 	return
 }
 
-func GetUserDashboard2(c *gin.Context) {
-	userId := c.GetInt("id")
-	days, _ := strconv.Atoi(c.Query("days"))
-	modelQuotes, totalQuota, err := model.GetUsersLogsQuoteAndSum(userId, days)
+func GetAllGraph(c *gin.Context) {
+	target := c.Query("target")
+	timestamp, _ := strconv.ParseInt(c.Query("time"), 10, 64)
+	hourlyDate, err := model.GetAllGraph(timestamp, target)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "1",
+			"message": err.Error(),
 		})
 		return
 	}
-	totalCount, err := model.GetUserLogsCount(userId, days)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "2",
-		})
-		return
-	}
-	totalQuotaFloat := float64(totalQuota) / 500000.0
 	c.JSON(http.StatusOK, gin.H{
+		"date":    hourlyDate,
 		"success": true,
 		"message": "",
-		"data": gin.H{
-			"dailyquotes": modelQuotes,
-			"totalquote":  totalQuotaFloat,
-			"totalcount":  totalCount,
-		},
+	})
+	return
+}
+
+func GetUserGraph(c *gin.Context) {
+	userId := c.GetInt("id")
+	target := c.Query("target")
+	timestamp, _ := strconv.ParseInt(c.Query("time"), 10, 64)
+	hourlyDate, err := model.GetUserGraph(userId, timestamp, target)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"date":    hourlyDate,
+		"success": true,
+		"message": "",
 	})
 	return
 }

@@ -40,7 +40,6 @@ func SetApiRouter(router *gin.Engine) {
 			selfRoute := userRoute.Group("/")
 			selfRoute.Use(middleware.UserAuth())
 			{
-				selfRoute.GET("/dashboard", controller.GetUserDashboard)
 				selfRoute.GET("/self", controller.GetSelf)
 				selfRoute.PUT("/self", controller.UpdateSelf)
 				selfRoute.DELETE("/self", controller.DeleteSelf)
@@ -122,9 +121,6 @@ func SetApiRouter(router *gin.Engine) {
 		}
 		menuRoute := apiRouter.Group("/menus")
 		menuRoute.GET("/", controller.Getmenus)
-		dashBoardRoute := apiRouter.Group("/dashboard")
-		dashBoardRoute.GET("/", middleware.AdminAuth(), controller.GetAdminDashboard)
-		dashBoardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard2)
 	}
 	cryptoaiRoute := apiRouter.Group("/")
 	cryptoaiRoute.GET("/pay/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)
@@ -134,5 +130,11 @@ func SetApiRouter(router *gin.Engine) {
 	orderRoute := apiRouter.Group("/order")
 	orderRoute.GET("/", middleware.AdminAuth(), controller.GetAllOrders)
 	orderRoute.GET("/self", middleware.UserAuth(), controller.GetUserOrders)
+
+	dashboardRoute := apiRouter.Group("/dashboard1")
+	dashboardRoute.GET("/", middleware.AdminAuth(), controller.GetAdminDashboard)
+	dashboardRoute.GET("/graph", middleware.AdminAuth(), controller.GetAllGraph)
+	dashboardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard)
+	dashboardRoute.GET("/graph/self", middleware.UserAuth(), controller.GetUserGraph)
 
 }

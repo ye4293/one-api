@@ -2,10 +2,10 @@ package model
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -232,214 +232,169 @@ func DeleteOldLog(targetTimestamp int64) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
-type LogStatistic struct {
-	Day              string `gorm:"column:day"`
-	ModelName        string `gorm:"column:model_name"`
-	RequestCount     int    `gorm:"column:request_count"`
-	Quota            int    `gorm:"column:quota"`
-	PromptTokens     int    `gorm:"column:prompt_tokens"`
-	CompletionTokens int    `gorm:"column:completion_tokens"`
+type UsageData struct {
+	TotalQuota  int64
+	TotalTokens int64
+	LogCount    int64
 }
 
-func SearchLogsByDayAndModel(userId, start, end int) (LogStatistics []*LogStatistic, err error) {
-	groupSelect := "DATE_FORMAT(FROM_UNIXTIME(created_at), '%Y-%m-%d') as day"
+func GetAllUsageAndTokenAndCount(timestamp int64) (UsageData, error) {
+	var usageData UsageData
+	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
+	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	if common.UsingPostgreSQL {
-		groupSelect = "TO_CHAR(date_trunc('day', to_timestamp(created_at)), 'YYYY-MM-DD') as day"
-	}
-
-	if common.UsingSQLite {
-		groupSelect = "strftime('%Y-%m-%d', datetime(created_at, 'unixepoch')) as day"
-	}
-
-	err = LOG_DB.Raw(`
-		SELECT `+groupSelect+`,
-		model_name, count(1) as request_count,
-		sum(quota) as quota,
-		sum(prompt_tokens) as prompt_tokens,
-		sum(completion_tokens) as completion_tokens
-		FROM logs
-		WHERE type=2
-		AND user_id= ?
-		AND created_at BETWEEN ? AND ?
-		GROUP BY day, model_name
-		ORDER BY day, model_name
-	`, userId, start, end).Scan(&LogStatistics).Error
-
-	return LogStatistics, err
-}
-
-type ModelQuota struct {
-	ModelName string
-	Quota     float64
-}
-
-type DateQuotaSummary struct {
-	Date        string
-	ModelQuotas []ModelQuota
-}
-
-func GetAllUsersLogsQuoteAndSum(days int) ([]DateQuotaSummary, float64, error) {
-	// 计算起始时间
-	startTime := time.Now().AddDate(0, 0, -days)
-
-	// 生成所有日期的初始列表
-	allDates := make([]string, 0, days)
-	for d := 0; d < days; d++ {
-		date := startTime.AddDate(0, 0, d).Format("01-02")
-		allDates = append(allDates, date)
-	}
-
-	// 用于存储查询结果
-	var results []struct {
-		Date      string
-		ModelName string
-		Quota     float64
-	}
-
-	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
-	if err := DB.Table("logs").
-		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
-		Where("created_at >= ? AND type = ?", startTime.Unix(), 2).
-		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
-		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
-		Find(&results).Error; err != nil {
-		return nil, 0, err
-	}
-
-	// 创建一个map来按日期聚合数据
-	dateQuotaMap := make(map[string][]ModelQuota)
-	for _, date := range allDates {
-		dateQuotaMap[date] = []ModelQuota{} // 初始化空切片
-	}
-	for _, result := range results {
-		dateQuotaMap[result.Date] = append(dateQuotaMap[result.Date], ModelQuota{
-			ModelName: result.ModelName,
-			Quota:     result.Quota,
-		})
-	}
-
-	// 将map转换为切片，并确保即使没有结果，也能为每个日期返回一个条目
-	var dateQuotas []DateQuotaSummary
-	for _, date := range allDates {
-		dateQuotas = append(dateQuotas, DateQuotaSummary{
-			Date:        date,
-			ModelQuotas: dateQuotaMap[date], // 这将添加一个空切片或者含有数据的切片
-		})
-	}
-
-	// 计算总和
-	var totalQuotaSum float64
-	if err := DB.Table("logs").
-		Where("created_at >= ? AND type = ?", startTime.Unix(), 2).
-		Select("SUM(quota) as quota").
-		Row().Scan(&totalQuotaSum); err != nil {
-		return nil, 0, err
-	}
-
-	// 如果数据库返回的是NULL，确保将总和设置为0
-	if totalQuotaSum != totalQuotaSum { // 利用 NaN 不等于自身的特性来检查
-		totalQuotaSum = 0
-	}
-
-	return dateQuotas, totalQuotaSum, nil
-}
-
-func GetUsersLogsQuoteAndSum(userId int, days int) ([]DateQuotaSummary, float64, error) {
-	// 计算起始时间
-	startTime := time.Now().AddDate(0, 0, -days)
-
-	// 生成所有日期的初始列表
-	allDates := make([]string, 0, days)
-	for d := 0; d < days; d++ {
-		date := startTime.AddDate(0, 0, d).Format("01-02")
-		allDates = append(allDates, date)
-	}
-
-	// 用于存储查询结果
-	var results []struct {
-		Date      string
-		ModelName string
-		Quota     float64
-	}
-
-	// 查询每一天的不同ModelName的Quota之和，只返回月份和日子
-	err := DB.Table("logs").
-		Select("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d') as date, model_name, SUM(quota) as quota").
-		Where("created_at >= ? AND type = ? AND user_id = ?", startTime.Unix(), 2, userId).
-		Group("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d'), model_name").
-		Order("DATE_FORMAT(FROM_UNIXTIME(created_at), '%m-%d')").
-		Find(&results).Error
+	// 计算当天的日志总数
+	err := LOG_DB.Model(&Log{}).
+		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
+		Count(&usageData.LogCount).Error
 	if err != nil {
-		return nil, 0, err
+		return usageData, err
 	}
 
-	// 创建一个map来按日期聚合数据
-	dateQuotaMap := make(map[string][]ModelQuota)
-	for _, date := range allDates {
-		dateQuotaMap[date] = []ModelQuota{} // 初始化空切片
-	}
-	for _, result := range results {
-		dateQuotaMap[result.Date] = append(dateQuotaMap[result.Date], ModelQuota{
-			ModelName: result.ModelName,
-			Quota:     result.Quota,
-		})
-	}
-
-	// 将map转换为切片
-	var dateQuotas []DateQuotaSummary
-	for _, date := range allDates {
-		dateQuotas = append(dateQuotas, DateQuotaSummary{
-			Date:        date,
-			ModelQuotas: dateQuotaMap[date], // 这将添加一个空切片或者含有数据的切片
-		})
-	}
-
-	// 计算总和
-	var totalQuotaSum float64
-	err = DB.Table("logs").
-		Where("created_at >= ? AND type = ? AND user_id = ?", startTime.Unix(), 2, userId).
-		Select("SUM(quota) as quota").
-		Row().Scan(&totalQuotaSum)
+	// 计算当天的总Quota
+	err = LOG_DB.Model(&Log{}).
+		Select("COALESCE(SUM(quota), 0) as total_quota").
+		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
+		Scan(&usageData.TotalQuota).Error
 	if err != nil {
-		return nil, 0, err
+		return usageData, err
 	}
 
-	return dateQuotas, totalQuotaSum, nil
+	// 计算当天的PromptTokens和CompletionTokens的总和
+	err = LOG_DB.Model(&Log{}).
+		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens").
+		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
+		Scan(&usageData.TotalTokens).Error
+	if err != nil {
+		return usageData, err
+	}
+
+	return usageData, nil
 }
 
-func GetAllUsersLogsCount(days int) (int, error) {
-	// 计算起始时间
-	startTime := time.Now().AddDate(0, 0, -days)
+func GetUserUsageAndTokenAndCount(userId int, timestamp int64) (UsageData, error) {
+	var usageData UsageData
+	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
+	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 定义变量来存储总数量
-	totalCount := 0
-
-	// 查询指定时间范围内的日志条目总数量
-	if err := DB.Table("logs").
-		Where("created_at >= ? AND type = ? ", startTime.Unix(), 2).
-		Select("COUNT(*) as count").
-		Row().Scan(&totalCount); err != nil {
-		return 0, err
+	// 计算当天的日志总数
+	err := LOG_DB.Model(&Log{}).
+		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
+		Count(&usageData.LogCount).Error
+	if err != nil {
+		return usageData, err
 	}
 
-	return totalCount, nil
+	// 计算当天的总Quota
+	err = LOG_DB.Model(&Log{}).
+		Select("COALESCE(SUM(quota), 0) as total_quota").
+		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
+		Scan(&usageData.TotalQuota).Error
+	if err != nil {
+		return usageData, err
+	}
+
+	// 计算当天的PromptTokens和CompletionTokens的总和
+	err = LOG_DB.Model(&Log{}).
+		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens").
+		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
+		Scan(&usageData.TotalTokens).Error
+	if err != nil {
+		return usageData, err
+	}
+
+	return usageData, nil
 }
 
-func GetUserLogsCount(userId int, days int) (int, error) {
-	// 计算起始时间
-	startTime := time.Now().AddDate(0, 0, -days)
+type HourlyData struct {
+	Hour   int   `json:"hour"`
+	Amount int64 `json:"amount"`
+}
 
-	// 定义变量来存储总数量
-	totalCount := 0
+func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
+	var hourlyData []HourlyData
+	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
+	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 查询指定用户和时间范围内的日志条目总数量
-	if err := DB.Table("logs").
-		Where("user_id = ? AND created_at >= ? AND type=?", userId, startTime.Unix(), 2).
-		Select("COUNT(*) as count").
-		Row().Scan(&totalCount); err != nil {
-		return 0, err
+	// 初始化每个小时的数据为0
+	for i := 0; i < 24; i++ {
+		hourlyData = append(hourlyData, HourlyData{Hour: i, Amount: 0})
 	}
 
-	return totalCount, nil
+	// 根据target选择要查询的字段
+	var field string
+	switch target {
+	case "quota":
+		field = "COALESCE(SUM(quota), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	case "token":
+		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	case "count":
+		field = "COALESCE(COUNT(*), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	default:
+		return nil, errors.New("invalid target")
+	}
+
+	// 从数据库获取数据
+	var results []HourlyData
+	err := LOG_DB.Model(&Log{}).
+		Select(field).
+		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
+		Group("HOUR(FROM_UNIXTIME(created_at))").
+		Scan(&results).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 更新hourlyData中的数据
+	for _, result := range results {
+		if result.Hour >= 0 && result.Hour < 24 {
+			hourlyData[result.Hour].Amount = result.Amount
+		}
+	}
+
+	return hourlyData, nil
+}
+
+func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, error) {
+	var hourlyData []HourlyData
+	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	// 初始化每个小时的数据为0
+	for i := 0; i < 24; i++ {
+		hourlyData = append(hourlyData, HourlyData{Hour: i, Amount: 0})
+	}
+
+	// 根据target选择要查询的字段
+	var field string
+	switch target {
+	case "quota":
+		field = "COALESCE(SUM(quota), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	case "token":
+		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	case "count":
+		field = "COALESCE(COUNT(*), 0) as amount, HOUR(FROM_UNIXTIME(created_at)) as hour"
+	default:
+		return nil, errors.New("invalid target")
+	}
+
+	// 从数据库获取数据
+	var results []HourlyData
+	err := LOG_DB.Model(&Log{}).
+		Select(field).
+		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
+		Group("HOUR(FROM_UNIXTIME(created_at))").
+		Scan(&results).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 更新hourlyData中的数据
+	for _, result := range results {
+		if result.Hour >= 0 && result.Hour < 24 {
+			hourlyData[result.Hour].Amount = result.Amount
+		}
+	}
+
+	return hourlyData, nil
 }
