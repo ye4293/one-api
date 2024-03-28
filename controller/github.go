@@ -99,9 +99,11 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	// 由于响应体已经被读取，需要将其内容复制回res2.Body，以便后续使用
 	res2.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+	
 	// 解码JSON到GitHubUser对象
 	var githubUser GitHubUser
 	err = json.NewDecoder(res2.Body).Decode(&githubUser)
+	logger.SysLog(fmt.Sprintf("code:%s\nGitHub User: %+v", code, githubUser))
 	if err != nil {
 		return nil, err
 	}
