@@ -27,7 +27,7 @@ type GitHubOAuthResponse struct {
 }
 
 type GitHubUser struct {
-	Id    int64  `json:"id"`
+	Login string `json:"login"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
@@ -105,7 +105,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	if githubUser.Id == 0 {
+	if githubUser.Login == "" {
 		return nil, errors.New("返回值非法，用户字段为空，请稍后重试！")
 	}
 	return &githubUser, nil
@@ -144,7 +144,7 @@ func GithubOAuthCallback(c *gin.Context) {
 		return
 	}
 	user := model.User{
-		GitHubId: githubUser.Id,
+		GitHubId: githubUser.Login,
 	}
 	if model.IsGitHubIdAlreadyTaken(user.GitHubId) {
 		err := user.FillUserByGitHubId()
@@ -215,7 +215,7 @@ func GitHubBind(c *gin.Context) {
 		return
 	}
 	user := model.User{
-		GitHubId: githubUser.Id,
+		GitHubId: githubUser.Login,
 	}
 	if model.IsGitHubIdAlreadyTaken(user.GitHubId) {
 		c.JSON(http.StatusOK, gin.H{
@@ -236,7 +236,7 @@ func GitHubBind(c *gin.Context) {
 		})
 		return
 	}
-	user.GitHubId = githubUser.Id
+	user.GitHubId = githubUser.Login
 	err = user.Update(false)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
