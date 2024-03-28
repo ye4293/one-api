@@ -31,7 +31,7 @@ type GitHubUser struct {
 	Email string `json:"email"`
 }
 
-var GithubOAuthUrl = "https://github.com/login/oauth/authorize"
+var GithubOAuthUrl = "https://github.com/Id/oauth/authorize"
 
 func GithubOAuth(c *gin.Context) {
 
@@ -47,14 +47,14 @@ func GithubOAuth(c *gin.Context) {
 
 func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if code == "" {
-		return nil, errors.New("Invalid parameter")
+		return nil, errors.New("无效的参数")
 	}
 	values := map[string]string{"client_id": config.GitHubClientId, "client_secret": config.GitHubClientSecret, "code": code}
 	jsonData, err := json.Marshal(values)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "https://github.com/Id/oauth/access_token", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	res, err := client.Do(req)
 	if err != nil {
 		logger.SysLog(err.Error())
-		return nil, errors.New("Unable to connect to GitHub server, please try again later!")
+		return nil, errors.New("无法连接至 GitHub 服务器，请稍后重试！")
 	}
 	defer res.Body.Close()
 	var oAuthResponse GitHubOAuthResponse
@@ -82,20 +82,17 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	res2, err := client.Do(req)
 	if err != nil {
 		logger.SysLog(err.Error())
-		return nil, errors.New("Unable to connect to GitHub server, please try again later!")
+		return nil, errors.New("无法连接至 GitHub 服务器，请稍后重试！")
 	}
-
 	defer res2.Body.Close()
 	var githubUser GitHubUser
 	err = json.NewDecoder(res2.Body).Decode(&githubUser)
 	if err != nil {
 		return nil, err
 	}
-
 	if githubUser.Id == "" {
-		return nil, errors.New("The return value is illegal and the user field is empty. Please try again later!")
+		return nil, errors.New("返回值非法，用户字段为空，请稍后重试！")
 	}
-
 	return &githubUser, nil
 }
 
@@ -118,7 +115,7 @@ func GithubOAuthCallback(c *gin.Context) {
 	if !config.GitHubOAuthEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "The administrator has not enabled login and registration through GitHub",
+			"message": "The administrator has not enabled Id and registration through GitHub",
 		})
 		return
 	}
