@@ -105,7 +105,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	if githubUser.Id == "" {
+	if githubUser.Id == 0 {
 		return nil, errors.New("返回值非法，用户字段为空，请稍后重试！")
 	}
 	return &githubUser, nil
