@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,7 +26,7 @@ type GitHubOAuthResponse struct {
 }
 
 type GitHubUser struct {
-	Login string `json:"login"`
+	Id    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
@@ -85,28 +84,15 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 		logger.SysLog(err.Error())
 		return nil, errors.New("Unable to connect to GitHub server, please try again later!")
 	}
+
 	defer res2.Body.Close()
-
-	// 读取响应体的全部内容
-	bodyBytes, err := io.ReadAll(res2.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// 打印完整的JSON响应
-	logger.SysLog(fmt.Sprint("GitHub Response:%s", string(bodyBytes)))
-
-	// 由于响应体已经被读取，需要将其内容复制回res2.Body，以便后续使用
-	res2.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// 解码JSON到GitHubUser对象
 	var githubUser GitHubUser
 	err = json.NewDecoder(res2.Body).Decode(&githubUser)
 	if err != nil {
 		return nil, err
 	}
 
-	if githubUser.Login == "" {
+	if githubUser.Id == "" {
 		return nil, errors.New("The return value is illegal and the user field is empty. Please try again later!")
 	}
 
@@ -146,7 +132,7 @@ func GithubOAuthCallback(c *gin.Context) {
 		return
 	}
 	user := model.User{
-		GitHubId: githubUser.Login,
+		GitHubId: githubUser.Id,
 	}
 	if model.IsGitHubIdAlreadyTaken(user.GitHubId) {
 		err := user.FillUserByGitHubId()
@@ -160,11 +146,7 @@ func GithubOAuthCallback(c *gin.Context) {
 	} else {
 		if config.RegisterEnabled {
 			user.Username = "github_" + strconv.Itoa(model.GetMaxUserId()+1)
-			if githubUser.Name != "" {
-				user.DisplayName = githubUser.Name
-			} else {
-				user.DisplayName = "GitHub User"
-			}
+			user.DisplayName = githubUser.Name
 			user.Email = githubUser.Email
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
@@ -221,7 +203,7 @@ func GitHubBind(c *gin.Context) {
 		return
 	}
 	user := model.User{
-		GitHubId: githubUser.Login,
+		GitHubId: githubUser.Id,
 	}
 	if model.IsGitHubIdAlreadyTaken(user.GitHubId) {
 		c.JSON(http.StatusOK, gin.H{
@@ -242,7 +224,7 @@ func GitHubBind(c *gin.Context) {
 		})
 		return
 	}
-	user.GitHubId = githubUser.Login
+	user.GitHubId = githubUser.Id
 	err = user.Update(false)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
