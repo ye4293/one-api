@@ -54,7 +54,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", "https://github.com/Id/oauth/access_token", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func GithubOAuthCallback(c *gin.Context) {
 	if !config.GitHubOAuthEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "The administrator has not enabled Id and registration through GitHub",
+			"message": "The administrator has not enabled login and registration through GitHub",
 		})
 		return
 	}
