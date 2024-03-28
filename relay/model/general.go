@@ -12,6 +12,7 @@ type GeneralOpenAIRequest struct {
 	MaxTokens        int             `json:"max_tokens,omitempty"`
 	Temperature      float64         `json:"temperature,omitempty"`
 	TopP             float64         `json:"top_p,omitempty"`
+	TopK             int             `json:"top_k,omitempty"`
 	N                int             `json:"n,omitempty"`
 	Input            any             `json:"input,omitempty"`
 	Instruction      string          `json:"instruction,omitempty"`

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
-	"gorm.io/gorm"
 )
 
 const (
@@ -64,6 +62,11 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
+	username := session.Get("username")
+	if username != nil {
+		GoogleBind(c)
+		return
+	}
 	if !config.GoogleOAuthEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -71,6 +74,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
+
 	code := c.Query("code")
 	tokenResult, err := GetTokenByCode(code)
 	if err != nil {
@@ -82,19 +86,33 @@ func GoogleOAuthCallback(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
-	user, err := model.GetUserByEmail2(googleUser.Email)
-
+	user := model.User{
+		GoogleId: googleUser.GoogleId,
+	}
 	//判断用户是否已经通过此邮箱进行了注册
-
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if model.IsGoogleIdAlreadyTaken(user.GoogleId) {
+		err := user.FillUserByGoogleId()
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		if user.Email != "" && user.Email != googleUser.Email {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "User email is different from google email",
+			})
+			return
+		}
+	} else {
 		if config.RegisterEnabled {
-			user.Username = "google_" + strconv.Itoa(model.GetMaxUserId()+1)
+			user.Username = "google" + strconv.Itoa(model.GetMaxUserId()+1)
 			user.DisplayName = googleUser.Name
-
 			user.Email = googleUser.Email
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
-			user.GoogleId = googleUser.GoogleId
 
 			if err := user.Insert(0); err != nil {
 				c.JSON(http.StatusOK, gin.H{
@@ -113,11 +131,12 @@ func GoogleOAuthCallback(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "管理员关闭了新用户注册",
+				"message": "The administrator has closed new user registration",
 			})
 			return
 		}
 	}
+
 	//如果是已经被注册过
 	if user.Status != common.UserStatusEnabled {
 		c.JSON(http.StatusOK, gin.H{
@@ -127,6 +146,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 		return
 	}
 	user.GoogleId = googleUser.GoogleId
+	user.Email = googleUser.Email
 	err = user.Update(false)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -136,7 +156,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 		return
 	}
 
-	setupLogin(user, c)
+	setupLogin(&user, c)
 }
 
 func GetTokenByCode(code string) (*GoogleTokenResult, error) {
@@ -195,4 +215,72 @@ func GetGoogleUserInfoByToken(token string) (*GoogleUser, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+func GoogleBind(c *gin.Context) {
+	if !config.GoogleOAuthEnabled {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "The administrator has closed new user registration",
+		})
+		return
+	}
+	code := c.Query("code")
+	tokenResult, err := GetTokenByCode(code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		return
+	}
+	googleUser, err := GetGoogleUserInfoByToken(tokenResult.AccessToken)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	user := model.User{
+		GoogleId: googleUser.GoogleId,
+	}
+	if model.IsGoogleIdAlreadyTaken(user.GoogleId) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "This GitHub account has been bound",
+		})
+		return
+	}
+	session := sessions.Default(c)
+	id := session.Get("id")
+	// id := c.GetInt("id")  // critical bug!
+	user.Id = id.(int)
+	err = user.FillUserById()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	if user.Email != "" && user.Email != googleUser.Email {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "User email is different from google email",
+		})
+		return
+	}
+	user.Email = googleUser.Email
+	user.GoogleId = googleUser.GoogleId
+	err = user.Update(false)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Bind google successfully",
+	})
+	return
 }

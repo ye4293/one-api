@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/helper"
@@ -11,9 +15,6 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
-	"io"
-	"net/http"
-	"strings"
 )
 
 func stopReasonClaude2OpenAI(reason *string) string {
@@ -38,6 +39,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		MaxTokens:   textRequest.MaxTokens,
 		Temperature: textRequest.Temperature,
 		TopP:        textRequest.TopP,
+		TopK:        textRequest.TopK,
 		Stream:      textRequest.Stream,
 	}
 	if claudeRequest.MaxTokens == 0 {
