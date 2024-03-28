@@ -31,7 +31,7 @@ type GitHubUser struct {
 	Email string `json:"email"`
 }
 
-var GithubOAuthUrl = "https://github.com/Id/oauth/authorize"
+var GithubOAuthUrl = "https://github.com/login/oauth/authorize"
 
 func GithubOAuth(c *gin.Context) {
 
