@@ -114,6 +114,13 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 }
 
 func GithubOAuthCallback(c *gin.Context) {
+	if 1+1 == 2 {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": true,
+			"message": "test",
+		})
+		return
+	}
 	session := sessions.Default(c)
 	state := c.Query("state")
 	if state == "" || session.Get("oauth_state") == nil || state != session.Get("oauth_state").(string) {
