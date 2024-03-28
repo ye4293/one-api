@@ -55,7 +55,6 @@ func GoogleOAuth(c *gin.Context) {
 }
 
 func GoogleOAuthCallback(c *gin.Context) {
-	code := c.Query("code")
 	session := sessions.Default(c)
 	state := c.Query("state")
 	if state == "" || session.Get("oauth_state") == nil || state != session.Get("oauth_state").(string) {
@@ -72,6 +71,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 		})
 		return
 	}
+	code := c.Query("code")
 	tokenResult, err := GetTokenByCode(code)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
