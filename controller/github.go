@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -85,6 +86,20 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 		return nil, errors.New("无法连接至 GitHub 服务器，请稍后重试！")
 	}
 	defer res2.Body.Close()
+
+	// 读取响应体的全部内容
+	bodyBytes, err := io.ReadAll(res2.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// 打印完整的JSON响应
+	logger.SysLog(fmt.Sprint("GitHub Response:%s", string(bodyBytes)))
+
+	// 由于响应体已经被读取，需要将其内容复制回res2.Body，以便后续使用
+	res2.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// 解码JSON到GitHubUser对象
 	var githubUser GitHubUser
 	err = json.NewDecoder(res2.Body).Decode(&githubUser)
 	if err != nil {
