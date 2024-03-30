@@ -132,6 +132,10 @@ func processChannelRelayError(ctx context.Context, channelId int, channelName st
 	}
 }
 
+func RelayMidjourney(c *gin.Context) {
+
+}
+
 func RelayNotImplemented(c *gin.Context) {
 	err := model.Error{
 		Message: "API not implemented",

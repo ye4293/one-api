@@ -69,4 +69,23 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps/:stepId", controller.RelayNotImplemented)
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps", controller.RelayNotImplemented)
 	}
+
+	// relayMjRouter := router.Group("/mj")
+	// relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
+	// relayMjRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	// {
+	// 	relayMjRouter.POST("/submit/action", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/shorten", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/modal", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/imagine", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/change", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/simple-change", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/describe", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/submit/blend", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/notify", controller.RelayMidjourney)
+	// 	relayMjRouter.GET("/task/:id/fetch", controller.RelayMidjourney)
+	// 	relayMjRouter.GET("/task/:id/image-seed", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/task/list-by-condition", controller.RelayMidjourney)
+	// 	relayMjRouter.POST("/insight-face/swap", controller.RelayMidjourney)
+	// }
 }
