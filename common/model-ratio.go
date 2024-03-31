@@ -262,3 +262,65 @@ func GetCompletionRatio(name string) float64 {
 	}
 	return 1
 }
+
+var DefaultModelPrice = map[string]float64{
+	"gpt-4-gizmo-*":     0.1,
+	"mj_imagine":        0.036,
+	"mj_variation":      0.036,
+	"mj_reroll":         0.036,
+	"mj_blend":          0.036,
+	"mj_modal":          0.036,
+	"mj_zoom":           0.036,
+	"mj_shorten":        0.036,
+	"mj_high_variation": 0.036,
+	"mj_low_variation":  0.036,
+	"mj_pan":            0.036,
+	"mj_inpaint":        0,
+	"mj_custom_zoom":    0,
+	"mj_describe":       0.036,
+	"mj_upscale":        0.036,
+	"swap_face":         0.036,
+}
+
+//后续进行修正
+
+var DefaultModelTypeRatio = map[string]float64{
+	"turbo": 1,
+	"fast":  1,
+	"relax": 1,
+}
+
+var modelPrice map[string]float64 = nil
+
+func ModelPrice2JSONString() string {
+	if modelPrice == nil {
+		modelPrice = DefaultModelPrice
+	}
+	jsonBytes, err := json.Marshal(modelPrice)
+	if err != nil {
+		logger.SysError("error marshalling model price: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateModelPriceByJSONString(jsonStr string) error {
+	modelPrice = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &modelPrice)
+}
+
+func GetModelPrice(name string, printErr bool) float64 {
+	if modelPrice == nil {
+		modelPrice = DefaultModelPrice
+	}
+	if strings.HasPrefix(name, "gpt-4-gizmo") {
+		name = "gpt-4-gizmo-*"
+	}
+	price, ok := modelPrice[name]
+	if !ok {
+		if printErr {
+			logger.SysError("model price not found: " + name)
+		}
+		return -1
+	}
+	return price
+}

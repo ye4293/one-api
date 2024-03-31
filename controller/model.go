@@ -3,6 +3,8 @@ package controller
 import (
 	"fmt"
 
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -10,7 +12,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"net/http"
 )
 
 // https://platform.openai.com/docs/api-reference/models/list
@@ -96,6 +97,17 @@ func init() {
 				Parent:     nil,
 			})
 		}
+	}
+	for modelName, _ := range common.MidjourneyModel2Action {
+		openAIModels = append(openAIModels, OpenAIModels{
+			Id:         modelName,
+			Object:     "model",
+			Created:    1626777600,
+			OwnedBy:    "midjourney",
+			Permission: permission,
+			Root:       modelName,
+			Parent:     nil,
+		})
 	}
 	openAIModelsMap = make(map[string]OpenAIModels)
 	for _, model := range openAIModels {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -15,7 +16,9 @@ import (
 	"github.com/songquanpeng/one-api/middleware"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
+	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	"github.com/songquanpeng/one-api/relay/constant"
+	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -133,7 +136,36 @@ func processChannelRelayError(ctx context.Context, channelId int, channelName st
 }
 
 func RelayMidjourney(c *gin.Context) {
-
+	relayMode := c.GetInt("relay_mode")
+	var err *midjourney.MidjourneyResponse
+	switch relayMode {
+	case relayconstant.RelayModeMidjourneyNotify:
+		err = controller.RelayMidjourneyNotify(c)
+	case relayconstant.RelayModeMidjourneyTaskFetch, relayconstant.RelayModeMidjourneyTaskFetchByCondition:
+		err = controller.RelayMidjourneyTask(c, relayMode)
+	case relayconstant.RelayModeMidjourneyTaskImageSeed:
+		err = controller.RelayMidjourneyTaskImageSeed(c)
+	case relayconstant.RelayModeSwapFace:
+		err = controller.RelaySwapFace(c)
+	default:
+		err = controller.RelayMidjourneySubmit(c, relayMode)
+	}
+	//err = relayMidjourneySubmit(c, relayMode)
+	log.Println(err)
+	if err != nil {
+		statusCode := http.StatusBadRequest
+		if err.Code == 30 {
+			err.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
+			statusCode = http.StatusTooManyRequests
+		}
+		c.JSON(statusCode, gin.H{
+			"description": fmt.Sprintf("%s %s", err.Description, err.Result),
+			"type":        "upstream_error",
+			"code":        err.Code,
+		})
+		channelId := c.GetInt("channel_id")
+		logger.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", err.Description, err.Result)))
+	}
 }
 
 func RelayNotImplemented(c *gin.Context) {

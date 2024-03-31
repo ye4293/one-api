@@ -71,6 +71,7 @@ const (
 	ChannelTypeGroq
 	ChannelTypeOllama
 	ChannelTypeLingYiWanWu
+	ChannelTypeMidjourneyPlus
 
 	ChannelTypeDummy
 )

@@ -115,6 +115,18 @@ func CacheUpdateUserQuota(ctx context.Context, id int) error {
 	return err
 }
 
+func CacheUpdateUserQuota2(id int) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	quota, err := GetUserQuota(id)
+	if err != nil {
+		return err
+	}
+	err = common.RedisSet(fmt.Sprintf("user_quota:%d", id), fmt.Sprintf("%d", quota), time.Duration(UserId2QuotaCacheSeconds)*time.Second)
+	return err
+}
+
 func CacheDecreaseUserQuota(id int, quota int64) error {
 	if !common.RedisEnabled {
 		return nil
@@ -148,6 +160,7 @@ func CacheIsUserEnabled(userId int) (bool, error) {
 }
 
 var group2model2channels map[string]map[string][]*Channel
+var channelsIDM map[int]*Channel
 var channelSyncLock sync.RWMutex
 
 func InitChannelCache() {
@@ -164,10 +177,12 @@ func InitChannelCache() {
 		groups[ability.Group] = true
 	}
 	newGroup2model2channels := make(map[string]map[string][]*Channel)
+	newChannelsIDM := make(map[int]*Channel)
 	for group := range groups {
 		newGroup2model2channels[group] = make(map[string][]*Channel)
 	}
 	for _, channel := range channels {
+		newChannelsIDM[channel.Id] = channel
 		groups := strings.Split(channel.Group, ",")
 		for _, group := range groups {
 			models := strings.Split(channel.Models, ",")
@@ -192,6 +207,7 @@ func InitChannelCache() {
 
 	channelSyncLock.Lock()
 	group2model2channels = newGroup2model2channels
+	channelsIDM = newChannelsIDM
 	channelSyncLock.Unlock()
 	logger.SysLog("channels synced from database")
 }
@@ -267,4 +283,18 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	// 理论上不应该到达这里，因为总是应该能找到一个渠道
 	// 但为了防止潜在的错误，还是返回一个错误
 	return nil, errors.New("failed to select a channel based on weight")
+}
+
+func CacheGetChannel(id int) (*Channel, error) {
+	if !config.MemoryCacheEnabled {
+		return GetChannelById(id, true)
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	c, ok := channelsIDM[id]
+	if !ok {
+		return nil, errors.New(fmt.Sprintf("当前渠道# %d，已不存在", id))
+	}
+	return c, nil
 }
