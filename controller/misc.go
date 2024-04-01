@@ -96,12 +96,16 @@ func SendEmailVerification(c *gin.Context) {
 				break
 			}
 		}
-		if !allowed {
+		if allowed && !containsSpecialSymbols {
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "Your email address is allowed.",
+			})
+		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
-				"message": "The administrator has enabled the email domain name whitelist, and the domain name of your email address is not in the whitelist.",
+				"message": "The administrator has enabled the email domain name whitelist, and your email address is not allowed due to special symbols or it's not in the whitelist.",
 			})
-			return
 		}
 	}
 	if model.IsEmailAlreadyTaken(email) {
