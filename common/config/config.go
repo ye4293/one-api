@@ -69,11 +69,12 @@ var SMTPToken = ""
 
 var GitHubClientId = ""
 var GitHubClientSecret = ""
+var GithubRedirectUri = "http://localhost:8848/#/login"
 
 var GoogleOAuthEnabled = true
 var GoogleClientId = "677844314191-58e12jjntkvieprf2ilv4dc4ocrr5q41.apps.googleusercontent.com"
 var GoogleClientSecret = "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"
-var GoogleRedirectUri = "http://localhost:3000/api/oauth/google/callback"
+var GoogleRedirectUri = "http://localhost:8848"
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""
