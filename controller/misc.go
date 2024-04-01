@@ -88,10 +88,14 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	if config.EmailDomainRestrictionEnabled {
-		containsSpecialSymbols := strings.Contains(email, "+") || strings.ContainsAny(email, ".")
+		parts := strings.Split(email, "@")
+		localPart := parts[0]
+		domainPart := parts[1]
+
+		containsSpecialSymbols := strings.Contains(localPart, "+") || strings.Count(localPart, ".") > 1
 		allowed := false
 		for _, domain := range config.EmailDomainWhitelist {
-			if strings.HasSuffix(email, "@"+domain) {
+			if domainPart == domain {
 				allowed = true
 				break
 			}
@@ -106,6 +110,7 @@ func SendEmailVerification(c *gin.Context) {
 				"success": false,
 				"message": "The administrator has enabled the email domain name whitelist, and your email address is not allowed due to special symbols or it's not in the whitelist.",
 			})
+			return
 		}
 	}
 	if model.IsEmailAlreadyTaken(email) {
