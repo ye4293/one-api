@@ -160,7 +160,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 }
 
 func GetTokenByCode(code string) (*GoogleTokenResult, error) {
-	redirect_url := fmt.Sprintf("%s/api/oauth/google/callback", config.ServerAddress)
+	redirect_url := config.GoogleRedirectUri
 	data := url.Values{}
 	data.Set("client_id", config.GoogleClientId)
 	data.Set("client_secret", config.GoogleClientSecret)
