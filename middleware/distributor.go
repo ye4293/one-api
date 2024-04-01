@@ -78,49 +78,50 @@ func Distribute() func(c *gin.Context) {
 					modelRequest.Model = midjourneyModel
 				}
 				c.Set("relay_mode", relayMode)
-				err := common.UnmarshalBodyReusable(c, &modelRequest)
+			}
+
+			err = common.UnmarshalBodyReusable(c, &modelRequest)
+			if err != nil {
+				abortWithMessage(c, http.StatusBadRequest, "Invalid request")
+				return
+			}
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
+				if modelRequest.Model == "" {
+					modelRequest.Model = "text-moderation-stable"
+				}
+			}
+			if strings.HasSuffix(c.Request.URL.Path, "embeddings") {
+				if modelRequest.Model == "" {
+					modelRequest.Model = c.Param("model")
+				}
+			}
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
+				if modelRequest.Model == "" {
+					modelRequest.Model = "dall-e-2"
+				}
+			}
+			if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") || strings.HasPrefix(c.Request.URL.Path, "/v1/audio/translations") {
+				if modelRequest.Model == "" {
+					modelRequest.Model = "whisper-1"
+				}
+			}
+			requestModel = modelRequest.Model
+			if shouldSelectChannel {
+				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
+				logger.SysLog(fmt.Sprintf("requestModel:%s\n", requestModel))
 				if err != nil {
-					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
+					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
+					if channel != nil {
+						logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
+						message = "Database consistency has been violated, please contact the administrator"
+					}
+					abortWithMessage(c, http.StatusServiceUnavailable, message)
 					return
 				}
-				if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
-					if modelRequest.Model == "" {
-						modelRequest.Model = "text-moderation-stable"
-					}
-				}
-				if strings.HasSuffix(c.Request.URL.Path, "embeddings") {
-					if modelRequest.Model == "" {
-						modelRequest.Model = c.Param("model")
-					}
-				}
-				if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
-					if modelRequest.Model == "" {
-						modelRequest.Model = "dall-e-2"
-					}
-				}
-				if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") || strings.HasPrefix(c.Request.URL.Path, "/v1/audio/translations") {
-					if modelRequest.Model == "" {
-						modelRequest.Model = "whisper-1"
-					}
-				}
-				requestModel = modelRequest.Model
-				if shouldSelectChannel {
-					channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
-					logger.SysLog(fmt.Sprintf("requestModel:%s\n", requestModel))
-					if err != nil {
-						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
-						if channel != nil {
-							logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-							message = "Database consistency has been violated, please contact the administrator"
-						}
-						abortWithMessage(c, http.StatusServiceUnavailable, message)
-						return
-					}
-				}
-				SetupContextForSelectedChannel(c, channel, requestModel)
 			}
-			c.Next()
+			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
+		c.Next()
 	}
 }
 
