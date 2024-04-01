@@ -43,6 +43,7 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		} else {
+			shouldSelectChannel := true
 			// Select a channel for the user
 			var modelRequest ModelRequest
 			var err error
@@ -52,6 +53,7 @@ func Distribute() func(c *gin.Context) {
 					relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||
 					relayMode == relayconstant.RelayModeMidjourneyNotify ||
 					relayMode == relayconstant.RelayModeMidjourneyTaskImageSeed {
+					shouldSelectChannel = false
 				} else {
 					midjourneyRequest := midjourney.MidjourneyRequest{}
 					err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
@@ -70,12 +72,13 @@ func Distribute() func(c *gin.Context) {
 							return
 						} else {
 							// task fetch, task fetch by condition, notify
-
+							shouldSelectChannel = false
 						}
 					}
 					modelRequest.Model = midjourneyModel
 				}
 				c.Set("relay_mode", relayMode)
+				err := common.UnmarshalBodyReusable(c, &modelRequest)
 				if err != nil {
 					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
 					return
@@ -101,18 +104,21 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 				requestModel = modelRequest.Model
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
-				if err != nil {
-					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
-					if channel != nil {
-						logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-						message = "Database consistency has been violated, please contact the administrator"
+				if shouldSelectChannel {
+					channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
+					logger.SysLog(fmt.Sprintf("requestModel:%s\n", requestModel))
+					if err != nil {
+						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
+						if channel != nil {
+							logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
+							message = "Database consistency has been violated, please contact the administrator"
+						}
+						abortWithMessage(c, http.StatusServiceUnavailable, message)
+						return
 					}
-					abortWithMessage(c, http.StatusServiceUnavailable, message)
-					return
 				}
+				SetupContextForSelectedChannel(c, channel, requestModel)
 			}
-			SetupContextForSelectedChannel(c, channel, requestModel)
 			c.Next()
 		}
 	}

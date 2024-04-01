@@ -23,7 +23,7 @@ func RelayPanicRecover() gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"error": gin.H{
 						"message": fmt.Sprintf("Panic detected, error: %v. Please submit send email help@ezlinkai.com", err),
-						"type":    "one_api_panic",
+						"type":    "api_panic",
 					},
 				})
 				c.Abort()
