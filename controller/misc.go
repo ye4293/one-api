@@ -88,6 +88,7 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	if config.EmailDomainRestrictionEnabled {
+		containsSpecialSymbols := strings.Contains(email, "+") || strings.ContainsAny(email, ".")
 		allowed := false
 		for _, domain := range config.EmailDomainWhitelist {
 			if strings.HasSuffix(email, "@"+domain) {
