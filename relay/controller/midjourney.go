@@ -488,7 +488,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 			}
 		}
 	}(c.Request.Context())
-
+	username := model.GetUsernameById(userId)
 	// 文档：https://github.com/novicezk/midjourney-proxy/blob/main/docs/api.md
 	//1-提交成功
 	// 21-任务已存在（处理中或者有结果了） {"code":21,"description":"任务已存在","result":"0741798445574458","properties":{"status":"SUCCESS","imageUrl":"https://xxxx"}}
@@ -515,6 +515,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       quota,
 		Type:        MidjourneyType,
+		Username:    username,
 	}
 
 	if midjResponse.Code != 1 && midjResponse.Code != 21 && midjResponse.Code != 22 {

@@ -22,6 +22,7 @@ type Midjourney struct {
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
 	Type        string `json:"type" gorm:"default:fast"`
+	Username    string `json:"username" gorm:"index:index_mj_model_name,priority:2;default:''"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段

@@ -19,7 +19,7 @@ func GetAdminDashboard(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"date":    usageData,
+		"data":    usageData,
 		"success": true,
 		"message": "",
 	})
@@ -39,7 +39,7 @@ func GetUserDashboard(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"date":    usageData,
+		"data":    usageData,
 		"success": true,
 		"message": "",
 	})
@@ -58,7 +58,7 @@ func GetAllGraph(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"date":    hourlyDate,
+		"data":    hourlyDate,
 		"success": true,
 		"message": "",
 	})
@@ -78,7 +78,7 @@ func GetUserGraph(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"date":    hourlyDate,
+		"data":    hourlyDate,
 		"success": true,
 		"message": "",
 	})
