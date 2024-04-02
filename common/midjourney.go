@@ -1,6 +1,6 @@
 package common
 
-var MjNotifyEnabled = false
+var MjNotifyEnabled = true
 
 const (
 	MjErrorUnknown = 5
