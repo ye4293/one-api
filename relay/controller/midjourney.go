@@ -21,8 +21,14 @@ import (
 )
 
 func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponse {
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+
+	logger.SysLog(fmt.Sprintf("notify:%s", string(bodyBytes)))
+
+	// 将读取的内容再次放回c.Request.Body中，以便后续的处理
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	var midjRequest midjourney.MidjourneyDto
-	err := common.UnmarshalBodyReusable(c, &midjRequest)
+	err = common.UnmarshalBodyReusable(c, &midjRequest)
 	if err != nil {
 		return &midjourney.MidjourneyResponse{
 			Code:        4,
