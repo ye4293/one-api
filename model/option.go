@@ -56,6 +56,9 @@ func InitOptionMap() {
 	config.OptionMap["ServerAddress"] = ""
 	config.OptionMap["GitHubClientId"] = ""
 	config.OptionMap["GitHubClientSecret"] = ""
+	config.OptionMap["GoogleClientId"] = ""
+	config.OptionMap["GoogleClientSecret"] = ""
+	config.OptionMap["GoogleRedirectUri"] = ""
 	config.OptionMap["WeChatServerAddress"] = ""
 	config.OptionMap["WeChatServerToken"] = ""
 	config.OptionMap["WeChatAccountQRCodeImageURL"] = ""
@@ -179,6 +182,10 @@ func updateOptionMap(key string, value string) (err error) {
 		config.ServerAddress = value
 	case "GoogleClientId":
 		config.GoogleClientId = value
+	case "GoogleClientSecret":
+		config.GoogleClientSecret = value
+	case "GoogleRedirectUri":
+		config.GoogleRedirectUri = value
 	case "GitHubClientId":
 		config.GitHubClientId = value
 	case "GitHubClientSecret":

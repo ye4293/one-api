@@ -72,9 +72,9 @@ var GitHubClientSecret = ""
 var GithubRedirectUri = ""
 
 var GoogleOAuthEnabled = true
-var GoogleClientId = "677844314191-58e12jjntkvieprf2ilv4dc4ocrr5q41.apps.googleusercontent.com"
-var GoogleClientSecret = "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"
-var GoogleRedirectUri = "https://platform.ezlinkai.com"
+var GoogleClientId = ""
+var GoogleClientSecret = ""
+var GoogleRedirectUri = ""
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""
