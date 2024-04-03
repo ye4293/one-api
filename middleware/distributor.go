@@ -78,12 +78,12 @@ func Distribute() func(c *gin.Context) {
 					modelRequest.Model = midjourneyModel
 				}
 				c.Set("relay_mode", relayMode)
-			}
-
-			err = common.UnmarshalBodyReusable(c, &modelRequest)
-			if err != nil {
-				abortWithMessage(c, http.StatusBadRequest, "Invalid request")
-				return
+			} else {
+				err = common.UnmarshalBodyReusable(c, &modelRequest)
+				if err != nil {
+					abortWithMessage(c, http.StatusBadRequest, "Invalidxxxx request")
+					return
+				}
 			}
 			if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
 				if modelRequest.Model == "" {
@@ -118,8 +118,8 @@ func Distribute() func(c *gin.Context) {
 					abortWithMessage(c, http.StatusServiceUnavailable, message)
 					return
 				}
+				SetupContextForSelectedChannel(c, channel, requestModel)
 			}
-			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
 		c.Next()
 	}
