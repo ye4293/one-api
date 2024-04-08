@@ -419,7 +419,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	//对于价格的验证，后续做改进
 	modelName := midjourney.CoverActionToModelName(midjRequest.Action)
 	if modelName == "mj_imagine" || modelName == "mj_shorten" || modelName == "mj_modal" {
-		MidjourneyType := midjourney.ParsePrompts(midjRequest.Prompt)
+		MidjourneyType = midjourney.ParsePrompts(midjRequest.Prompt)
 		// 根据 MidjourneyType 设置不同的 modelPrice
 		switch MidjourneyType {
 		case "fast":

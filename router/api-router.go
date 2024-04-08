@@ -123,6 +123,7 @@ func SetApiRouter(router *gin.Engine) {
 		menuRoute.GET("/", controller.Getmenus)
 	}
 	cryptoaiRoute := apiRouter.Group("/")
+	// cryptoaiRoute.GET("/pay/crypt/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)
 	cryptoaiRoute.GET("/pay/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)
 	cryptoaiRoute.GET("/pay/get_channel", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetPayChannel)
 	cryptoaiRoute.GET("/crypt/callback", middleware.CryptCallbackAuth(), controller.CryptCallback)
@@ -139,4 +140,7 @@ func SetApiRouter(router *gin.Engine) {
 	mjRoute := apiRouter.Group("/mj")
 	mjRoute.GET("/self", middleware.UserAuth(), controller.GetUserMidjourney)
 	mjRoute.GET("/", middleware.AdminAuth(), controller.GetAllMidjourney)
+	payRoute := apiRouter.Group("/pay")
+	payRoute.GET("/crypt/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CryptCheck)
+	payRoute.GET("/stripe/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripeCheck)
 }

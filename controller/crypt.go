@@ -2,6 +2,6 @@ package controller
 
 import "github.com/gin-gonic/gin"
 
-func StripeCheck(c *gin.Context) {
+func CryptCheck(c *gin.Context) {
 	return
 }
