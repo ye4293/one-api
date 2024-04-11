@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -135,9 +134,8 @@ func processChannelRelayError(ctx context.Context, channelId int, channelName st
 	}
 }
 
-func RelayMidjourney(c *gin.Context) {
-	relayMode := c.GetInt("relay_mode")
-	var err *midjourney.MidjourneyResponse
+func relayMidjourney(c *gin.Context, relayMode int) *midjourney.MidjourneyResponseWithStatusCode {
+	var err *midjourney.MidjourneyResponseWithStatusCode
 	switch relayMode {
 	case relayconstant.RelayModeMidjourneyNotify:
 		err = controller.RelayMidjourneyNotify(c)
@@ -150,22 +148,101 @@ func RelayMidjourney(c *gin.Context) {
 	default:
 		err = controller.RelayMidjourneySubmit(c, relayMode)
 	}
-	//err = relayMidjourneySubmit(c, relayMode)
-	log.Println(err)
-	if err != nil {
+	logger.SysLog(fmt.Sprintf("err:%+v", err))
+	return err
+}
+
+func RelayMidjourney(c *gin.Context) {
+	ctx := c.Request.Context()
+	relayMode := c.GetInt("relay_mode")
+
+	var MjErr *midjourney.MidjourneyResponseWithStatusCode
+	MjErr = relayMidjourney(c, relayMode)
+	if MjErr == nil {
+		return
+	}
+	channelId := c.GetInt("channel_id")
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+	originalModel := c.GetString("original_model")
+
+	if originalModel != "" {
+		ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
+	}
+
+	retryTimes := config.RetryTimes
+	if !MidjourneyShouldRetry(MjErr) {
+		retryTimes = 0
+		logger.SysLog("no retry!!!")
+	}
+	for i := retryTimes; i > 0; i-- {
+		if originalModel != "" {
+			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+			if err != nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+				break
+			}
+			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+			middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+
+			requestBody, err := common.GetRequestBody(c)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+			MjErr := relayMidjourney(c, relayMode)
+
+			channelId = c.GetInt("channel_id")
+			channelName = c.GetString("channel_name")
+			ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
+		} else {
+			requestBody, err := common.GetRequestBody(c)
+			if err == nil {
+				return
+			}
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+			MjErr = relayMidjourney(c, relayMode)
+			logger.SysLog(fmt.Sprintf("relayMode:%+v;retry:%d\n", relayMode, i))
+		}
+	}
+	if MjErr != nil {
 		statusCode := http.StatusBadRequest
-		if err.Code == 30 {
-			err.Result = "当前分组负载已饱和，请稍后再试，或升级账户以提升服务质量。"
+		if MjErr.Response.Code == 30 {
+			MjErr.Response.Result = "The current group load is saturated, please try again later, or upgrade your account to improve service quality."
 			statusCode = http.StatusTooManyRequests
 		}
 		c.JSON(statusCode, gin.H{
-			"description": fmt.Sprintf("%s %s", err.Description, err.Result),
+			"description": fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result),
 			"type":        "upstream_error",
-			"code":        err.Code,
+			"code":        MjErr.Response.Code,
 		})
 		channelId := c.GetInt("channel_id")
-		logger.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", err.Description, err.Result)))
+		logger.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result)))
 	}
+}
+func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) bool {
+	if MjErr.Response.Code == 23 { //当前渠道已满
+		return true
+	}
+	if MjErr.Response.Code == 24 {
+		return false
+	}
+	if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 {
+		return true
+	}
+	return true
+}
+
+func ShouldDisabelMidjourneyChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
+	if MjErr.Response.Code == 3 {
+		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
+	}
+
+	if MjErr.StatusCode == 403 || MjErr.StatusCode == 401 || MjErr.StatusCode == 404 {
+		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
+	}
+
+}
+
+func ShouldEnabelMidjourneyChannel(c *gin.Context, err *midjourney.MidjourneyResponse) {
+
 }
 
 func RelayNotImplemented(c *gin.Context) {

@@ -75,6 +75,7 @@ var GoogleOAuthEnabled = true
 var GoogleClientId = ""
 var GoogleClientSecret = ""
 var GoogleRedirectUri = ""
+var StripeKey = ""
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""

@@ -221,45 +221,66 @@ func SyncChannelCache(frequency int) {
 }
 
 func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPriority bool) (*Channel, error) {
-	if !config.MemoryCacheEnabled {
-		return GetRandomSatisfiedChannel(group, model)
+	groupCol := "`group`"
+	trueVal := "1"
+	if common.UsingPostgreSQL {
+		groupCol = `"group"`
+		trueVal = "true"
 	}
 
-	channelSyncLock.RLock()
-	defer channelSyncLock.RUnlock()
-
-	channels := group2model2channels[group][model]
-	if len(channels) == 0 {
-		return nil, errors.New("channel not found")
+	// 查询所有可用的优先级
+	var priorities []int
+	err := DB.Model(&Ability{}).Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model).
+		Pluck("DISTINCT priority", &priorities).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
 	}
 
-	var filteredChannels []*Channel
-	if ignoreFirstPriority {
-		// 如果忽略最高优先级，则将所有渠道视为候选
-		filteredChannels = channels
+	if len(priorities) == 0 {
+		return nil, errors.New("no priorities available")
+	}
+
+	// 确定使用哪个优先级
+	var priorityToUse int
+	// 首先，按照从大到小的顺序对priorities进行排序
+	sort.Slice(priorities, func(i, j int) bool {
+		return priorities[i] > priorities[j]
+	})
+
+	// 如果有多于一个优先级且需要忽略最高优先级
+	if len(priorities) > 1 && ignoreFirstPriority {
+		// 选择次高优先级，即在降序列表中的第二个元素
+		priorityToUse = priorities[1]
 	} else {
-		// 筛选出同一最高优先级的渠道
-		maxPriority := channels[0].GetPriority()
-		for _, channel := range channels {
-			if channel.GetPriority() > maxPriority {
-				maxPriority = channel.GetPriority()
-			}
-		}
-		for _, channel := range channels {
-			if channel.GetPriority() == maxPriority {
-				filteredChannels = append(filteredChannels, channel)
-			}
-		}
+		// 否则，选择最高优先级，即在降序列表中的第一个元素
+		priorityToUse = priorities[0]
 	}
 
-	// 计算候选渠道的总权重
+	// 获取符合条件的所有渠道及其权重
+	var channels []Channel
+	err = DB.Table("channels").
+		Joins("JOIN abilities ON channels.id = abilities.channel_id").
+		Where("`abilities`.`group` = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ?", group, model, trueVal, priorityToUse).
+		Find(&channels).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch channels: %w", err)
+	}
+
+	if len(channels) == 0 {
+		return nil, errors.New("no channels available with the required priority and weight")
+	}
+
 	totalWeight := 0
-	for _, channel := range filteredChannels {
-		weight := int(*channel.GetWeight())
+	for _, channel := range channels {
+		weight := int(*channel.Weight)
 		if weight <= 0 {
 			weight = 1
 		}
 		totalWeight += weight
+	}
+
+	if totalWeight == 0 {
+		return nil, errors.New("total weight of channels is zero")
 	}
 
 	// 生成一个随机权重阈值
@@ -267,22 +288,19 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	randGen := rand.New(randSource)
 	weightThreshold := randGen.Intn(totalWeight) + 1
 
-	// 根据权重随机选择渠道
 	currentWeight := 0
-	for _, channel := range filteredChannels {
-		weight := int(*channel.GetWeight())
+	for _, channel := range channels {
+		weight := int(*channel.Weight)
 		if weight <= 0 {
 			weight = 1
 		}
 		currentWeight += weight
 		if currentWeight >= weightThreshold {
-			return channel, nil
+			return &channel, nil
 		}
 	}
 
-	// 理论上不应该到达这里，因为总是应该能找到一个渠道
-	// 但为了防止潜在的错误，还是返回一个错误
-	return nil, errors.New("failed to select a channel based on weight")
+	return nil, errors.New("unable to select a channel based on weight")
 }
 
 func CacheGetChannel(id int) (*Channel, error) {

@@ -27,6 +27,7 @@ type Midjourney struct {
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
 type TaskQueryParams struct {
+	UserName       string
 	ChannelID      string
 	MjID           string
 	StartTimestamp string
@@ -76,12 +77,15 @@ func GetAllTask(page int, pageSize int, queryParams TaskQueryParams) (tasks []*M
 	if queryParams.MjID != "" {
 		query = query.Where("mj_id = ?", queryParams.MjID)
 	}
+	if queryParams.UserName != "" {
+		query = query.Where("username <= ?", queryParams.UserName)
+	}
 	if queryParams.StartTimestamp != "" {
 		// 假设您已将前端传来的时间戳转换为数据库所需的时间格式，并处理了时间戳的验证和解析
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
 	if queryParams.EndTimestamp != "" {
-		query = query.Where("submit_time <= ?", queryParams.EndTimestamp)
+		query = query.Where("end_time <= ?", queryParams.EndTimestamp)
 	}
 
 	// 首先计算满足条件的总数

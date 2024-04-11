@@ -137,10 +137,12 @@ func SetApiRouter(router *gin.Engine) {
 	dashboardRoute.GET("/graph", middleware.AdminAuth(), controller.GetAllGraph)
 	dashboardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard)
 	dashboardRoute.GET("/graph/self", middleware.UserAuth(), controller.GetUserGraph)
+
 	mjRoute := apiRouter.Group("/mj")
 	mjRoute.GET("/self", middleware.UserAuth(), controller.GetUserMidjourney)
 	mjRoute.GET("/", middleware.AdminAuth(), controller.GetAllMidjourney)
-	payRoute := apiRouter.Group("/pay")
-	payRoute.GET("/crypt/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CryptCheck)
-	payRoute.GET("/stripe/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripeCheck)
+
+	// 	payRoute := apiRouter.Group("/pay")
+	// 	payRoute.GET("/crypt/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CryptCheck)
+	// 	payRoute.GET("/stripe/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripeCheck)
 }

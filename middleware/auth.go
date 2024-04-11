@@ -105,8 +105,11 @@ func TokenAuth() func(c *gin.Context) {
 			parts = strings.Split(key, "-")
 			key = parts[0]
 		}
-		logger.SysLog(fmt.Sprintf("key:%s", key))
 		token, err := model.ValidateUserToken(key)
+		UserName := model.GetUsernameById(token.Id)
+		if UserName != "" {
+			logger.SysLog(fmt.Sprintf("user:%s key:%s\n", UserName, key))
+		}
 		if err != nil {
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return

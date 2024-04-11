@@ -259,7 +259,7 @@ func checkMjTaskNeedUpdate(oldTask *model.Midjourney, newTask midjourney.Midjour
 }
 
 func GetAllMidjourney(c *gin.Context) {
-	page, _ := strconv.Atoi(c.Query("p"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 0 {
 		page = 0
 	}
@@ -268,6 +268,7 @@ func GetAllMidjourney(c *gin.Context) {
 	// 解析其他查询参数
 	queryParams := model.TaskQueryParams{
 		ChannelID:      c.Query("channel_id"),
+		UserName:       c.Query("username"),
 		MjID:           c.Query("mj_id"),
 		StartTimestamp: c.Query("start_timestamp"),
 		EndTimestamp:   c.Query("end_timestamp"),
@@ -294,7 +295,7 @@ func GetAllMidjourney(c *gin.Context) {
 }
 
 func GetUserMidjourney(c *gin.Context) {
-	page, _ := strconv.Atoi(c.Query("p"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 0 {
 		page = 0
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ import (
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 )
 
-func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponse {
+func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 
 	logger.SysLog(fmt.Sprintf("notify:%s", string(bodyBytes)))
@@ -30,20 +31,26 @@ func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponse {
 	var midjRequest midjourney.MidjourneyDto
 	err = common.UnmarshalBodyReusable(c, &midjRequest)
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "bind_request_body_failed",
-			Properties:  nil,
-			Result:      "",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Unmarshal BodyReusable failed",
+				Properties:  nil,
+				Result:      "",
+			},
 		}
 	}
 	midjourneyTask := model.GetByOnlyMJId(midjRequest.MjId)
 	if midjourneyTask == nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "midjourney_task_not_found",
-			Properties:  nil,
-			Result:      "",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Get Mj id failed",
+				Properties:  nil,
+				Result:      "",
+			},
 		}
 	}
 	midjourneyTask.Progress = midjRequest.Progress
@@ -57,9 +64,14 @@ func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponse {
 	midjourneyTask.FailReason = midjRequest.FailReason
 	err = midjourneyTask.Update()
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "update_midjourney_task_failed",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Update mj task failed",
+				Properties:  nil,
+				Result:      "",
+			},
 		}
 	}
 
@@ -103,20 +115,21 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	return
 }
 
-func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponse {
+func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now().UnixNano() / int64(time.Millisecond)
 	tokenId := c.GetInt("token_id")
 	userId := c.GetInt("id")
+	consumeQuota := true
 	group := c.GetString("group")
 	channelId := c.GetInt("channel_id")
 	var swapFaceRequest midjourney.SwapFaceRequest
 	err := common.UnmarshalBodyReusable(c, &swapFaceRequest)
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "bind_request_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "bind_request_body_failed", http.StatusInternalServerError)
 	}
 	if swapFaceRequest.SourceBase64 == "" || swapFaceRequest.TargetBase64 == "" {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "sour_base64_and_target_base64_is_required")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "sour_base64_and_target_base64_is_required", http.StatusInternalServerError)
 	}
 	modelName := midjourney.CoverActionToModelName(common.MjActionSwapFace)
 	modelPrice := common.GetModelPrice(modelName, true)
@@ -133,17 +146,27 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponse {
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Failed to get user quota",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	quota := int64(ratio * config.QuotaPerUnit)
 
 	if userQuota-quota < 0 {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "User quota is not enough",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	requestURL := c.Request.URL.String()
@@ -151,10 +174,10 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponse {
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 	mjResp, _, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
-		return &mjResp.Response
+		return mjResp
 	}
 	defer func(ctx context.Context) {
-		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
+		if consumeQuota && mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
 				logger.SysError("error consuming token remain quota: " + err.Error())
@@ -193,35 +216,42 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponse {
 		ChannelId:   c.GetInt("channel_id"),
 		Quota:       quota,
 	}
+
+	if mjResp.Response.Code != 1 && mjResp.Response.Code != 21 && mjResp.Response.Code != 22 {
+		//非1-提交成功,21-任务已存在和22-排队中，则记录错误原因
+		midjourneyTask.FailReason = midjResponse.Description
+		consumeQuota = false
+		return mjResp
+	}
 	err = midjourneyTask.Insert()
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "insert_midjourney_task_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "insert_midjourney_task_failed", http.StatusInternalServerError)
 	}
 	c.Writer.WriteHeader(mjResp.StatusCode)
 	respBody, err := json.Marshal(midjResponse)
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "unmarshal_response_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
 	_, err = io.Copy(c.Writer, bytes.NewBuffer(respBody))
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "copy_response_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "copy_response_body_failed", http.StatusInternalServerError)
 	}
 	return nil
 }
 
-func RelayMidjourneyTaskImageSeed(c *gin.Context) *midjourney.MidjourneyResponse {
+func RelayMidjourneyTaskImageSeed(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode {
 	taskId := c.Param("id")
 	userId := c.GetInt("id")
 	originTask := model.GetByMJId(userId, taskId)
 	if originTask == nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "task_no_found")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "task_no_found", http.StatusInternalServerError)
 	}
 	channel, err := model.GetChannelById(originTask.ChannelId, true)
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "get_channel_info_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "get_channel_info_failed", http.StatusInternalServerError)
 	}
 	if channel.Status != common.ChannelStatusEnabled {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "该任务所属渠道已被禁用")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "该任务所属渠道已被禁用", http.StatusInternalServerError)
 	}
 	c.Set("channel_id", originTask.ChannelId)
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
@@ -230,22 +260,22 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *midjourney.MidjourneyResponse
 	fullRequestURL := fmt.Sprintf("%s%s", channel.GetBaseURL(), requestURL)
 	midjResponseWithStatus, _, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*30, fullRequestURL)
 	if err != nil {
-		return &midjResponseWithStatus.Response
+		return midjResponseWithStatus
 	}
 	midjResponse := &midjResponseWithStatus.Response
 	c.Writer.WriteHeader(midjResponseWithStatus.StatusCode)
 	respBody, err := json.Marshal(midjResponse)
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "unmarshal_response_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
 	_, err = io.Copy(c.Writer, bytes.NewBuffer(respBody))
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "copy_response_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "copy_response_body_failed", http.StatusInternalServerError)
 	}
 	return nil
 }
 
-func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyResponse {
+func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyResponseWithStatusCode {
 	userId := c.GetInt("id")
 	var err error
 	var respBody []byte
@@ -254,17 +284,27 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyRe
 		taskId := c.Param("id")
 		originTask := model.GetByMJId(userId, taskId)
 		if originTask == nil {
-			return &midjourney.MidjourneyResponse{
-				Code:        4,
-				Description: "task_no_found",
+			return &midjourney.MidjourneyResponseWithStatusCode{
+				StatusCode: http.StatusBadRequest,
+				Response: midjourney.MidjourneyResponse{
+					Code:        4,
+					Description: "Get mj id failed",
+					Properties:  nil,
+					Result:      "Error",
+				},
 			}
 		}
 		midjourneyTask := coverMidjourneyTaskDto(c, originTask)
 		respBody, err = json.Marshal(midjourneyTask)
 		if err != nil {
-			return &midjourney.MidjourneyResponse{
-				Code:        4,
-				Description: "unmarshal_response_body_failed",
+			return &midjourney.MidjourneyResponseWithStatusCode{
+				StatusCode: http.StatusBadRequest,
+				Response: midjourney.MidjourneyResponse{
+					Code:        4,
+					Description: "Marshal midjourneyTask failed",
+					Properties:  nil,
+					Result:      "Error",
+				},
 			}
 		}
 	case relayconstant.RelayModeMidjourneyTaskFetchByCondition:
@@ -273,9 +313,14 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyRe
 		}{}
 		err = c.BindJSON(&condition)
 		if err != nil {
-			return &midjourney.MidjourneyResponse{
-				Code:        4,
-				Description: "do_request_failed",
+			return &midjourney.MidjourneyResponseWithStatusCode{
+				StatusCode: http.StatusBadRequest,
+				Response: midjourney.MidjourneyResponse{
+					Code:        4,
+					Description: "Bind json failed",
+					Properties:  nil,
+					Result:      "Error",
+				},
 			}
 		}
 		var tasks []midjourney.MidjourneyDto
@@ -291,9 +336,14 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyRe
 		}
 		respBody, err = json.Marshal(tasks)
 		if err != nil {
-			return &midjourney.MidjourneyResponse{
-				Code:        4,
-				Description: "unmarshal_response_body_failed",
+			return &midjourney.MidjourneyResponseWithStatusCode{
+				StatusCode: http.StatusBadRequest,
+				Response: midjourney.MidjourneyResponse{
+					Code:        4,
+					Description: "Marshal failed",
+					Properties:  nil,
+					Result:      "Error",
+				},
 			}
 		}
 	}
@@ -302,15 +352,20 @@ func RelayMidjourneyTask(c *gin.Context, relayMode int) *midjourney.MidjourneyRe
 
 	_, err = io.Copy(c.Writer, bytes.NewBuffer(respBody))
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "copy_response_body_failed",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "io.Copy error",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	return nil
 }
 
-func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.MidjourneyResponse {
+func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.MidjourneyResponseWithStatusCode {
 
 	tokenId := c.GetInt("token_id")
 	//channelType := c.GetInt("channel")
@@ -321,7 +376,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	var midjRequest midjourney.MidjourneyRequest
 	err := common.UnmarshalBodyReusable(c, &midjRequest)
 	if err != nil {
-		return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "bind_request_body_failed")
+		return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "bind_request_body_failed", http.StatusInternalServerError)
 	}
 
 	if relayMode == relayconstant.RelayModeMidjourneyAction { // midjourney plus，需要从customId中获取任务信息
@@ -334,7 +389,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 	if relayMode == relayconstant.RelayModeMidjourneyImagine { //绘画任务，此类任务可重复
 		if midjRequest.Prompt == "" {
-			return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "prompt_is_required")
+			return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "prompt_is_required", http.StatusInternalServerError)
 		}
 		midjRequest.Action = common.MjActionImagine
 	} else if relayMode == relayconstant.RelayModeMidjourneyDescribe { //按图生文任务，此类任务可重复
@@ -347,27 +402,27 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		mjId := ""
 		if relayMode == relayconstant.RelayModeMidjourneyChange {
 			if midjRequest.TaskId == "" {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "task_id_is_required")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "task_id_is_required", http.StatusBadRequest)
 			} else if midjRequest.Action == "" {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "action_is_required")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "action_is_required", http.StatusBadRequest)
 			} else if midjRequest.Index == 0 {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "index_is_required")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "index_is_required", http.StatusBadRequest)
 			}
 			//action = midjRequest.Action
 			mjId = midjRequest.TaskId
 		} else if relayMode == relayconstant.RelayModeMidjourneySimpleChange {
 			if midjRequest.Content == "" {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "content_is_required")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "content_is_required", http.StatusBadRequest)
 			}
 			params := midjourney.ConvertSimpleChangeParams(midjRequest.Content)
 			if params == nil {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "content_parse_failed")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "content_parse_failed", http.StatusBadRequest)
 			}
 			mjId = params.TaskId
 			midjRequest.Action = params.Action
 		} else if relayMode == relayconstant.RelayModeMidjourneyModal {
 			//if midjRequest.MaskBase64 == "" {
-			//	return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "mask_base64_is_required")
+			//	return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "mask_base64_is_required")
 			//}
 			mjId = midjRequest.TaskId
 			midjRequest.Action = common.MjActionModal
@@ -375,16 +430,16 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 		originTask := model.GetByMJId(userId, mjId)
 		if originTask == nil {
-			return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "task_not_found")
+			return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "task_not_found", http.StatusBadRequest)
 		} else if originTask.Status != "SUCCESS" && relayMode != relayconstant.RelayModeMidjourneyModal {
-			return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "task_status_not_success")
+			return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "task_status_not_success", http.StatusBadRequest)
 		} else { //原任务的Status=SUCCESS，则可以做放大UPSCALE、变换VARIATION等动作，此时必须使用原来的请求地址才能正确处理
 			channel, err := model.GetChannelById(originTask.ChannelId, true)
 			if err != nil {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "get_channel_info_failed")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "get_channel_info_failed", http.StatusBadRequest)
 			}
 			if channel.Status != common.ChannelStatusEnabled {
-				return midjourney.MidjourneyErrorWrapper(common.MjRequestError, "该任务所属渠道已被禁用")
+				return midjourney.MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "The channel to which this task belongs has been disabled", http.StatusBadRequest)
 			}
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
@@ -448,23 +503,33 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Failed to get user quota",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	quota := int64(ratio * config.QuotaPerUnit)
 
 	if consumeQuota && userQuota-quota < 0 {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "User quota is not enough",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 
 	midjResponseWithStatus, responseBody, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
-		return &midjResponseWithStatus.Response
+		return midjResponseWithStatus
 	}
 	midjResponse := &midjResponseWithStatus.Response
 
@@ -522,6 +587,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		//非1-提交成功,21-任务已存在和22-排队中，则记录错误原因
 		midjourneyTask.FailReason = midjResponse.Description
 		consumeQuota = false
+		return midjResponseWithStatus
 	}
 
 	if midjResponse.Code == 21 { //21-任务已存在（处理中或者有结果了）
@@ -550,9 +616,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 	err = midjourneyTask.Insert()
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "insert_midjourney_task_failed",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: " Insert midjourneyTask failed",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 
@@ -572,16 +643,26 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 	_, err = io.Copy(c.Writer, bodyReader)
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "copy_response_body_failed",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Io Copy error",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	err = bodyReader.Close()
 	if err != nil {
-		return &midjourney.MidjourneyResponse{
-			Code:        4,
-			Description: "close_response_body_failed",
+		return &midjourney.MidjourneyResponseWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Response: midjourney.MidjourneyResponse{
+				Code:        4,
+				Description: "Close bodyReader error",
+				Properties:  nil,
+				Result:      "Error",
+			},
 		}
 	}
 	return nil

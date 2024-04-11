@@ -25,7 +25,7 @@ func CoverActionToModelName(mjAction string) string {
 	return modelName
 }
 
-func GetMjRequestModel(relayMode int, midjRequest *MidjourneyRequest) (string, *MidjourneyResponse, bool) {
+func GetMjRequestModel(relayMode int, midjRequest *MidjourneyRequest) (string, *MidjourneyResponseWithStatusCode, bool) {
 	action := ""
 	if relayMode == relayconstant.RelayModeMidjourneyAction {
 		// plus request
@@ -53,24 +53,24 @@ func GetMjRequestModel(relayMode int, midjRequest *MidjourneyRequest) (string, *
 		case relayconstant.RelayModeMidjourneySimpleChange:
 			params := ConvertSimpleChangeParams(midjRequest.Content)
 			if params == nil {
-				return "", MidjourneyErrorWrapper(common.MjRequestError, "invalid_request"), false
+				return "", MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "invalid_request", http.StatusInternalServerError), false
 			}
 			action = params.Action
 		case relayconstant.RelayModeMidjourneyTaskFetch, relayconstant.RelayModeMidjourneyTaskFetchByCondition, relayconstant.RelayModeMidjourneyNotify:
 			return "", nil, true
 		default:
-			return "", MidjourneyErrorWrapper(common.MjRequestError, "unknown_relay_action"), false
+			return "", MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "unknown_relay_action", http.StatusInternalServerError), false
 		}
 	}
 	modelName := CoverActionToModelName(action)
 	return modelName, nil, true
 }
 
-func CoverPlusActionToNormalAction(midjRequest *MidjourneyRequest) *MidjourneyResponse {
+func CoverPlusActionToNormalAction(midjRequest *MidjourneyRequest) *MidjourneyResponseWithStatusCode {
 	// "customId": "MJ::JOB::upsample::2::3dbbd469-36af-4a0f-8f02-df6c579e7011"
 	customId := midjRequest.CustomId
 	if customId == "" {
-		return MidjourneyErrorWrapper(common.MjRequestError, "custom_id_is_required")
+		return MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "custom_id_is_required", http.StatusInternalServerError)
 	}
 	splits := strings.Split(customId, "::")
 	var action string
@@ -81,12 +81,12 @@ func CoverPlusActionToNormalAction(midjRequest *MidjourneyRequest) *MidjourneyRe
 	}
 
 	if action == "" {
-		return MidjourneyErrorWrapper(common.MjRequestError, "unknown_action")
+		return MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "unknown_action", http.StatusInternalServerError)
 	}
 	if strings.Contains(action, "upsample") {
 		index, err := strconv.Atoi(splits[3])
 		if err != nil {
-			return MidjourneyErrorWrapper(common.MjRequestError, "index_parse_failed")
+			return MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "index_parse_failed", http.StatusInternalServerError)
 		}
 		midjRequest.Index = index
 		midjRequest.Action = common.MjActionUpscale
@@ -95,7 +95,7 @@ func CoverPlusActionToNormalAction(midjRequest *MidjourneyRequest) *MidjourneyRe
 		if action == "variation" {
 			index, err := strconv.Atoi(splits[3])
 			if err != nil {
-				return MidjourneyErrorWrapper(common.MjRequestError, "index_parse_failed")
+				return MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "index_parse_failed", http.StatusInternalServerError)
 			}
 			midjRequest.Index = index
 			midjRequest.Action = common.MjActionVariation
@@ -120,7 +120,7 @@ func CoverPlusActionToNormalAction(midjRequest *MidjourneyRequest) *MidjourneyRe
 		midjRequest.Action = common.MjActionInPaint
 		midjRequest.Index = 1
 	} else {
-		return MidjourneyErrorWrapper(common.MjRequestError, "unknown_action:"+customId)
+		return MidjourneyErrorWithStatusCodeWrapper(common.MjRequestError, "unknown_action:"+customId, http.StatusInternalServerError)
 	}
 	return nil
 }
@@ -220,7 +220,7 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		return MidjourneyErrorWithStatusCodeWrapper(common.MjErrorUnknown, "close_response_body_failed", statusCode), responseBody, err
 	}
 	respStr := string(responseBody)
-	log.Printf("responseBody: %s", respStr)
+	log.Printf("statusCode:%d responseBody: %s", statusCode, respStr)
 	if respStr == "" {
 		return MidjourneyErrorWithStatusCodeWrapper(common.MjErrorUnknown, "empty_response_body", statusCode), responseBody, nil
 	} else {

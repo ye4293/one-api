@@ -63,7 +63,7 @@ func Distribute() func(c *gin.Context) {
 					}
 					midjourneyModel, mjErr, success := midjourney.GetMjRequestModel(relayMode, &midjourneyRequest)
 					if mjErr != nil {
-						abortWithMidjourneyMessage(c, http.StatusBadRequest, mjErr.Code, mjErr.Description)
+						abortWithMidjourneyMessage(c, http.StatusBadRequest, mjErr.Response.Code, mjErr.Response.Description)
 						return
 					}
 					if midjourneyModel == "" {
@@ -78,10 +78,11 @@ func Distribute() func(c *gin.Context) {
 					modelRequest.Model = midjourneyModel
 				}
 				c.Set("relay_mode", relayMode)
+				logger.SysLog(fmt.Sprintf("Use Mj model: %+v\n", relayMode))
 			} else {
 				err = common.UnmarshalBodyReusable(c, &modelRequest)
 				if err != nil {
-					abortWithMessage(c, http.StatusBadRequest, "Invalidxxxx request")
+					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
 					return
 				}
 			}
@@ -108,11 +109,10 @@ func Distribute() func(c *gin.Context) {
 			requestModel = modelRequest.Model
 			if shouldSelectChannel {
 				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
-				logger.SysLog(fmt.Sprintf("requestModel:%s\n", requestModel))
 				if err != nil {
 					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
 					if channel != nil {
-						logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
+						logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
 						message = "Database consistency has been violated, please contact the administrator"
 					}
 					abortWithMessage(c, http.StatusServiceUnavailable, message)
@@ -131,6 +131,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("channel_name", channel.Name)
 	c.Set("model_mapping", channel.GetModelMapping())
 	c.Set("original_model", modelName) // for retry
+	logger.SysLog(fmt.Sprintf("channel:%d;requestModel:%s\n", channel.Id, modelName))
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 	c.Set("base_url", channel.GetBaseURL())
 	// this is for backward compatibility
