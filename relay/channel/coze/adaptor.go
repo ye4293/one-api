@@ -1,4 +1,4 @@
-package anthropic
+package coze
 
 import (
 	"errors"
@@ -7,7 +7,9 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/relay/channel"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -20,18 +22,12 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
-	return fmt.Sprintf("%s/v1/messages", meta.BaseURL), nil
+	return fmt.Sprintf("%s/open_api/v2/chat", meta.BaseURL), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	channel.SetupCommonRequestHeader(c, req, meta)
-	req.Header.Set("x-api-key", meta.APIKey)
-	anthropicVersion := c.Request.Header.Get("anthropic-version")
-	if anthropicVersion == "" {
-		anthropicVersion = "2023-06-01"
-	}
-	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("anthropic-beta", "messages-2023-12-15")
+	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
 	return nil
 }
 
@@ -39,7 +35,15 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
+	request.User = c.GetString(ctxkey.ConfigUserID)
 	return ConvertRequest(*request), nil
+}
+
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
+	return request, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
@@ -47,11 +51,19 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
+	var responseText *string
 	if meta.IsStream {
-		err, usage = StreamHandler(c, resp)
+		err, responseText = StreamHandler(c, resp)
 	} else {
-		err, usage = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
+		err, responseText = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
 	}
+	if responseText != nil {
+		usage = openai.ResponseText2Usage(*responseText, meta.ActualModelName, meta.PromptTokens)
+	} else {
+		usage = &model.Usage{}
+	}
+	usage.PromptTokens = meta.PromptTokens
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	return
 }
 
@@ -60,5 +72,5 @@ func (a *Adaptor) GetModelList() []string {
 }
 
 func (a *Adaptor) GetChannelName() string {
-	return "anthropic"
+	return "coze"
 }

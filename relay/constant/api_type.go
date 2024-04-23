@@ -16,6 +16,9 @@ const (
 	APITypeTencent
 	APITypeGemini
 	APITypeOllama
+	APITypeAwsClaude
+	APITypeCoze
+	APITypeCohere
 
 	APITypeDummy // this one is only for count, do not add any channel after this
 )
@@ -43,6 +46,10 @@ func ChannelType2APIType(channelType int) int {
 		apiType = APITypeGemini
 	case common.ChannelTypeOllama:
 		apiType = APITypeOllama
+	case common.ChannelTypeCohere:
+		apiType = APITypeCohere
+	case common.ChannelTypeCoze:
+		apiType = APITypeCoze
 	}
 	return apiType
 }

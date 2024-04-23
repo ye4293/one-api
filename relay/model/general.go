@@ -9,6 +9,7 @@ type GeneralOpenAIRequest struct {
 	Model            string          `json:"model,omitempty"`
 	FrequencyPenalty float64         `json:"frequency_penalty,omitempty"`
 	MaxTokens        int             `json:"max_tokens,omitempty"`
+	MaxInputTokens   int             `json:"max_input_tokens,omitempty"`
 	N                int             `json:"n,omitempty"`
 	PresencePenalty  float64         `json:"presence_penalty,omitempty"`
 	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`

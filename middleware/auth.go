@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -106,10 +105,6 @@ func TokenAuth() func(c *gin.Context) {
 			key = parts[0]
 		}
 		token, err := model.ValidateUserToken(key)
-		UserName := model.GetUsernameById(token.Id)
-		if UserName != "" {
-			logger.SysLog(fmt.Sprintf("user:%s key:%s\n", UserName, key))
-		}
 		if err != nil {
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return

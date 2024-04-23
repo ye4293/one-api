@@ -72,6 +72,10 @@ const (
 	ChannelTypeOllama
 	ChannelTypeLingYiWanWu
 	ChannelTypeMidjourneyPlus
+	ChannelTypeAwsClaude
+	ChannelTypeCoze
+	ChannelTypeCohere
+	ChannelTypeTogetherAi
 
 	ChannelTypeDummy
 )
@@ -109,6 +113,11 @@ var ChannelBaseURLs = []string{
 	"https://api.groq.com/openai",               // 29
 	"http://localhost:11434",                    // 30
 	"https://api.lingyiwanwu.com",               // 31
+	"",                                          //32
+	"",                                          //33
+	"https://api.coze.com",                      //34
+	"https://api.cohere.ai",                     //35
+	"",                                          //36
 }
 
 const (

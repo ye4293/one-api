@@ -25,7 +25,7 @@ import (
 
 // https://platform.openai.com/docs/api-reference/chat
 
-func relay(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
+func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	var err *model.ErrorWithStatusCode
 	switch relayMode {
 	case constant.RelayModeImagesGenerations:
@@ -49,7 +49,7 @@ func Relay(c *gin.Context) {
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
 	}
 	channelId := c.GetInt("channel_id")
-	bizErr := relay(c, relayMode)
+	bizErr := relayHelper(c, relayMode)
 	requestId := c.GetString(logger.RequestIdKey) // 确保在函数开始就获取requestId
 
 	if bizErr == nil {
@@ -82,7 +82,7 @@ func Relay(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-		bizErr = relay(c, relayMode)
+		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			return
 		}

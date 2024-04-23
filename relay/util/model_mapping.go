@@ -1,12 +1,12 @@
 package util
 
-func GetMappedModelName(modelName string, mapping map[string]string) (string, bool) {
+func GetMappedModelName(modelName string, mapping map[string]string) (string, string, bool) {
 	if mapping == nil {
-		return modelName, false
+		return modelName, modelName, false
 	}
 	mappedModelName := mapping[modelName]
 	if mappedModelName != "" {
-		return mappedModelName, true
+		return mappedModelName, modelName, true
 	}
-	return modelName, false
+	return modelName, modelName, false
 }

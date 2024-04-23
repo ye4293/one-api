@@ -1,4 +1,4 @@
-package anthropic
+package cohere
 
 import (
 	"errors"
@@ -7,31 +7,32 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-type Adaptor struct {
-}
+type Adaptor struct{}
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
 
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
-	return fmt.Sprintf("%s/v1/messages", meta.BaseURL), nil
+	logger.SysLog(fmt.Sprintf("%s/v1/chat", meta.BaseURL))
+	return fmt.Sprintf("%s/v1/chat", meta.BaseURL), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	channel.SetupCommonRequestHeader(c, req, meta)
-	req.Header.Set("x-api-key", meta.APIKey)
-	anthropicVersion := c.Request.Header.Get("anthropic-version")
-	if anthropicVersion == "" {
-		anthropicVersion = "2023-06-01"
+	logger.SysLog(meta.APIKey)
+	req.Header.Set("Authorization", "bearer "+meta.APIKey)
+	if meta.ChannelType == common.ChannelTypeOpenRouter {
+		req.Header.Set("HTTP-Referer", "https://www.ezlinkai.com")
+		req.Header.Set("X-Title", "EZLINK AI")
 	}
-	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("anthropic-beta", "messages-2023-12-15")
 	return nil
 }
 
@@ -60,5 +61,5 @@ func (a *Adaptor) GetModelList() []string {
 }
 
 func (a *Adaptor) GetChannelName() string {
-	return "anthropic"
+	return "cohere"
 }
