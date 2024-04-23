@@ -141,6 +141,13 @@ var ModelRatio = map[string]float64{
 	"yi-34b-chat-0205": 2.5 / 1000 * RMB,
 	"yi-34b-chat-200k": 12.0 / 1000 * RMB,
 	"yi-vl-plus":       6.0 / 1000 * RMB,
+	//https://cohere.com/pricing  command系列没有给出定价 所以采用的openrouter的标准
+	"command":               0.5,
+	"command-light":         0.5,
+	"command-nightly":       0.5,
+	"command-light-nightly": 0.5,
+	"command-r":             0.25,
+	"command-r-plus	":       1.5,
 }
 
 var CompletionRatio = map[string]float64{}
@@ -258,7 +265,17 @@ func GetCompletionRatio(name string) float64 {
 	}
 	switch name {
 	case "llama2-70b-4096":
-		return 0.8 / 0.7
+		return 0.8 / 0.64
+	case "llama3-8b-8192":
+		return 2
+	case "llama3-70b-8192":
+		return 0.79 / 0.59
+	case "command", "command-light", "command-nightly", "command-light-nightly":
+		return 2
+	case "command-r":
+		return 3
+	case "command-r-plus":
+		return 5
 	}
 	return 1
 }
