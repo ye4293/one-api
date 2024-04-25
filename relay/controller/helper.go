@@ -130,12 +130,12 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	if err != nil {
 		return preConsumedQuota, openai.ErrorWrapper(err, "decrease_user_quota_failed", http.StatusInternalServerError)
 	}
-	// if userQuota > 100*preConsumedQuota {
-	// 	// in this case, we do not pre-consume quota
-	// 	// because the user has enough quota
-	// 	preConsumedQuota = 0
-	// 	logger.Info(ctx, fmt.Sprintf("user %d has enough quota %d, trusted and no need to pre-consume", meta.UserId, userQuota))
-	// }
+	if userQuota > 100*preConsumedQuota {
+		// in this case, we do not pre-consume quota
+		// because the user has enough quota
+		preConsumedQuota = 0
+		logger.Info(ctx, fmt.Sprintf("user %d has enough quota %d, trusted and no need to pre-consume", meta.UserId, userQuota))
+	}
 	if preConsumedQuota > 0 {
 		err := model.PreConsumeTokenQuota(meta.TokenId, preConsumedQuota)
 		if err != nil {
@@ -145,7 +145,7 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	return preConsumedQuota, nil
 }
 
-func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, originModelName string) {
+func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64) {
 	if usage == nil {
 		logger.Error(ctx, "usage is nil, which is unexpected")
 		return
@@ -175,7 +175,7 @@ func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.R
 	}
 	if quota != 0 {
 		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
-		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, originModelName, meta.TokenName, quota, logContent, duration)
+		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}

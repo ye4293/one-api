@@ -34,7 +34,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 	// map model name
 	var isModelMapped bool
-	var originModelName string
 	meta.OriginModelName = textRequest.Model
 	textRequest.Model, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = textRequest.Model
@@ -109,6 +108,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, originModelName)
+	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration)
 	return nil
 }

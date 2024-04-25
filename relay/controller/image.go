@@ -44,7 +44,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// map model name
 	var isModelMapped bool
-	var originModelName string
 	meta.OriginModelName = imageRequest.Model
 	imageRequest.Model, isModelMapped = util.GetMappedModelName(imageRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = imageRequest.Model
@@ -138,7 +137,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			duration := math.Round(rowDuration*1000) / 1000
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
-			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, originModelName, tokenName, quota, logContent, duration)
+			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration)
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 			channelId := c.GetInt("channel_id")
 			model.UpdateChannelUsedQuota(channelId, quota)
