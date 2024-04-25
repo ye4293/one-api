@@ -3,14 +3,15 @@ package gemini
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/logger"
 	channelhelper "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
 )
 
 type Adaptor struct {
@@ -21,12 +22,13 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
-	version := helper.AssignOrDefault(meta.APIVersion, "v1")
+	// version := helper.AssignOrDefault(meta.APIVersion, config.GeminiVersion)
 	action := "generateContent"
 	if meta.IsStream {
 		action = "streamGenerateContent"
 	}
-	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, version, meta.ActualModelName, action), nil
+	logger.SysLog(fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action))
+	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {

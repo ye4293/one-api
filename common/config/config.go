@@ -11,6 +11,7 @@ import (
 	"github.com/songquanpeng/one-api/common/env"
 )
 
+var GeminiVersion = "v1/beta"
 var SystemName = "EZLINK AI"
 var ServerAddress = "http://localhost:3000"
 var Footer = ""
