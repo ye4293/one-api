@@ -46,7 +46,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	var isModelMapped bool
 	var originModelName string
 	meta.OriginModelName = imageRequest.Model
-	imageRequest.Model, originModelName, isModelMapped = util.GetMappedModelName(imageRequest.Model, meta.ModelMapping)
+	imageRequest.Model, isModelMapped = util.GetMappedModelName(imageRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = imageRequest.Model
 
 	// model validation

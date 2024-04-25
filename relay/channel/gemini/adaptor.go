@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/logger"
 	channelhelper "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -27,7 +26,7 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	if meta.IsStream {
 		action = "streamGenerateContent"
 	}
-	logger.SysLog(fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action))
+	// logger.SysLog(fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action))
 	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action), nil
 }
 

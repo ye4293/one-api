@@ -36,7 +36,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	var isModelMapped bool
 	var originModelName string
 	meta.OriginModelName = textRequest.Model
-	textRequest.Model, originModelName, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
+	textRequest.Model, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = textRequest.Model
 	// get model ratio & group ratio
 	modelRatio := common.GetModelRatio(textRequest.Model)
