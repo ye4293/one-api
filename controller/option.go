@@ -101,6 +101,14 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "StripePaymentEnabled":
+		if option.Value == "true" && (config.StripeCallbackUrl == "") {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无法启用 strip支付，请先填入 服务器回调地址！",
+			})
+			return
+		}
 	}
 	err = model.UpdateOption(option.Key, option.Value)
 	if err != nil {

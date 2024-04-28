@@ -40,9 +40,13 @@ var TurnstileCheckEnabled = false
 var RegisterEnabled = true
 
 var CryptPaymentEnabled = false
+var StripePaymentEnabled = false
 var CryptCallbackUrl = ""
 var AddressOut = ""
-
+var StripeCallbackUrl = ""
+var StripePrivateKey = ""
+var StripePublicKey = ""
+var StripeEndpointSecret = ""
 var EmailDomainRestrictionEnabled = false
 var EmailDomainWhitelist = []string{
 	"gmail.com",
