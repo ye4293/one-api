@@ -18,7 +18,7 @@ type ChargeConfig struct {
 
 func GetChargeConfigs() (chargeConfigs []*ChargeConfig, err error) {
 	// 获取所有充值项,可以根据条件过滤
-	err = DB.Model(&ChargeConfig{}).Where("status = ?", 1).Order("order asc").Find(&ChargeConfig{}).Error
+	err = DB.Model(&ChargeConfig{}).Where("status = ?", 1).Order("`order` asc").Find(&chargeConfigs).Error
 	// 然后获取满足条件的充值数据
 	if err != nil {
 		return nil, err

@@ -1,12 +1,15 @@
 package controller
 
 import (
+	"net/http"
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/model"
-	"net/http"
-	"strconv"
 )
+
+
 
 func GetChargeConfigs(c *gin.Context) {
 	chargeConfigs, err := model.GetChargeConfigs()
@@ -24,14 +27,24 @@ func GetChargeConfigs(c *gin.Context) {
 			"list": chargeConfigs,
 		},
 	})
-	return
 }
 func CreateChargeOrder(c *gin.Context) {
-	chargeId, _ := strconv.Atoi(c.Query("charge_id"))
+	var CreateChargeOrderRequest struct {
+		ChrargeId int `json:"charge_id"`
+	}
+	//绑定json和结构体
+	if err := c.BindJSON(&CreateChargeOrderRequest); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	chargeId:= CreateChargeOrderRequest.ChrargeId
 	//获取充值配置
 	//创建支付链接
 	userId := c.GetInt("id")
-	chargeUrl, err := model.CreateStripOrder(userId, chargeId)
+	chargeUrl, appOrderId,err := model.CreateStripOrder(userId, chargeId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -44,12 +57,17 @@ func CreateChargeOrder(c *gin.Context) {
 		"message": "",
 		"data": gin.H{
 			"charge_url": chargeUrl,
+			"app_order_id":appOrderId,
 		},
 	})
-	return
 }
 func StripCallback(c *gin.Context) {
-	err := model.HandStipeCallback()
+	err := model.HandleStripeCallback(c.Request)
+	if err!=nil{
+		c.String(http.StatusBadRequest, "fail")
+		return
+	}
+	c.String(http.StatusOK, "ok")
 }
 func GetUserChargeOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.Query("page"))

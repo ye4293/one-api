@@ -33,7 +33,7 @@ require (
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/rs/cors v1.10.1 // indirect
-	github.com/stripe/stripe-go/v78 v78.3.0 // indirect
+	github.com/stripe/stripe-go/v78 v78.5.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 )
 
