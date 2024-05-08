@@ -177,10 +177,10 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			if len(data) < 6 {
 				continue
 			}
-			if !strings.HasPrefix(data, "data: ") {
+			if !strings.HasPrefix(data, "data:") {
 				continue
 			}
-			data = strings.TrimPrefix(data, "data: ")
+			data = strings.TrimPrefix(data, "data:")
 			dataChan <- data
 		}
 		stopChan <- true
@@ -193,7 +193,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 		select {
 		case data := <-dataChan:
 			// some implementations may add \r at the end of data
-			data = strings.TrimSuffix(data, "\r")
+			data = strings.TrimSpace(data)
 			var claudeResponse StreamResponse
 			err := json.Unmarshal([]byte(data), &claudeResponse)
 			if err != nil {

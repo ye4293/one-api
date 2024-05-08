@@ -24,7 +24,7 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	// version := helper.AssignOrDefault(meta.APIVersion, config.GeminiVersion)
 	action := "generateContent"
 	if meta.IsStream {
-		action = "streamGenerateContent"
+		action = "streamGenerateContent?alt=sse"
 	}
 	// logger.SysLog(fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action))
 	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action), nil

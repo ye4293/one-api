@@ -76,6 +76,7 @@ const (
 	ChannelTypeCoze
 	ChannelTypeCohere
 	ChannelTypeTogetherAi
+	ChannelTypeDeepseek
 
 	ChannelTypeDummy
 )
@@ -117,7 +118,8 @@ var ChannelBaseURLs = []string{
 	"",                                          //33
 	"https://api.coze.com",                      //34
 	"https://api.cohere.ai",                     //35
-	"",                                          //36
+	"https://api.together.xyz",                  //36
+	"https://api.deepseek.com",                  //37
 }
 
 const (

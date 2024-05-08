@@ -147,7 +147,10 @@ var ModelRatio = map[string]float64{
 	"command-nightly":       0.5,
 	"command-light-nightly": 0.5,
 	"command-r":             0.25,
-	"command-r-plus	":       1.5,
+	"command-r-plus":        1.5,
+	// https://platform.deepseek.com/api-docs/pricing/
+	"deepseek-chat":  1.0 / 1000 * RMB,
+	"deepseek-coder": 1.0 / 1000 * RMB,
 }
 
 var CompletionRatio = map[string]float64{}
@@ -201,6 +204,9 @@ func UpdateModelRatioByJSONString(jsonStr string) error {
 
 func GetModelRatio(name string) float64 {
 	if strings.HasPrefix(name, "qwen-") && strings.HasSuffix(name, "-internet") {
+		name = strings.TrimSuffix(name, "-internet")
+	}
+	if strings.HasPrefix(name, "command-") && strings.HasSuffix(name, "-internet") {
 		name = strings.TrimSuffix(name, "-internet")
 	}
 	ratio, ok := ModelRatio[name]
