@@ -45,7 +45,7 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 			//支付成功
 			if status == 3 {
 				var addAmount float64
-				DB.Transaction(func(tx *gorm.DB) error {
+				if err:=DB.Transaction(func(tx *gorm.DB) error {
 					// 创建一笔订单
 					if err = DB.Create(&Order{
 						UserId:             response.UserId,
@@ -72,7 +72,9 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 					}
 					// 返回 nil 提交事务
 					return nil
-				})
+				});err!=nil{
+					return err
+				}
 
 				//crypt支付成功处理一下其它
 				AfterChargeSuccess(response.UserId, addAmount)

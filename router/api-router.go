@@ -142,7 +142,9 @@ func SetApiRouter(router *gin.Engine) {
 	mjRoute.GET("/self", middleware.UserAuth(), controller.GetUserMidjourney)
 	mjRoute.GET("/", middleware.AdminAuth(), controller.GetAllMidjourney)
 
-	// 	payRoute := apiRouter.Group("/pay")
-	// 	payRoute.GET("/crypt/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CryptCheck)
-	// 	payRoute.GET("/stripe/check", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripeCheck)
+	chargeRoute := apiRouter.Group("/charge")
+	chargeRoute.GET("/get_config", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetChargeConfigs)
+	chargeRoute.POST("/create_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CreateChargeOrder)
+	chargeRoute.GET("/get_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetUserChargeOrders)
+	chargeRoute.POST("/stripe_callback", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripCallback)
 }

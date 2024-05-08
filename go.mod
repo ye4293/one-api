@@ -33,6 +33,7 @@ require (
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/rs/cors v1.10.1 // indirect
+	github.com/stripe/stripe-go/v78 v78.5.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 )
 
@@ -72,6 +73,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rs/cors/wrapper/gin v0.0.0-20240228164225-8d33ca4794ea
+	github.com/stripe/stripe-go/v76 v76.25.0
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	golang.org/x/arch v0.7.0 // indirect

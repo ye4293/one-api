@@ -82,6 +82,10 @@ func InitOptionMap() {
 	config.OptionMap["CryptPaymentEnabled"] = strconv.FormatBool(config.CryptPaymentEnabled)
 	config.OptionMap["CryptCallbackUrl"] = ""
 	config.OptionMap["AddressOut"] = ""
+	config.OptionMap["StripeCallbackUrl"] = ""
+	config.OptionMap["StripePrivateKey"] = ""
+	config.OptionMap["StripePublicKey"] = ""
+	config.OptionMap["StripeEndpointKey"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -162,6 +166,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.DisplayTokenStatEnabled = boolValue
 		case "CryptPaymentEnabled":
 			config.CryptPaymentEnabled = boolValue
+		case "StripePaymentEnabled":
+			config.StripePaymentEnabled = boolValue
 		}
 	}
 	switch key {
@@ -242,6 +248,14 @@ func updateOptionMap(key string, value string) (err error) {
 		config.CryptCallbackUrl = value
 	case "AddressOut":
 		config.AddressOut = value
+	case "StripeCallbackUrl":
+		config.StripeCallbackUrl = value
+	case "StripePrivateKey":
+		config.StripePrivateKey = value
+	case "StripePublicKey":
+		config.StripePublicKey = value
+	case "endpointSecret":
+		config.StripeEndpointSecret = value
 	}
 	return err
 }
