@@ -81,7 +81,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	modelRatio := common.GetModelRatio(imageRequest.Model)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	ratio := modelRatio * groupRatio
+	userModelTypeRatio := common.GetUserModelTypeRation(meta.UserId, imageRequest.Model)
+	ratio := modelRatio * groupRatio * userModelTypeRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 
 	quota := int64(ratio*imageCostRatio*1000) * int64(imageRequest.N)
@@ -136,7 +137,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f 用户模型倍率 %.2f", modelRatio, groupRatio, userModelTypeRatio)
 			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration)
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 			channelId := c.GetInt("channel_id")

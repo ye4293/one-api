@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/relay/channel/anthropic"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
 )
 
 const (
@@ -346,4 +348,38 @@ func GetModelPrice(name string, printErr bool) float64 {
 		return -1
 	}
 	return price
+}
+
+func getProvider(model string) string {
+	for _, m := range openai.ModelList {
+		if model == m {
+			return "openai"
+		}
+	}
+	for _, m := range anthropic.ModelList {
+		if model == m {
+			return "claude"
+		}
+	}
+	return "default"
+}
+
+var userchannelmap = map[int]map[string]float64{
+	1: {
+		"openai": 0.8,
+		"claude": 1.0,
+	},
+}
+
+func GetUserModelTypeRation(userId int, model string) float64 {
+	provider := getProvider(model)
+	if provider == "default" {
+		return 1.0
+	}
+	if providerScore, ok := userchannelmap[userId]; ok {
+		if score, ok := providerScore[provider]; ok {
+			return score
+		}
+	}
+	return 1.0
 }

@@ -40,7 +40,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// get model ratio & group ratio
 	modelRatio := common.GetModelRatio(textRequest.Model)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	ratio := modelRatio * groupRatio
+	userModelTypeRatio := common.GetUserModelTypeRation(meta.UserId, textRequest.Model)
+	ratio := modelRatio * groupRatio * userModelTypeRatio
 	// pre-consume quota
 	promptTokens := getPromptTokens(textRequest, meta.Mode)
 	meta.PromptTokens = promptTokens
@@ -108,6 +109,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration)
+	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, userModelTypeRatio, duration)
 	return nil
 }
