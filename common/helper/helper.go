@@ -2,7 +2,6 @@ package helper
 
 import (
 	"fmt"
-	"github.com/google/uuid"
 	"html/template"
 	"log"
 	"math/rand"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func OpenBrowser(url string) {
@@ -214,4 +215,9 @@ func String2Int(str string) int {
 		return 0
 	}
 	return num
+}
+
+func GetFormatTimeString() string {
+	now := time.Now()
+	return now.Format("20060102150405")
 }

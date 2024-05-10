@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/relay/channel/anthropic"
-	"github.com/songquanpeng/one-api/relay/channel/openai"
 )
 
 const (
@@ -350,20 +348,6 @@ func GetModelPrice(name string, printErr bool) float64 {
 	return price
 }
 
-func getProvider(model string) string {
-	for _, m := range openai.ModelList {
-		if model == m {
-			return "openai"
-		}
-	}
-	for _, m := range anthropic.ModelList {
-		if model == m {
-			return "claude"
-		}
-	}
-	return "default"
-}
-
 var userchannelmap = map[int]map[string]float64{
 	1: {
 		"openai": 0.8,
@@ -371,8 +355,47 @@ var userchannelmap = map[int]map[string]float64{
 	},
 }
 
+var openaiModelList = []string{
+	"gpt-3.5-turbo", "gpt-3.5-turbo-0301", "gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-3.5-turbo-0125",
+	"gpt-3.5-turbo-16k", "gpt-3.5-turbo-16k-0613",
+	"gpt-3.5-turbo-instruct",
+	"gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4-0125-preview",
+	"gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613",
+	"gpt-4-turbo-preview",
+	"gpt-4-vision-preview",
+	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
+	"text-curie-001", "text-babbage-001", "text-ada-001", "text-davinci-002", "text-davinci-003",
+	"text-moderation-latest", "text-moderation-stable",
+	"text-davinci-edit-001",
+	"davinci-002", "babbage-002",
+	"dall-e-2", "dall-e-3",
+	"whisper-1",
+	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
+}
+
+var claudeModelList = []string{
+	"claude-instant-1.2", "claude-2.0", "claude-2.1",
+	"claude-3-haiku-20240307",
+	"claude-3-sonnet-20240229",
+	"claude-3-opus-20240229",
+}
+
+func GetProvider(model string) string {
+	for _, m := range openaiModelList {
+		if model == m {
+			return "openai"
+		}
+	}
+	for _, m := range claudeModelList {
+		if model == m {
+			return "claude"
+		}
+	}
+	return "default"
+}
+
 func GetUserModelTypeRation(userId int, model string) float64 {
-	provider := getProvider(model)
+	provider := GetProvider(model)
 	if provider == "default" {
 		return 1.0
 	}
