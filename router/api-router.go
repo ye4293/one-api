@@ -146,5 +146,5 @@ func SetApiRouter(router *gin.Engine) {
 	chargeRoute.GET("/get_config", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetChargeConfigs)
 	chargeRoute.POST("/create_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CreateChargeOrder)
 	chargeRoute.GET("/get_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetUserChargeOrders)
-	chargeRoute.POST("/stripe_callback", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.StripCallback)
+	chargeRoute.POST("/stripe_callback", middleware.GlobalWebRateLimit(), controller.StripCallback)
 }
