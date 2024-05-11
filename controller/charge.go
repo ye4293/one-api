@@ -1,15 +1,15 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 )
-
-
 
 func GetChargeConfigs(c *gin.Context) {
 	chargeConfigs, err := model.GetChargeConfigs()
@@ -40,11 +40,11 @@ func CreateChargeOrder(c *gin.Context) {
 		})
 		return
 	}
-	chargeId:= CreateChargeOrderRequest.ChrargeId
+	chargeId := CreateChargeOrderRequest.ChrargeId
 	//获取充值配置
 	//创建支付链接
 	userId := c.GetInt("id")
-	chargeUrl, appOrderId,err := model.CreateStripOrder(userId, chargeId)
+	chargeUrl, appOrderId, err := model.CreateStripOrder(userId, chargeId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -56,14 +56,15 @@ func CreateChargeOrder(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"charge_url": chargeUrl,
-			"app_order_id":appOrderId,
+			"charge_url":   chargeUrl,
+			"app_order_id": appOrderId,
 		},
 	})
 }
-func StripCallback(c *gin.Context) {
+func StripeCallback(c *gin.Context) {
 	err := model.HandleStripeCallback(c.Request)
-	if err!=nil{
+	if err != nil {
+		logger.SysLog(fmt.Sprintf("err1:%+v\n", err))
 		c.String(http.StatusBadRequest, "fail")
 		return
 	}

@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-    "sync"
-	"gorm.io/gorm"
+	"sync"
+
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/stripe/stripe-go/v78"
 	"github.com/stripe/stripe-go/v78/paymentlink"
 	"github.com/stripe/stripe-go/v78/webhook"
+	"gorm.io/gorm"
 )
 
 type ChargeOrder struct {
@@ -37,12 +38,12 @@ type OrderInfo struct {
 }
 
 var StatusMap = map[string]int{
-	"create":  1,//待支付
-	"success": 3,//成功
-	"fail":    4,//失败
-	"refund":  5,//退款
-	"dispute":6,//争议
-	"fraud":7,//欺诈
+	"create":  1, //待支付
+	"success": 3, //成功
+	"fail":    4, //失败
+	"refund":  5, //退款
+	"dispute": 6, //争议
+	"fraud":   7, //欺诈
 }
 
 func GetUserChargeOrdersAndCount(conditions map[string]interface{}, page int, pageSize int) (chargeOrders []*ChargeOrder, total int64, err error) {
@@ -75,13 +76,13 @@ func GetUserChargeOrdersAndCount(conditions map[string]interface{}, page int, pa
 	return chargeOrders, total, nil
 }
 
-func CreateStripOrder(userId, chargeId int) (string, string,error) {
+func CreateStripOrder(userId, chargeId int) (string, string, error) {
 	//查询配置项
 	chargeConfig, err := GetChargeConfigById(chargeId)
 	if err != nil {
-		return "","", err
+		return "", "", err
 	}
-	appOrderId :=  helper.GetRandomString(16)
+	appOrderId := helper.GetRandomString(16)
 	chargeOrder := ChargeOrder{
 		UserId:     userId,
 		ChargeId:   chargeConfig.Id,
@@ -90,14 +91,14 @@ func CreateStripOrder(userId, chargeId int) (string, string,error) {
 		Status:     StatusMap["create"],
 		Amount:     chargeConfig.Amount,
 		Ip:         helper.GetIp(),
-		UpdatedAt: helper.GetFormatTimeString(),
-		CreatedAt: helper.GetFormatTimeString(),
+		UpdatedAt:  helper.GetFormatTimeString(),
+		CreatedAt:  helper.GetFormatTimeString(),
 	}
 
 	//创建订单
 	err = DB.Model(&ChargeOrder{}).Create(&chargeOrder).Error
 	if err != nil {
-		return "","", err
+		return "", "", err
 	}
 	//创建价格
 	stripe.Key = config.StripePrivateKey
@@ -117,65 +118,65 @@ func CreateStripOrder(userId, chargeId int) (string, string,error) {
 	}
 	result, err := paymentlink.New(params)
 	if err != nil {
-		return "","", err
+		return "", "", err
 	}
-	return result.URL,appOrderId, nil
+	return result.URL, appOrderId, nil
 }
-func stripeChargeFail(charge *stripe.Charge)error{
-   return nil
+func stripeChargeFail(charge *stripe.Charge) error {
+	return nil
 }
-func stripeChargeDispute(){
+func stripeChargeDispute() {
 
 }
-func stripeChargeFraud(){
+func stripeChargeFraud() {
 
 }
-func stripeChargeRefund(charge *stripe.Charge)error{
+func stripeChargeRefund(charge *stripe.Charge) error {
 	var stripLock sync.Mutex
 	stripLock.Lock()
 	defer stripLock.Unlock()
-	if charge.Status == "succeeded"{
-//获取meta数据里的订单id
-		orderId:=charge.Metadata["appOrderId"]
-		userId :=charge.Metadata["userId"]
-		var chargeOrder ChargeOrder 
-		if err:=DB.Model(&ChargeOrder{}).Where("app_order_id = ? ",orderId).Where("user_id = ?",userId).First(&chargeOrder).Error;err!=nil{
+	if charge.Status == "succeeded" {
+		//获取meta数据里的订单id
+		orderId := charge.Metadata["appOrderId"]
+		userId := charge.Metadata["userId"]
+		var chargeOrder ChargeOrder
+		if err := DB.Model(&ChargeOrder{}).Where("app_order_id = ? ", orderId).Where("user_id = ?", userId).First(&chargeOrder).Error; err != nil {
 			return err
 		}
 		//如果已经支付成功直接返回
-		if chargeOrder.Status == StatusMap["refund"]{
+		if chargeOrder.Status == StatusMap["refund"] {
 			return nil
 		}
-		if err:=DB.Model(chargeOrder).Updates(ChargeOrder{Status:StatusMap["refund"]}).Error;err!=nil{
+		if err := DB.Model(chargeOrder).Updates(ChargeOrder{Status: StatusMap["refund"]}).Error; err != nil {
 			return err
 		}
-    }
+	}
 	return nil
 }
-func stripeChargeSuccess(charge *stripe.Charge) error{
+func stripeChargeSuccess(charge *stripe.Charge) error {
 	// fmt.Printf("%+v\n",charge)
 	// return nil
 	var stripLock sync.Mutex
 	stripLock.Lock()
 	defer stripLock.Unlock()
 	//获取meta数据里的订单id
-	if charge.Status == "succeeded"{
-		orderId:=charge.Metadata["appOrderId"]
-		userId :=charge.Metadata["userId"]
-		var chargeOrder ChargeOrder 
-		if err:=DB.Model(&ChargeOrder{}).Where("app_order_id = ? ",orderId).Where("user_id = ?",userId).First(&chargeOrder).Error;err!=nil{
+	if charge.Status == "succeeded" {
+		orderId := charge.Metadata["appOrderId"]
+		userId := charge.Metadata["userId"]
+		var chargeOrder ChargeOrder
+		if err := DB.Model(&ChargeOrder{}).Where("app_order_id = ? ", orderId).Where("user_id = ?", userId).First(&chargeOrder).Error; err != nil {
 			return err
 		}
 		//如果已经支付成功直接返回
-		if chargeOrder.Status == StatusMap["success"]{
+		if chargeOrder.Status == StatusMap["success"] {
 			return nil
 		}
-		if err:=DB.Transaction(func(tx *gorm.DB) error {
+		if err := DB.Transaction(func(tx *gorm.DB) error {
 			//更新订单
-			amount:=float64(charge.Amount/100)
-			orderCost:=float64(charge.ApplicationFeeAmount/100)
-			realAmount:=amount - orderCost
-			if err:=DB.Model(chargeOrder).Updates(ChargeOrder{Status:StatusMap["success"],RealAmount: realAmount,OrderCost: orderCost,OrderNo: charge.ID,Amount:  amount}).Error;err!=nil{
+			amount := float64(charge.Amount / 100)
+			orderCost := float64(charge.ApplicationFeeAmount / 100)
+			realAmount := amount - orderCost
+			if err := DB.Model(chargeOrder).Updates(ChargeOrder{Status: StatusMap["success"], RealAmount: realAmount, OrderCost: orderCost, OrderNo: charge.ID, Amount: amount}).Error; err != nil {
 				return err
 			}
 			//更新余额 待定手续费和用户组别的变更
@@ -185,7 +186,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error{
 			}
 			// 返回 nil 提交事务
 			return nil
-		});err!=nil{
+		}); err != nil {
 			return err
 		}
 		//支付成功处理一下其它
@@ -196,6 +197,9 @@ func stripeChargeSuccess(charge *stripe.Charge) error{
 func HandleStripeCallback(req *http.Request) error {
 	payload, err := io.ReadAll(req.Body)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("stripePayload:%+v\n", payload))
+		logger.SysLog(fmt.Sprintf("stripePayloaderr:%+v\n", err))
+		logger.SysLog(fmt.Sprintf("stripePayloadheader:%+v\n", req.Header.Get("Stripe-Signature")))
 		//fmt.Fprintf(os.Stderr, "Error reading request body: %v\n", err)
 		//w.WriteHeader(http.StatusServiceUnavailable)
 		return err
@@ -210,6 +214,7 @@ func HandleStripeCallback(req *http.Request) error {
 	signatureHeader := req.Header.Get("Stripe-Signature")
 	event, err = webhook.ConstructEvent(payload, signatureHeader, endpointSecret)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("eventerr:%+v\n", err))
 		return err
 	}
 	switch event.Type {
@@ -221,8 +226,8 @@ func HandleStripeCallback(req *http.Request) error {
 			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
 			return err
 		}
-       err=stripeChargeSuccess(&charge)
-	   if err != nil {
+		err = stripeChargeSuccess(&charge)
+		if err != nil {
 			return err
 		}
 	case "charge.refunded":
@@ -232,8 +237,8 @@ func HandleStripeCallback(req *http.Request) error {
 			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
 			return err
 		}
-       err=stripeChargeRefund(&charge)
-	   if err != nil {
+		err = stripeChargeRefund(&charge)
+		if err != nil {
 			return err
 		}
 	case "charge.failed":
@@ -243,8 +248,8 @@ func HandleStripeCallback(req *http.Request) error {
 			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
 			return err
 		}
-		err=stripeChargeFail(&charge)
-	   if err != nil {
+		err = stripeChargeFail(&charge)
+		if err != nil {
 			return err
 		}
 	default:
