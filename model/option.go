@@ -254,7 +254,7 @@ func updateOptionMap(key string, value string) (err error) {
 		config.StripePrivateKey = value
 	case "StripePublicKey":
 		config.StripePublicKey = value
-	case "endpointSecret":
+	case "StripeEndpointSecret":
 		config.StripeEndpointSecret = value
 	}
 	return err

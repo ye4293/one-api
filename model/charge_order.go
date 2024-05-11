@@ -194,6 +194,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 	}
 	return nil
 }
+
 func HandleStripeCallback(req *http.Request) error {
 	payload, err := io.ReadAll(req.Body)
 	logger.SysLog(fmt.Sprintf("stripePayload:%s\n", payload))
@@ -211,6 +212,7 @@ func HandleStripeCallback(req *http.Request) error {
 		return err
 	}
 	endpointSecret := config.StripeEndpointSecret
+	logger.SysLog(fmt.Sprintf("StripeEndpointSecret:%+v\n", endpointSecret))
 	signatureHeader := req.Header.Get("Stripe-Signature")
 	event, err = webhook.ConstructEvent(payload, signatureHeader, endpointSecret)
 	if err != nil {

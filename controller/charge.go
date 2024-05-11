@@ -61,6 +61,7 @@ func CreateChargeOrder(c *gin.Context) {
 		},
 	})
 }
+
 func StripeCallback(c *gin.Context) {
 	err := model.HandleStripeCallback(c.Request)
 	if err != nil {
@@ -70,6 +71,7 @@ func StripeCallback(c *gin.Context) {
 	}
 	c.String(http.StatusOK, "ok")
 }
+
 func GetUserChargeOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.Query("page"))
 	appOrderId := c.DefaultQuery("app_order_id", "")
