@@ -196,7 +196,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 }
 func HandleStripeCallback(req *http.Request) error {
 	payload, err := io.ReadAll(req.Body)
-	logger.SysLog(fmt.Sprintf("stripePayload:%+v\n", payload))
+	logger.SysLog(fmt.Sprintf("stripePayload:%s\n", payload))
 	logger.SysLog(fmt.Sprintf("stripePayloaderr:%+v\n", err))
 	logger.SysLog(fmt.Sprintf("stripePayloadheader:%+v\n", req.Header.Get("Stripe-Signature")))
 	if err != nil {
