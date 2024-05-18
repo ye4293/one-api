@@ -210,15 +210,19 @@ func UpdateMidjourneyTaskBulk() {
 				}
 				if task.Progress == "100%" && config.CfR2storeEnabled {
 					objectKey := task.MjId
+					// 为上传图片创建独立的 context，并设置更长的超时时间
+					uploadCtx, uploadCancel := context.WithTimeout(context.Background(), time.Minute*10)
+
 					imageData, err := DownloadImage(task.ImageUrl)
 					if err != nil {
 						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
 					}
-					r2Url, err := UploadToR2WithURL(ctx, imageData, config.CfBucketImageName, objectKey, config.CfImageAccessKey, config.CfImageSecretKey, config.CfImageEndpoint)
+					r2Url, err := UploadToR2WithURL(uploadCtx, imageData, config.CfBucketImageName, objectKey, config.CfImageAccessKey, config.CfImageSecretKey, config.CfImageEndpoint)
 					if err != nil {
 						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
 					}
 					task.StoreUrl = r2Url
+					uploadCancel() // 确保在每次上传完成后调用
 				}
 				err = task.Update()
 				if err != nil {
