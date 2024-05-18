@@ -57,9 +57,10 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 	s3Client := s3.NewFromConfig(cfg)
 
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucketName),
-		Key:    aws.String(objectKey),
-		Body:   bytes.NewReader(imageData),
+		Bucket:      aws.String(bucketName),
+		Key:         aws.String(objectKey),
+		Body:        bytes.NewReader(imageData),
+		ContentType: aws.String("image/png"),
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
