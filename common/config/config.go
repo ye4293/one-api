@@ -48,6 +48,18 @@ var StripeCallbackUrl = ""
 var StripePrivateKey = ""
 var StripePublicKey = ""
 var StripeEndpointSecret = ""
+
+var CfR2storeEnabled = true
+var CfBucketFileName = ""
+var CfFileAccessKey = ""
+var CfFileSecretKey = ""
+var CfFileEndpoint = ""
+
+var CfBucketImageName = ""
+var CfImageAccessKey = ""
+var CfImageSecretKey = ""
+var CfImageEndpoint = ""
+
 var EmailDomainRestrictionEnabled = false
 var EmailDomainWhitelist = []string{
 	"gmail.com",

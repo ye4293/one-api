@@ -87,4 +87,19 @@ func SetRelayRouter(router *gin.Engine) {
 		relayMjRouter.POST("/task/list-by-condition", controller.RelayMidjourney)
 		relayMjRouter.POST("/insight-face/swap", controller.RelayMidjourney)
 	}
+
+	relaySdRouter := router.Group("/v2beta")
+	relaySdRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		relaySdRouter.POST("/stable-image/generate/core", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
+		relaySdRouter.GET("/stable-image/upscale/creative/result/:id", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/control/structure", controller.RelaySd)
+	}
 }

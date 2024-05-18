@@ -56,29 +56,29 @@ func Path2RelayMode(path string) int {
 
 func Path2RelayModeMidjourney(path string) int {
 	relayMode := RelayModeUnknown
-	if strings.HasPrefix(path, "/mj/submit/action") {
+	if strings.HasSuffix(path, "/mj/submit/action") {
 		// midjourney plus
 		relayMode = RelayModeMidjourneyAction
-	} else if strings.HasPrefix(path, "/mj/submit/modal") {
+	} else if strings.HasSuffix(path, "/mj/submit/modal") {
 		// midjourney plus
 		relayMode = RelayModeMidjourneyModal
-	} else if strings.HasPrefix(path, "/mj/submit/shorten") {
+	} else if strings.HasSuffix(path, "/mj/submit/shorten") {
 		// midjourney plus
 		relayMode = RelayModeMidjourneyShorten
-	} else if strings.HasPrefix(path, "/mj/insight-face/swap") {
+	} else if strings.HasSuffix(path, "/mj/insight-face/swap") {
 		// midjourney plus
 		relayMode = RelayModeSwapFace
-	} else if strings.HasPrefix(path, "/mj/submit/imagine") {
+	} else if strings.HasSuffix(path, "/mj/submit/imagine") {
 		relayMode = RelayModeMidjourneyImagine
-	} else if strings.HasPrefix(path, "/mj/submit/blend") {
+	} else if strings.HasSuffix(path, "/mj/submit/blend") {
 		relayMode = RelayModeMidjourneyBlend
-	} else if strings.HasPrefix(path, "/mj/submit/describe") {
+	} else if strings.HasSuffix(path, "/mj/submit/describe") {
 		relayMode = RelayModeMidjourneyDescribe
-	} else if strings.HasPrefix(path, "/mj/notify") {
+	} else if strings.HasSuffix(path, "/mj/notify") {
 		relayMode = RelayModeMidjourneyNotify
-	} else if strings.HasPrefix(path, "/mj/submit/change") {
+	} else if strings.HasSuffix(path, "/mj/submit/change") {
 		relayMode = RelayModeMidjourneyChange
-	} else if strings.HasPrefix(path, "/mj/submit/simple-change") {
+	} else if strings.HasSuffix(path, "/mj/submit/simple-change") {
 		relayMode = RelayModeMidjourneyChange
 	} else if strings.HasSuffix(path, "/fetch") {
 		relayMode = RelayModeMidjourneyTaskFetch
@@ -86,6 +86,46 @@ func Path2RelayModeMidjourney(path string) int {
 		relayMode = RelayModeMidjourneyTaskImageSeed
 	} else if strings.HasSuffix(path, "/list-by-condition") {
 		relayMode = RelayModeMidjourneyTaskFetchByCondition
+	}
+	return relayMode
+}
+
+const (
+	RelayModeUnknown2 = iota
+	RelayModelGenerateCore
+	RelayModelGenerateSd3
+	RelayModeUpscaleCreative
+	RelayModeUpscaleCreativeResult
+	RelayModeEditInpaint
+	RelayModeEditOutpaint
+	RelayModeEditSR //Search and Replace 搜索和替换
+	RelayModeEditRB //Remove Background 删除背景
+	RelayModeControlSketch
+	RelayModeControlStructure
+)
+
+func Path2RelayModeSd(path string) int {
+	relayMode := RelayModeUnknown2
+	if strings.HasPrefix(path, "/v2beta/stable-image/generate/core") {
+		relayMode = RelayModelGenerateCore
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/sd3") {
+		relayMode = RelayModelGenerateSd3
+	} else if path == "/v2beta/stable-image/upscale/creative" {
+		relayMode = RelayModeUpscaleCreative
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/upscale/creative/result") {
+		relayMode = RelayModeUpscaleCreativeResult
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/inpaint") {
+		relayMode = RelayModeEditInpaint
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/outpaint") {
+		relayMode = RelayModeEditOutpaint
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/search-and-replace") {
+		relayMode = RelayModeEditSR
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/remove-background") {
+		relayMode = RelayModeEditRB
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/control/sketch") {
+		relayMode = RelayModeControlSketch
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/control/structure") {
+		relayMode = RelayModeControlStructure
 	}
 	return relayMode
 }

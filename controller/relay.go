@@ -148,7 +148,6 @@ func relayMidjourney(c *gin.Context, relayMode int) *midjourney.MidjourneyRespon
 	default:
 		err = controller.RelayMidjourneySubmit(c, relayMode)
 	}
-	logger.SysLog(fmt.Sprintf("err:%+v", err))
 	return err
 }
 
@@ -255,6 +254,10 @@ func RelayNotImplemented(c *gin.Context) {
 	c.JSON(http.StatusNotImplemented, gin.H{
 		"error": err,
 	})
+}
+
+func RelaySd(c *gin.Context) {
+	return
 }
 
 func RelayNotFound(c *gin.Context) {

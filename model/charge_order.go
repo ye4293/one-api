@@ -46,6 +46,8 @@ var StatusMap = map[string]int{
 	"fraud":   7, //欺诈
 }
 
+var stripLock sync.Mutex
+
 func GetUserChargeOrdersAndCount(conditions map[string]interface{}, page int, pageSize int) (chargeOrders []*ChargeOrder, total int64, err error) {
 	var chargeOrder ChargeOrder
 	for k, v := range conditions {
@@ -131,6 +133,7 @@ func stripeChargeDispute() {
 func stripeChargeFraud() {
 
 }
+
 func stripeChargeRefund(charge *stripe.Charge) error {
 	var stripLock sync.Mutex
 	stripLock.Lock()
@@ -156,9 +159,9 @@ func stripeChargeRefund(charge *stripe.Charge) error {
 func stripeChargeSuccess(charge *stripe.Charge) error {
 	// fmt.Printf("%+v\n",charge)
 	// return nil
-	var stripLock sync.Mutex
 	stripLock.Lock()
 	defer stripLock.Unlock()
+
 	//获取meta数据里的订单id
 	if charge.Status == "succeeded" {
 		orderId := charge.Metadata["appOrderId"]

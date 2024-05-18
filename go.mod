@@ -15,6 +15,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pkoukk/tiktoken-go v0.1.6
 	github.com/stretchr/testify v1.8.4
+	github.com/stripe/stripe-go/v78 v78.5.0
 	golang.org/x/crypto v0.21.0
 	golang.org/x/image v0.15.0
 	gorm.io/driver/mysql v1.5.4
@@ -26,20 +27,33 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.2 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.5 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.5 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.3 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.7 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.7 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.0 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.11.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.3.9 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.11.9 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.17.7 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.20.8 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.24.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.28.9 // indirect
 	github.com/aws/smithy-go v1.20.2 // indirect
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
-	github.com/stripe/stripe-go/v78 v78.5.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.26.1
-	github.com/aws/aws-sdk-go-v2/credentials v1.17.11
+	github.com/aws/aws-sdk-go v1.53.5
+	github.com/aws/aws-sdk-go-v2 v1.27.0
+	github.com/aws/aws-sdk-go-v2/config v1.27.15
+	github.com/aws/aws-sdk-go-v2/credentials v1.17.15
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.7.4
 	github.com/bytedance/sonic v1.11.3 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
@@ -73,7 +87,6 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rs/cors/wrapper/gin v0.0.0-20240228164225-8d33ca4794ea
-	github.com/stripe/stripe-go/v76 v76.25.0
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	golang.org/x/arch v0.7.0 // indirect

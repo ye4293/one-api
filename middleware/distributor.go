@@ -78,7 +78,10 @@ func Distribute() func(c *gin.Context) {
 					modelRequest.Model = midjourneyModel
 				}
 				c.Set("relay_mode", relayMode)
-				logger.SysLog(fmt.Sprintf("Use Mj model: %+v\n", relayMode))
+
+			} else if strings.HasPrefix(c.Request.URL.Path, "/v2beta") {
+				relayMode := relayconstant.Path2RelayModeSd((c.Request.URL.Path))
+				c.Set("relay_mode", relayMode)
 			} else {
 				err = common.UnmarshalBodyReusable(c, &modelRequest)
 				if err != nil {

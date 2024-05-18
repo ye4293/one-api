@@ -208,6 +208,18 @@ func UpdateMidjourneyTaskBulk() {
 						}
 					}
 				}
+				if task.Progress == "100%" && config.CfR2storeEnabled {
+					objectKey := task.MjId
+					imageData, err := DownloadImage(task.ImageUrl)
+					if err != nil {
+						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+					}
+					r2Url, err := UploadToR2WithURL(ctx, imageData, config.CfBucketImageName, objectKey, config.CfImageAccessKey, config.CfImageSecretKey, config.CfImageEndpoint)
+					if err != nil {
+						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+					}
+					task.StoreUrl = r2Url
+				}
 				err = task.Update()
 				if err != nil {
 					logger.Error(ctx, "UpdateMidjourneyTask task error: "+err.Error())

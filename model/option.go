@@ -86,6 +86,17 @@ func InitOptionMap() {
 	config.OptionMap["StripePrivateKey"] = ""
 	config.OptionMap["StripePublicKey"] = ""
 	config.OptionMap["StripeEndpointKey"] = ""
+
+	config.OptionMap["CfR2storeEnabled"] = strconv.FormatBool(config.CfR2storeEnabled)
+	config.OptionMap["CfBucketFileName"] = ""
+	config.OptionMap["CfFileAccessKey"] = ""
+	config.OptionMap["CfFileSecretKey"] = ""
+	config.OptionMap["CfFileEndpoint"] = ""
+
+	config.OptionMap["CfBucketImageName"] = ""
+	config.OptionMap["CfImageAccessKey"] = ""
+	config.OptionMap["CfImageSecretKey"] = ""
+	config.OptionMap["CfImageEndpoint"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -168,6 +179,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.CryptPaymentEnabled = boolValue
 		case "StripePaymentEnabled":
 			config.StripePaymentEnabled = boolValue
+		case "CfR2storeEnabled":
+			config.CfR2storeEnabled = boolValue
 		}
 	}
 	switch key {
@@ -256,6 +269,22 @@ func updateOptionMap(key string, value string) (err error) {
 		config.StripePublicKey = value
 	case "StripeEndpointSecret":
 		config.StripeEndpointSecret = value
+	case "CfBucketFileName":
+		config.CfBucketFileName = value
+	case "CfFileAccessKey":
+		config.CfFileAccessKey = value
+	case "CfFileSecretKey":
+		config.CfFileSecretKey = value
+	case "CfFileEndpoint":
+		config.CfFileEndpoint = value
+	case "CfBucketImageName":
+		config.CfBucketImageName = value
+	case "CfImageAccessKey":
+		config.CfImageAccessKey = value
+	case "CfImageSecretKey":
+		config.CfImageSecretKey = value
+	case "CfImageEndpoint":
+		config.CfImageEndpoint = value
 	}
 	return err
 }
