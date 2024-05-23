@@ -125,7 +125,7 @@ func UpdateMidjourneyTaskBulk() {
 			})
 			req, err := http.NewRequest("POST", requestUrl, bytes.NewBuffer(body))
 			if err != nil {
-				logger.Error(ctx, fmt.Sprintf("Get Task error: %v", err))
+				logger.Error(ctx, fmt.Sprintf("channel: %d Get Task error: %v", channelId, err))
 				continue
 			}
 			// 设置超时时间
@@ -137,11 +137,11 @@ func UpdateMidjourneyTaskBulk() {
 			req.Header.Set("mj-api-secret", midjourneyChannel.Key)
 			resp, err := util.GetHttpClient().Do(req)
 			if err != nil {
-				logger.Error(ctx, fmt.Sprintf("Get Task Do req error: %v", err))
+				logger.Error(ctx, fmt.Sprintf("channel: %d Get Task Do req error: %v", channelId, err))
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {
-				logger.Error(ctx, fmt.Sprintf("Get Task status code: %d", resp.StatusCode))
+				logger.Error(ctx, fmt.Sprintf("channel: %d Get Task status code: %d", channelId, resp.StatusCode))
 				continue
 			}
 			responseBody, err := io.ReadAll(resp.Body)
