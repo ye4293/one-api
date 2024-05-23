@@ -50,10 +50,10 @@ var StripePublicKey = ""
 var StripeEndpointSecret = ""
 
 var CfR2storeEnabled = true
-var CfBucketFileName = ""
-var CfFileAccessKey = ""
-var CfFileSecretKey = ""
-var CfFileEndpoint = ""
+var CfBucketFileName = "ezlinkai-file"
+var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
+var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
+var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
 
 var CfBucketImageName = ""
 var CfImageAccessKey = ""

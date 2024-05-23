@@ -49,6 +49,7 @@ func Relay(c *gin.Context) {
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
 	}
 	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
 	bizErr := relayHelper(c, relayMode)
 	requestId := c.GetString(logger.RequestIdKey) // 确保在函数开始就获取requestId
 
@@ -60,7 +61,7 @@ func Relay(c *gin.Context) {
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
-	go processChannelRelayError(ctx, channelId, channelName, bizErr)
+	go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode) {
@@ -90,7 +91,7 @@ func Relay(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 		lastFailedChannelId = channelId
 		channelName = c.GetString("channel_name")
-		go processChannelRelayError(ctx, channelId, channelName, bizErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 	}
 
 	// 如果所有尝试都失败，不处理耗时记录
@@ -124,8 +125,8 @@ func shouldRetry(c *gin.Context, statusCode int) bool {
 	return true
 }
 
-func processChannelRelayError(ctx context.Context, channelId int, channelName string, err *model.ErrorWithStatusCode) {
-	logger.Errorf(ctx, "relay error (channel #%d): %s", channelId, err.Message)
+func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
+	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Message)
 	// https://platform.openai.com/docs/guides/error-codes/api-errors
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 		monitor.DisableChannel(channelId, channelName, err.Message)
@@ -187,9 +188,6 @@ func RelayMidjourney(c *gin.Context) {
 			requestBody, err := common.GetRequestBody(c)
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 			MjErr := relayMidjourney(c, relayMode)
-
-			channelId = c.GetInt("channel_id")
-			channelName = c.GetString("channel_name")
 			ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
 		} else {
 			requestBody, err := common.GetRequestBody(c)
