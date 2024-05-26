@@ -83,78 +83,36 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 	return fmt.Sprintf("%s/%s", Imager2Url, objectKey), nil
 }
 
-type UploadPurpose struct {
-	Purpose string `json:"purpose"`
-}
-
-func UploadFile(c *gin.Context) {
-	var uploadPurpose UploadPurpose
-	if err := c.ShouldBind(&uploadPurpose); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"message": err.Error(),
-			"success": false,
-		})
-		return
-	}
-	userId := c.GetInt("id")
-	// 设置请求上下文超时为 30 秒
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-	defer cancel()
-	createTime := time.Now()
-	file, header, err := c.Request.FormFile("file")
+func DeleteFileR2(ctx context.Context, filename string) error {
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     commonConfig.CfFileAccessKey,
+				SecretAccessKey: commonConfig.CfFileSecretKey,
+			}, nil
+		}))),
+		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: commonConfig.CfFileEndpoint}, nil
+			}),
+		),
+	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Error retrieving the file",
-			"success": false,
-		})
-		return
-	}
-	defer file.Close()
-
-	// UserUesdBytes, err := model.SumBytesByUserId(userId)
-	// if int64(header.Size)+UserUesdBytes > 300*1024*1024 {
-
-	// }
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error retrieving the file"})
-		return
+		return fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	fileStoreUrl, err := UploadFileR2WithUrl(ctx, file, strconv.Itoa(userId)+header.Filename, header.Header.Get("Content-Type"))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Failed to upload file to R2",
-			"success": false,
-		})
-		return
-	}
-	finishTime := time.Now()
+	client := s3.NewFromConfig(cfg)
 
-	newFile := model.File{
-		UserId:     userId,
-		CreatTime:  createTime.Unix(),
-		FinishTime: finishTime.Unix(),
-		FileName:   header.Filename,
-		StoreUrl:   fileStoreUrl,
-		Bytes:      header.Size,
-		Purpose:    uploadPurpose.Purpose,
-	}
-	err = newFile.Insert()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-	//上传文件的操作是否扣费待定和上传文件的限制
-	c.JSON(http.StatusOK, gin.H{
-		"message": "File uploaded successfully",
-		"success": true,
-		"file":    newFile,
+	_, err = client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(commonConfig.CfBucketFileName),
+		Key:    aws.String(filename),
 	})
-	return
+	if err != nil {
+		return fmt.Errorf("failed to delete file from R2: %w", err)
+	}
+
+	return nil
 }
 
 func UploadFileR2WithUrl(ctx context.Context, file multipart.File, filename, contentType string) (string, error) {
@@ -201,34 +159,149 @@ func UploadFileR2WithUrl(ctx context.Context, file multipart.File, filename, con
 	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
 }
 
-func DeleteFileR2(ctx context.Context, filename string) error {
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-			return aws.Credentials{
-				AccessKeyID:     commonConfig.CfFileAccessKey,
-				SecretAccessKey: commonConfig.CfFileSecretKey,
-			}, nil
-		}))),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{URL: commonConfig.CfFileEndpoint}, nil
-			}),
-		),
-	)
-	if err != nil {
-		return fmt.Errorf("unable to load SDK config: %w", err)
+func CheckUserUsage(group string, UserUsedBytes int64) bool {
+	levelSizeMap := map[string]int64{
+		"Lv1": 100 * 1024 * 1024,
+		"Lv2": 300 * 1024 * 1024,
+		"Lv3": 500 * 1024 * 1024,
+		"Lv4": 1 * 1024 * 1024 * 1024,
+		"Lv5": 2 * 1024 * 1024 * 1024,
 	}
 
-	client := s3.NewFromConfig(cfg)
+	limit, exists := levelSizeMap[group]
+	if !exists {
+		// 如果传入的group值不存在于levelSizeMap中，返回false
+		return false
+	}
 
-	_, err = client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
-		Bucket: aws.String(commonConfig.CfBucketFileName),
-		Key:    aws.String(filename),
+	if UserUsedBytes > limit {
+		// 如果用户使用的字节数超过了对应的限制，返回false
+		return false
+	}
+
+	// 如果用户使用的字节数没有超过限制，返回true
+	return true
+}
+
+type UploadPurpose struct {
+	Purpose string `json:"purpose"`
+}
+
+func UploadFile(c *gin.Context) {
+	var uploadPurpose UploadPurpose
+	if err := c.ShouldBind(&uploadPurpose); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+			"success": false,
+		})
+		return
+	}
+	userId := c.GetInt("id")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+	defer cancel()
+	createTime := time.Now()
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Error retrieving the file",
+			"success": false,
+		})
+		return
+	}
+	defer file.Close()
+
+	group, err := model.GetUserGroup(userId)
+	if err != nil {
+		return
+	}
+	UserUsedBytes, err := model.SumBytesByUserId(userId)
+	if err != nil {
+		return
+	}
+	if !CheckUserUsage(group, UserUsedBytes+header.Size) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "The total size of uploaded files exceeds your level limit",
+			"success": false,
+		})
+		return
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error retrieving the file"})
+		return
+	}
+
+	fileStoreUrl, err := UploadFileR2WithUrl(ctx, file, strconv.Itoa(userId)+header.Filename, header.Header.Get("Content-Type"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "Failed to upload file to R2",
+			"success": false,
+		})
+		return
+	}
+	finishTime := time.Now()
+
+	newFile := model.File{
+		UserId:     userId,
+		CreatTime:  createTime.Unix(),
+		FinishTime: finishTime.Unix(),
+		FileName:   header.Filename,
+		StoreUrl:   fileStoreUrl,
+		Bytes:      header.Size,
+		Purpose:    uploadPurpose.Purpose,
+	}
+	err = newFile.Insert()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "File uploaded successfully",
+		"success": true,
+		"file":    newFile,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to delete file from R2: %w", err)
+	return
+}
+
+func DeletiFile(c *gin.Context) {
+	type DeleteFile struct {
+		Filename string `json:"filename"`
 	}
 
-	return nil
+	var filename DeleteFile
+	if err := c.ShouldBind(&filename); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+			"success": false,
+		})
+		return
+	}
+	userId := c.GetInt("id")
+	filename2 := strconv.Itoa(userId) + filename.Filename
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 1*time.Minute)
+	defer cancel()
+	err := DeleteFileR2(ctx, filename2)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+			"success": false,
+		})
+		return
+	}
+	err = model.DeleteFileByFilename(filename.Filename)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": err.Error(),
+			"success": false,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "File deleted successfully",
+		"success": true,
+	})
+	return
 }

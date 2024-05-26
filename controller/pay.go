@@ -13,7 +13,7 @@ func GetQrcode(c *gin.Context) {
 	if config.AddressOut == "" || config.CryptCallbackUrl == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "无法获取crypt支付，请先填入 服务器回调地址 和钱包收款地址！",
+			"message": "Unable to obtain crypt payment, please fill in the server callback address and wallet payment address first!",
 		})
 		return
 	}
@@ -55,6 +55,10 @@ func CryptCallback(c *gin.Context) {
 	if err != nil {
 		logger.SysLog("failed to handle callback")
 		c.String(http.StatusUnauthorized, err.Error())
+		return
+	}
+	err = UserLevelUpgrade(userId)
+	if err != nil {
 		return
 	}
 

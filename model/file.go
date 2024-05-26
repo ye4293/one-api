@@ -1,6 +1,11 @@
 package model
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"gorm.io/gorm"
+)
 
 type File struct {
 	Id         int64  `json:"id"`
@@ -25,6 +30,24 @@ func SumBytesByUserId(userId int) (int64, error) {
 	}
 
 	return totalBytes, nil
+}
+
+func DeleteFileByFilename(filename string) error {
+	var file File
+	err := DB.Where("file_name = ?", filename).First(&file).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("file with filename '%s' not found", filename)
+		}
+		return err
+	}
+
+	err = file.Delete()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (file *File) Insert() error {

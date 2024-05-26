@@ -11,6 +11,38 @@ import (
 	"github.com/songquanpeng/one-api/model"
 )
 
+func UserLevelUpgrade(userId int) error {
+	user, err := model.GetUserById(userId, true)
+	if err != nil {
+		return err
+	}
+
+	levels := []string{"Lv1", "Lv2", "Lv3", "Lv4", "Lv5"}
+	levelMap := map[string]int64{
+		"Lv1": 0,
+		"Lv2": 5 * 500000,
+		"Lv3": 50 * 500000,
+		"Lv4": 100 * 500000,
+		"Lv5": 250 * 500000,
+	}
+
+	totalQuota := user.Quota + user.UsedQuota
+
+	for i := 0; i < len(levels)-1; i++ {
+		currentLevel := levels[i]
+		nextLevel := levels[i+1]
+
+		if user.Group == currentLevel &&
+			totalQuota > levelMap[currentLevel] &&
+			totalQuota <= levelMap[nextLevel] {
+			user.Group = nextLevel
+			user.Update(false)
+			break
+		}
+	}
+	return nil
+}
+
 func GetChargeConfigs(c *gin.Context) {
 	chargeConfigs, err := model.GetChargeConfigs()
 	if err != nil {
@@ -69,6 +101,12 @@ func StripeCallback(c *gin.Context) {
 		c.String(http.StatusBadRequest, "fail")
 		return
 	}
+	userId := c.GetInt("id")
+	err = UserLevelUpgrade(userId)
+	if err != nil {
+		return
+	}
+
 	c.String(http.StatusOK, "ok")
 }
 

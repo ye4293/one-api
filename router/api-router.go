@@ -147,4 +147,10 @@ func SetApiRouter(router *gin.Engine) {
 	chargeRoute.POST("/create_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CreateChargeOrder)
 	chargeRoute.GET("/get_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetUserChargeOrders)
 	chargeRoute.POST("/stripe_callback", middleware.GlobalWebRateLimit(), controller.StripeCallback)
+
+	fileRoute := apiRouter.Group("/files")
+	{
+		fileRoute.POST("/", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.UploadFile)
+		fileRoute.DELETE("/", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.DeletiFile)
+	}
 }

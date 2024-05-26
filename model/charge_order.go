@@ -106,7 +106,7 @@ func CreateStripOrder(userId, chargeId int) (string, string, error) {
 	stripe.Key = config.StripePrivateKey
 	params := &stripe.PaymentLinkParams{
 		LineItems: []*stripe.PaymentLinkLineItemParams{
-			&stripe.PaymentLinkLineItemParams{
+			{
 				Price:    stripe.String(chargeConfig.Price),
 				Quantity: stripe.Int64(1),
 			},
@@ -117,7 +117,13 @@ func CreateStripOrder(userId, chargeId int) (string, string, error) {
 				"appOrderId": appOrderId,
 			},
 		},
+		Restrictions: &stripe.PaymentLinkRestrictionsParams{
+			CompletedSessions: &stripe.PaymentLinkRestrictionsCompletedSessionsParams{
+				Limit: stripe.Int64(1),
+			},
+		},
 	}
+
 	result, err := paymentlink.New(params)
 	if err != nil {
 		return "", "", err
