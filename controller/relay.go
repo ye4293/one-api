@@ -101,7 +101,7 @@ func Relay(c *gin.Context) {
 		}
 		bizErr.Error.Message = helper.MessageWithRequestId(bizErr.Error.Message, requestId)
 		c.JSON(bizErr.StatusCode, gin.H{
-			"error": bizErr.Error,
+			"error": util.ProcessString(bizErr.Error.Message),
 		})
 	}
 }
@@ -205,7 +205,7 @@ func RelayMidjourney(c *gin.Context) {
 			statusCode = http.StatusTooManyRequests
 		}
 		c.JSON(statusCode, gin.H{
-			"description": fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result),
+			"description": util.ProcessString(fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result)),
 			"type":        "upstream_error",
 			"code":        MjErr.Response.Code,
 		})

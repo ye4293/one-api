@@ -33,6 +33,7 @@ type ChargeOrder struct {
 	UpdatedAt  string  `json:"updated_at"`
 	CreatedAt  string  `json:"created_at"`
 }
+
 type OrderInfo struct {
 	ChargeUrl string
 }
@@ -99,6 +100,21 @@ func CreateStripOrder(userId, chargeId int) (string, string, error) {
 
 	//创建订单
 	err = DB.Model(&ChargeOrder{}).Create(&chargeOrder).Error
+	if err != nil {
+		return "", "", err
+	}
+
+	bill := Bill{
+		Username:  GetUsernameById(userId),
+		UserId:    userId,
+		Type:      "Credits",
+		UpdatedAt: helper.GetTimestamp(),
+		CreatedAt: helper.GetTimestamp(),
+		Amount:    chargeConfig.Amount,
+		Status:    StatusMap["create"],
+		SourceId:  appOrderId,
+	}
+	err = DB.Model(&Bill{}).Create(&bill).Error
 	if err != nil {
 		return "", "", err
 	}
@@ -173,6 +189,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 		orderId := charge.Metadata["appOrderId"]
 		userId := charge.Metadata["userId"]
 		var chargeOrder ChargeOrder
+		var bill Bill
 		if err := DB.Model(&ChargeOrder{}).Where("app_order_id = ? ", orderId).Where("user_id = ?", userId).First(&chargeOrder).Error; err != nil {
 			return err
 		}
@@ -185,7 +202,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 			amount := float64(charge.Amount / 100)
 			orderCost := float64(charge.ApplicationFeeAmount / 100)
 			realAmount := amount - orderCost
-			if err := DB.Model(chargeOrder).Updates(ChargeOrder{Status: StatusMap["success"], RealAmount: realAmount, OrderCost: orderCost, OrderNo: charge.ID, Amount: amount}).Error; err != nil {
+			if err := DB.Model(&chargeOrder).Updates(ChargeOrder{Status: StatusMap["success"], RealAmount: realAmount, OrderCost: orderCost, OrderNo: charge.ID, Amount: amount}).Error; err != nil {
 				return err
 			}
 			//更新余额 待定手续费和用户组别的变更
@@ -193,6 +210,14 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 			if err != nil {
 				return err
 			}
+
+			if err := DB.Model(&Bill{}).Where("source_id = ?", orderId).First(&bill).Error; err != nil {
+				return err
+			}
+			if err := DB.Model(&bill).Updates(Bill{Status: StatusMap["success"]}).Error; err != nil {
+				return err
+			}
+
 			// 返回 nil 提交事务
 			return nil
 		}); err != nil {

@@ -119,8 +119,6 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			groupRoute.GET("/", controller.GetGroups)
 		}
-		menuRoute := apiRouter.Group("/menus")
-		menuRoute.GET("/", controller.Getmenus)
 	}
 	cryptoaiRoute := apiRouter.Group("/")
 	// cryptoaiRoute.GET("/pay/crypt/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)

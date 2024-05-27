@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -185,4 +187,40 @@ func GetAzureAPIVersion(c *gin.Context) string {
 		apiVersion = c.GetString(common.ConfigKeyAPIVersion)
 	}
 	return apiVersion
+}
+
+func ProcessString(input string) string {
+	// 使用正则表达式匹配域名和IP
+	re := regexp.MustCompile(`(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})(:[0-9]+)?`)
+
+	// 替换函数
+	replacer := func(match string) string {
+		// 去除协议部分
+		if strings.HasPrefix(match, "http://") || strings.HasPrefix(match, "https://") {
+			match = match[strings.Index(match, "://")+3:]
+		}
+
+		// 去除可能存在的端口号
+		parts := strings.Split(match, ":")
+		host := parts[0]
+
+		// 判断是域名还是IP
+		if ip := net.ParseIP(host); ip != nil {
+			// 如果是IP,替换为<host>
+			return "<host>"
+		} else {
+			// 如果是域名,移除域名部分,保留路径
+			pathIndex := strings.Index(match, "/")
+			if pathIndex != -1 {
+				return match[pathIndex:]
+			} else {
+				return ""
+			}
+		}
+	}
+
+	// 替换字符串中的域名和IP
+	result := re.ReplaceAllStringFunc(input, replacer)
+
+	return result
 }

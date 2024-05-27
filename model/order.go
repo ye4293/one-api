@@ -64,6 +64,19 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 					}).Error; err != nil {
 						return err
 					}
+
+					if err = DB.Create(&Bill{
+						Username:  username,
+						UserId:    response.UserId,
+						Type:      "Crypto",
+						CreatedAt: helper.GetTimestamp(),
+						Amount:    response.ValueCoin,
+						SourceId:  response.Uuid,
+						Status:    status,
+					}).Error; err != nil {
+						return err
+					}
+
 					//更新余额 待定手续费和用户组别的变更
 					addAmount := response.ValueCoin
 					err = IncreaseUserQuota(response.UserId, int64(addAmount*500000))
@@ -93,10 +106,18 @@ func CreateOrUpdateOrder(response CryptCallbackResponse, username string) error 
 			if err != nil {
 				return err
 			}
+			err = UpdateBill(order.Uuid, Bill{
+				Status:    status,
+				UpdatedAt: helper.GetTimestamp(),
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
+
 func AfterChargeSuccess(userId int, addAmount float64) {
 
 	//send email and back message
