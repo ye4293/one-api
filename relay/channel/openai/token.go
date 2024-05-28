@@ -36,17 +36,16 @@ func InitTokenEncoders() {
 	for model := range common.ModelRatio {
 		if strings.HasPrefix(model, "gpt-3.5") {
 			tokenEncoderMap[model] = gpt35TokenEncoder
-		} else if strings.HasPrefix(model, "gpt-4") {
-			tokenEncoderMap[model] = gpt4TokenEncoder
 		} else if strings.HasPrefix(model, "gpt-4o") {
 			tokenEncoderMap[model] = gpt4oTokenEncoder
+		} else if strings.HasPrefix(model, "gpt-4") {
+			tokenEncoderMap[model] = gpt4TokenEncoder
 		} else {
 			tokenEncoderMap[model] = nil
 		}
 	}
 	logger.SysLog("token encoders initialized")
 }
-
 func getTokenEncoder(model string) *tiktoken.Tiktoken {
 	tokenEncoder, ok := tokenEncoderMap[model]
 	if ok && tokenEncoder != nil {

@@ -14,7 +14,7 @@ require (
 	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
-	github.com/pkoukk/tiktoken-go v0.1.6
+	github.com/pkoukk/tiktoken-go v0.1.7
 	github.com/stretchr/testify v1.8.4
 	github.com/stripe/stripe-go/v78 v78.5.0
 	golang.org/x/crypto v0.21.0
