@@ -448,12 +448,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		}
 		midjRequest.Prompt = originTask.Prompt
 
-		//if channelType == common.ChannelTypeMidjourneyPlus {
-		//	// plus
-		//} else {
-		//	// 普通版渠道
-		//
-		//}
 	}
 
 	if midjRequest.Action == common.MjActionInPaint || midjRequest.Action == common.MjActionCustomZoom {
@@ -471,6 +465,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 	var MidjourneyType string
 	var modelPrice float64
+	var defaultPrice float64
 	//对于价格的验证，后续做改进
 	modelName := midjourney.CoverActionToModelName(midjRequest.Action)
 	if modelName == "mj_imagine" || modelName == "mj_shorten" || modelName == "mj_modal" {
@@ -487,16 +482,18 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 			modelPrice = 0.036 // 默认价格
 		}
 	} else {
-		modelPrice := common.GetModelPrice(modelName, true)
+		modelPrice = common.GetModelPrice(modelName, true)
 		// 如果没有配置价格，则使用默认价格
 		if modelPrice == -1 {
-			defaultPrice, ok := common.DefaultModelPrice[modelName]
-			if !ok {
-				modelPrice = 0.036
-			} else {
+			var ok bool
+			defaultPrice, ok = common.DefaultModelPrice[modelName]
+			if ok {
 				modelPrice = defaultPrice
+			} else {
+				modelPrice = 0.036
 			}
 		}
+
 	}
 	ctx := c.Request.Context()
 	groupRatio := common.GetGroupRatio(group)
@@ -534,6 +531,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	midjResponse := &midjResponseWithStatus.Response
 
 	defer func(ctx context.Context) {
+		logger.SysLog(fmt.Sprintf("consumeQuota: %+v StatusCode: %d", consumeQuota, midjResponseWithStatus.StatusCode))
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {

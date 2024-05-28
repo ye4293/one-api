@@ -190,7 +190,9 @@ func RelayMidjourney(c *gin.Context) {
 			}
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 			MjErr := relayMidjourney(c, relayMode)
-			logger.SysLog(fmt.Sprintf("channelId: %d channelname: %s Mjerr: %+v", channelId, channelName, MjErr))
+			if MjErr == nil {
+				return
+			}
 			ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
 		} else {
 			requestBody, err := common.GetRequestBody(c)
@@ -199,6 +201,9 @@ func RelayMidjourney(c *gin.Context) {
 			}
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 			MjErr = relayMidjourney(c, relayMode)
+			if MjErr == nil {
+				return
+			}
 			logger.SysLog(fmt.Sprintf("relayMode:%+v;retry:%d\n", relayMode, i))
 		}
 	}
