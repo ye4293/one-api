@@ -3,14 +3,15 @@ package openai
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strings"
+
 	"github.com/pkoukk/tiktoken-go"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/model"
-	"math"
-	"strings"
 )
 
 // tokenEncoderMap won't grow after initialization
@@ -24,6 +25,10 @@ func InitTokenEncoders() {
 		logger.FatalLog(fmt.Sprintf("failed to get gpt-3.5-turbo token encoder: %s", err.Error()))
 	}
 	defaultTokenEncoder = gpt35TokenEncoder
+	gpt4oTokenEncoder, err := tiktoken.EncodingForModel("gpt-4o")
+	if err != nil {
+		logger.FatalLog(fmt.Sprintf("failed to get gpt-4o token encoder: %s", err.Error()))
+	}
 	gpt4TokenEncoder, err := tiktoken.EncodingForModel("gpt-4")
 	if err != nil {
 		logger.FatalLog(fmt.Sprintf("failed to get gpt-4 token encoder: %s", err.Error()))
@@ -33,6 +38,8 @@ func InitTokenEncoders() {
 			tokenEncoderMap[model] = gpt35TokenEncoder
 		} else if strings.HasPrefix(model, "gpt-4") {
 			tokenEncoderMap[model] = gpt4TokenEncoder
+		} else if strings.HasPrefix(model, "gpt-4o") {
+			tokenEncoderMap[model] = gpt4oTokenEncoder
 		} else {
 			tokenEncoderMap[model] = nil
 		}
