@@ -504,6 +504,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	groupRatio := common.GetGroupRatio(group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
+	logger.SysLog(fmt.Sprintf("erruserQuota1:%+v\n", err))
 	if err != nil {
 		return &midjourney.MidjourneyResponseWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -530,17 +531,15 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	}
 
 	midjResponseWithStatus, responseBody, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
+	logger.SysLog(fmt.Sprintf("erruserQuota2:%+v\n", err))
 	if err != nil {
 		return midjResponseWithStatus
 	}
 	midjResponse := &midjResponseWithStatus.Response
 
 	defer func(ctx context.Context) {
-		logger.SysLog(fmt.Sprintf("consumeQuota: %+v StatusCode: %d", consumeQuota, midjResponseWithStatus.StatusCode))
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
 			referer := c.Request.Header.Get("HTTP-Referer")
-
-			// 获取X-Title header
 			title := c.Request.Header.Get("X-Title")
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
