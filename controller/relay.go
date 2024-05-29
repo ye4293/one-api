@@ -185,7 +185,7 @@ func RelayMidjourney(c *gin.Context) {
 			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 			middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 			requestBody, err := common.GetRequestBody(c)
-			if err == nil {
+			if err != nil {
 				return
 			}
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
