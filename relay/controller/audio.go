@@ -220,10 +220,14 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	succeed = true
 	quotaDelta := quota - preConsumedQuota
+	referer := c.Request.Header.Get("HTTP-Referer")
+
+	// 获取X-Title header
+	title := c.Request.Header.Get("X-Title")
 	defer func(ctx context.Context) {
 		rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 		duration := math.Round(rowDuration*1000) / 1000
-		go util.PostConsumeQuota(ctx, tokenId, quotaDelta, quota, userId, channelId, modelRatio, groupRatio, audioModel, tokenName, duration)
+		go util.PostConsumeQuota(ctx, tokenId, quotaDelta, quota, userId, channelId, modelRatio, groupRatio, audioModel, tokenName, duration, title, referer)
 	}(c.Request.Context())
 
 	for k, v := range resp.Header {

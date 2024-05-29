@@ -297,16 +297,16 @@ var DefaultModelPrice = map[string]float64{
 	"mj_reroll":         0.036,
 	"mj_blend":          0.036,
 	"mj_modal":          0.036,
-	"mj_zoom":           0.036,
-	"mj_shorten":        0.036,
+	"mj_zoom":           0.018,
+	"mj_shorten":        0.018,
 	"mj_high_variation": 0.036,
 	"mj_low_variation":  0.036,
 	"mj_pan":            0.036,
-	"mj_inpaint":        0,
-	"mj_custom_zoom":    0,
-	"mj_describe":       0.036,
-	"mj_upscale":        0.036,
-	"swap_face":         0.036,
+	"mj_inpaint":        0.036,
+	"mj_custom_zoom":    0.036,
+	"mj_describe":       0.018,
+	"mj_upscale":        0.018,
+	"swap_face":         0.018,
 }
 
 //后续进行修正

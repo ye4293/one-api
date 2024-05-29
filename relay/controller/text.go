@@ -108,7 +108,13 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
+
+	referer := c.Request.Header.Get("HTTP-Referer")
+
+	// 获取X-Title header
+	title := c.Request.Header.Get("X-Title")
+
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, userModelTypeRatio, duration)
+	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, userModelTypeRatio, duration, title, referer)
 	return nil
 }

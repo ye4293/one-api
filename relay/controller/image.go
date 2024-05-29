@@ -134,11 +134,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logger.SysError("error update user quota cache: " + err.Error())
 		}
 		if quota != 0 {
+			referer := c.Request.Header.Get("HTTP-Referer")
+
+			// 获取X-Title header
+			title := c.Request.Header.Get("X-Title")
+
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f 用户模型倍率 %.2f", modelRatio, groupRatio, userModelTypeRatio)
-			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration)
+			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 			channelId := c.GetInt("channel_id")
 			model.UpdateChannelUsedQuota(channelId, quota)

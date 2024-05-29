@@ -178,6 +178,11 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode 
 	}
 	defer func(ctx context.Context) {
 		if consumeQuota && mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
+			referer := c.Request.Header.Get("HTTP-Referer")
+
+			// 获取X-Title header
+			title := c.Request.Header.Get("X-Title")
+
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
 				logger.SysError("error consuming token remain quota: " + err.Error())
@@ -189,7 +194,7 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode 
 			if quota != 0 {
 				tokenName := c.GetString("token_name")
 				logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", modelPrice, groupRatio, common.MjActionSwapFace)
-				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, 0)
+				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 				model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				model.UpdateChannelUsedQuota(channelId, quota)
@@ -533,6 +538,10 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	defer func(ctx context.Context) {
 		logger.SysLog(fmt.Sprintf("consumeQuota: %+v StatusCode: %d", consumeQuota, midjResponseWithStatus.StatusCode))
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
+			referer := c.Request.Header.Get("HTTP-Referer")
+
+			// 获取X-Title header
+			title := c.Request.Header.Get("X-Title")
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
 				logger.SysError("error consuming token remain quota: " + err.Error())
@@ -544,7 +553,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 			if quota != 0 {
 				tokenName := c.GetString("token_name")
 				logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", modelPrice, groupRatio, midjRequest.Action)
-				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, 0)
+				model.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 				model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				model.UpdateChannelUsedQuota(channelId, quota)

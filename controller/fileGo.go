@@ -44,6 +44,24 @@ func DownloadImage(url string) ([]byte, error) {
 }
 
 func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, objectKey, accessKey, secretKey, endpoint string) (string, error) {
+	// 参数检查
+	if bucketName == "" {
+		return "", fmt.Errorf("bucket name is required")
+	}
+	if objectKey == "" {
+		return "", fmt.Errorf("object key is required")
+	}
+	if accessKey == "" {
+		return "", fmt.Errorf("access key is required")
+	}
+	if secretKey == "" {
+		return "", fmt.Errorf("secret key is required")
+	}
+	if endpoint == "" {
+		return "", fmt.Errorf("endpoint is required")
+	}
+
+	// 加载配置
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
@@ -62,8 +80,10 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 		return "", fmt.Errorf("failed to create config: %v", err)
 	}
 
+	// 创建 S3 客户端
 	s3Client := s3.NewFromConfig(cfg)
 
+	// 上传对象
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(bucketName),
 		Key:         aws.String(objectKey),
@@ -74,15 +94,10 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
 	}
 
-	if err != nil {
-		return "", fmt.Errorf("failed to generate presigned URL: %v", err)
-	}
-
+	// 生成 URL
 	Imager2Url := "https://pub-787c236addba492a978fd31529395f95.r2.dev"
-
 	return fmt.Sprintf("%s/%s", Imager2Url, objectKey), nil
 }
-
 func DeleteFileR2(ctx context.Context, filename string) error {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),

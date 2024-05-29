@@ -28,6 +28,8 @@ type Log struct {
 	CompletionTokens int     `json:"completion_tokens" gorm:"default:0"`
 	ChannelId        int     `json:"channel" gorm:"index"`
 	Duration         float64 `json:"duration" gorm:"default:0"`
+	Title            string  `json:"title"`
+	HttpReferer      string  `json:"http_referer"`
 }
 
 const (
@@ -55,7 +57,7 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
-func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64) {
+func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string) {
 	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content))
 	if !config.LogConsumeEnabled {
 		return
@@ -73,6 +75,8 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 		Quota:            int(quota),
 		ChannelId:        channelId,
 		Duration:         duration,
+		Title:            title,
+		HttpReferer:      httpReferer,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
