@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
+	"github.com/songquanpeng/one-api/relay/channel/stability"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 
 	"github.com/gin-gonic/gin"
@@ -79,8 +80,17 @@ func Distribute() func(c *gin.Context) {
 				}
 				c.Set("relay_mode", relayMode)
 
-			} else if strings.HasPrefix(c.Request.URL.Path, "/v2beta") {
+			} else if strings.HasPrefix(c.Request.URL.Path, "/v2beta") { //sd的api开头
 				relayMode := relayconstant.Path2RelayModeSd((c.Request.URL.Path))
+				if relayMode == relayconstant.RelayModeUpscaleCreativeResult {
+					shouldSelectChannel = false
+				}
+				sdModel, err := stability.GetSdRequestModel(relayMode)
+				modelRequest.Model = sdModel
+				if err != nil {
+					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
+					return
+				}
 				c.Set("relay_mode", relayMode)
 			} else {
 				err = common.UnmarshalBodyReusable(c, &modelRequest)

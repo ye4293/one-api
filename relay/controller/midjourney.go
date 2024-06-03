@@ -516,12 +516,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 			},
 		}
 	}
-	logger.SysLog(fmt.Sprintf("userQuota:%+v\n", userQuota))
-	logger.SysLog(fmt.Sprintf("consumeQuota:%+v\n", consumeQuota))
 
 	quota := int64(ratio * config.QuotaPerUnit)
-
-	logger.SysLog(fmt.Sprintf("quota:%+v\n", quota))
 
 	if consumeQuota && userQuota-quota < 0 {
 		return &midjourney.MidjourneyResponseWithStatusCode{

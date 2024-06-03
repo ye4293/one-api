@@ -156,9 +156,7 @@ func ConvertSimpleChangeParams(content string) *MidjourneyRequest {
 
 func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestURL string) (*MidjourneyResponseWithStatusCode, []byte, error) {
 	var nullBytes []byte
-	//var requestBody io.Reader
-	//requestBody = c.Request.Body
-	// read request body to json, delete accountFilter and notifyHook
+
 	var mapResult map[string]interface{}
 	// if get request, no need to read request body
 	if c.Request.Method != "GET" {
@@ -227,10 +225,7 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 			return MidjourneyErrorWithStatusCodeWrapper(common.MjErrorUnknown, "unmarshal_response_body_failed", statusCode), responseBody, err
 		}
 	}
-	//log.Printf("midjResponse: %v", midjResponse)
-	//for k, v := range resp.Header {
-	//	c.Writer.Header().Set(k, v[0])
-	//}
+
 	return &MidjourneyResponseWithStatusCode{
 		StatusCode: statusCode,
 		Response:   midjResponse,

@@ -26,6 +26,18 @@ const (
 	RelayModeMidjourneyModal
 	RelayModeMidjourneyShorten
 	RelayModeSwapFace
+	RelayModelGenerateCore
+	RelayModelGenerateSd3
+	RelayModeUpscaleConservative
+	RelayModeUpscaleCreative
+	RelayModeUpscaleCreativeResult
+	RelayModeEditErase
+	RelayModeEditInpaint
+	RelayModeEditOutpaint
+	RelayModeEditSR //Search and Replace 搜索和替换
+	RelayModeEditRB //Remove Background 删除背景
+	RelayModeControlSketch
+	RelayModeControlStructure
 )
 
 func Path2RelayMode(path string) int {
@@ -90,30 +102,20 @@ func Path2RelayModeMidjourney(path string) int {
 	return relayMode
 }
 
-const (
-	RelayModeUnknown2 = iota
-	RelayModelGenerateCore
-	RelayModelGenerateSd3
-	RelayModeUpscaleCreative
-	RelayModeUpscaleCreativeResult
-	RelayModeEditInpaint
-	RelayModeEditOutpaint
-	RelayModeEditSR //Search and Replace 搜索和替换
-	RelayModeEditRB //Remove Background 删除背景
-	RelayModeControlSketch
-	RelayModeControlStructure
-)
-
 func Path2RelayModeSd(path string) int {
-	relayMode := RelayModeUnknown2
+	relayMode := RelayModeUnknown
 	if strings.HasPrefix(path, "/v2beta/stable-image/generate/core") {
 		relayMode = RelayModelGenerateCore
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/sd3") {
 		relayMode = RelayModelGenerateSd3
+	} else if path == "/v2beta/stable-image/upscale/conservative" {
+		relayMode = RelayModeUpscaleConservative
 	} else if path == "/v2beta/stable-image/upscale/creative" {
 		relayMode = RelayModeUpscaleCreative
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/upscale/creative/result") {
 		relayMode = RelayModeUpscaleCreativeResult
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/erase") {
+		relayMode = RelayModeEditErase
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/inpaint") {
 		relayMode = RelayModeEditInpaint
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/outpaint") {

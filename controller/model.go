@@ -109,6 +109,17 @@ func init() {
 			Parent:     nil,
 		})
 	}
+	for modelName, _ := range common.SdModel2Action {
+		openAIModels = append(openAIModels, OpenAIModels{
+			Id:         modelName,
+			Object:     "model",
+			Created:    1626777600,
+			OwnedBy:    "Stability",
+			Permission: permission,
+			Root:       modelName,
+			Parent:     nil,
+		})
+	}
 	openAIModelsMap = make(map[string]OpenAIModels)
 	for _, model := range openAIModels {
 		openAIModelsMap[model.Id] = model
@@ -128,16 +139,17 @@ func DashboardListModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    channelId2Models,
+		"data":    openAIModels,
 	})
 }
 
 func ListModels(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"object": "list",
-		"data":   openAIModels,
+		"data":   channelId2Models,
 	})
 }
+
 func RetrieveModel(c *gin.Context) {
 	modelId := c.Param("model")
 	if model, ok := openAIModelsMap[modelId]; ok {

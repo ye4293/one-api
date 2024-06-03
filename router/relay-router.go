@@ -97,8 +97,10 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		relaySdRouter.POST("/stable-image/generate/core", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/upscale/conservative", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
-		relaySdRouter.GET("/stable-image/upscale/creative/result/:id", controller.RelaySd)
+		relaySdRouter.GET("/stable-image/upscale/creative/result/:generation_id", controller.RelaySd)
+		relaySdRouter.POST("/stable-image/edit/erase", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)

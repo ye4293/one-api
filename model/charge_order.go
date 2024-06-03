@@ -200,7 +200,9 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 		if err := DB.Transaction(func(tx *gorm.DB) error {
 			//更新订单
 			amount := float64(charge.Amount / 100)
-			orderCost := float64(charge.ApplicationFeeAmount / 100)
+			// orderCost := float64(charge.ApplicationFeeAmount / 100)
+			// realAmount := amount - orderCost
+			orderCost := amount*0.029 + 0.3
 			realAmount := amount - orderCost
 			if err := DB.Model(&chargeOrder).Updates(ChargeOrder{Status: StatusMap["success"], RealAmount: realAmount, OrderCost: orderCost, OrderNo: charge.ID, Amount: amount}).Error; err != nil {
 				return err

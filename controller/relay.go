@@ -171,7 +171,7 @@ func RelayMidjourney(c *gin.Context) {
 	}
 
 	retryTimes := config.RetryTimes
-	if !MidjourneyShouldRetry(MjErr) {
+	if !MidjourneyShouldRetry(MjErr) { //返回false就不执行重试
 		retryTimes = 0
 		logger.SysLog("no retry!!!")
 	}
@@ -179,7 +179,7 @@ func RelayMidjourney(c *gin.Context) {
 		if originalModel != "" {
 			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
 			if err != nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v", err)
 				break
 			}
 			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
@@ -222,6 +222,7 @@ func RelayMidjourney(c *gin.Context) {
 		logger.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result)))
 	}
 }
+
 func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) bool {
 	if MjErr.Response.Code == 23 { //当前渠道已满
 		return true
@@ -229,7 +230,7 @@ func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) b
 	if MjErr.Response.Code == 24 {
 		return false
 	}
-	if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 {
+	if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 && MjErr.Response.Code != 4 {
 		return true
 	}
 	return true
@@ -246,10 +247,6 @@ func ShouldDisabelMidjourneyChannel(channelId int, channelName string, MjErr *mi
 
 }
 
-func ShouldEnabelMidjourneyChannel(c *gin.Context, err *midjourney.MidjourneyResponse) {
-
-}
-
 func RelayNotImplemented(c *gin.Context) {
 	err := model.Error{
 		Message: "API not implemented",
@@ -262,9 +259,76 @@ func RelayNotImplemented(c *gin.Context) {
 	})
 }
 
-func RelaySd(c *gin.Context) {
-	return
+func relaySd(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
+	var err *model.ErrorWithStatusCode
+	if relayMode == relayconstant.RelayModeUpscaleCreativeResult {
+		err = controller.GetUpscaleResults(c)
+	} else {
+		err = controller.RelaySdGenerate(c, relayMode)
+	}
+	return err
 }
+
+func RelaySd(c *gin.Context) {
+	// ctx := c.Request.Context()
+	relayMode := c.GetInt("relay_mode")
+	// channelId := c.GetInt("channel_id")
+	// userId := c.GetInt("id")
+
+	SdErr := relaySd(c, relayMode)
+	if SdErr == nil {
+		return
+	}
+
+	// lastFailedChannelId := channelId
+	// channelName := c.GetString("channel_name")
+	// group := c.GetString("group")
+	// originalModel := c.GetString("original_model")
+	// retryTimes := config.RetryTimes
+	// if !SdShouldRetry(c, SdErr) {
+	// 	logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", SdErr.StatusCode)
+	// 	retryTimes = 0
+	// }
+
+	// for i := retryTimes; i > 0; i-- {
+	// 	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+	// 	if err != nil {
+	// 		logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+	// 		break
+	// 	}
+	// 	if channel.Id == lastFailedChannelId {
+	// 		continue
+	// 	}
+	// 	logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+
+	// 	middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+	// 	requestBody, err := common.GetRequestBody(c)
+	// 	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+	// 	SdErr = relaySd(c, relayMode)
+	// 	if SdErr == nil {
+	// 		return
+	// 	}
+
+	// 	channelId = c.GetInt("channel_id")
+	// 	lastFailedChannelId = channelId
+	// 	channelName = c.GetString("channel_name")
+
+	// }
+	if SdErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": SdErr.Error.Code,
+		})
+	}
+
+}
+
+// func SdShouldRetry(c *gin.Context, err *model.ErrorWithStatusCode) bool {
+
+// }
+
+// func ShouldDisabelSdChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
+
+// }
 
 func RelayNotFound(c *gin.Context) {
 	err := model.Error{
