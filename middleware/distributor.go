@@ -86,11 +86,11 @@ func Distribute() func(c *gin.Context) {
 					shouldSelectChannel = false
 				}
 				sdModel, err := stability.GetSdRequestModel(relayMode)
-				modelRequest.Model = sdModel
 				if err != nil {
 					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
 					return
 				}
+				modelRequest.Model = sdModel
 				c.Set("relay_mode", relayMode)
 			} else {
 				err = common.UnmarshalBodyReusable(c, &modelRequest)
@@ -123,7 +123,7 @@ func Distribute() func(c *gin.Context) {
 			if shouldSelectChannel {
 				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
 				if err != nil {
-					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", userGroup, modelRequest.Model)
+					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 					if channel != nil {
 						logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
 						message = "Database consistency has been violated, please contact the administrator"

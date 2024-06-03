@@ -139,14 +139,14 @@ func DashboardListModels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    openAIModels,
+		"data":    channelId2Models,
 	})
 }
 
 func ListModels(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"object": "list",
-		"data":   channelId2Models,
+		"data":   openAIModels,
 	})
 }
 
