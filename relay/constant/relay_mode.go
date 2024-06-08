@@ -28,6 +28,7 @@ const (
 	RelayModeSwapFace
 	RelayModelGenerateCore
 	RelayModelGenerateSd3
+	RelayModelGenerateUltra
 	RelayModeUpscaleConservative
 	RelayModeUpscaleCreative
 	RelayModeUpscaleCreativeResult
@@ -106,6 +107,8 @@ func Path2RelayModeSd(path string) int {
 	relayMode := RelayModeUnknown
 	if strings.HasPrefix(path, "/v2beta/stable-image/generate/core") {
 		relayMode = RelayModelGenerateCore
+	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/ultra") {
+		relayMode = RelayModelGenerateUltra
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/sd3") {
 		relayMode = RelayModelGenerateSd3
 	} else if path == "/v2beta/stable-image/upscale/conservative" {

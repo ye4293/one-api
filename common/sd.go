@@ -1,6 +1,7 @@
 package common
 
 const (
+	SdActionGenerateUltra         = "GENERATE_Ultra"
 	SdActionGenerateCore          = "GENERATE_CORE"
 	SdActionGenerateSd3           = "GENERATE_SD3"
 	SdActionGenerateSd3Turbo      = "GENERATE_SD3_TURBO"
@@ -17,17 +18,18 @@ const (
 )
 
 var SdModel2Action = map[string]string{
-	"sd_generate_core":           SdActionGenerateCore,
-	"sd_generate_sd3":            SdActionGenerateSd3,
-	"sd_generate_sd3_turbo":      SdActionGenerateSd3Turbo,
-	"sd_upscale_conservative":    SdActionUpscaleConservative,
-	"sd_upscale_creative":        SdActionUpscaleCreative,
-	"sd_upscale_creative_result": SdActionUpscaleCreativeResult,
-	"sd_edit_erase":              SdActionEditErase,
-	"sd_edit_inpaint":            SdActionEditInpaint,
-	"sd_edit_outpaint":           SdActionEditOutpaint,
-	"sd_edit_search_replace":     SdActionEditSearchReplace,
-	"sd_edit_remove_background":  SdActionEditRemoveBackground,
-	"sd_control_sketch":          SdActionControlSketch,
-	"sd_control_structure":       SdActionControlStructure,
+	"generate_ultra":          SdActionGenerateUltra,
+	"generate_core":           SdActionGenerateCore,
+	"generate_sd3":            SdActionGenerateSd3,
+	"generate_sd3_turbo":      SdActionGenerateSd3Turbo,
+	"upscale_conservative":    SdActionUpscaleConservative,
+	"upscale_creative":        SdActionUpscaleCreative,
+	"upscale_creative_result": SdActionUpscaleCreativeResult,
+	"edit_erase":              SdActionEditErase,
+	"edit_inpaint":            SdActionEditInpaint,
+	"edit_outpaint":           SdActionEditOutpaint,
+	"edit_search_replace":     SdActionEditSearchReplace,
+	"edit_remove_background":  SdActionEditRemoveBackground,
+	"control_sketch":          SdActionControlSketch,
+	"control_structure":       SdActionControlStructure,
 }

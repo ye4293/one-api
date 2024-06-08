@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 )
 
 func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
-	createTime := time.Now().UnixNano() / int64(time.Millisecond)
+	createTime := time.Now()
 	tokenId := c.GetInt("token_id")
 	//channelType := c.GetInt("channel")
 	userId := c.GetInt("id")
@@ -37,6 +38,8 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	baseURL := c.GetString("base_url")
 
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
+	logger.SysLog(fmt.Sprintf("baseURL:%+v\n", baseURL))
+	logger.SysLog(fmt.Sprintf("requestURL:%+v\n", requestURL))
 
 	var modelPrice float64
 	var modelName string
@@ -63,6 +66,11 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	}
 
 	sdResponse, responseBody, sdResponseStruct, responseModelName, err := stability.DoSdHttpRequest(c, time.Second*60, fullRequestURL)
+	logger.SysLog(fmt.Sprintf("sdResponse:%+v\n", sdResponse))
+	logger.SysLog(fmt.Sprintf("responseBody:%+v\n", responseBody))
+	logger.SysLog(fmt.Sprintf("sdResponseStruct:%+v\n", sdResponseStruct))
+	logger.SysLog(fmt.Sprintf("fullRequestURL:%+v\n", fullRequestURL))
+
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get response", http.StatusBadRequest)
 	}
@@ -71,6 +79,7 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 		quota = 20000
 
 	}
+	finishTime := time.Now()
 
 	defer func(ctx context.Context) {
 		if consumeQuota && err == nil {
@@ -85,9 +94,10 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 				logger.SysError("error update user quota cache: " + err.Error())
 			}
 			if quota != 0 {
+				duration := math.Round(finishTime.Sub(createTime).Seconds()*1000) / 1000
 				tokenName := c.GetString("token_name")
 				logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", modelPrice, groupRatio, modelName)
-				dbmodel.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+				dbmodel.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, duration, title, referer)
 				dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				dbmodel.UpdateChannelUsedQuota(channelId, quota)
@@ -107,8 +117,8 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	sdTask := &dbmodel.Sd{
 		UserId:       userId,
 		Username:     username,
-		CreatedAt:    createTime,
-		FinishAt:     time.Now().UnixNano() / int64(time.Millisecond),
+		CreatedAt:    createTime.UnixNano() / int64(time.Millisecond),
+		FinishAt:     finishTime.UnixNano() / int64(time.Millisecond),
 		Quota:        quota,
 		Model:        modelName,
 		ChannelId:    c.GetInt("channel_id"),

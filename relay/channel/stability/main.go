@@ -25,6 +25,7 @@ func GetSdRequestModel(relayModel int) (string, error) {
 	modelMap := map[int]string{
 		relayconstant.RelayModelGenerateCore:         common.SdActionGenerateCore,
 		relayconstant.RelayModelGenerateSd3:          common.SdActionGenerateSd3,
+		relayconstant.RelayModelGenerateUltra:        common.SdActionGenerateUltra,
 		relayconstant.RelayModeUpscaleConservative:   common.SdActionUpscaleConservative,
 		relayconstant.RelayModeUpscaleCreative:       common.SdActionUpscaleCreative,
 		relayconstant.RelayModeUpscaleCreativeResult: common.SdActionUpscaleCreativeResult,

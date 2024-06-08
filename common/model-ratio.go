@@ -309,6 +309,7 @@ var DefaultModelPrice = map[string]float64{
 	"swap_face":               0.018,
 	"generate_core":           0.03,
 	"generate_sd3":            0.065,
+	"generate_ultra":          0.08,
 	"sd3-turbo":               0.04,
 	"upscale_conservative":    0.03,
 	"upscale_creative":        0.25,
