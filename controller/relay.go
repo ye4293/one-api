@@ -161,8 +161,8 @@ func RelayMidjourney(c *gin.Context) {
 	if MjErr == nil {
 		return
 	}
-	channelId := c.GetInt("channel_id")
-	channelName := c.GetString("channel_name")
+	// channelId := c.GetInt("channel_id")
+	// channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 
