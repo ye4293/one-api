@@ -15,6 +15,8 @@ const (
 	SdActionEditRemoveBackground  = "EDIT_REMOVE_BACKGROUND"
 	SdActionControlSketch         = "CONTROL_SKETCH"
 	SdActionControlStructure      = "CONTROL_STRUCTURE"
+	SdActionImageToVideo          = "IMAGE_TO_VIDEO"
+	SdActionVideoResult           = "VIDEO_RESULT"
 )
 
 var SdModel2Action = map[string]string{
@@ -32,4 +34,6 @@ var SdModel2Action = map[string]string{
 	"edit_remove_background":  SdActionEditRemoveBackground,
 	"control_sketch":          SdActionControlSketch,
 	"control_structure":       SdActionControlStructure,
+	"image_to_video":          SdActionImageToVideo,
+	"video_result":            SdActionVideoResult,
 }

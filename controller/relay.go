@@ -166,9 +166,9 @@ func RelayMidjourney(c *gin.Context) {
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 
-	if originalModel != "" {
-		ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
-	}
+	// if originalModel != "" {
+	// 	ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
+	// }
 
 	retryTimes := config.RetryTimes
 	if !MidjourneyShouldRetry(MjErr) { //返回false就不执行重试
@@ -193,7 +193,7 @@ func RelayMidjourney(c *gin.Context) {
 			if MjErr == nil {
 				return
 			}
-			ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
+			// ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
 		} else {
 			requestBody, err := common.GetRequestBody(c)
 			if err == nil {
@@ -236,16 +236,16 @@ func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) b
 	return true
 }
 
-func ShouldDisabelMidjourneyChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
-	if MjErr.Response.Code == 3 {
-		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
-	}
+// func ShouldDisabelMidjourneyChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
+// 	if MjErr.Response.Code == 3 {
+// 		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
+// 	}
 
-	if MjErr.StatusCode == 403 || MjErr.StatusCode == 401 || MjErr.StatusCode == 404 {
-		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
-	}
+// 	if MjErr.StatusCode == 403 || MjErr.StatusCode == 401 || MjErr.StatusCode == 404 {
+// 		monitor.DisableChannel(channelId, channelName, MjErr.Response.Description)
+// 	}
 
-}
+// }
 
 func RelayNotImplemented(c *gin.Context) {
 	err := model.Error{
@@ -261,7 +261,7 @@ func RelayNotImplemented(c *gin.Context) {
 
 func relaySd(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	var err *model.ErrorWithStatusCode
-	if relayMode == relayconstant.RelayModeUpscaleCreativeResult {
+	if relayMode == relayconstant.RelayModeUpscaleCreativeResult || relayMode == relayconstant.RelayModeVideoResult {
 		err = controller.GetUpscaleResults(c)
 	} else {
 		err = controller.RelaySdGenerate(c, relayMode)
@@ -270,53 +270,54 @@ func relaySd(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 }
 
 func RelaySd(c *gin.Context) {
-	// ctx := c.Request.Context()
+	ctx := c.Request.Context()
 	relayMode := c.GetInt("relay_mode")
-	// channelId := c.GetInt("channel_id")
-	// userId := c.GetInt("id")
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
 
 	SdErr := relaySd(c, relayMode)
 	if SdErr == nil {
 		return
 	}
 
-	// lastFailedChannelId := channelId
-	// channelName := c.GetString("channel_name")
-	// group := c.GetString("group")
-	// originalModel := c.GetString("original_model")
-	// retryTimes := config.RetryTimes
-	// if !SdShouldRetry(c, SdErr) {
-	// 	logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", SdErr.StatusCode)
-	// 	retryTimes = 0
-	// }
+	lastFailedChannelId := channelId
+	group := c.GetString("group")
+	originalModel := c.GetString("original_model")
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, SdErr.StatusCode) {
+		logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", SdErr.StatusCode)
+		retryTimes = 0
+	}
 
-	// for i := retryTimes; i > 0; i-- {
-	// 	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
-	// 	if err != nil {
-	// 		logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
-	// 		break
-	// 	}
-	// 	if channel.Id == lastFailedChannelId {
-	// 		continue
-	// 	}
-	// 	logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+	for i := retryTimes; i > 0; i-- {
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+			break
+		}
+		if channel.Id == lastFailedChannelId {
+			continue
+		}
+		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
-	// 	middleware.SetupContextForSelectedChannel(c, channel, originalModel)
-	// 	requestBody, err := common.GetRequestBody(c)
-	// 	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-	// 	SdErr = relaySd(c, relayMode)
-	// 	if SdErr == nil {
-	// 		return
-	// 	}
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		requestBody, err := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		SdErr = relaySd(c, relayMode)
+		if SdErr == nil {
+			return
+		}
 
-	// 	channelId = c.GetInt("channel_id")
-	// 	lastFailedChannelId = channelId
-	// 	channelName = c.GetString("channel_name")
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName := c.GetString("channel_name")
+		go processChannelRelayError(ctx, userId, channelId, channelName, SdErr)
 
-	// }
+	}
 	if SdErr != nil {
+
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": SdErr.Error.Code,
+			"error": SdErr.Code,
 		})
 	}
 

@@ -321,6 +321,7 @@ var DefaultModelPrice = map[string]float64{
 	"edit_remove_background":  0.02,
 	"control_sketch":          0.03,
 	"control_structure":       0.03,
+	"image_to_video":          0.2,
 }
 
 //后续进行修正

@@ -39,6 +39,8 @@ const (
 	RelayModeEditRB //Remove Background 删除背景
 	RelayModeControlSketch
 	RelayModeControlStructure
+	RelayModeImageToVideo
+	RelayModeVideoResult
 )
 
 func Path2RelayMode(path string) int {
@@ -131,6 +133,11 @@ func Path2RelayModeSd(path string) int {
 		relayMode = RelayModeControlSketch
 	} else if strings.HasPrefix(path, "/v2beta/stable-image/control/structure") {
 		relayMode = RelayModeControlStructure
+	} else if strings.HasPrefix(path, "/v2beta/image-to-video/result") {
+		relayMode = RelayModeVideoResult
+	} else if strings.HasPrefix(path, "/v2beta/image-to-video") {
+		relayMode = RelayModeImageToVideo
 	}
+
 	return relayMode
 }

@@ -82,7 +82,7 @@ func Distribute() func(c *gin.Context) {
 
 			} else if strings.HasPrefix(c.Request.URL.Path, "/v2beta") { //sd的api开头
 				relayMode := relayconstant.Path2RelayModeSd((c.Request.URL.Path))
-				if relayMode == relayconstant.RelayModeUpscaleCreativeResult {
+				if relayMode == relayconstant.RelayModeUpscaleCreativeResult || relayMode == relayconstant.RelayModeVideoResult {
 					shouldSelectChannel = false
 				}
 				sdModel, err := stability.GetSdRequestModel(relayMode)

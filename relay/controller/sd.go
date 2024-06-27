@@ -82,7 +82,7 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	finishTime := time.Now()
 
 	defer func(ctx context.Context) {
-		if consumeQuota && err == nil {
+		if consumeQuota && sdResponse.StatusCode == 200 {
 			referer := c.Request.Header.Get("HTTP-Referer")
 			title := c.Request.Header.Get("X-Title")
 			err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
@@ -141,9 +141,10 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 func GetUpscaleResults(c *gin.Context) *model.ErrorWithStatusCode {
 
 	generationId := c.Param("generation_id")
-
+	logger.SysLog(fmt.Sprintf("generationId:%+v\n", generationId))
 	channelId, err := dbmodel.GetChannelIdByGenerationId(generationId)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("err:%+v\n", err))
 		return openai.ErrorWrapper(err, "get_channel_id_failed", http.StatusInternalServerError)
 	}
 
@@ -153,8 +154,8 @@ func GetUpscaleResults(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 
 	baseURL := *channel.BaseURL
-	fullRequestURL := fmt.Sprintf("%s/v2beta/stable-image/upscale/creative/result/%s", baseURL, generationId)
-
+	fullRequestURL := baseURL + c.Request.RequestURI
+	logger.SysLog(fmt.Sprintf("fullRequestURL:%+v\n", fullRequestURL))
 	sdResponse, responseBody, err := stability.DoSdUpscaleResults(c, time.Second*60, *channel, fullRequestURL)
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get response", http.StatusBadRequest)

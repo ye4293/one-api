@@ -33,6 +33,76 @@ func stopReasonClaude2OpenAI(reason *string) string {
 	}
 }
 
+func convertTool(openAITool model.Tool) (Tool, error) {
+	claudeTool := Tool{
+		Name: openAITool.Function.Name,
+		InputSchema: ClaudeInputSchema{
+			Type:       "object",
+			Properties: make(map[string]ClaudeProperty),
+			Required:   []string{},
+		},
+	}
+
+	// 安全地处理顶层的 description
+	if openAITool.Function.Description != "" {
+		claudeTool.Description = openAITool.Function.Description
+	}
+
+	if openAITool.Function.Parameters == nil {
+		return claudeTool, fmt.Errorf("tool function parameters are nil")
+	}
+
+	params, ok := openAITool.Function.Parameters.(map[string]interface{})
+	if !ok {
+		return claudeTool, fmt.Errorf("parameters is not a map")
+	}
+
+	properties, ok := params["properties"].(map[string]interface{})
+	if !ok {
+		return claudeTool, fmt.Errorf("properties is not a map")
+	}
+
+	for key, value := range properties {
+		prop, ok := value.(map[string]interface{})
+		if !ok {
+			continue // Skip this property if it's not a map
+		}
+
+		claudeProp := ClaudeProperty{}
+
+		if typeStr, ok := prop["type"].(string); ok {
+			claudeProp.Type = typeStr
+		}
+
+		// 安全地处理属性级别的 description
+		if descInterface, exists := prop["description"]; exists {
+			if descStr, ok := descInterface.(string); ok {
+				claudeProp.Description = descStr
+			}
+		}
+
+		if enum, ok := prop["enum"].([]interface{}); ok {
+			for _, e := range enum {
+				if strEnum, ok := e.(string); ok {
+					claudeProp.Enum = append(claudeProp.Enum, strEnum)
+				}
+			}
+		}
+
+		claudeTool.InputSchema.Properties[key] = claudeProp
+	}
+
+	if required, ok := params["required"].([]interface{}); ok {
+		for _, r := range required {
+			if strR, ok := r.(string); ok {
+				claudeTool.InputSchema.Required = append(claudeTool.InputSchema.Required, strR)
+			}
+		}
+	}
+
+	return claudeTool, nil
+}
+
 func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 	claudeRequest := Request{
 		Model:       textRequest.Model,
@@ -87,6 +157,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		}
 		claudeMessage.Content = contents
 		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
+	}
+
+	//Convert tools
+	for _, openAITool := range textRequest.Tools {
+		claudeTool, err := convertTool(openAITool)
+		if err != nil {
+			return nil
+		}
+		claudeRequest.Tools = append(claudeRequest.Tools, claudeTool)
 	}
 	return &claudeRequest
 }

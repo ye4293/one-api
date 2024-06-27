@@ -36,6 +36,8 @@ func GetSdRequestModel(relayModel int) (string, error) {
 		relayconstant.RelayModeEditRB:                common.SdActionEditRemoveBackground,
 		relayconstant.RelayModeControlSketch:         common.SdActionControlSketch,
 		relayconstant.RelayModeControlStructure:      common.SdActionControlStructure,
+		relayconstant.RelayModeImageToVideo:          common.SdActionImageToVideo,
+		relayconstant.RelayModeVideoResult:           common.SdActionVideoResult,
 	}
 
 	modelName, ok := modelMap[relayModel]
@@ -187,7 +189,7 @@ func DoSdUpscaleResults(c *gin.Context, timeout time.Duration, channel dbmodel.C
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError), nullBytes, err
 	}
 
-	if accept == "image/*" {
+	if accept == "image/*" || accept == "video/*" {
 		return &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 		}, responseBody, nil

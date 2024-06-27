@@ -33,7 +33,26 @@ type Request struct {
 	Temperature   float64   `json:"temperature,omitempty"`
 	TopP          float64   `json:"top_p,omitempty"`
 	TopK          int       `json:"top_k,omitempty"`
+	Tools         []Tool    `json:"tools,omitempty"`
 	//Metadata    `json:"metadata,omitempty"`
+}
+
+type Tool struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	InputSchema ClaudeInputSchema `json:"input_schema"`
+}
+
+type ClaudeInputSchema struct {
+	Type       string                    `json:"type"`
+	Properties map[string]ClaudeProperty `json:"properties"`
+	Required   []string                  `json:"required"`
+}
+
+type ClaudeProperty struct {
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
 }
 
 type Usage struct {

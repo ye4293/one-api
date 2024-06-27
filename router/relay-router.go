@@ -108,5 +108,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
 		relaySdRouter.POST("/stable-image/control/structure", controller.RelaySd)
+		relaySdRouter.POST("/image-to-video", controller.RelaySd)
+		relaySdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
 	}
 }
