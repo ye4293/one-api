@@ -28,6 +28,7 @@ type Log struct {
 	CompletionTokens int     `json:"completion_tokens" gorm:"default:0"`
 	ChannelId        int     `json:"channel" gorm:"index"`
 	Duration         float64 `json:"duration" gorm:"default:0"`
+	Speed            float64 `json:"speed"`
 	Title            string  `json:"title"`
 	HttpReferer      string  `json:"http_referer"`
 }

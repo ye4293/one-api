@@ -16,11 +16,29 @@ type Content struct {
 	Type   string       `json:"type"`
 	Text   string       `json:"text,omitempty"`
 	Source *ImageSource `json:"source,omitempty"`
+	// tool_calls
+	Id        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Input     any    `json:"input,omitempty"`
+	Content   string `json:"content,omitempty"`
+	ToolUseId string `json:"tool_use_id,omitempty"`
 }
 
 type Message struct {
 	Role    string    `json:"role"`
 	Content []Content `json:"content"`
+}
+
+type Tool struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	InputSchema InputSchema `json:"input_schema"`
+}
+
+type InputSchema struct {
+	Type       string `json:"type"`
+	Properties any    `json:"properties,omitempty"`
+	Required   any    `json:"required,omitempty"`
 }
 
 type Request struct {
@@ -34,25 +52,8 @@ type Request struct {
 	TopP          float64   `json:"top_p,omitempty"`
 	TopK          int       `json:"top_k,omitempty"`
 	Tools         []Tool    `json:"tools,omitempty"`
+	ToolChoice    any       `json:"tool_choice,omitempty"`
 	//Metadata    `json:"metadata,omitempty"`
-}
-
-type Tool struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	InputSchema ClaudeInputSchema `json:"input_schema"`
-}
-
-type ClaudeInputSchema struct {
-	Type       string                    `json:"type"`
-	Properties map[string]ClaudeProperty `json:"properties"`
-	Required   []string                  `json:"required"`
-}
-
-type ClaudeProperty struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
 }
 
 type Usage struct {
@@ -80,6 +81,7 @@ type Response struct {
 type Delta struct {
 	Type         string  `json:"type"`
 	Text         string  `json:"text"`
+	PartialJson  string  `json:"partial_json,omitempty"`
 	StopReason   *string `json:"stop_reason"`
 	StopSequence *string `json:"stop_sequence"`
 }
