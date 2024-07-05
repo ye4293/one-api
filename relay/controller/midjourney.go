@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -169,7 +170,13 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode 
 			},
 		}
 	}
-	requestURL := c.Request.URL.String()
+	channelType := c.GetInt("channel")
+	var requestURL string
+	requestURL = c.Request.URL.String()
+	if (strings.Contains(requestURL, "/mj-fast/mj") || strings.Contains(requestURL, "/mj-turbo/mj") || strings.Contains(requestURL, "/mj-relax/mj")) && channelType == 32 {
+		re := regexp.MustCompile(`/mj-(fast|turbo|relax)/mj`)
+		requestURL = re.ReplaceAllString(requestURL, "/mj")
+	}
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 	mjResp, _, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
@@ -261,7 +268,13 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *midjourney.MidjourneyResponse
 	c.Set("channel_id", originTask.ChannelId)
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 
-	requestURL := c.Request.URL.String()
+	channelType := c.GetInt("channel")
+	var requestURL string
+	requestURL = c.Request.URL.String()
+	if (strings.Contains(requestURL, "/mj-fast/mj") || strings.Contains(requestURL, "/mj-turbo/mj") || strings.Contains(requestURL, "/mj-relax/mj")) && channelType == 32 {
+		re := regexp.MustCompile(`/mj-(fast|turbo|relax)/mj`)
+		requestURL = re.ReplaceAllString(requestURL, "/mj")
+	}
 	fullRequestURL := fmt.Sprintf("%s%s", channel.GetBaseURL(), requestURL)
 	midjResponseWithStatus, _, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*30, fullRequestURL)
 	if err != nil {
@@ -459,9 +472,51 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		consumeQuota = false
 	}
 
-	//baseURL := common.ChannelBaseURLs[channelType]
-	requestURL := c.Request.URL.String()
+	channelType := c.GetInt("channel")
+	var mode string
+	mode = c.GetString("mode")
+	var requestURL string
+	requestURL = c.Request.URL.String()
+	if (strings.Contains(requestURL, "/mj-fast/mj") || strings.Contains(requestURL, "/mj-turbo/mj") || strings.Contains(requestURL, "/mj-relax/mj")) && channelType == 32 {
+		if midjRequest.Prompt != "" {
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--fast", "")
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--turbo", "")
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--relax", "")
 
+			// 移除多余的空格并添加 mode
+			midjRequest.Prompt = strings.TrimSpace(midjRequest.Prompt)
+			if mode != "" {
+				midjRequest.Prompt += " --" + mode
+			} else {
+				midjRequest.Prompt += " --fast"
+			}
+		}
+		re := regexp.MustCompile(`/mj-(fast|turbo|relax)/mj`)
+		requestURL = re.ReplaceAllString(requestURL, "/mj")
+	} else if (strings.Contains(requestURL, "/mj-fast/mj") || strings.Contains(requestURL, "/mj-turbo/mj") || strings.Contains(requestURL, "/mj-relax/mj")) && channelType != 32 {
+		if midjRequest.Prompt != "" {
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--fast", "")
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--turbo", "")
+			midjRequest.Prompt = strings.ReplaceAll(midjRequest.Prompt, "--relax", "")
+
+			// 移除多余的空格并添加 mode
+			midjRequest.Prompt = strings.TrimSpace(midjRequest.Prompt)
+			if mode != "" {
+				midjRequest.Prompt += " --" + mode
+			} else {
+				midjRequest.Prompt += " --fast"
+			}
+		}
+	} else if strings.HasPrefix(requestURL, "/mj") && channelType != 32 {
+		if midjRequest.Prompt != "" {
+			mode = midjourney.ParsePrompts(midjRequest.Prompt)
+		} else {
+			mode = "fast"
+		}
+		requestURL = strings.Replace(requestURL, "/mj/", "/mj-"+mode+"/mj/", 1)
+
+	}
+	logger.SysLog(fmt.Sprintf("requestURL:%s", requestURL))
 	baseURL := c.GetString("base_url")
 
 	//midjRequest.NotifyHook = "http://127.0.0.1:3000/mj/notify"

@@ -71,17 +71,17 @@ func Path2RelayMode(path string) int {
 
 func Path2RelayModeMidjourney(path string) int {
 	relayMode := RelayModeUnknown
+
+	// 移除可能的模式前缀
+	path = removeModePrefix(path)
+
 	if strings.HasSuffix(path, "/mj/submit/action") {
-		// midjourney plus
 		relayMode = RelayModeMidjourneyAction
 	} else if strings.HasSuffix(path, "/mj/submit/modal") {
-		// midjourney plus
 		relayMode = RelayModeMidjourneyModal
 	} else if strings.HasSuffix(path, "/mj/submit/shorten") {
-		// midjourney plus
 		relayMode = RelayModeMidjourneyShorten
 	} else if strings.HasSuffix(path, "/mj/insight-face/swap") {
-		// midjourney plus
 		relayMode = RelayModeSwapFace
 	} else if strings.HasSuffix(path, "/mj/submit/imagine") {
 		relayMode = RelayModeMidjourneyImagine
@@ -95,14 +95,26 @@ func Path2RelayModeMidjourney(path string) int {
 		relayMode = RelayModeMidjourneyChange
 	} else if strings.HasSuffix(path, "/mj/submit/simple-change") {
 		relayMode = RelayModeMidjourneyChange
-	} else if strings.HasSuffix(path, "/fetch") {
+	} else if strings.HasSuffix(path, "/mj/task/") && strings.HasSuffix(path, "/fetch") {
 		relayMode = RelayModeMidjourneyTaskFetch
-	} else if strings.HasSuffix(path, "/image-seed") {
+	} else if strings.HasSuffix(path, "/mj/task/") && strings.HasSuffix(path, "/image-seed") {
 		relayMode = RelayModeMidjourneyTaskImageSeed
-	} else if strings.HasSuffix(path, "/list-by-condition") {
+	} else if strings.HasSuffix(path, "/mj/task/list-by-condition") {
 		relayMode = RelayModeMidjourneyTaskFetchByCondition
 	}
+
 	return relayMode
+}
+
+// 辅助函数：移除模式前缀
+func removeModePrefix(path string) string {
+	prefixes := []string{"/mj-fast", "/mj-turbo", "/mj-relax"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return strings.TrimPrefix(path, prefix)
+		}
+	}
+	return path
 }
 
 func Path2RelayModeSd(path string) int {
