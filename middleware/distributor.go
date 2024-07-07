@@ -51,6 +51,7 @@ func Distribute() func(c *gin.Context) {
 			if strings.HasPrefix(c.Request.URL.Path, "/mj") {
 				relayMode := relayconstant.Path2RelayModeMidjourney((c.Request.URL.Path))
 				if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||
+
 					relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||
 					relayMode == relayconstant.RelayModeMidjourneyNotify ||
 					relayMode == relayconstant.RelayModeMidjourneyTaskImageSeed {

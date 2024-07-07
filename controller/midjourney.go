@@ -145,6 +145,7 @@ func UpdateMidjourneyTaskBulk() {
 				continue
 			}
 			responseBody, err := io.ReadAll(resp.Body)
+			logger.SysLog(fmt.Sprintf("responseBody:%s", responseBody))
 			if err != nil {
 				logger.Error(ctx, fmt.Sprintf("Get Task parse body error: %v", err))
 				continue
@@ -188,45 +189,45 @@ func UpdateMidjourneyTaskBulk() {
 				if responseItem.Buttons != nil {
 					buttonStr, _ := json.Marshal(responseItem.Buttons)
 					task.Buttons = string(buttonStr)
-				}
 
-				if task.Progress != "100%" && responseItem.FailReason != "" {
-					logger.Info(ctx, task.MjId+" 构建失败，"+task.FailReason)
-					task.Progress = "100%"
-					err = model.CacheUpdateUserQuota2(task.UserId)
-					if err != nil {
-						logger.Error(ctx, "error update user quota cache: "+err.Error())
-					} else {
-						quota := task.Quota
-						if quota != 0 {
-							err = model.IncreaseUserQuota(task.UserId, quota)
-							if err != nil {
-								logger.Error(ctx, "fail to increase user quota: "+err.Error())
+					if (task.Progress != "100%" && responseItem.FailReason != "") || responseItem.FailReason == "未知集成" {
+						logger.Info(ctx, task.MjId+" 构建失败，"+task.FailReason)
+						task.Progress = "100%"
+						err = model.CacheUpdateUserQuota2(task.UserId)
+						if err != nil {
+							logger.Error(ctx, "error update user quota cache: "+err.Error())
+						} else {
+							quota := task.Quota
+							if quota != 0 {
+								err = model.IncreaseUserQuota(task.UserId, quota)
+								if err != nil {
+									logger.Error(ctx, "fail to increase user quota: "+err.Error())
+								}
+								logContent := fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, common.LogQuota(quota))
+								model.RecordLog(task.UserId, model.LogTypeSystem, logContent)
 							}
-							logContent := fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, common.LogQuota(quota))
-							model.RecordLog(task.UserId, model.LogTypeSystem, logContent)
 						}
 					}
-				}
-				if task.Progress == "100%" && config.CfR2storeEnabled {
-					objectKey := task.MjId
-					// 为上传图片创建独立的 context，并设置更长的超时时间
-					uploadCtx, uploadCancel := context.WithTimeout(context.Background(), time.Minute*10)
+					if task.Progress == "100%" && config.CfR2storeEnabled {
+						objectKey := task.MjId
+						// 为上传图片创建独立的 context，并设置更长的超时时间
+						uploadCtx, uploadCancel := context.WithTimeout(context.Background(), time.Minute*10)
 
-					imageData, err := DownloadImage(task.ImageUrl)
-					if err != nil {
-						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+						imageData, err := DownloadImage(task.ImageUrl)
+						if err != nil {
+							logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+						}
+						r2Url, err := UploadToR2WithURL(uploadCtx, imageData, config.CfBucketImageName, objectKey, config.CfImageAccessKey, config.CfImageSecretKey, config.CfImageEndpoint)
+						if err != nil {
+							logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+						}
+						task.StoreUrl = r2Url
+						uploadCancel() // 确保在每次上传完成后调用
 					}
-					r2Url, err := UploadToR2WithURL(uploadCtx, imageData, config.CfBucketImageName, objectKey, config.CfImageAccessKey, config.CfImageSecretKey, config.CfImageEndpoint)
+					err = task.Update()
 					if err != nil {
-						logger.SysLog(fmt.Sprintf("err:%+v\n", err))
+						logger.Error(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 					}
-					task.StoreUrl = r2Url
-					uploadCancel() // 确保在每次上传完成后调用
-				}
-				err = task.Update()
-				if err != nil {
-					logger.Error(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 				}
 			}
 		}

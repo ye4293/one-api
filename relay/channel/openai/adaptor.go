@@ -51,8 +51,8 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	}
 	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
 	if meta.ChannelType == common.ChannelTypeOpenRouter {
-		req.Header.Set("HTTP-Referer", "https://github.com/songquanpeng/one-api")
-		req.Header.Set("X-Title", "One API")
+		req.Header.Set("HTTP-Referer", "https://www.ezlinkai.com/")
+		req.Header.Set("X-Title", "EZLINK AI")
 	}
 	return nil
 }
