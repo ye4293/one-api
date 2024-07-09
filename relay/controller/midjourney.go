@@ -587,7 +587,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	}
 
 	midjResponseWithStatus, responseBody, err := midjourney.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
-	logger.SysLog(fmt.Sprintf("erruserQuota2:%+v\n", err))
 	if err != nil {
 		return midjResponseWithStatus
 	}

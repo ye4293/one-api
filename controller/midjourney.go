@@ -145,7 +145,6 @@ func UpdateMidjourneyTaskBulk() {
 				continue
 			}
 			responseBody, err := io.ReadAll(resp.Body)
-			logger.SysLog(fmt.Sprintf("responseBody:%s", responseBody))
 			if err != nil {
 				logger.Error(ctx, fmt.Sprintf("Get Task parse body error: %v", err))
 				continue

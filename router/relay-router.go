@@ -99,6 +99,7 @@ func SetRelayRouter(router *gin.Engine) {
 	// 定义设置 MJ 路由的函数
 	setupMJRoutes := func(group *gin.RouterGroup) {
 		group.GET("/image/:id", controller.RelayMidjourneyImage)
+		group.POST("/notify", middleware.Distribute(), controller.RelayMidjourney)
 		group.Use(middleware.TokenAuth(), middleware.Distribute())
 		{
 			group.POST("/submit/action", controller.RelayMidjourney)
@@ -109,7 +110,6 @@ func SetRelayRouter(router *gin.Engine) {
 			group.POST("/submit/simple-change", controller.RelayMidjourney)
 			group.POST("/submit/describe", controller.RelayMidjourney)
 			group.POST("/submit/blend", controller.RelayMidjourney)
-			group.POST("/notify", controller.RelayMidjourney)
 			group.GET("/task/:id/fetch", controller.RelayMidjourney)
 			group.GET("/task/:id/image-seed", controller.RelayMidjourney)
 			group.POST("/task/list-by-condition", controller.RelayMidjourney)

@@ -158,6 +158,7 @@ func RelayMidjourney(c *gin.Context) {
 
 	var MjErr *midjourney.MidjourneyResponseWithStatusCode
 	MjErr = relayMidjourney(c, relayMode)
+	retryTimes := config.RetryTimes
 	if MjErr == nil {
 		return
 	}
@@ -169,9 +170,7 @@ func RelayMidjourney(c *gin.Context) {
 	// if originalModel != "" {
 	// 	ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
 	// }
-
-	retryTimes := config.RetryTimes
-	if !MidjourneyShouldRetry(MjErr) { //返回false就不执行重试
+	if !MidjourneyShouldRetryByCode(MjErr) { //返回false就不执行重试
 		retryTimes = 0
 		logger.SysLog("no retry!!!")
 	}
@@ -223,7 +222,7 @@ func RelayMidjourney(c *gin.Context) {
 	}
 }
 
-func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) bool {
+func MidjourneyShouldRetryByCode(MjErr *midjourney.MidjourneyResponseWithStatusCode) bool {
 	if MjErr.Response.Code == 23 { //当前渠道已满
 		return true
 	}
@@ -233,6 +232,7 @@ func MidjourneyShouldRetry(MjErr *midjourney.MidjourneyResponseWithStatusCode) b
 	if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 && MjErr.Response.Code != 4 {
 		return true
 	}
+
 	return true
 }
 
