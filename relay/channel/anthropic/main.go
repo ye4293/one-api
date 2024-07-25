@@ -63,6 +63,9 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		Stream:      textRequest.Stream,
 		Tools:       claudeTools,
 	}
+	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
+		claudeRequest.StopSequences = []string{stop}
+	}
 	if len(claudeTools) > 0 {
 		claudeToolChoice := struct {
 			Type string `json:"type"`

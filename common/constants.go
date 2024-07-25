@@ -78,6 +78,7 @@ const (
 	ChannelTypeTogetherAi
 	ChannelTypeDeepseek
 	channelTypeStability
+	ChannelTypeNovita
 
 	ChannelTypeDummy
 )
@@ -122,6 +123,7 @@ var ChannelBaseURLs = []string{
 	"https://api.together.xyz",                  //36
 	"https://api.deepseek.com",                  //37
 	"https://api.stability.ai",                  //38
+	"https://api.novita.ai/v3/openai",           // 39
 }
 
 const (

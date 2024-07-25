@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/config"
@@ -28,9 +29,10 @@ type Log struct {
 	CompletionTokens int     `json:"completion_tokens" gorm:"default:0"`
 	ChannelId        int     `json:"channel" gorm:"index"`
 	Duration         float64 `json:"duration" gorm:"default:0"`
-	Speed            float64 `json:"speed"`
+	Speed            float64 `json:"speed" gorm:"default:0"`
 	Title            string  `json:"title"`
 	HttpReferer      string  `json:"http_referer"`
+	Provider         string  `json:"provider"`
 }
 
 const (
@@ -78,6 +80,7 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 		Duration:         duration,
 		Title:            title,
 		HttpReferer:      httpReferer,
+		Speed:            math.Round(float64(completionTokens)/duration*100) / 100,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
+	"github.com/songquanpeng/one-api/relay/channel/novita"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -38,6 +39,8 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 		return util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType), nil
 	case common.ChannelTypeMinimax:
 		return minimax.GetRequestURL(meta)
+	case common.ChannelTypeNovita:
+		return novita.GetRequestURL(meta)
 	default:
 		return util.GetFullRequestURL(meta.BaseURL, meta.RequestURLPath, meta.ChannelType), nil
 	}

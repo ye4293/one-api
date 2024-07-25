@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
 	"github.com/songquanpeng/one-api/relay/channel/mistral"
 	"github.com/songquanpeng/one-api/relay/channel/moonshot"
+	"github.com/songquanpeng/one-api/relay/channel/novita"
 	"github.com/songquanpeng/one-api/relay/channel/togetherai"
 )
 
@@ -23,6 +24,7 @@ var CompatibleChannels = []int{
 	common.ChannelTypeGroq,
 	common.ChannelTypeLingYiWanWu,
 	common.ChannelTypeTogetherAi,
+	common.ChannelTypeNovita,
 }
 
 func GetCompatibleChannelMeta(channelType int) (string, []string) {
@@ -47,6 +49,8 @@ func GetCompatibleChannelMeta(channelType int) (string, []string) {
 		return "togetherai", togetherai.ModelList
 	case common.ChannelTypeDeepseek:
 		return "deepseek", deepseek.ModelList
+	case common.ChannelTypeNovita:
+		return "novita", novita.ModelList
 	default:
 		return "openai", ModelList
 	}

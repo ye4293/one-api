@@ -29,6 +29,7 @@ type GeneralOpenAIRequest struct {
 	Dimensions       int             `json:"dimensions,omitempty"`
 	Instruction      string          `json:"instruction,omitempty"`
 	Size             string          `json:"size,omitempty"`
+	Stop             any             `json:"stop,omitempty"`
 }
 
 func (r GeneralOpenAIRequest) ParseInput() []string {

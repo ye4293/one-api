@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
@@ -32,6 +33,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	}
 	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("anthropic-beta", "messages-2023-12-15")
+	if strings.HasPrefix(meta.ActualModelName, "claude-3-5-sonnet") {
+		req.Header.Set("anthropic-beta", "max-tokens-3-5-sonnet-2024-07-15")
+	}
 	return nil
 }
 
