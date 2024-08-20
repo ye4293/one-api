@@ -33,6 +33,7 @@ type Log struct {
 	Title            string  `json:"title"`
 	HttpReferer      string  `json:"http_referer"`
 	Provider         string  `json:"provider"`
+	XRequestID       string  `json:"x_request_id"`
 }
 
 const (
@@ -41,6 +42,7 @@ const (
 	LogTypeConsume
 	LogTypeManage
 	LogTypeSystem
+	LogTypeError
 )
 
 func RecordLog(userId int, logType int, content string) {

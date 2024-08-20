@@ -367,11 +367,12 @@ func GetModelPrice(name string, printErr bool) float64 {
 	return price
 }
 
-var userchannelmap = map[int]map[string]float64{
-	1: {
-		"openai": 0.8,
-		"claude": 1.0,
-	},
+var levels = map[string]float64{
+	"Lv1": 1.0,
+	"Lv2": 0.95,
+	"Lv3": 0.90,
+	"Lv4": 0.85,
+	"Lv5": 0.80,
 }
 
 var openaiModelList = []string{
@@ -382,6 +383,7 @@ var openaiModelList = []string{
 	"gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613",
 	"gpt-4-turbo-preview",
 	"gpt-4-vision-preview",
+	"gpt-4o", "gpt-4o-mini", "gpt-4o", "gpt-4o-mini-2024-07-18",
 	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
 	"text-curie-001", "text-babbage-001", "text-ada-001", "text-davinci-002", "text-davinci-003",
 	"text-moderation-latest", "text-moderation-stable",
@@ -392,36 +394,23 @@ var openaiModelList = []string{
 	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
 }
 
-var claudeModelList = []string{
-	"claude-instant-1.2", "claude-2.0", "claude-2.1",
-	"claude-3-haiku-20240307",
-	"claude-3-sonnet-20240229",
-	"claude-3-opus-20240229",
-}
-
-func GetProvider(model string) string {
+func GetUserModelTypeRation(group string, model string) float64 {
+	// 首先检查模型是否在列表中
+	modelInList := false
 	for _, m := range openaiModelList {
-		if model == m {
-			return "openai"
+		if m == model {
+			modelInList = true
+			break
 		}
 	}
-	for _, m := range claudeModelList {
-		if model == m {
-			return "claude"
-		}
-	}
-	return "default"
-}
 
-func GetUserModelTypeRation(userId int, model string) float64 {
-	provider := GetProvider(model)
-	if provider == "default" {
-		return 1.0
-	}
-	if providerScore, ok := userchannelmap[userId]; ok {
-		if score, ok := providerScore[provider]; ok {
-			return score
+	// 如果模型在列表中，返回对应 group 的值
+	if modelInList {
+		if ratio, exists := levels[group]; exists {
+			return ratio
 		}
 	}
+
+	// 如果模型不在列表中或 group 不存在，返回默认值 1.0
 	return 1.0
 }

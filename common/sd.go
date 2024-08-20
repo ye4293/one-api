@@ -17,6 +17,7 @@ const (
 	SdActionControlStructure      = "CONTROL_STRUCTURE"
 	SdActionImageToVideo          = "IMAGE_TO_VIDEO"
 	SdActionVideoResult           = "VIDEO_RESULT"
+	SdAction3d                    = "SD_3D"
 )
 
 var SdModel2Action = map[string]string{
@@ -36,4 +37,5 @@ var SdModel2Action = map[string]string{
 	"control_structure":       SdActionControlStructure,
 	"image_to_video":          SdActionImageToVideo,
 	"video_result":            SdActionVideoResult,
+	"sd_3d":                   SdAction3d,
 }

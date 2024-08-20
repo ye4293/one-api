@@ -81,7 +81,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	modelRatio := common.GetModelRatio(imageRequest.Model)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	userModelTypeRatio := common.GetUserModelTypeRation(meta.UserId, imageRequest.Model)
+	userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, imageRequest.Model)
 	ratio := modelRatio * groupRatio * userModelTypeRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 

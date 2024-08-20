@@ -41,6 +41,7 @@ const (
 	RelayModeControlStructure
 	RelayModeImageToVideo
 	RelayModeVideoResult
+	RelayMode3D
 )
 
 func Path2RelayMode(path string) int {
@@ -149,6 +150,8 @@ func Path2RelayModeSd(path string) int {
 		relayMode = RelayModeVideoResult
 	} else if strings.HasPrefix(path, "/v2beta/image-to-video") {
 		relayMode = RelayModeImageToVideo
+	} else if strings.HasPrefix(path, "/v2beta/3d/stable-fast-3d") {
+		relayMode = RelayMode3D
 	}
 
 	return relayMode

@@ -38,6 +38,7 @@ func GetSdRequestModel(relayModel int) (string, error) {
 		relayconstant.RelayModeControlStructure:      common.SdActionControlStructure,
 		relayconstant.RelayModeImageToVideo:          common.SdActionImageToVideo,
 		relayconstant.RelayModeVideoResult:           common.SdActionVideoResult,
+		relayconstant.RelayMode3D:                    common.SdAction3d,
 	}
 
 	modelName, ok := modelMap[relayModel]

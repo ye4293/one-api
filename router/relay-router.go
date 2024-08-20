@@ -142,5 +142,6 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySdRouter.POST("/stable-image/control/structure", controller.RelaySd)
 		relaySdRouter.POST("/image-to-video", controller.RelaySd)
 		relaySdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
+		// relaySdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
 	}
 }
