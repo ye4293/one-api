@@ -252,7 +252,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
 
 	// 设置状态码
-	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.WriteHeader(http.StatusOK)
 
 	// 写入响应体
 	_, err = c.Writer.Write(responseBody)
