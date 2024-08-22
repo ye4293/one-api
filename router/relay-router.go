@@ -144,4 +144,9 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
 		// relaySdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
 	}
+	relayFluxRouter := router.Group("/flux")
+	{
+		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
+	}
+
 }

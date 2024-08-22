@@ -2,18 +2,24 @@ package xunfei
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
-	"strings"
 )
 
 type Adaptor struct {
 	request *model.GeneralOpenAIRequest
+}
+
+// ConvertImageRequest implements channel.Adaptor.
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	panic("unimplemented")
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {

@@ -20,6 +20,11 @@ type Adaptor struct {
 	ChannelType int
 }
 
+// ConvertImageRequest implements channel.Adaptor.
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	panic("unimplemented")
+}
+
 func (a *Adaptor) Init(meta *util.RelayMeta) {
 	a.ChannelType = meta.ChannelType
 }

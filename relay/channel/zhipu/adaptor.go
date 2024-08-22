@@ -3,19 +3,25 @@ package zhipu
 import (
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"math"
-	"net/http"
-	"strings"
 )
 
 type Adaptor struct {
 	APIVersion string
+}
+
+// ConvertImageRequest implements channel.Adaptor.
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	panic("unimplemented")
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {

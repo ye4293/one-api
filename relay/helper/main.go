@@ -13,6 +13,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/ollama"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/palm"
+	"github.com/songquanpeng/one-api/relay/channel/replicate"
 	"github.com/songquanpeng/one-api/relay/channel/tencent"
 	"github.com/songquanpeng/one-api/relay/channel/xunfei"
 	"github.com/songquanpeng/one-api/relay/channel/zhipu"
@@ -49,6 +50,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &coze.Adaptor{}
 	case constant.APITypeCohere:
 		return &cohere.Adaptor{}
+	case constant.APITypeReplicate:
+		return &replicate.Adaptor{}
 	}
 	return nil
 }

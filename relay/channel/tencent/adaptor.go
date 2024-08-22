@@ -3,20 +3,26 @@ package tencent
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
-	"strings"
 )
 
 // https://cloud.tencent.com/document/api/1729/101837
 
 type Adaptor struct {
 	Sign string
+}
+
+// ConvertImageRequest implements channel.Adaptor.
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	panic("unimplemented")
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {

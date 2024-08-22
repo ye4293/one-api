@@ -30,6 +30,10 @@ type GeneralOpenAIRequest struct {
 	Instruction      string          `json:"instruction,omitempty"`
 	Size             string          `json:"size,omitempty"`
 	Stop             any             `json:"stop,omitempty"`
+	AspectRatio      string          `json:"aspect_ratio,omitempty"`
+	NumOutputs       int             `json:"num_outputs,omitempty"`
+	OutputFormat     string          `json:"output_format,omitempty"`
+	OutputQuality    int             `json:"output_quality,omitempty"`
 }
 
 func (r GeneralOpenAIRequest) ParseInput() []string {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	"github.com/songquanpeng/one-api/relay/channel/replicate"
 	"github.com/songquanpeng/one-api/relay/constant"
+	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 
@@ -58,18 +61,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_image_cost_ratio_failed", http.StatusInternalServerError)
 	}
-
+	var fullRequestURL string
 	requestURL := c.Request.URL.String()
-	fullRequestURL := util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType)
+	fullRequestURL = util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType)
 	if meta.ChannelType == common.ChannelTypeAzure {
-		// https://learn.microsoft.com/en-us/azure/ai-services/openai/dall-e-quickstart?tabs=dalle3%2Ccommand-line&pivots=rest-api
 		apiVersion := util.GetAzureAPIVersion(c)
-		// https://{resource_name}.openai.azure.com/openai/deployments/dall-e-3/images/generations?api-version=2024-03-01-preview
 		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
 	}
 
 	var requestBody io.Reader
-	if isModelMapped || meta.ChannelType == common.ChannelTypeAzure { // make Azure channel request body
+	if isModelMapped || meta.ChannelType == common.ChannelTypeAzure {
 		jsonStr, err := json.Marshal(imageRequest)
 		if err != nil {
 			return openai.ErrorWrapper(err, "marshal_image_request_failed", http.StatusInternalServerError)
@@ -77,6 +78,25 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		requestBody = bytes.NewBuffer(jsonStr)
 	} else {
 		requestBody = c.Request.Body
+	}
+
+	adaptor := helper.GetAdaptor(meta.APIType)
+	if adaptor == nil {
+		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
+	}
+	adaptor.Init(meta)
+
+	if meta.ChannelType == common.ChannelTypeReplicate {
+		fullRequestURL, err = adaptor.GetRequestURL(meta)
+		finalRequest, err := adaptor.ConvertImageRequest(imageRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "convert_image_request_failed", http.StatusInternalServerError)
+		}
+		jsonStr, err := json.Marshal(finalRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "marshal_image_request_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(jsonStr)
 	}
 
 	modelRatio := common.GetModelRatio(imageRequest.Model)
@@ -96,7 +116,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 	}
 	token := c.Request.Header.Get("Authorization")
-	if meta.ChannelType == common.ChannelTypeAzure { // Azure authentication
+	if meta.ChannelType == common.ChannelTypeAzure {
 		token = strings.TrimPrefix(token, "Bearer ")
 		req.Header.Set("api-key", token)
 	} else {
@@ -122,9 +142,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	var imageResponse openai.ImageResponse
 
 	defer func(ctx context.Context) {
-		if resp != nil && resp.StatusCode != http.StatusOK {
+		if resp == nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
 			return
 		}
+
 		err := model.PostConsumeTokenQuota(meta.TokenId, quota)
 		if err != nil {
 			logger.SysError("error consuming token remain quota: " + err.Error())
@@ -135,13 +156,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 		if quota != 0 {
 			referer := c.Request.Header.Get("HTTP-Referer")
-
-			// 获取X-Title header
 			title := c.Request.Header.Get("X-Title")
-
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 			tokenName := c.GetString("token_name")
+			if meta.ChannelType == common.ChannelTypeReplicate {
+				quota = int64(ratio * 500000)
+			}
 			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f 用户模型倍率 %.2f", modelRatio, groupRatio, userModelTypeRatio)
 			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
@@ -151,7 +172,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}(c.Request.Context())
 
 	responseBody, err := io.ReadAll(resp.Body)
-
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
@@ -164,20 +184,151 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
 
-	resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+	if meta.ChannelType == common.ChannelTypeReplicate {
+		var replicateResp replicate.ReplicateResponse
+		err = json.Unmarshal(responseBody, &replicateResp)
+		if err != nil {
+			return openai.ErrorWrapper(err, "unmarshal_replicate_response_failed", http.StatusInternalServerError)
+		}
 
+		channel, err := model.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_channel_failed", http.StatusInternalServerError)
+		}
+
+		finalResult, err := getReplicateFinalResult(replicateResp.URLs.Get, channel.Key)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_replicate_final_result_failed", http.StatusInternalServerError)
+		}
+
+		logger.SysLog(fmt.Sprintf("finalResult:%+v", finalResult))
+
+		// 构造 DALL-E 3 格式的响应
+		dalleResp := ImageResponse{
+			Created: time.Now().Unix(),
+			Data:    make([]ImageData, len(finalResult.Output)),
+		}
+
+		for i, url := range finalResult.Output {
+			dalleResp.Data[i] = ImageData{
+				RevisedPrompt: imageRequest.Prompt,
+				URL:           url,
+			}
+		}
+
+		// 如果有 revised_prompt，只保留第一个
+		// if len(finalResult.Input.Prompt) > 0 {
+		// 	dalleResp.Data[0].RevisedPrompt = finalResult.Input.Prompt
+		// }
+
+		flux := model.Flux{
+			Id:        finalResult.ID,
+			UserId:    meta.UserId,
+			Prompt:    finalResult.Input.Prompt,
+			ChannelId: meta.ChannelId,
+		}
+
+		err = flux.Insert()
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed to insert flux", http.StatusInternalServerError)
+		}
+
+		modifiedResponseBody, err := json.Marshal(dalleResp)
+		if err != nil {
+			return openai.ErrorWrapper(err, "marshal_modified_response_failed", http.StatusInternalServerError)
+		}
+
+		responseBody = modifiedResponseBody
+
+		logger.SysLog(fmt.Sprintf("Modified Response: %+v", dalleResp))
+	}
+
+	// 设置响应头
 	for k, v := range resp.Header {
 		c.Writer.Header().Set(k, v[0])
 	}
+
+	// 设置新的 Content-Length
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
+
+	// 设置状态码
 	c.Writer.WriteHeader(resp.StatusCode)
 
-	_, err = io.Copy(c.Writer, resp.Body)
+	// 写入响应体
+	_, err = c.Writer.Write(responseBody)
 	if err != nil {
-		return openai.ErrorWrapper(err, "copy_response_body_failed", http.StatusInternalServerError)
+		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
-	}
+
 	return nil
+
+}
+
+type ImageResponse struct {
+	Created int64       `json:"created"`
+	Data    []ImageData `json:"data"`
+}
+
+type ImageData struct {
+	RevisedPrompt string `json:"revised_prompt"`
+	URL           string `json:"url"`
+}
+
+// func extractString(inputString string) string {
+// 	re := regexp.MustCompile(`\/([\w]+)$`)
+// 	result := re.FindStringSubmatch(inputString)
+// 	if len(result) > 1 {
+// 		return result[1]
+// 	} else {
+// 		return ""
+// 	}
+// }
+
+func getReplicateFinalResult(url, apiKey string) (*replicate.FinalRequestResponse, error) {
+
+	client := &http.Client{
+		Timeout: time.Second * 30,
+	}
+
+	maxRetries := 10
+	retryDelay := time.Second * 1
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating request: %v", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("error sending request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("error reading response body: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		}
+
+		var replicateResp replicate.FinalRequestResponse
+		err = json.Unmarshal(body, &replicateResp)
+		if err != nil {
+			logger.SysLog(fmt.Sprintf("Error unmarshalling response: %v", err))
+			return nil, fmt.Errorf("error unmarshalling response: %v", err)
+		}
+
+		// 检查 Output 是否为空
+		if replicateResp.Output != nil && len(replicateResp.Output) > 0 {
+			return &replicateResp, nil
+		}
+		time.Sleep(retryDelay)
+	}
+
+	return nil, fmt.Errorf("failed to get non-empty output after %d attempts", maxRetries)
 }

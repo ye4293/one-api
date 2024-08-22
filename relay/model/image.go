@@ -9,4 +9,9 @@ type ImageRequest struct {
 	ResponseFormat string `json:"response_format,omitempty"`
 	Style          string `json:"style,omitempty"`
 	User           string `json:"user,omitempty"`
+	AspectRatio    string `json:"aspect_ratio,omitempty"`
+	NumOutputs     int    `json:"num_outputs,omitempty"`
+	Seed           int    `json:"seed,omitempty"`
+	OutputFormat   string `json:"output_format,omitempty"`
+	OutputQuality  int    `json:"output_quality,omitempty"`
 }

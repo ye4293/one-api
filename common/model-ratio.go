@@ -213,7 +213,7 @@ func GetModelRatio(name string) float64 {
 	}
 	ratio, ok := ModelRatio[name]
 	if !ok {
-		ratio, ok = DefaultModelRatio[name]
+		ratio, ok = DefaultModelPrice[name]
 	}
 	if !ok {
 		logger.SysError("model ratio not found: " + name)
@@ -322,6 +322,9 @@ var DefaultModelPrice = map[string]float64{
 	"control_sketch":          0.03,
 	"control_structure":       0.03,
 	"image_to_video":          0.2,
+	"flux-pro":                0.055,
+	"flux-schnell":            0.003,
+	"flux-dev":                0.030,
 }
 
 //后续进行修正
@@ -383,7 +386,7 @@ var openaiModelList = []string{
 	"gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613",
 	"gpt-4-turbo-preview",
 	"gpt-4-vision-preview",
-	"gpt-4o", "gpt-4o-mini", "gpt-4o", "gpt-4o-mini-2024-07-18",
+	"gpt-4o", "gpt-4o-mini", "gpt-4o", "gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06",
 	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
 	"text-curie-001", "text-babbage-001", "text-ada-001", "text-davinci-002", "text-davinci-003",
 	"text-moderation-latest", "text-moderation-stable",

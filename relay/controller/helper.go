@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -37,8 +38,8 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 	return textRequest, nil
 }
 
-func getImageRequest(c *gin.Context, relayMode int) (*openai.ImageRequest, error) {
-	imageRequest := &openai.ImageRequest{}
+func getImageRequest(c *gin.Context, relayMode int) (*relaymodel.ImageRequest, error) {
+	imageRequest := &relaymodel.ImageRequest{}
 	err := common.UnmarshalBodyReusable(c, imageRequest)
 	if err != nil {
 		return nil, err
@@ -55,7 +56,10 @@ func getImageRequest(c *gin.Context, relayMode int) (*openai.ImageRequest, error
 	return imageRequest, nil
 }
 
-func validateImageRequest(imageRequest *openai.ImageRequest, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+	if strings.HasPrefix(imageRequest.Model, "flux") {
+		return nil
+	}
 	// model validation
 	_, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
 	if !hasValidSize {
@@ -78,7 +82,10 @@ func validateImageRequest(imageRequest *openai.ImageRequest, meta *util.RelayMet
 	return nil
 }
 
-func getImageCostRatio(imageRequest *openai.ImageRequest) (float64, error) {
+func getImageCostRatio(imageRequest *relaymodel.ImageRequest) (float64, error) {
+	if strings.HasPrefix(imageRequest.Model, "flux") {
+		return 1, nil
+	}
 	if imageRequest == nil {
 		return 0, errors.New("imageRequest is nil")
 	}

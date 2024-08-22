@@ -38,8 +38,6 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	baseURL := c.GetString("base_url")
 
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
-	logger.SysLog(fmt.Sprintf("baseURL:%+v\n", baseURL))
-	logger.SysLog(fmt.Sprintf("requestURL:%+v\n", requestURL))
 
 	var modelPrice float64
 	var modelName string

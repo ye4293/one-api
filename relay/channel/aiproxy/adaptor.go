@@ -3,16 +3,22 @@ package aiproxy
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"io"
-	"net/http"
 )
 
 type Adaptor struct {
+}
+
+// ConvertImageRequest implements channel.Adaptor.
+func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
+	panic("unimplemented")
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {

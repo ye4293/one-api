@@ -79,6 +79,7 @@ const (
 	ChannelTypeDeepseek
 	channelTypeStability
 	ChannelTypeNovita
+	ChannelTypeReplicate
 
 	ChannelTypeDummy
 )
@@ -124,6 +125,7 @@ var ChannelBaseURLs = []string{
 	"https://api.deepseek.com",                  //37
 	"https://api.stability.ai",                  //38
 	"https://api.novita.ai/v3/openai",           // 39
+	"https://api.replicate.com",                 //40
 }
 
 const (
