@@ -161,7 +161,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			duration := math.Round(rowDuration*1000) / 1000
 			tokenName := c.GetString("token_name")
 			if meta.ChannelType == common.ChannelTypeReplicate {
-				quota = int64(ratio * 500000)
+				quota = int64(ratio*500000) * int64(imageRequest.N)
 			}
 			logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f 用户模型倍率 %.2f", modelRatio, groupRatio, userModelTypeRatio)
 			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
