@@ -57,7 +57,7 @@ func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) 
 	fluxRequest := FluxReplicate{
 		Input: FluxReplicateInput{
 			Prompt:        request.Prompt,
-			NumOutputs:    request.N,
+			NumOutputs:    1,
 			Seed:          request.Seed,
 			OutputFormat:  request.ResponseFormat,
 			OutputQuality: request.OutputQuality,
