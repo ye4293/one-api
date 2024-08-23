@@ -206,10 +206,26 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		// 构造 DALL-E 3 格式的响应
 		dalleResp := ImageResponse{
 			Created: time.Now().Unix(),
-			Data:    make([]ImageData, len(finalResult.Output)),
 		}
 
-		for i, url := range finalResult.Output {
+		// 处理 Output 字段
+		var outputURLs []string
+		switch output := finalResult.Output.(type) {
+		case string:
+			outputURLs = []string{output}
+		case []interface{}:
+			for _, url := range output {
+				if strURL, ok := url.(string); ok {
+					outputURLs = append(outputURLs, strURL)
+				}
+			}
+		case []string:
+			outputURLs = output
+		}
+
+		// 构造 Data 字段
+		dalleResp.Data = make([]ImageData, len(outputURLs))
+		for i, url := range outputURLs {
 			dalleResp.Data[i] = ImageData{
 				RevisedPrompt: imageRequest.Prompt,
 				URL:           url,
@@ -218,7 +234,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 如果有 revised_prompt，只保留第一个
 		// if len(finalResult.Input.Prompt) > 0 {
-		// 	dalleResp.Data[0].RevisedPrompt = finalResult.Input.Prompt
+		//     dalleResp.Data[0].RevisedPrompt = finalResult.Input.Prompt
 		// }
 
 		flux := model.Flux{
@@ -229,6 +245,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		err = flux.Insert()
+
 		if err != nil {
 			return openai.ErrorWrapper(err, "failed to insert flux", http.StatusInternalServerError)
 		}
@@ -286,11 +303,11 @@ type ImageData struct {
 
 func getReplicateFinalResult(url, apiKey string) (*replicate.FinalRequestResponse, error) {
 	client := &http.Client{
-		Timeout: time.Minute, // 将超时时间设置为1分钟
+		Timeout: time.Minute, // 1分钟超时
 	}
 
-	maxRetries := 30              // 增加到30次重试
-	retryDelay := time.Second * 2 // 每次重试间隔为2秒
+	maxRetries := 30
+	retryDelay := time.Second * 2
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		req, err := http.NewRequest("GET", url, nil)
@@ -322,12 +339,31 @@ func getReplicateFinalResult(url, apiKey string) (*replicate.FinalRequestRespons
 			return nil, fmt.Errorf("error unmarshalling response: %v", err)
 		}
 
-		// 检查 Output 是否为空
-		if replicateResp.Output != nil && len(replicateResp.Output) > 0 {
-			return &replicateResp, nil
+		// 检查状态和输出
+		if replicateResp.Status == "succeeded" {
+			switch output := replicateResp.Output.(type) {
+			case string:
+				if output != "" {
+					return &replicateResp, nil
+				}
+			case []interface{}:
+				if len(output) > 0 {
+					return &replicateResp, nil
+				}
+			case []string:
+				if len(output) > 0 {
+					return &replicateResp, nil
+				}
+			}
 		}
+
+		// 如果状态为 "failed"，立即返回错误
+		if replicateResp.Status == "failed" {
+			return nil, fmt.Errorf("prediction failed: %v", replicateResp.Error)
+		}
+
 		time.Sleep(retryDelay)
 	}
 
-	return nil, fmt.Errorf("failed to get non-empty output after %d attempts", maxRetries)
+	return nil, fmt.Errorf("failed to get valid output after %d attempts", maxRetries)
 }

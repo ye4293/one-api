@@ -46,15 +46,15 @@ type FinalRequestResponse struct {
 	Version     string      `json:"version"`
 	Input       Input       `json:"input"`
 	Logs        string      `json:"logs"`
-	Output      []string    `json:"output"`
+	Output      interface{} `json:"output"` // 使用 interface{} 来处理多种可能的类型
 	DataRemoved bool        `json:"data_removed"`
 	Error       interface{} `json:"error"`
 	Status      string      `json:"status"`
 	CreatedAt   time.Time   `json:"created_at"`
 	StartedAt   time.Time   `json:"started_at"`
-	CompletedAt time.Time   `json:"completed_at"`
+	CompletedAt *time.Time  `json:"completed_at,omitempty"`
 	URLs        URLs        `json:"urls"`
-	Metrics     Metrics     `json:"metrics"`
+	Metrics     *Metrics    `json:"metrics,omitempty"`
 }
 
 type Input struct {
