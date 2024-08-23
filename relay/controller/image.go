@@ -285,13 +285,12 @@ type ImageData struct {
 // }
 
 func getReplicateFinalResult(url, apiKey string) (*replicate.FinalRequestResponse, error) {
-
 	client := &http.Client{
-		Timeout: time.Second * 30,
+		Timeout: time.Minute, // 将超时时间设置为1分钟
 	}
 
-	maxRetries := 10
-	retryDelay := time.Second * 1
+	maxRetries := 30              // 增加到30次重试
+	retryDelay := time.Second * 2 // 每次重试间隔为2秒
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		req, err := http.NewRequest("GET", url, nil)
