@@ -67,6 +67,14 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 	if !config.LogConsumeEnabled {
 		return
 	}
+
+	var speed float64
+	if duration > 0 {
+		speed = math.Round(float64(completionTokens)/duration*100) / 100
+	} else {
+		speed = 0 // 或者设置为其他默认值
+	}
+
 	log := &Log{
 		UserId:           userId,
 		Username:         GetUsernameById(userId),
@@ -82,7 +90,7 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 		Duration:         duration,
 		Title:            title,
 		HttpReferer:      httpReferer,
-		Speed:            math.Round(float64(completionTokens)/duration*100) / 100,
+		Speed:            speed,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
