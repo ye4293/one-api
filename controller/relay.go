@@ -342,3 +342,50 @@ func RelayNotFound(c *gin.Context) {
 		"error": err,
 	})
 }
+
+type ModelRequest struct {
+	Model string `json:"model"`
+}
+
+func RelayVideoGenearte(c *gin.Context) {
+	ctx := c.Request.Context()
+	if config.DebugEnabled {
+		requestBody, _ := common.GetRequestBody(c)
+		logger.Debugf(ctx, "request body: %s", string(requestBody))
+	}
+	// channelId := c.GetInt("channel_id")
+	// userId := c.GetInt("id")
+	// lastFailedChannelId := channelId
+	// channelName := c.GetString("channel_name")
+	// group := c.GetString("group")
+	// originalModel := c.GetString("original_model")
+	var modelRequest ModelRequest
+
+	err := common.UnmarshalBodyReusable(c, &modelRequest)
+	if err != nil {
+
+	}
+	bizErr := controller.DoVideoRequest(c, modelRequest.Model)
+	if bizErr != nil {
+		if bizErr.StatusCode == http.StatusTooManyRequests {
+			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+		}
+		c.JSON(bizErr.StatusCode, gin.H{
+			"error": util.ProcessString(bizErr.Error.Message),
+		})
+	}
+}
+
+func RelayVideoResult(c *gin.Context) {
+	modelType := c.Query("type")
+	taskId := c.Query("taskid")
+	bizErr := controller.GetVideoResult(c, modelType, taskId)
+	if bizErr != nil {
+		if bizErr.StatusCode == http.StatusTooManyRequests {
+			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+		}
+		c.JSON(bizErr.StatusCode, gin.H{
+			"error": util.ProcessString(bizErr.Error.Message),
+		})
+	}
+}

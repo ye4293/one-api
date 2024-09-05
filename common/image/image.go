@@ -7,6 +7,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -16,17 +17,38 @@ import (
 )
 
 // Regex to match data URL pattern
-var	dataURLPattern = regexp.MustCompile(`data:image/([^;]+);base64,(.*)`)
+var dataURLPattern = regexp.MustCompile(`data:image/([^;]+);base64,(.*)`)
 
 func IsImageUrl(url string) (bool, error) {
-	resp, err := http.Head(url)
+	// 创建一个自定义的 HTTP 客户端
+	client := &http.Client{}
+
+	// 创建一个新的 GET 请求
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return false, err
 	}
-	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "image/") {
-		return false, nil
+
+	// 设置自定义的 User-Agent
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+	// 发送请求
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
 	}
-	return true, nil
+	defer resp.Body.Close()
+
+	// 读取响应体的前 512 字节
+	buffer := make([]byte, 512)
+	_, err = io.ReadFull(resp.Body, buffer)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false, err
+	}
+
+	// 使用 http.DetectContentType 检测内容类型
+	contentType := http.DetectContentType(buffer)
+	return strings.HasPrefix(contentType, "image/"), nil
 }
 
 func GetImageSizeFromUrl(url string) (width int, height int, err error) {
