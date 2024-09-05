@@ -19,7 +19,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
 		relayV1Router.POST("/files", controller.UploadFile)
-		relayV1Router.GET("/video/generation/result", controller.RelayVideoResult)
+		relayV1Router.GET("/video/generations/result", controller.RelayVideoResult)
 	}
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
