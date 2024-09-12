@@ -33,8 +33,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	panic("unimplemented")
 }
 
-// GetRequestURL implements channel.Adaptor.
-
 // SetupRequestHeader implements channel.Adaptor.
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	panic("unimplemented")

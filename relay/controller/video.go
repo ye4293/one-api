@@ -339,7 +339,7 @@ func GetVideoResult(c *gin.Context, modelType string, taskId string) *model.Erro
 		c.DataFromReader(http.StatusOK, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
 	} else if modelType == "minimax" {
 		// 解析 Minimax 的响应
-		minimaxResponse, err := pollForCompletion(channel, taskId, 10, 5*time.Second)
+		minimaxResponse, err := pollForCompletion(channel, taskId, 10, 1*time.Second)
 		if err != nil {
 			// 检查是否是最大重试错误
 			if strings.Contains(err.Error(), "max retries reached") {
