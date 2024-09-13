@@ -50,6 +50,13 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(err, "Failed to get modelName", http.StatusBadRequest)
 	}
 
+	if relayMode == 24 {
+		if sdRequest.Model == "" {
+			modelName = "sd3-large"
+		} else {
+			modelName = sdRequest.Model
+		}
+	}
 	modelPrice = common.GetModelPrice(modelName, true)
 	ratio := modelPrice * groupRatio
 	userQuota, err := dbmodel.CacheGetUserQuota(ctx, userId)

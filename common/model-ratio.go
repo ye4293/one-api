@@ -325,6 +325,9 @@ var DefaultModelPrice = map[string]float64{
 	"flux-pro":                0.055,
 	"flux-schnell":            0.003,
 	"flux-dev":                0.030,
+	"sd3-large":               0.065,
+	"sd3-medium":              0.035,
+	"sd3-large-turbo":         0.04,
 }
 
 //后续进行修正

@@ -20,22 +20,29 @@ type Adaptor struct {
 
 // ConvertRequest implements channel.Adaptor.
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
-	panic("unimplemented")
+	return nil, errors.New("wrong path url please use /v1/images/generations")
 }
 
 // DoRequest implements channel.Adaptor.
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
-	panic("unimplemented")
+	return nil, errors.New("DoRequest method not implemented for Replicate adaptor")
 }
 
 // DoResponse implements channel.Adaptor.
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
-	panic("unimplemented")
+	return nil, &model.ErrorWithStatusCode{
+		Error: model.Error{
+			Message: "DoResponse method not implemented for Replicate adaptor",
+			Type:    "internal_error",
+			Code:    "not_implemented",
+		},
+		StatusCode: http.StatusNotImplemented,
+	}
 }
 
 // SetupRequestHeader implements channel.Adaptor.
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
-	panic("unimplemented")
+	return errors.New("SetupRequestHeader method not implemented for Replicate adaptor")
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -55,7 +62,7 @@ func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) 
 	fluxRequest := FluxReplicate{
 		Input: FluxReplicateInput{
 			Prompt:        request.Prompt,
-			NumOutputs:    1,
+			NumOutputs:    request.N,
 			Seed:          request.Seed,
 			OutputFormat:  request.ResponseFormat,
 			OutputQuality: request.OutputQuality,
@@ -78,17 +85,25 @@ func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) 
 }
 
 func sizeToAspectRatio(size string) (string, error) {
-	parts := strings.Split(size, "x")
+	var parts []string
+	if strings.Contains(size, "x") {
+		parts = strings.Split(size, "x")
+	} else if strings.Contains(size, ":") {
+		parts = strings.Split(size, ":")
+	} else {
+		return "", fmt.Errorf("invalid size format: %s", size)
+	}
+
 	if len(parts) != 2 {
 		return "", fmt.Errorf("invalid size format: %s", size)
 	}
 
-	width, err := strconv.Atoi(parts[0])
+	width, err := strconv.Atoi(strings.TrimSpace(parts[0]))
 	if err != nil {
 		return "", fmt.Errorf("invalid width: %s", parts[0])
 	}
 
-	height, err := strconv.Atoi(parts[1])
+	height, err := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if err != nil {
 		return "", fmt.Errorf("invalid height: %s", parts[1])
 	}

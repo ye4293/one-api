@@ -1,14 +1,15 @@
 package stability
 
 type SdGenerationRequest struct {
-	Prompt          string  `json:"prompt" required:"true"`
-	AspectRatio     string  `json:"aspect_ratio,omitempty"` // 默认值为"1:1"
-	NegativePrompt  string  `json:"negative_prompt,omitempty"`
-	Seed            int     `json:"seed,omitempty"` // 默认值为0
-	StylePreset     string  `json:"style_preset,omitempty"`
-	OutputFormat    string  `json:"output_format,omitempty"` // 默认值为"png"
-	CFGSCALE        float64 `json:"cfg_scale,omitempty"`
-	MontionBucketId int     `json:"motion_bucket_id,omitempty"`
+	Prompt         string  `json:"prompt" binding:"required,min=1,max=10000"`
+	Mode           string  `json:"mode,omitempty" binding:"omitempty,oneof=text-to-image image-to-image"`
+	Image          []byte  `json:"image,omitempty"`
+	Strength       float64 `json:"strength,omitempty" binding:"omitempty,min=0,max=1"`
+	AspectRatio    string  `json:"aspect_ratio,omitempty" binding:"omitempty,oneof=16:9 1:1 21:9 2:3 3:2 4:5 5:4 9:16 9:21"`
+	Model          string  `json:"model,omitempty" binding:"omitempty,oneof=sd3-large sd3-large-turbo sd3-medium"`
+	Seed           uint32  `json:"seed,omitempty" binding:"omitempty,max=4294967294"`
+	OutputFormat   string  `json:"output_format,omitempty" binding:"omitempty,oneof=jpeg png"`
+	NegativePrompt string  `json:"negative_prompt,omitempty" binding:"omitempty,max=10000"`
 }
 
 type SdResponse struct {
