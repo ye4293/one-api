@@ -1,7 +1,7 @@
 package stability
 
 type SdGenerationRequest struct {
-	Prompt         string  `json:"prompt" binding:"required,min=1,max=10000"`
+	Prompt         string  `json:"prompt"`
 	Mode           string  `json:"mode,omitempty" binding:"omitempty,oneof=text-to-image image-to-image"`
 	Image          []byte  `json:"image,omitempty"`
 	Strength       float64 `json:"strength,omitempty" binding:"omitempty,min=0,max=1"`

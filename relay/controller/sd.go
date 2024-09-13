@@ -30,6 +30,7 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	var sdRequest stability.SdGenerationRequest
 	err := c.Bind(&sdRequest)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("err:%s", err))
 		return openai.ErrorWrapper(err, "Failed to bind request", http.StatusBadRequest)
 	}
 
@@ -71,10 +72,10 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	}
 
 	sdResponse, responseBody, sdResponseStruct, responseModelName, err := stability.DoSdHttpRequest(c, time.Second*60, fullRequestURL)
-	logger.SysLog(fmt.Sprintf("sdResponse:%+v\n", sdResponse))
-	logger.SysLog(fmt.Sprintf("responseBody:%+v\n", responseBody))
-	logger.SysLog(fmt.Sprintf("sdResponseStruct:%+v\n", sdResponseStruct))
-	logger.SysLog(fmt.Sprintf("fullRequestURL:%+v\n", fullRequestURL))
+	// logger.SysLog(fmt.Sprintf("sdResponse:%+v\n", sdResponse))
+	// logger.SysLog(fmt.Sprintf("responseBody:%+v\n", responseBody))
+	// logger.SysLog(fmt.Sprintf("sdResponseStruct:%+v\n", sdResponseStruct))
+	// logger.SysLog(fmt.Sprintf("fullRequestURL:%+v\n", fullRequestURL))
 
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get response", http.StatusBadRequest)
