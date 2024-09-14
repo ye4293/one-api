@@ -241,11 +241,15 @@ func UpdateMidjourneyTaskBulk() {
 		}
 	}()
 
+	logger.Info(context.Background(), "Starting UpdateMidjourneyTaskBulk routine")
+
 	for {
 		ctx := context.Background()
 
-		time.Sleep(time.Duration(15) * time.Second)
+		logger.Info(ctx, "Waiting for 10 seconds before next iteration")
+		time.Sleep(time.Duration(10) * time.Second)
 
+		logger.Info(ctx, "Fetching unfinished tasks")
 		tasks, err := safeGetAllUnFinishTasks()
 		if err != nil {
 			logger.Error(ctx, fmt.Sprintf("Error getting unfinished tasks: %v", err))
@@ -253,6 +257,7 @@ func UpdateMidjourneyTaskBulk() {
 		}
 
 		if len(tasks) == 0 {
+			logger.Info(ctx, "No unfinished tasks found")
 			continue
 		}
 
@@ -269,6 +274,7 @@ func UpdateMidjourneyTaskBulk() {
 			taskChannelM[task.ChannelId] = append(taskChannelM[task.ChannelId], task.MjId)
 		}
 		if len(nullTaskIds) > 0 {
+			logger.Info(ctx, fmt.Sprintf("Updating %d tasks with null MjId", len(nullTaskIds)))
 			err := model.MjBulkUpdateByTaskIds(nullTaskIds, map[string]any{
 				"status":   "FAILURE",
 				"progress": "100%",
@@ -280,11 +286,12 @@ func UpdateMidjourneyTaskBulk() {
 			}
 		}
 		if len(taskChannelM) == 0 {
+			logger.Info(ctx, "No tasks to process after filtering")
 			continue
 		}
 
 		for channelId, taskIds := range taskChannelM {
-			logger.Info(ctx, fmt.Sprintf("渠道 #%d 未完成的任务有: %d", channelId, len(taskIds)))
+			logger.Info(ctx, fmt.Sprintf("Processing tasks for channel #%d, task count: %d", channelId, len(taskIds)))
 			if len(taskIds) == 0 {
 				continue
 			}
@@ -317,6 +324,7 @@ func UpdateMidjourneyTaskBulk() {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("mj-api-secret", midjourneyChannel.Key)
 
+			logger.Info(ctx, fmt.Sprintf("Sending request to %s for channel %d", requestUrl, channelId))
 			resp, err := util.GetHttpClient().Do(req)
 			if err != nil {
 				cancel() // 如果请求失败，立即取消 context
@@ -345,6 +353,7 @@ func UpdateMidjourneyTaskBulk() {
 				continue
 			}
 
+			logger.Info(ctx, fmt.Sprintf("Processing %d tasks for channel %d", len(responseItems), channelId))
 			for _, responseItem := range responseItems {
 				task := taskM[responseItem.MjId]
 
@@ -355,8 +364,10 @@ func UpdateMidjourneyTaskBulk() {
 					responseItem.Status = "FAILURE"
 				}
 				if !checkMjTaskNeedUpdate(task, responseItem) {
+					logger.Info(ctx, fmt.Sprintf("Task %s does not need update", task.MjId))
 					continue
 				}
+				logger.Info(ctx, fmt.Sprintf("Updating task %s", task.MjId))
 				task.Code = 1
 				task.Progress = responseItem.Progress
 				task.PromptEn = responseItem.PromptEn
@@ -394,6 +405,7 @@ func UpdateMidjourneyTaskBulk() {
 						}
 					}
 					if task.Progress == "100%" && config.CfR2storeEnabled {
+						logger.Info(ctx, fmt.Sprintf("Uploading image for task %s to R2", task.MjId))
 						objectKey := task.MjId
 						// 为上传图片创建独立的 context，并设置更长的超时时间
 						uploadCtx, uploadCancel := context.WithTimeout(context.Background(), time.Minute*10)
@@ -411,6 +423,8 @@ func UpdateMidjourneyTaskBulk() {
 					err = task.Update()
 					if err != nil {
 						logger.Error(ctx, "UpdateMidjourneyTask task error: "+err.Error())
+					} else {
+						logger.Info(ctx, fmt.Sprintf("Successfully updated task %s", task.MjId))
 					}
 				}
 			}
