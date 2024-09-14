@@ -75,6 +75,7 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	// logger.SysLog(fmt.Sprintf("sdResponse:%+v\n", sdResponse))
 	// logger.SysLog(fmt.Sprintf("responseBody:%+v\n", responseBody))
 	// logger.SysLog(fmt.Sprintf("sdResponseStruct:%+v\n", sdResponseStruct))
+
 	// logger.SysLog(fmt.Sprintf("fullRequestURL:%+v\n", fullRequestURL))
 
 	if err != nil {

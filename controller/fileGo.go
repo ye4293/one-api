@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,6 +22,12 @@ import (
 )
 
 func DownloadImage(url string) ([]byte, error) {
+	if url == "" {
+		return nil, fmt.Errorf("empty URL provided")
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return nil, fmt.Errorf("URL must start with http:// or https://")
+	}
 	// 发送HTTP GET请求
 	resp, err := http.Get(url)
 	if err != nil {
