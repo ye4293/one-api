@@ -433,6 +433,10 @@ func RelayMidjourneyImage(c *gin.Context) {
 // 	}
 // }
 
+var (
+	maxConcurrentGoroutines = 60 // 可以根据需要调整
+)
+
 func UpdateMidjourneyTaskBulk() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -448,12 +452,14 @@ func UpdateMidjourneyTaskBulk() {
 		logger.Info(ctx, "Waiting for 10 seconds before next iteration")
 		time.Sleep(time.Duration(10) * time.Second)
 
+		startTime := time.Now()
 		logger.Info(ctx, "Fetching unfinished tasks")
 		tasks, err := safeGetAllUnFinishTasks()
 		if err != nil {
 			logger.Error(ctx, fmt.Sprintf("Error getting unfinished tasks: %v", err))
 			continue
 		}
+		logger.Info(ctx, fmt.Sprintf("Fetching unfinished tasks took %v", time.Since(startTime)))
 
 		if len(tasks) == 0 {
 			logger.Info(ctx, "No unfinished tasks found")
@@ -492,7 +498,7 @@ func UpdateMidjourneyTaskBulk() {
 		// 创建一个 WaitGroup 来等待所有 goroutine 完成
 		var wg sync.WaitGroup
 		// 创建一个带缓冲的通道来限制并发数
-		semaphore := make(chan struct{}, 40) // 最多40个并发请求
+		semaphore := make(chan struct{}, maxConcurrentGoroutines)
 
 		for channelId, taskIds := range taskChannelM {
 			wg.Add(1)
@@ -501,11 +507,13 @@ func UpdateMidjourneyTaskBulk() {
 				semaphore <- struct{}{}        // 获取信号量
 				defer func() { <-semaphore }() // 释放信号量
 
+				channelStartTime := time.Now()
 				logger.Info(ctx, fmt.Sprintf("Processing tasks for channel #%d, task count: %d", channelId, len(taskIds)))
 				if len(taskIds) == 0 {
 					return
 				}
 				midjourneyChannel, err := safeGetChannel(channelId)
+				logger.Info(ctx, fmt.Sprintf("Channel info retrieval for #%d took %v", channelId, time.Since(channelStartTime)))
 				if err != nil {
 					logger.Error(ctx, fmt.Sprintf("CacheGetChannel: %v", err))
 					err := model.MjBulkUpdate(taskIds, map[string]any{
@@ -520,6 +528,7 @@ func UpdateMidjourneyTaskBulk() {
 				}
 				requestUrl := fmt.Sprintf("%s/mj/task/list-by-condition", *midjourneyChannel.BaseURL)
 
+				requestPrepStartTime := time.Now()
 				body, _ := json.Marshal(map[string]any{
 					"ids": taskIds,
 				})
@@ -528,6 +537,8 @@ func UpdateMidjourneyTaskBulk() {
 					logger.Error(ctx, fmt.Sprintf("channel: %d Get Task error: %v", channelId, err))
 					return
 				}
+				logger.Info(ctx, fmt.Sprintf("Request preparation for channel #%d took %v", channelId, time.Since(requestPrepStartTime)))
+
 				// 为每个请求创建一个新的 context
 				reqCtx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 				defer cancel()
@@ -535,8 +546,10 @@ func UpdateMidjourneyTaskBulk() {
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("mj-api-secret", midjourneyChannel.Key)
 
+				apiCallStartTime := time.Now()
 				logger.Info(ctx, fmt.Sprintf("Sending request to %s for channel %d", requestUrl, channelId))
 				resp, err := util.GetHttpClient().Do(req)
+				logger.Info(ctx, fmt.Sprintf("API call for channel #%d took %v", channelId, time.Since(apiCallStartTime)))
 				if err != nil {
 					logger.Error(ctx, fmt.Sprintf("channel: %d Get Task Do req error: %v", channelId, err))
 					return
@@ -548,7 +561,9 @@ func UpdateMidjourneyTaskBulk() {
 					return
 				}
 
+				responseReadStartTime := time.Now()
 				responseBody, err := io.ReadAll(resp.Body)
+				logger.Info(ctx, fmt.Sprintf("Response reading for channel #%d took %v", channelId, time.Since(responseReadStartTime)))
 				if err != nil {
 					logger.Error(ctx, fmt.Sprintf("Get Task parse body error: %v", err))
 					return
@@ -561,6 +576,7 @@ func UpdateMidjourneyTaskBulk() {
 				}
 
 				logger.Info(ctx, fmt.Sprintf("Processing %d tasks for channel %d", len(responseItems), channelId))
+				taskProcessStartTime := time.Now()
 				for _, responseItem := range responseItems {
 					task := taskM[responseItem.MjId]
 
@@ -635,12 +651,14 @@ func UpdateMidjourneyTaskBulk() {
 						}
 					}
 				}
+				logger.Info(ctx, fmt.Sprintf("Task processing for channel #%d took %v", channelId, time.Since(taskProcessStartTime)))
+				logger.Info(ctx, fmt.Sprintf("Total processing time for channel #%d: %v", channelId, time.Since(channelStartTime)))
 			}(channelId, taskIds)
 		}
 
 		// 等待所有 goroutine 完成
 		wg.Wait()
-		logger.Info(ctx, "All tasks processed for this iteration")
+		logger.Info(ctx, fmt.Sprintf("All tasks processed for this iteration. Total time: %v", time.Since(startTime)))
 	}
 }
 
