@@ -223,17 +223,17 @@ func RelayMidjourney(c *gin.Context) {
 }
 
 func MidjourneyShouldRetryByCode(MjErr *midjourney.MidjourneyResponseWithStatusCode) bool {
-	if MjErr.Response.Code == 23 { //当前渠道已满
-		return true
-	}
-	if MjErr.Response.Code == 24 {
-		return false
-	}
-	if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 && MjErr.Response.Code != 4 {
-		return true
-	}
+	// if MjErr.Response.Code == 23 { //当前渠道已满
+	// 	return true
+	// }
+	// if MjErr.Response.Code == 24 {
+	// 	return false
+	// }
+	// if MjErr.Response.Code != 1 && MjErr.Response.Code != 21 && MjErr.Response.Code != 22 && MjErr.Response.Code != 4 {
+	// 	return true
+	// }
 
-	return true
+	return false
 }
 
 // func ShouldDisabelMidjourneyChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
