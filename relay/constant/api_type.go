@@ -53,6 +53,9 @@ func ChannelType2APIType(channelType int) int {
 		apiType = APITypeCoze
 	case common.ChannelTypeReplicate:
 		apiType = APITypeReplicate
+	case common.ChannelTypeAwsClaude:
+		apiType = APITypeAwsClaude
+
 	}
 	return apiType
 }

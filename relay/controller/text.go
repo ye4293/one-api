@@ -56,6 +56,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
 	}
 
+	adaptor.Init(meta)
+
 	// get request body
 	var requestBody io.Reader
 	if meta.APIType == constant.APITypeOpenAI {
@@ -96,6 +98,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 			return util.RelayErrorHandler(resp)
 		}
 	}
+
 	meta.IsStream = meta.IsStream || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 
 	// do response

@@ -8,71 +8,45 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/songquanpeng/one-api/common/ctxkey"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
 	"github.com/pkg/errors"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
+	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 )
 
-func newAwsClient(c *gin.Context) (*bedrockruntime.Client, error) {
-	ak := c.GetString(ctxkey.ConfigAK)
-	sk := c.GetString(ctxkey.ConfigSK)
-	region := c.GetString(ctxkey.ConfigRegion)
-	client := bedrockruntime.New(bedrockruntime.Options{
-		Region:      region,
-		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(ak, sk, "")),
-	})
-
-	return client, nil
-}
-
-func wrapErr(err error) *relaymodel.ErrorWithStatusCode {
-	return &relaymodel.ErrorWithStatusCode{
-		StatusCode: http.StatusInternalServerError,
-		Error: relaymodel.Error{
-			Message: fmt.Sprintf("%s", err.Error()),
-		},
-	}
-}
-
 // https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html
-var awsModelIDMap = map[string]string{
-	"claude-instant-1.2":       "anthropic.claude-instant-v1",
-	"claude-2.0":               "anthropic.claude-v2",
-	"claude-2.1":               "anthropic.claude-v2:1",
-	"claude-3-sonnet-20240229": "anthropic.claude-3-sonnet-20240229-v1:0",
-	"claude-3-opus-20240229":   "anthropic.claude-3-opus-20240229-v1:0",
-	"claude-3-haiku-20240307":  "anthropic.claude-3-haiku-20240307-v1:0",
+var AwsModelIDMap = map[string]string{
+	"claude-instant-1.2":         "anthropic.claude-instant-v1",
+	"claude-2.0":                 "anthropic.claude-v2",
+	"claude-2.1":                 "anthropic.claude-v2:1",
+	"claude-3-sonnet-20240229":   "anthropic.claude-3-sonnet-20240229-v1:0",
+	"claude-3-5-sonnet-20240620": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+	"claude-3-opus-20240229":     "anthropic.claude-3-opus-20240229-v1:0",
+	"claude-3-haiku-20240307":    "anthropic.claude-3-haiku-20240307-v1:0",
 }
 
 func awsModelID(requestModel string) (string, error) {
-	if awsModelID, ok := awsModelIDMap[requestModel]; ok {
+	if awsModelID, ok := AwsModelIDMap[requestModel]; ok {
 		return awsModelID, nil
 	}
 
 	return "", errors.Errorf("model %s not found", requestModel)
 }
 
-func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName string) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
-	awsCli, err := newAwsClient(c)
-	if err != nil {
-		return wrapErr(errors.Wrap(err, "newAwsClient")), nil
-	}
-
+func Handler(c *gin.Context, awsCli *bedrockruntime.Client, modelName string) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
 	awsModelId, err := awsModelID(c.GetString(ctxkey.RequestModel))
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "awsModelID")), nil
+		return utils.WrapErr(errors.Wrap(err, "awsModelID")), nil
 	}
 
 	awsReq := &bedrockruntime.InvokeModelInput{
@@ -83,30 +57,30 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 
 	claudeReq_, ok := c.Get(ctxkey.ConvertedRequest)
 	if !ok {
-		return wrapErr(errors.New("request not found")), nil
+		return utils.WrapErr(errors.New("request not found")), nil
 	}
 	claudeReq := claudeReq_.(*anthropic.Request)
 	awsClaudeReq := &Request{
 		AnthropicVersion: "bedrock-2023-05-31",
 	}
 	if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
-		return wrapErr(errors.Wrap(err, "copy request")), nil
+		return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 	}
 
 	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "marshal request")), nil
+		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
 
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "InvokeModel")), nil
+		return utils.WrapErr(errors.Wrap(err, "InvokeModel")), nil
 	}
 
 	claudeResponse := new(anthropic.Response)
 	err = json.Unmarshal(awsResp.Body, claudeResponse)
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "unmarshal response")), nil
+		return utils.WrapErr(errors.Wrap(err, "unmarshal response")), nil
 	}
 
 	openaiResp := anthropic.ResponseClaude2OpenAI(claudeResponse)
@@ -122,16 +96,11 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	return nil, &usage
 }
 
-func StreamHandler(c *gin.Context, resp *http.Response) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
+func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
 	createdTime := helper.GetTimestamp()
-	awsCli, err := newAwsClient(c)
-	if err != nil {
-		return wrapErr(errors.Wrap(err, "newAwsClient")), nil
-	}
-
 	awsModelId, err := awsModelID(c.GetString(ctxkey.RequestModel))
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "awsModelID")), nil
+		return utils.WrapErr(errors.Wrap(err, "awsModelID")), nil
 	}
 
 	awsReq := &bedrockruntime.InvokeModelWithResponseStreamInput{
@@ -142,7 +111,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*relaymodel.ErrorWithSt
 
 	claudeReq_, ok := c.Get(ctxkey.ConvertedRequest)
 	if !ok {
-		return wrapErr(errors.New("request not found")), nil
+		return utils.WrapErr(errors.New("request not found")), nil
 	}
 	claudeReq := claudeReq_.(*anthropic.Request)
 
@@ -150,16 +119,16 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*relaymodel.ErrorWithSt
 		AnthropicVersion: "bedrock-2023-05-31",
 	}
 	if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
-		return wrapErr(errors.Wrap(err, "copy request")), nil
+		return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 	}
 	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "marshal request")), nil
+		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
 
 	awsResp, err := awsCli.InvokeModelWithResponseStream(c.Request.Context(), awsReq)
 	if err != nil {
-		return wrapErr(errors.Wrap(err, "InvokeModelWithResponseStream")), nil
+		return utils.WrapErr(errors.Wrap(err, "InvokeModelWithResponseStream")), nil
 	}
 	stream := awsResp.GetStream()
 	defer stream.Close()
@@ -168,6 +137,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*relaymodel.ErrorWithSt
 	var usage relaymodel.Usage
 	var id string
 	var lastToolCallChoice openai.ChatCompletionsStreamResponseChoice
+
 	c.Stream(func(w io.Writer) bool {
 		event, ok := <-stream.Events()
 		if !ok {
@@ -208,6 +178,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*relaymodel.ErrorWithSt
 			response.Id = id
 			response.Model = c.GetString(ctxkey.OriginalModel)
 			response.Created = createdTime
+
 			for _, choice := range response.Choices {
 				if len(choice.Delta.ToolCalls) > 0 {
 					lastToolCallChoice = choice

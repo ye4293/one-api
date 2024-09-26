@@ -61,7 +61,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 			if message.Role == "assistant" {
 				role = "CHATBOT"
 			} else if message.Role == "system" {
-				role = "SYSTEM"
+				role = "USER"
 			} else {
 				role = "USER"
 			}

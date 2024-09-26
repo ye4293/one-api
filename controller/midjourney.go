@@ -861,8 +861,8 @@ func updateTasks(ctx context.Context, channelId int, responseItems []midjourney.
 
 func updateTask(ctx context.Context, task *model.Midjourney, responseItem midjourney.MidjourneyDto) {
 	useTime := (time.Now().UnixNano() / int64(time.Millisecond)) - task.SubmitTime
-	if useTime > 360000000 && task.Progress != "100%" {
-		responseItem.FailReason = "上游任务超时（超过100小时）"
+	if useTime > 3600000 && task.Progress != "100%" {
+		responseItem.FailReason = "上游任务超时（超过1小时）"
 		responseItem.Status = "FAILURE"
 	}
 

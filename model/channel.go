@@ -33,6 +33,30 @@ type Channel struct {
 	Config             string  `json:"config"`
 }
 
+type ChannelConfig struct {
+	Region            string `json:"region,omitempty"`
+	SK                string `json:"sk,omitempty"`
+	AK                string `json:"ak,omitempty"`
+	UserID            string `json:"user_id,omitempty"`
+	APIVersion        string `json:"api_version,omitempty"`
+	LibraryID         string `json:"library_id,omitempty"`
+	Plugin            string `json:"plugin,omitempty"`
+	VertexAIProjectID string `json:"vertex_ai_project_id,omitempty"`
+	VertexAIADC       string `json:"vertex_ai_adc,omitempty"`
+}
+
+func (channel *Channel) LoadConfig() (ChannelConfig, error) {
+	var cfg ChannelConfig
+	if channel.Config == "" {
+		return cfg, nil
+	}
+	err := json.Unmarshal([]byte(channel.Config), &cfg)
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
 func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int64, err error) {
 	// 首先计算频道总数
 	err = DB.Model(&Channel{}).Count(&total).Error
@@ -242,18 +266,6 @@ func BatchDeleteChannel(ids []int) error {
 
 	// 提交事务
 	return tx.Commit().Error
-}
-
-func (channel *Channel) LoadConfig() (map[string]string, error) {
-	if channel.Config == "" {
-		return nil, nil
-	}
-	cfg := make(map[string]string)
-	err := json.Unmarshal([]byte(channel.Config), &cfg)
-	if err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }
 
 func UpdateChannelStatusById(id int, status int) {

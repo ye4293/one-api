@@ -1,7 +1,9 @@
 module github.com/songquanpeng/one-api
 
 // +heroku goVersion go1.18
-go 1.18
+go 1.21
+
+toolchain go1.21.5
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.2
@@ -40,7 +42,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.20.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.24.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.28.9 // indirect
-	github.com/aws/smithy-go v1.20.2 // indirect
+	github.com/aws/smithy-go v1.20.4 // indirect
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
@@ -49,7 +51,7 @@ require (
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.27.0
+	github.com/aws/aws-sdk-go-v2 v1.30.5
 	github.com/aws/aws-sdk-go-v2/config v1.27.15
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.15
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.7.4
