@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -18,11 +19,91 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
 	"github.com/songquanpeng/one-api/relay/channel/cohere"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 )
 
 var AwsModelIDMap = map[string]string{
-	"cohere.command-r-v1:0": "cohere.command-r-v1:0",
+	"cohere.command-r-v1:0":      "cohere.command-r-v1:0",
+	"cohere.command-r-plus-v1:0": "cohere.command-r-plus-v1:0",
+}
+
+var fieldMappings = map[string]string{
+	"Message":          "message",
+	"ChatHistory":      "chat_history",
+	"Documents":        "documents",
+	"Preamble":         "preamble",
+	"MaxTokens":        "max_tokens",
+	"Temperature":      "temperature",
+	"P":                "p",
+	"K":                "k",
+	"PromptTruncation": "prompt_truncation",
+	"FrequencyPenalty": "frequency_penalty",
+	"PresencePenalty":  "presence_penalty",
+	"Seed":             "seed",
+	"Tools":            "tools",
+	"ToolResults":      "tool_results",
+	"StopSequences":    "stop_sequences",
+}
+
+func convertCohereRequestToAWSMap(cohereReq *cohere.Request) (map[string]interface{}, error) {
+	if cohereReq == nil {
+		return nil, errors.New("cohereReq is nil")
+	}
+
+	requestMap := make(map[string]interface{})
+	v := reflect.ValueOf(*cohereReq)
+	t := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		fieldName := t.Field(i).Name
+
+		// 检查字段是否在映射表中
+		if awsFieldName, exists := fieldMappings[fieldName]; exists {
+			// 跳过空值字段
+			if isZeroValue(field) {
+				continue
+			}
+
+			// 特殊处理某些字段
+			switch fieldName {
+			case "K":
+				requestMap[awsFieldName] = float64(field.Int())
+			case "Temperature", "P", "FrequencyPenalty", "PresencePenalty":
+				// 对于浮点数，我们可能想要限制精度
+				requestMap[awsFieldName] = float64(int(field.Float()*1000)) / 1000
+			default:
+				requestMap[awsFieldName] = field.Interface()
+			}
+		}
+	}
+
+	// 添加 AWS 特有的字段，设置默认值
+	requestMap["search_queries_only"] = false
+	requestMap["return_prompt"] = false
+	requestMap["raw_prompting"] = false
+
+	return requestMap, nil
+}
+
+// 检查值是否为零值
+func isZeroValue(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return v.Len() == 0
+	case reflect.Bool:
+		return !v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return v.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() == 0
+	case reflect.Interface, reflect.Ptr:
+		return v.IsNil()
+	}
+	return false
 }
 
 func Handler(c *gin.Context, awsCli *bedrockruntime.Client, modelName string) (*model.ErrorWithStatusCode, *model.Usage) {
@@ -42,34 +123,21 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, modelName string) (*
 	if !ok {
 		return utils.WrapErr(errors.New("invalid request type")), nil
 	}
-
-	// 创建一个新的map来存储我们想要的字段
-	requestMap := map[string]interface{}{
-		"message":         cohereReq.Message,
-		"return_metadata": true,
-	}
-
-	// 添加其他非空字段
-	if len(cohereReq.ChatHistory) > 0 {
-		requestMap["chat_history"] = cohereReq.ChatHistory
-	}
-
 	var err error
+	requestMap, err := convertCohereRequestToAWSMap(cohereReq)
+	if err != nil {
+		return utils.WrapErr(err), nil
+	}
+
 	awsReq.Body, err = json.Marshal(requestMap)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
 
-	// 打印请求体
-	fmt.Printf("Request Body: %s\n", string(awsReq.Body))
-
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "InvokeModel")), nil
 	}
-
-	// 打印原始响应体
-	fmt.Printf("Raw Response Body: %s\n", string(awsResp.Body))
 
 	cohereResponse := new(cohere.Response)
 	err = json.Unmarshal(awsResp.Body, cohereResponse)
@@ -79,11 +147,45 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, modelName string) (*
 
 	openaiResp := cohere.ResponseCohere2OpenAI(cohereResponse)
 	openaiResp.Model = modelName
-	usage := model.Usage{
-		PromptTokens:     cohereResponse.Meta.BilledUnits.InputTokens,
-		CompletionTokens: cohereResponse.Meta.BilledUnits.OutputTokens,
-		TotalTokens:      cohereResponse.Meta.BilledUnits.InputTokens + cohereResponse.Meta.BilledUnits.OutputTokens,
+
+	var usage model.Usage
+	request_, ok := c.Get("request")
+	if !ok {
+		return utils.WrapErr(errors.New("invalid request type")), nil
 	}
+
+	// 类型断言
+	generalRequest, ok := request_.(model.GeneralOpenAIRequest)
+	if !ok {
+		return utils.WrapErr(errors.New("request is not of type GeneralOpenAIRequest")), nil
+	}
+
+	logger.SysLog(fmt.Sprintf("request: %+v", generalRequest))
+
+	// 确保 Messages 切片不为空
+	if len(generalRequest.Messages) == 0 {
+		return utils.WrapErr(errors.New("no messages in request")), nil
+	}
+
+	messages1 := []model.Message{
+		{
+			Role:    "assistant", // 假设这是助手的回复，如果不是，请相应调整
+			Content: generalRequest.Messages[0].Content,
+		},
+	}
+
+	usage.PromptTokens = openai.CountTokenMessages(messages1, modelName)
+
+	messages2 := []model.Message{
+		{
+			Role:    "assistant", // 假设这是助手的回复，如果不是，请相应调整
+			Content: openaiResp.Choices[0].Content,
+		},
+	}
+
+	usage.CompletionTokens = openai.CountTokenMessages(messages2, modelName)
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
 	openaiResp.Usage = usage
 
 	c.JSON(http.StatusOK, openaiResp)
@@ -109,16 +211,11 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*model.ErrorW
 	if !ok {
 		return utils.WrapErr(errors.New("invalid request type")), nil
 	}
-
-	requestMap := map[string]interface{}{
-		"message": cohereReq.Message,
-	}
-
-	// 添加其他非空字段
-	if len(cohereReq.ChatHistory) > 0 {
-		requestMap["chat_history"] = cohereReq.ChatHistory
-	}
 	var err error
+	requestMap, err := convertCohereRequestToAWSMap(cohereReq)
+	if err != nil {
+		return utils.WrapErr(err), nil
+	}
 	awsReq.Body, err = json.Marshal(requestMap)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
@@ -152,7 +249,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*model.ErrorW
 
 			response, meta := cohere.StreamResponseCohere2OpenAI(cohereResp)
 			if meta != nil {
-				usage.PromptTokens += meta.Meta.Tokens.InputTokens
+				usage.PromptTokens = meta.Meta.Tokens.InputTokens
 				usage.CompletionTokens += meta.Meta.Tokens.OutputTokens
 				return true
 			}
@@ -167,6 +264,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*model.ErrorW
 				logger.SysError("error marshalling stream response: " + err.Error())
 				return true
 			}
+
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
 			return true
 		case *types.UnknownUnionMember:

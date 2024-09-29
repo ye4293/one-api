@@ -48,10 +48,10 @@ type Penalty struct {
 	Scale float64 `json:"scale"`
 }
 
-type NonStreamingResponse struct {
-	ID      string   `json:"id"`
-	Choices []Choice `json:"choices"`
-	Usage   Usage    `json:"usage"`
+type GenericResponse struct {
+	ID      interface{} `json:"id"`
+	Choices []Choice    `json:"choices"`
+	Usage   Usage       `json:"usage"`
 }
 
 type Choice struct {
@@ -84,4 +84,47 @@ type StreamChoice struct {
 type StreamDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
+}
+
+type Prompt struct {
+	Text   string  `json:"text"`
+	Tokens []Token `json:"tokens"`
+}
+
+type Token struct {
+	GeneratedToken GeneratedToken `json:"generatedToken"`
+	TopTokens      interface{}    `json:"topTokens"`
+	TextRange      TextRange      `json:"textRange"`
+}
+
+type GeneratedToken struct {
+	Token      string  `json:"token"`
+	LogProb    float64 `json:"logprob"`
+	RawLogProb float64 `json:"raw_logprob"`
+}
+
+type TextRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+type Completion struct {
+	Data         CompletionData `json:"data"`
+	FinishReason FinishReason   `json:"finishReason"`
+}
+
+type CompletionData struct {
+	Text   string  `json:"text"`
+	Tokens []Token `json:"tokens"`
+}
+
+type FinishReason struct {
+	Reason string `json:"reason"`
+	Length int    `json:"length"`
+}
+
+type Response struct {
+	ID          int          `json:"id"`
+	Prompt      Prompt       `json:"prompt"`
+	Completions []Completion `json:"completions"`
 }

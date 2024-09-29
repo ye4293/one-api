@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -99,7 +98,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 	}
 
-	meta.IsStream = meta.IsStream || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+	// meta.IsStream = meta.IsStream || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 
 	// do response
 	usage, respErr := adaptor.DoResponse(c, resp, meta)

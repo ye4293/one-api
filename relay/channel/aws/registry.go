@@ -5,6 +5,7 @@ import (
 	claude "github.com/songquanpeng/one-api/relay/channel/aws/claude"
 	cohere "github.com/songquanpeng/one-api/relay/channel/aws/cohere"
 	llama3 "github.com/songquanpeng/one-api/relay/channel/aws/llama3"
+	mistral "github.com/songquanpeng/one-api/relay/channel/aws/mistral"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
 )
 
@@ -35,6 +36,9 @@ func init() {
 	for model := range cohere.AwsModelIDMap {
 		adaptors[model] = AwsCohere
 	}
+	for model := range mistral.AwsModelIDMap {
+		adaptors[model] = AwsMistral
+	}
 }
 
 func GetAdaptor(model string) utils.AwsAdapter {
@@ -48,6 +52,8 @@ func GetAdaptor(model string) utils.AwsAdapter {
 		return &ai21.Adaptor{}
 	case AwsCohere:
 		return &cohere.Adaptor{}
+	case AwsMistral:
+		return &mistral.Adaptor{}
 
 	default:
 		return nil

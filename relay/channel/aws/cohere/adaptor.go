@@ -22,10 +22,11 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		return nil, errors.New("request is nil")
 	}
 
-	claudeReq := cohere.ConvertRequest(*request)
+	cohereReq := cohere.ConvertRequest(*request)
 	c.Set(ctxkey.RequestModel, request.Model)
-	c.Set(ctxkey.ConvertedRequest, claudeReq)
-	return claudeReq, nil
+	c.Set(ctxkey.ConvertedRequest, cohereReq)
+	c.Set("request", *request)
+	return cohereReq, nil
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
