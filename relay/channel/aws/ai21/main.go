@@ -63,11 +63,9 @@ func ConvertRequest(textRequest *model.GeneralOpenAIRequest) *AI21Request {
 				log.Printf("Warning: message content is not a string")
 				content = fmt.Sprintf("%v", msg.Content)
 			}
-			promptBuilder.WriteString(msg.Role + ": " + content + "\n")
+			promptBuilder.WriteString(content)
 		}
 		req.Prompt = promptBuilder.String()
-
-		logger.SysLog(fmt.Sprintf("req.Prompt: %+v", req.Prompt))
 
 		if stop, ok := textRequest.Stop.([]string); ok {
 			req.StopSequences = stop

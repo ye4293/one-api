@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -64,7 +65,7 @@ func Relay(c *gin.Context) {
 	go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 
 	retryTimes := config.RetryTimes
-	if !shouldRetry(c, bizErr.StatusCode) {
+	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
 		logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
 		retryTimes = 0
 	}
@@ -106,7 +107,7 @@ func Relay(c *gin.Context) {
 	}
 }
 
-func shouldRetry(c *gin.Context, statusCode int) bool {
+func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
@@ -121,6 +122,9 @@ func shouldRetry(c *gin.Context, statusCode int) bool {
 	}
 	if statusCode/100 == 2 {
 		return false
+	}
+	if strings.Contains(message, "Operation not allowed") {
+		return true
 	}
 	return true
 }
@@ -284,7 +288,7 @@ func RelaySd(c *gin.Context) {
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 	retryTimes := config.RetryTimes
-	if !shouldRetry(c, SdErr.StatusCode) {
+	if !shouldRetry(c, SdErr.StatusCode, SdErr.Error.Message) {
 		logger.Errorf(ctx, "Relay error happen, status code is %d, won't retry in this case", SdErr.StatusCode)
 		retryTimes = 0
 	}

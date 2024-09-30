@@ -33,7 +33,6 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	switch err.Type {
 	case "insufficient_quota":
 		return true
-	// https://docs.anthropic.com/claude/reference/errors
 	case "authentication_error":
 		return true
 	case "permission_error":
@@ -44,18 +43,19 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" {
 		return true
 	}
-	if strings.HasPrefix(err.Message, "Your credit balance is too low") { // anthropic
+	if strings.HasPrefix(err.Message, "Your credit balance is too low") {
 		return true
 	} else if strings.HasPrefix(err.Message, "This organization has been disabled.") {
 		return true
 	}
-	//if strings.Contains(err.Message, "quota") {
-	//	return true
-	//}
 	if strings.Contains(err.Message, "credit") {
 		return true
 	}
 	if strings.Contains(err.Message, "balance") {
+		return true
+	}
+	// 添加对 "Operation not allowed" 错误的处理
+	if strings.Contains(err.Message, "Operation not allowed") {
 		return true
 	}
 	return false
