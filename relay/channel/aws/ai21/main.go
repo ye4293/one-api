@@ -329,27 +329,33 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*relaymodel.E
 			return utils.WrapErr(errors.Wrap(err, "InvokeModel")), nil
 		}
 
+		// 打印原始响应
+		logger.SysLog("Raw response from AI21:")
+		logger.SysLog(string(awsResp.Body))
+
 		var j2Response Response
 		if err := json.Unmarshal(awsResp.Body, &j2Response); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "unmarshal response")), nil
 		}
 
+		// // 打印完整的 text 值
+		// fullText := j2Response.Completions[0].Data.Text
+		// logger.SysLog("Full response text: " + fullText)
+
 		streamResponses := convertJ2ResponseToStream(&j2Response, awsModelId, createdTime)
 		for _, streamResp := range streamResponses {
-			streamResp.Id = fmt.Sprintf("chatcmpl-%s", helper.GetUUID())
-			streamResp.Model = c.GetString(ctxkey.OriginalModel)
-			streamResp.Created = createdTime
-
 			jsonStr, err := json.Marshal(streamResp)
 			if err != nil {
 				logger.SysError("error marshalling stream response: " + err.Error())
 				continue
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
+			c.Writer.Flush() // 确保每个事件立即发送
 		}
 
 		// 在所有响应发送完毕后，单独发送 [DONE] 消息
 		c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
+		c.Writer.Flush()
 
 		// 更新 usage（使用最后一个响应中的 Usage）
 		if len(streamResponses) > 0 && streamResponses[len(streamResponses)-1].Usage != nil {
@@ -369,23 +375,43 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client) (*relaymodel.E
 func convertJ2ResponseToStream(j2Resp *Response, modelName string, createdTime int64) []openai.ChatCompletionsStreamResponse {
 	var streamResponses []openai.ChatCompletionsStreamResponse
 
-	for i, token := range j2Resp.Completions[0].Data.Tokens {
+	fullText := j2Resp.Completions[0].Data.Text
+	tokens := j2Resp.Completions[0].Data.Tokens
+
+	for i, token := range tokens {
+		// 确保 start 和 end 在有效范围内
+		start := token.TextRange.Start
+		end := token.TextRange.End
+		if start < 0 {
+			start = 0
+		}
+		if end > len(fullText) {
+			end = len(fullText)
+		}
+
+		// 提取当前 token 对应的文本
+		tokenText := ""
+		if start < end && start < len(fullText) {
+			tokenText = fullText[start:end]
+		}
+
 		streamResp := openai.ChatCompletionsStreamResponse{
-			Id:     fmt.Sprintf("chatcmpl-%s", helper.GetUUID()),
-			Object: "chat.completion.chunk",
-			Model:  modelName, // 或者使用实际的模型名称
+			Id:      fmt.Sprintf("chatcmpl-%s", helper.GetUUID()),
+			Object:  "chat.completion.chunk",
+			Model:   modelName,
+			Created: createdTime,
 			Choices: []openai.ChatCompletionsStreamResponseChoice{
 				{
 					Index: 0,
 					Delta: model.Message{
-						Content: token.GeneratedToken.Token,
+						Content: tokenText,
 					},
 				},
 			},
 		}
 
 		// 设置最后一个token的FinishReason
-		if i == len(j2Resp.Completions[0].Data.Tokens)-1 {
+		if i == len(tokens)-1 {
 			finishReason := j2Resp.Completions[0].FinishReason.Reason
 			streamResp.Choices[0].FinishReason = &finishReason
 		}
@@ -398,7 +424,7 @@ func convertJ2ResponseToStream(j2Resp *Response, modelName string, createdTime i
 		Id:      fmt.Sprintf("chatcmpl-%s", helper.GetUUID()),
 		Object:  "chat.completion.chunk",
 		Created: createdTime,
-		Model:   "ai21.j2-ultra-v1", // 或者使用实际的模型名称
+		Model:   modelName,
 		Choices: []openai.ChatCompletionsStreamResponseChoice{
 			{
 				Index: 0,
@@ -407,8 +433,8 @@ func convertJ2ResponseToStream(j2Resp *Response, modelName string, createdTime i
 		},
 		Usage: &model.Usage{
 			PromptTokens:     len(j2Resp.Prompt.Tokens),
-			CompletionTokens: len(j2Resp.Completions[0].Data.Tokens),
-			TotalTokens:      len(j2Resp.Prompt.Tokens) + len(j2Resp.Completions[0].Data.Tokens),
+			CompletionTokens: len(tokens),
+			TotalTokens:      len(j2Resp.Prompt.Tokens) + len(tokens),
 		},
 	}
 	streamResponses = append(streamResponses, finalResp)

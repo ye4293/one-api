@@ -357,12 +357,6 @@ func RelayVideoGenearte(c *gin.Context) {
 		requestBody, _ := common.GetRequestBody(c)
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
 	}
-	// channelId := c.GetInt("channel_id")
-	// userId := c.GetInt("id")
-	// lastFailedChannelId := channelId
-	// channelName := c.GetString("channel_name")
-	// group := c.GetString("group")
-	// originalModel := c.GetString("original_model")
 	var modelRequest ModelRequest
 
 	err := common.UnmarshalBodyReusable(c, &modelRequest)
