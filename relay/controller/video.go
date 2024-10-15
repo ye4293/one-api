@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
@@ -84,6 +87,8 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	var imageCheck struct {
 		Image string `json:"image"`
 		// Model string `json:"model"`
+		Mode     string `json:"mode"`
+		Duration string `json:"duration"`
 	}
 
 	if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
@@ -92,10 +97,16 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 
 	var requestBody interface{}
 	var fullRequestUrl string
+	var videoType string
 
 	if imageCheck.Image != "" {
 		// 图生视频请求
-		fullRequestUrl = baseUrl + "/v1/videos/image2video"
+		if meta.ChannelType == 41 {
+			fullRequestUrl = baseUrl + "/v1/videos/image2video"
+		} else {
+			fullRequestUrl = baseUrl + "/kling/v1/videos/image2video"
+		}
+		videoType = "image-to-video"
 		var imageToVideoReq keling.ImageToVideoRequest
 		if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
 			return openai.ErrorWrapper(err, "invalid_image_to_video_request", http.StatusBadRequest)
@@ -103,7 +114,12 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		requestBody = imageToVideoReq
 	} else {
 		// 文生视频请求
-		fullRequestUrl = baseUrl + "/v1/videos/text2video"
+		if meta.ChannelType == 41 {
+			fullRequestUrl = baseUrl + "/v1/videos/text2video"
+		} else {
+			fullRequestUrl = baseUrl + "/kling/v1/videos/text2video"
+		}
+		videoType = "text-to-video"
 		var videoGenerationReq keling.TextToVideoRequest
 		if err := common.UnmarshalBodyReusable(c, &videoGenerationReq); err != nil {
 			return openai.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
@@ -115,8 +131,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
-
-	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "kling-v1")
+	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "kling-v1", imageCheck.Mode, imageCheck.Duration, videoType)
 }
 
 func sendRequestMinimaxAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
@@ -192,19 +207,24 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 
 }
 
-func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	}
-
+func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
+	log.Printf("fullRequestUrl: %s", fullRequestUrl)
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
+	var token string
+	if meta.ChannelType == 41 {
+		ak := meta.Config.AK
+		sk := meta.Config.SK
 
+		// Generate JWT token
+		token = encodeJWTToken(ak, sk)
+	} else {
+		token = meta.APIKey
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("authorization", "Bearer "+channel.Key)
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -224,18 +244,34 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
 	}
 	KelingvideoResponse.StatusCode = resp.StatusCode
-	return handleKelingVideoResponse(c, ctx, KelingvideoResponse, body, meta, modelName)
+	return handleKelingVideoResponse(c, ctx, KelingvideoResponse, body, meta, modelName, mode, duration, videoType)
+}
 
+func encodeJWTToken(ak, sk string) string {
+	claims := jwt.MapClaims{
+		"iss": ak,
+		"exp": time.Now().Add(30 * time.Minute).Unix(),
+		"nbf": time.Now().Add(-5 * time.Second).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(sk))
+	if err != nil {
+		// Handle error (you might want to return an error instead of panicking in production)
+		panic(err)
+	}
+
+	return tokenString
 }
 func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.BaseResp.StatusCode {
 	case 0:
-		err := CreateVideoLog("minimax", videoResponse.TaskID, meta)
+		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "")
 		if err != nil {
 
 		}
 		c.Data(http.StatusOK, "application/json", body)
-		return handleSuccessfulResponse(c, ctx, meta, modelName)
+		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
 	case 1002, 1008:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", videoResponse.BaseResp.StatusMsg),
@@ -266,7 +302,7 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("zhipu", videoResponse.ID, meta)
+		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -275,7 +311,7 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 			)
 		}
 		c.Data(http.StatusOK, "application/json", body)
-		return handleSuccessfulResponse(c, ctx, meta, modelName)
+		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -297,10 +333,13 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 	}
 }
 
-func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoResponse keling.KelingVideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoResponse keling.KelingVideoResponse, body []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
+	// 首先，记录完整的响应体
+	log.Printf("Full response body: %s", string(body))
+
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("keling-video", videoResponse.Data.TaskID, meta)
+		err := CreateVideoLog("keling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -309,30 +348,65 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 			)
 		}
 		c.Data(http.StatusOK, "application/json", body)
-		return handleSuccessfulResponse(c, ctx, meta, modelName)
+		return handleSuccessfulResponse(c, ctx, meta, modelName, mode, duration)
 	case 400:
 		return openai.ErrorWrapper(
-			fmt.Errorf("API error: %s", videoResponse.Message),
+			fmt.Errorf("API error (400): %s\nFull response: %s", videoResponse.Message, string(body)),
 			"api_error",
 			http.StatusBadRequest,
 		)
 	case 429:
 		return openai.ErrorWrapper(
-			fmt.Errorf("API error: %s", videoResponse.Message),
+			fmt.Errorf("API error (429): %s\nFull response: %s", videoResponse.Message, string(body)),
 			"api_error",
 			http.StatusTooManyRequests,
 		)
 	default:
+		// 对于未知错误，我们需要更详细的信息
+		errorMessage := fmt.Sprintf("Unknown API error (Status Code: %d): %s\nFull response: %s",
+			videoResponse.StatusCode,
+			videoResponse.Message,
+			string(body))
+
+		log.Printf("Error occurred: %s", errorMessage)
+
 		return openai.ErrorWrapper(
-			fmt.Errorf("Unknown API error: %s", videoResponse.Message),
+			fmt.Errorf(errorMessage),
 			"api_error",
 			http.StatusInternalServerError,
 		)
 	}
 }
 
-func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	quota := int64(36000)
+func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string) *model.ErrorWithStatusCode {
+	var modelPrice float64
+	defaultPrice, ok := common.DefaultModelPrice[modelName]
+	if !ok {
+		modelPrice = 0.1
+	} else {
+		modelPrice = defaultPrice
+	}
+	quota := int64(modelPrice * config.QuotaPerUnit)
+
+	// 特殊处理 kling-v1 模型
+	if modelName == "kling-v1" {
+		var multiplier float64
+		switch {
+		case mode == "std" && duration == "5":
+			multiplier = 1
+		case mode == "std" && duration == "10":
+			multiplier = 2
+		case mode == "pro" && duration == "5":
+			multiplier = 3.5
+		case mode == "pro" && duration == "10":
+			multiplier = 7
+		default:
+			// 如果不匹配任何条件，使用默认倍率 1
+			multiplier = 1
+		}
+		quota = int64(float64(quota) * multiplier)
+	}
+
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -348,7 +422,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 
 	if quota != 0 {
 		tokenName := c.GetString("token_name")
-		logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", 2.00, 3.00, "midjRequest.Action")
+		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
 		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
@@ -358,7 +432,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 	return nil
 }
 
-func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta) error {
+func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string) error {
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
 		Prompt:    "prompt",
@@ -368,6 +442,9 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta) error 
 		Username:  dbmodel.GetUsernameById(meta.UserId),
 		ChannelId: meta.ChannelId,
 		UseId:     meta.UserId,
+		Mode:      mode, //keling
+		Type:      videoType,
+		Duration:  duration,
 	}
 
 	// 调用 Insert 方法插入记录
@@ -380,7 +457,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta) error 
 }
 
 func GetVideoResult(c *gin.Context, provider string, taskId string) *model.ErrorWithStatusCode {
-	channelId, err := dbmodel.GetChannelIdByTaskIdAndType(taskId, provider)
+	channelId, err := dbmodel.GetChannelIdByTaskIdAndProvider(taskId, provider)
 	logger.SysLog(fmt.Sprintf("channelId:%d", channelId))
 	if err != nil {
 		return openai.ErrorWrapper(
@@ -392,6 +469,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 
 	channel, err := dbmodel.GetChannelById(channelId, true)
 	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
+	cfg, _ := channel.LoadConfig()
 	if err != nil {
 		return openai.ErrorWrapper(
 			fmt.Errorf("failed to get channel: %v", err),
@@ -400,6 +478,13 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		)
 	}
 	videoTask, err := dbmodel.GetVideoTaskByIdAndProvider(taskId, provider)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to get videoTask: %v", err),
+			"database_error",
+			http.StatusBadRequest,
+		)
+	}
 
 	var fullRequestUrl string
 	switch provider {
@@ -409,10 +494,19 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		fullRequestUrl = fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
 	case "keling":
 		if videoTask.Type == "text-to-video" {
-			fullRequestUrl = fmt.Sprintf("https://api.klingai.com/v1/videos/text2video/%s", taskId)
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/text2video/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/text2video/%s", *channel.BaseURL, taskId)
+			}
 		} else if videoTask.Type == "image-to-video" {
-			fullRequestUrl = fmt.Sprintf("https://api.klingai.com/v1/videos/image2video/%s", taskId)
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/image2video/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/image2video/%s", *channel.BaseURL, taskId)
+			}
 		}
+
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type: %s", provider),
@@ -429,10 +523,16 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 			http.StatusInternalServerError,
 		)
 	}
+	if provider == "keling" && channel.Type == 41 {
+		token := encodeJWTToken(cfg.AK, cfg.SK)
 
-	// 添加头部
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 
 	// 发送 HTTP 请求获取结果
 	client := &http.Client{}

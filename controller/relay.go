@@ -375,9 +375,9 @@ func RelayVideoGenearte(c *gin.Context) {
 }
 
 func RelayVideoResult(c *gin.Context) {
-	modelType := c.Query("type")
+	provider := c.Query("provider")
 	taskId := c.Query("taskid")
-	bizErr := controller.GetVideoResult(c, modelType, taskId)
+	bizErr := controller.GetVideoResult(c, provider, taskId)
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."

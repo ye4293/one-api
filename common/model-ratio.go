@@ -328,6 +328,9 @@ var DefaultModelPrice = map[string]float64{
 	"sd3-large":               0.065,
 	"sd3-medium":              0.035,
 	"sd3-large-turbo":         0.04,
+	"cogvideox":               0.1,
+	"video-01":                0.45,
+	"kling-v1":                0.25,
 }
 
 //后续进行修正
