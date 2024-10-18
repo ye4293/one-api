@@ -339,7 +339,7 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("keling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
+		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
