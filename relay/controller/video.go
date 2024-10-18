@@ -492,7 +492,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		fullRequestUrl = fmt.Sprintf("https://open.bigmodel.cn/api/paas/v4/async-result/%s", taskId)
 	case "minimax":
 		fullRequestUrl = fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
-	case "keling":
+	case "kling":
 		if videoTask.Type == "text-to-video" {
 			if channel.Type == 41 {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/text2video/%s", *channel.BaseURL, taskId)
@@ -523,7 +523,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 			http.StatusInternalServerError,
 		)
 	}
-	if provider == "keling" && channel.Type == 41 {
+	if provider == "kling" && channel.Type == 41 {
 		token := encodeJWTToken(cfg.AK, cfg.SK)
 
 		req.Header.Set("Content-Type", "application/json")
@@ -613,7 +613,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 
 		// 直接将第二个请求的响应体传递给客户端
 		c.DataFromReader(http.StatusOK, resp2.ContentLength, resp2.Header.Get("Content-Type"), resp2.Body, nil)
-	} else if provider == "keling" {
+	} else if provider == "kling" {
 		c.DataFromReader(http.StatusOK, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
 	}
 
