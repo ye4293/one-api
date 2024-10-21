@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -208,7 +207,6 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 }
 
 func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
-	log.Printf("fullRequestUrl: %s", fullRequestUrl)
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
@@ -263,6 +261,26 @@ func encodeJWTToken(ak, sk string) string {
 
 	return tokenString
 }
+
+func getStatusMessage(statusCode int) string {
+	switch statusCode {
+	case 0:
+		return "请求成功"
+	case 1002:
+		return "触发限流，请稍后再试"
+	case 1004:
+		return "账号鉴权失败，请检查 API-Key 是否填写正确"
+	case 1008:
+		return "账号余额不足"
+	case 1013:
+		return "传入参数异常，请检查入参是否按要求填写"
+	case 1026:
+		return "视频描述涉及敏感内容"
+	default:
+		return fmt.Sprintf("未知错误码: %d", statusCode)
+	}
+}
+
 func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.BaseResp.StatusCode {
 	case 0:
@@ -270,7 +288,25 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 		if err != nil {
 
 		}
-		c.Data(http.StatusOK, "application/json", body)
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     videoResponse.TaskID,
+			TaskStatus: getStatusMessage(videoResponse.BaseResp.StatusCode),
+			Message:    videoResponse.BaseResp.StatusMsg,
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
 	case 1002, 1008:
 		return openai.ErrorWrapper(
@@ -310,7 +346,26 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 				http.StatusBadRequest,
 			)
 		}
-		c.Data(http.StatusOK, "application/json", body)
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     videoResponse.ID,
+			TaskStatus: videoResponse.TaskStatus,
+			Message:    "",
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
 	case 400:
 		return openai.ErrorWrapper(
@@ -334,9 +389,6 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 }
 
 func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoResponse keling.KelingVideoResponse, body []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
-	// 首先，记录完整的响应体
-	log.Printf("Full response body: %s", string(body))
-
 	switch videoResponse.StatusCode {
 	case 200:
 		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
@@ -347,7 +399,26 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 				http.StatusBadRequest,
 			)
 		}
-		c.Data(http.StatusOK, "application/json", body)
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     videoResponse.Data.TaskID,
+			TaskStatus: videoResponse.Data.TaskStatus,
+			Message:    videoResponse.Message,
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return handleSuccessfulResponse(c, ctx, meta, modelName, mode, duration)
 	case 400:
 		return openai.ErrorWrapper(
@@ -457,17 +528,16 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 }
 
 func GetVideoResult(c *gin.Context, provider string, taskId string) *model.ErrorWithStatusCode {
-	channelId, err := dbmodel.GetChannelIdByTaskIdAndProvider(taskId, provider)
-	logger.SysLog(fmt.Sprintf("channelId:%d", channelId))
+	videoTask, err := dbmodel.GetVideoTaskById(taskId)
 	if err != nil {
 		return openai.ErrorWrapper(
-			fmt.Errorf("failed to get channel ID: %v", err),
+			fmt.Errorf("failed to get video: %v", err),
 			"database_error",
 			http.StatusInternalServerError,
 		)
 	}
 
-	channel, err := dbmodel.GetChannelById(channelId, true)
+	channel, err := dbmodel.GetChannelById(videoTask.ChannelId, true)
 	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
 	cfg, _ := channel.LoadConfig()
 	if err != nil {
@@ -477,7 +547,6 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 			http.StatusInternalServerError,
 		)
 	}
-	videoTask, err := dbmodel.GetVideoTaskByIdAndProvider(taskId, provider)
 	if err != nil {
 		return openai.ErrorWrapper(
 			fmt.Errorf("failed to get videoTask: %v", err),
@@ -487,7 +556,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 	}
 
 	var fullRequestUrl string
-	switch provider {
+	switch videoTask.Provider {
 	case "zhipu":
 		fullRequestUrl = fmt.Sprintf("https://open.bigmodel.cn/api/paas/v4/async-result/%s", taskId)
 	case "minimax":
@@ -523,7 +592,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 			http.StatusInternalServerError,
 		)
 	}
-	if provider == "kling" && channel.Type == 41 {
+	if videoTask.Provider == "kling" && channel.Type == 41 {
 		token := encodeJWTToken(cfg.AK, cfg.SK)
 
 		req.Header.Set("Content-Type", "application/json")
@@ -556,116 +625,195 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		)
 	}
 
-	if provider == "zhipu" {
-		// 直接将 zhipu 的响应体传递给客户端
-		c.DataFromReader(http.StatusOK, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
-	} else if provider == "minimax" {
-		// 解析 Minimax 的响应
-		minimaxResponse, err := pollForCompletion(channel, taskId, 10, 1*time.Second)
-		if err != nil {
-			// 检查是否是最大重试错误
-			if strings.Contains(err.Error(), "max retries reached") {
-				// 直接将最后的响应返回给客户端
-				c.JSON(http.StatusOK, minimaxResponse)
-				return nil
-			}
-			// 处理其他类型的错误
-			return openai.ErrorWrapper(err, "api_error", http.StatusInternalServerError)
-		}
-
-		fullRequestUrl2 := fmt.Sprintf("https://api.minimax.chat/v1/files/retrieve?file_id=%s", minimaxResponse.FileID)
-		logger.SysLog(fmt.Sprintf("minimaxResponse.FileID:%s", minimaxResponse.FileID))
-		// 创建新的请求
-		req2, err := http.NewRequest("GET", fullRequestUrl2, nil)
+	if videoTask.Provider == "zhipu" {
+		// 读取响应体
+		// 读取响应体
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return openai.ErrorWrapper(
-				fmt.Errorf("failed to create second request: %v", err),
-				"api_error",
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
 				http.StatusInternalServerError,
 			)
-		}
-
-		// 添加头部
-		req2.Header.Set("Content-Type", "application/json")
-		req2.Header.Set("Authorization", "Bearer "+channel.Key)
-
-		// 发送第二个 HTTP 请求
-		client := &http.Client{}
-		resp2, err := client.Do(req2)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to fetch file: %v", err),
-				"api_error",
-				http.StatusInternalServerError,
-			)
-		}
-		defer resp2.Body.Close()
-
-		// 检查响应状态码
-		if resp2.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp2.Body)
-			return openai.ErrorWrapper(
-				fmt.Errorf("API error in second request: %s", string(body)),
-				"api_error",
-				resp2.StatusCode,
-			)
-		}
-
-		// 直接将第二个请求的响应体传递给客户端
-		c.DataFromReader(http.StatusOK, resp2.ContentLength, resp2.Header.Get("Content-Type"), resp2.Body, nil)
-	} else if provider == "kling" {
-		c.DataFromReader(http.StatusOK, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
-	}
-
-	return nil
-}
-
-func pollForCompletion(channel *dbmodel.Channel, taskId string, maxRetries int, retryInterval time.Duration) (*model.FinalVideoResponse, error) {
-	var lastResponse *model.FinalVideoResponse
-	var lastRawResponse string
-
-	for i := 0; i < maxRetries; i++ {
-		fullRequestUrl := fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
-
-		// 创建请求并设置头部
-		req, err := http.NewRequest("GET", fullRequestUrl, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %v", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+channel.Key)
-
-		// 发送请求
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to send request: %v", err)
 		}
 		defer resp.Body.Close()
 
-		// 读取并解析响应
-		body, _ := io.ReadAll(resp.Body)
-		lastRawResponse = string(body)
-		logger.SysLog(fmt.Sprintf("Raw response body: %s", lastRawResponse))
-
-		var minimaxResponse model.FinalVideoResponse
-		if err := json.Unmarshal(body, &minimaxResponse); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal response: %v", err)
-		}
-		lastResponse = &minimaxResponse
-
-		// 检查任务状态
-		if minimaxResponse.Status == "Success" || minimaxResponse.FileID != "" {
-			return &minimaxResponse, nil
-		} else if minimaxResponse.Status == "Failed" {
-			return &minimaxResponse, fmt.Errorf("task failed: %s", minimaxResponse.BaseResp.StatusMsg)
+		// 解析JSON响应
+		var zhipuResp model.FinalVideoResponse
+		if err := json.Unmarshal(body, &zhipuResp); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
 		}
 
-		// 如果还在处理中，等待一段时间后重试
-		logger.SysLog(fmt.Sprintf("Task still processing. Retry %d/%d", i+1, maxRetries))
-		time.Sleep(retryInterval)
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      taskId,
+			TaskStatus:  zhipuResp.TaskStatus, // 或者可以根据需要设置其他消息
+			Message:     "",
+			VideoResult: "",
+		}
+
+		// 如果任务成功且有视频结果，添加到响应中
+		if zhipuResp.TaskStatus == "SUCCESS" && len(zhipuResp.VideoResults) > 0 {
+			generalResponse.VideoResult = zhipuResp.VideoResults[0].URL
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	} else if videoTask.Provider == "minimax" {
+		err := handleMinimaxResponse(c, channel, taskId)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+	} else if videoTask.Provider == "kling" {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		defer resp.Body.Close()
+
+		// 解析JSON响应
+		var klingResp keling.KelingVideoResponse
+		if err := json.Unmarshal(body, &klingResp); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      klingResp.Data.TaskID,
+			TaskStatus:  klingResp.Data.TaskStatus, // 或者可以根据需要设置其他消息
+			Message:     klingResp.Data.TaskStatusMsg,
+			VideoResult: "",
+			Duration:    "",
+		}
+
+		// 如果任务成功且有视频结果，添加到响应中
+		if klingResp.Data.TaskStatus == "succeed" && len(klingResp.Data.TaskResult.Videos) > 0 {
+			generalResponse.VideoResult = klingResp.Data.TaskResult.Videos[0].URL
+			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+
+		return nil
+	}
+	return nil
+}
+
+func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
+	// 第一次请求，获取初始状态
+	url := fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to create request: %v", err), "api_error", http.StatusInternalServerError)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to send request: %v", err), "api_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to read response body: %v", err), "internal_error", http.StatusInternalServerError)
 	}
 
-	// 达到最大重试次数，返回最后一次的响应
-	return lastResponse, fmt.Errorf("max retries reached, last raw response: %s", lastRawResponse)
+	var minimaxResp model.FinalVideoResponse
+	if err := json.Unmarshal(body, &minimaxResp); err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to parse response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
+	}
+
+	generalResponse := model.GeneralFinalVideoResponse{
+		TaskId:      taskId,
+		TaskStatus:  minimaxResp.Status,
+		Message:     getStatusMessage(minimaxResp.BaseResp.StatusCode),
+		VideoResult: "",
+	}
+
+	// 如果 FileID 为空，直接返回当前状态
+	if minimaxResp.FileID == "" {
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(fmt.Errorf("Error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
+		}
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	}
+
+	// 如果 FileID 不为空，获取文件信息
+	fileUrl := fmt.Sprintf("https://api.minimax.chat/v1/files/retrieve?file_id=%s", minimaxResp.FileID)
+	fileReq, err := http.NewRequest("GET", fileUrl, nil)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to create file request: %v", err), "api_error", http.StatusInternalServerError)
+	}
+	fileReq.Header.Set("Content-Type", "application/json")
+	fileReq.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	fileResp, err := client.Do(fileReq)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to send file request: %v", err), "api_error", http.StatusInternalServerError)
+	}
+	defer fileResp.Body.Close()
+
+	fileBody, err := io.ReadAll(fileResp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to read file response body: %v", err), "internal_error", http.StatusInternalServerError)
+	}
+
+	var fileResponse model.MinimaxFinalResponse
+	if err := json.Unmarshal(fileBody, &fileResponse); err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("failed to parse file response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
+	}
+
+	generalResponse.VideoResult = fileResponse.File.DownloadURL
+	generalResponse.TaskStatus = "success" // 假设有 FileID 且能获取到下载 URL 就意味着成功
+
+	jsonResponse, err := json.Marshal(generalResponse)
+	if err != nil {
+		return openai.ErrorWrapper(fmt.Errorf("Error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
+	}
+
+	c.Data(http.StatusOK, "application/json", jsonResponse)
+	return nil
 }

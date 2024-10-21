@@ -26,24 +26,12 @@ func (video *Video) Insert() error {
 	return err
 }
 
-func GetChannelIdByTaskIdAndProvider(taskId string, provider string) (int, error) {
+func GetVideoTaskById(taskId string) (*Video, error) {
 	var video Video
-	result := DB.Where("task_id = ? AND provider = ?", taskId, provider).First(&video)
+	result := DB.Where("task_id = ?", taskId).First(&video)
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return 0, fmt.Errorf("no record found for task_id: %s and provider: %s", taskId, provider)
-		}
-		return 0, result.Error
-	}
-	return video.ChannelId, nil
-}
-
-func GetVideoTaskByIdAndProvider(taskId string, provider string) (*Video, error) {
-	var video Video
-	result := DB.Where("task_id = ? AND provider = ?", taskId, provider).First(&video)
-	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("no record found for task_id: %s and provider: %s", taskId, provider)
+			return nil, fmt.Errorf("no record found for task_id: %s", taskId)
 		}
 		return nil, result.Error
 	}

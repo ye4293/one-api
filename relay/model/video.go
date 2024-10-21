@@ -66,3 +66,18 @@ type VideoResult struct {
 	URL           string `json:"url,omitempty"`             // 视频url
 	CoverImageURL string `json:"cover_image_url,omitempty"` // 视频封面url
 }
+
+type MinimaxFinalResponse struct {
+	File struct {
+		FileID      int64  `json:"file_id"`
+		Bytes       int    `json:"bytes"`
+		CreatedAt   int64  `json:"created_at"`
+		Filename    string `json:"filename"`
+		Purpose     string `json:"purpose"`
+		DownloadURL string `json:"download_url"`
+	} `json:"file"`
+	BaseResp struct {
+		StatusCode int    `json:"status_code"`
+		StatusMsg  string `json:"status_msg"`
+	} `json:"base_resp"`
+}

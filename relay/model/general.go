@@ -54,3 +54,17 @@ func (r GeneralOpenAIRequest) ParseInput() []string {
 	}
 	return input
 }
+
+type GeneralVideoResponse struct {
+	TaskId     string `json:"task_id"`
+	TaskStatus string `json:"task_status"`
+	Message    string `json:"message"`
+}
+
+type GeneralFinalVideoResponse struct {
+	TaskId      string `json:"task_id"`
+	VideoResult string `json:"video_result"`
+	TaskStatus  string `json:"task_status"`
+	Message     string `json:"message"`
+	Duration    string `json:"duration"`
+}
