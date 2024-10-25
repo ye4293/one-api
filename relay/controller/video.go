@@ -290,11 +290,16 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 		}
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralVideoResponse{
-			TaskId:     videoResponse.TaskID,
-			TaskStatus: getStatusMessage(videoResponse.BaseResp.StatusCode),
-			Message:    videoResponse.BaseResp.StatusMsg,
+			TaskId:  videoResponse.TaskID,
+			Message: videoResponse.BaseResp.StatusMsg,
 		}
 
+		switch videoResponse.BaseResp.StatusCode {
+		case 0:
+			generalResponse.TaskStatus = "succeed"
+		default:
+			generalResponse.TaskStatus = "failed"
+		}
 		// 将 GeneralVideoResponse 结构体转换为 JSON
 		jsonResponse, err := json.Marshal(generalResponse)
 		if err != nil {
@@ -349,9 +354,16 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralVideoResponse{
-			TaskId:     videoResponse.ID,
-			TaskStatus: videoResponse.TaskStatus,
-			Message:    "",
+			TaskId:  videoResponse.ID,
+			Message: "",
+		}
+
+		// 修改 TaskStatus 处理逻辑
+		switch videoResponse.TaskStatus {
+		case "FAIL":
+			generalResponse.TaskStatus = "failed"
+		default:
+			generalResponse.TaskStatus = "succeed"
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
@@ -366,6 +378,7 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
+
 		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
 	case 400:
 		return openai.ErrorWrapper(
@@ -402,9 +415,15 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralVideoResponse{
-			TaskId:     videoResponse.Data.TaskID,
-			TaskStatus: videoResponse.Data.TaskStatus,
-			Message:    videoResponse.Message,
+			TaskId:  videoResponse.Data.TaskID,
+			Message: videoResponse.Message,
+		}
+
+		switch videoResponse.Data.TaskStatus {
+		case "failed":
+			generalResponse.TaskStatus = "failed"
+		default:
+			generalResponse.TaskStatus = "succeed"
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
@@ -527,7 +546,33 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 	return nil
 }
 
-func GetVideoResult(c *gin.Context, provider string, taskId string) *model.ErrorWithStatusCode {
+func mapTaskStatus(status string) string {
+	switch status {
+	case "PROCESSING":
+		return "processing"
+	case "SUCCESS":
+		return "succeed"
+	case "FAIL":
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func mapTaskStatusMinimax(status string) string {
+	switch status {
+	case "Processing":
+		return "processing"
+	case "Success":
+		return "succeed"
+	case "Fail":
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	videoTask, err := dbmodel.GetVideoTaskById(taskId)
 	if err != nil {
 		return openai.ErrorWrapper(
@@ -578,7 +623,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 
 	default:
 		return openai.ErrorWrapper(
-			fmt.Errorf("unsupported model type: %s", provider),
+			fmt.Errorf("unsupported model type:"),
 			"invalid_request_error",
 			http.StatusBadRequest,
 		)
@@ -651,7 +696,7 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralFinalVideoResponse{
 			TaskId:      taskId,
-			TaskStatus:  zhipuResp.TaskStatus, // 或者可以根据需要设置其他消息
+			TaskStatus:  mapTaskStatus(zhipuResp.TaskStatus), // 使用 mapTaskStatus 函数
 			Message:     "",
 			VideoResult: "",
 		}
@@ -707,10 +752,17 @@ func GetVideoResult(c *gin.Context, provider string, taskId string) *model.Error
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralFinalVideoResponse{
 			TaskId:      klingResp.Data.TaskID,
-			TaskStatus:  klingResp.Data.TaskStatus, // 或者可以根据需要设置其他消息
 			Message:     klingResp.Data.TaskStatusMsg,
 			VideoResult: "",
 			Duration:    "",
+		}
+
+		// 处理任务状态
+		switch klingResp.Data.TaskStatus {
+		case "submitted":
+			generalResponse.TaskStatus = "processing"
+		default:
+			generalResponse.TaskStatus = klingResp.Data.TaskStatus
 		}
 
 		// 如果任务成功且有视频结果，添加到响应中
@@ -766,8 +818,8 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 
 	generalResponse := model.GeneralFinalVideoResponse{
 		TaskId:      taskId,
-		TaskStatus:  minimaxResp.Status,
-		Message:     getStatusMessage(minimaxResp.BaseResp.StatusCode),
+		TaskStatus:  mapTaskStatusMinimax(minimaxResp.Status),
+		Message:     minimaxResp.BaseResp.StatusMsg,
 		VideoResult: "",
 	}
 
