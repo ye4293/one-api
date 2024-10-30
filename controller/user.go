@@ -99,6 +99,7 @@ func setupLogin(user *model.User, c *gin.Context) {
 		DisplayName: user.DisplayName,
 		Role:        user.Role,
 		Status:      user.Status,
+		AccessToken: user.AccessToken,
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"message": "",
@@ -178,6 +179,7 @@ func Register(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.Username,
 		InviterId:   inviterId,
+		AccessToken: helper.GetUUID(),
 	}
 	if config.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
