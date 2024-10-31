@@ -166,3 +166,52 @@ func RetrieveModel(c *gin.Context) {
 		})
 	}
 }
+
+// 定义返回的数据结构
+func ListTypes(c *gin.Context) {
+	// 定义返回的数据结构
+	type ChannelOption struct {
+		Key   int    `json:"key"`
+		Text  string `json:"text"`
+		Value int    `json:"value"`
+		Color string `json:"color"`
+	}
+
+	// 创建返回数据
+	channelOptions := []ChannelOption{
+		{Key: 1, Text: "OpenAI", Value: 1, Color: "green"},
+		{Key: 14, Text: "Anthropic Claude", Value: 14, Color: "black"},
+		{Key: 3, Text: "Azure OpenAI", Value: 3, Color: "olive"},
+		{Key: 11, Text: "Google PaLM2", Value: 11, Color: "orange"},
+		{Key: 24, Text: "Google Gemini", Value: 24, Color: "orange"},
+		{Key: 28, Text: "Mistral AI", Value: 28, Color: "orange"},
+		{Key: 31, Text: "零一万物", Value: 31, Color: "green"},
+		{Key: 32, Text: "midjourney-Plus", Value: 32, Color: "green"},
+		{Key: 33, Text: "AWS Claude", Value: 33, Color: "black"},
+		{Key: 34, Text: "Coze", Value: 34, Color: "blue"},
+		{Key: 35, Text: "Cohere", Value: 35, Color: "green"},
+		{Key: 36, Text: "together", Value: 36, Color: "blue"},
+		{Key: 37, Text: "Deepseek", Value: 37, Color: "green"},
+		{Key: 38, Text: "Stability", Value: 38, Color: "blue"},
+		{Key: 39, Text: "Novita", Value: 39, Color: "blue"},
+		{Key: 40, Text: "Replicate", Value: 40, Color: "blue"},
+		{Key: 30, Text: "Ollama", Value: 30, Color: "orange"},
+		{Key: 29, Text: "Groq", Value: 29, Color: "orange"},
+		{Key: 15, Text: "百度文心千帆", Value: 15, Color: "blue"},
+		{Key: 17, Text: "阿里通义千问", Value: 17, Color: "orange"},
+		{Key: 18, Text: "讯飞星火认知", Value: 18, Color: "blue"},
+		{Key: 16, Text: "智谱 ChatGLM", Value: 16, Color: "violet"},
+		{Key: 19, Text: "360 智脑", Value: 19, Color: "blue"},
+		{Key: 25, Text: "Moonshot AI", Value: 25, Color: "black"},
+		{Key: 23, Text: "腾讯混元", Value: 23, Color: "teal"},
+		{Key: 26, Text: "百川大模型", Value: 26, Color: "orange"},
+		{Key: 27, Text: "MiniMax", Value: 27, Color: "red"},
+		{Key: 8, Text: "自定义渠道", Value: 8, Color: "pink"},
+		{Key: 41, Text: "可灵", Value: 41, Color: "purple"},
+	}
+
+	c.JSON(200, gin.H{
+		"object": "list",
+		"data":   channelOptions,
+	})
+}
