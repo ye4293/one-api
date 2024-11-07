@@ -60,6 +60,9 @@ func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.Rela
 	if strings.HasPrefix(imageRequest.Model, "flux") {
 		return nil
 	}
+	if strings.HasPrefix(imageRequest.Model, "recraft") {
+		return nil
+	}
 	// model validation
 	_, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
 	if !hasValidSize {
@@ -84,6 +87,9 @@ func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.Rela
 
 func getImageCostRatio(imageRequest *relaymodel.ImageRequest) (float64, error) {
 	if strings.HasPrefix(imageRequest.Model, "flux") {
+		return 1, nil
+	}
+	if strings.HasPrefix(imageRequest.Model, "recraft") {
 		return 1, nil
 	}
 	if imageRequest == nil {
