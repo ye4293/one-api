@@ -159,43 +159,69 @@ func CacheIsUserEnabled(userId int) (bool, error) {
 	return userEnabled, err
 }
 
-var group2model2channels map[string]map[string][]*Channel
-var channelsIDM map[int]*Channel
-var channelSyncLock sync.RWMutex
+// 首先在文件顶部声明全局变量时就进行初始化
+var (
+	channelSyncLock      sync.RWMutex
+	group2model2channels = make(map[string]map[string][]*Channel)
+	channelsIDM          = make(map[int]*Channel)
+)
 
 func InitChannelCache() {
+	// 创建新的 map 实例
 	newChannelId2channel := make(map[int]*Channel)
 	var channels []*Channel
 	DB.Where("status = ?", common.ChannelStatusEnabled).Find(&channels)
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
 	}
+
 	var abilities []*Ability
 	DB.Find(&abilities)
 	groups := make(map[string]bool)
 	for _, ability := range abilities {
 		groups[ability.Group] = true
 	}
+
+	// 创建新的 map 实例
 	newGroup2model2channels := make(map[string]map[string][]*Channel)
 	newChannelsIDM := make(map[int]*Channel)
+
+	// 初始化每个组的 model map
 	for group := range groups {
 		newGroup2model2channels[group] = make(map[string][]*Channel)
 	}
+
+	// 处理 channels
 	for _, channel := range channels {
 		newChannelsIDM[channel.Id] = channel
 		groups := strings.Split(channel.Group, ",")
 		for _, group := range groups {
+			group = strings.TrimSpace(group) // 添加空格处理
+			if group == "" {
+				continue // 跳过空组
+			}
+
 			models := strings.Split(channel.Models, ",")
 			for _, model := range models {
+				model = strings.TrimSpace(model) // 添加空格处理
+				if model == "" {
+					continue // 跳过空模型
+				}
+
+				// 确保 map 已初始化
+				if _, ok := newGroup2model2channels[group]; !ok {
+					newGroup2model2channels[group] = make(map[string][]*Channel)
+				}
 				if _, ok := newGroup2model2channels[group][model]; !ok {
 					newGroup2model2channels[group][model] = make([]*Channel, 0)
 				}
+
 				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel)
 			}
 		}
 	}
 
-	// sort by priority
+	// 排序
 	for group, model2channels := range newGroup2model2channels {
 		for model, channels := range model2channels {
 			sort.Slice(channels, func(i, j int) bool {
@@ -205,10 +231,12 @@ func InitChannelCache() {
 		}
 	}
 
+	// 使用锁保护全局变量更新
 	channelSyncLock.Lock()
 	group2model2channels = newGroup2model2channels
 	channelsIDM = newChannelsIDM
 	channelSyncLock.Unlock()
+
 	logger.SysLog("channels synced from database")
 }
 
