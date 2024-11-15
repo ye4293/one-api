@@ -112,7 +112,7 @@ func GitHubLogin(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"cdata":   updateUser,
+		"data":    updateUser,
 	})
 	setLoginSession(&updateUser, c)
 }
