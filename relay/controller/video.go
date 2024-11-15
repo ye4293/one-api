@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,7 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -38,6 +40,8 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "kling-v1" {
 		return handleKelingVideoRequest(c, ctx, meta)
+	} else if modelName == "gen3a_turbo" {
+		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		// 处理其他模型的逻辑
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
@@ -131,6 +135,38 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
 	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "kling-v1", imageCheck.Mode, imageCheck.Duration, videoType)
+}
+
+func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	baseUrl := meta.BaseURL
+	var fullRequestUrl string
+	if meta.ChannelType == 42 {
+		fullRequestUrl = baseUrl + "/v1/image_to_video"
+	} else {
+		fullRequestUrl = baseUrl + "/runwayml/v1/image_to_video"
+	}
+
+	// 解析请求体
+	var runwayRequest runway.VideoGenerationRequest
+	if err := common.UnmarshalBodyReusable(c, &runwayRequest); err != nil {
+		return openai.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
+	}
+
+	// 设置默认时长
+	if runwayRequest.Duration == 0 {
+		runwayRequest.Duration = 10
+	}
+
+	// 设置 duration 到上下文
+	c.Set("duration", strconv.Itoa(runwayRequest.Duration))
+
+	// 序列化请求
+	jsonData, err := json.Marshal(runwayRequest)
+	if err != nil {
+		return openai.ErrorWrapper(err, "failed to marshal request body", http.StatusInternalServerError)
+	}
+
+	return sendRequestRunwayAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "gen3a_turbo")
 }
 
 func sendRequestMinimaxAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
@@ -243,6 +279,45 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	}
 	KelingvideoResponse.StatusCode = resp.StatusCode
 	return handleKelingVideoResponse(c, ctx, KelingvideoResponse, body, meta, modelName, mode, duration, videoType)
+}
+
+func sendRequestRunwayAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Runway-Version", "2024-11-06")
+	req.Header.Set("authorization", "Bearer "+channel.Key)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	var videoResponse runway.VideoResponse
+	err = json.Unmarshal(body, &videoResponse)
+	if err != nil {
+		log.Printf("Unmarshal error: %v", err)
+		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
+	}
+
+	videoResponse.StatusCode = resp.StatusCode
+	return handleRunwayVideoResponse(c, ctx, videoResponse, body, meta, modelName)
 }
 
 func encodeJWTToken(ak, sk string) string {
@@ -468,6 +543,60 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 	}
 }
 
+func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoResponse runway.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	switch videoResponse.StatusCode {
+	case 200:
+		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "")
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("API error: %s", err.Error()),
+				"api_error",
+				http.StatusBadRequest,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     videoResponse.Id,
+			Message:    "",
+			TaskStatus: "succeed",
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+
+		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
+	case 400:
+		return openai.ErrorWrapper(
+			fmt.Errorf("API error: %s", videoResponse.Error),
+			"api_error",
+			http.StatusBadRequest,
+		)
+	case 429:
+		return openai.ErrorWrapper(
+			fmt.Errorf("API error: %s", videoResponse.Error),
+			"api_error",
+			http.StatusTooManyRequests,
+		)
+	default:
+		return openai.ErrorWrapper(
+			fmt.Errorf("Unknown API error: %s", videoResponse.Error),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+}
+
 func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string) *model.ErrorWithStatusCode {
 	var modelPrice float64
 	defaultPrice, ok := common.DefaultModelPrice[modelName]
@@ -495,6 +624,14 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 			multiplier = 1
 		}
 		quota = int64(float64(quota) * multiplier)
+	}
+
+	value, exists := c.Get("duration")
+	if exists {
+		runwayDuration := value.(string)
+		if runwayDuration == "10" {
+			quota = quota * 2
+		}
 	}
 
 	referer := c.Request.Header.Get("HTTP-Referer")
@@ -572,6 +709,17 @@ func mapTaskStatusMinimax(status string) string {
 	}
 }
 
+func mapTaskStatusRunway(status string) string {
+	switch status {
+	case "PENDING":
+		return "processing"
+	case "SUCCEEDED":
+		return "succeed"
+	default:
+		return "unknown"
+	}
+}
+
 func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	videoTask, err := dbmodel.GetVideoTaskById(taskId)
 	if err != nil {
@@ -620,6 +768,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/image2video/%s", *channel.BaseURL, taskId)
 			}
 		}
+	case "runway":
+		if channel.Type != 42 {
+			fullRequestUrl = fmt.Sprintf("%s/runwayml/v1/tasks/%s", *channel.BaseURL, taskId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/tasks/%s", *channel.BaseURL, taskId)
+		}
 
 	default:
 		return openai.ErrorWrapper(
@@ -643,6 +797,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
 
+	} else if videoTask.Provider == "runway" && channel.Type == 42 {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Runway-Version", "2024-11-06")
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -671,8 +829,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 
 	if videoTask.Provider == "zhipu" {
-		// 读取响应体
-		// 读取响应体
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -785,8 +941,65 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
 		return nil
+	} else if videoTask.Provider == "runway" {
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 打印响应内容，方便调试
+		log.Printf("Runway response body: %s", string(body))
+
+		// 解析JSON响应
+		var runwayResp runway.VideoFinalResponse
+		if err := json.Unmarshal(body, &runwayResp); err != nil {
+			log.Printf("Failed to parse response: %v, body: %s", err, string(body))
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      taskId,
+			TaskStatus:  mapTaskStatusRunway(runwayResp.Status),
+			Message:     "", // 添加错误信息
+			VideoResult: "",
+		}
+
+		// 如果任务成功且有视频结果，添加到响应中
+		if runwayResp.Status == "SUCCEEDED" && len(runwayResp.Output) > 0 {
+			generalResponse.VideoResult = runwayResp.Output[0]
+		} else {
+			log.Printf("Task not succeeded or no output. Status: %s, Output length: %d",
+				runwayResp.Status, len(runwayResp.Output))
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
+
 	return nil
+
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {

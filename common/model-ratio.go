@@ -331,6 +331,7 @@ var DefaultModelPrice = map[string]float64{
 	"cogvideox":               0.1,
 	"video-01":                0.45,
 	"kling-v1":                0.25,
+	"gen3a_turbo":             0.25,
 }
 
 //后续进行修正

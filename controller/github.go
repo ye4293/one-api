@@ -33,6 +33,88 @@ type GitHubUser struct {
 
 var GithubOAuthUrl = "https://github.com/login/oauth/authorize"
 
+type NextGithubUser struct {
+	Id    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"` // 修正这里的 josn 为 json
+	Image string `json:"image"`
+}
+
+func GitHubLogin(c *gin.Context) {
+	var user NextGithubUser
+	if err := c.ShouldBindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request data: " + err.Error(),
+		})
+		return
+	}
+
+	// 查找现有用户
+	existingUser, err := model.GetUserByEmail(user.Email)
+	if err != nil {
+		// 检查用户名是否已存在
+		_, err := model.GetUserByUsername(user.Name, false)
+		if err == nil { // 用户名已存在
+			// 获取最大用户ID
+			maxId := model.GetMaxUserId()
+			// 创建新的用户名 (原用户名_新ID)
+			user.Name = fmt.Sprintf("%s_%d", user.Name, maxId+1)
+		}
+
+		// 创建新用户
+		newUser := model.User{
+			DisplayName: user.Name,
+			Username:    user.Name,
+			AccessToken: helper.GetUUID(),
+			Email:       user.Email,
+			GitHubId:    user.Id,
+		}
+
+		if err = newUser.Insert(0); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to create user: " + err.Error(),
+			})
+			return
+		}
+
+		// c.JSON(http.StatusOK, gin.H{
+		// 	"success": true,
+		// 	"message": "New user created successfully",
+		// 	"data":    newUser,
+		// })
+		setupLogin(&newUser, c)
+		return
+	}
+
+	// 用户存在，更新信息
+	updateUser := model.User{
+		Id:          existingUser.Id,
+		GitHubId:    user.Id,
+		Username:    user.Name,
+		DisplayName: user.Name,
+		Email:       user.Email,
+		Password:    "",
+		AccessToken: existingUser.AccessToken,
+	}
+
+	if err := updateUser.Update(false); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// c.JSON(http.StatusOK, gin.H{
+	// 	"success": true,
+	// 	"message": "",
+	// 	"cdata":   updateUser,
+	// })
+	setupLogin(&updateUser, c)
+}
+
 func GithubOAuth(c *gin.Context) {
 
 	//防止CSRF攻击

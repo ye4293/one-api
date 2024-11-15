@@ -24,6 +24,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), controller.ResetPassword)
 		apiRouter.GET("/oauth/state", middleware.CriticalRateLimit(), controller.GenerateOAuthCode)
 		apiRouter.GET("/oauth/github", middleware.CriticalRateLimit(), controller.GithubOAuth)
+		apiRouter.POST("/github/login", middleware.CriticalRateLimit(), controller.GitHubLogin)
 		apiRouter.GET("/oauth/github/callback", middleware.CriticalRateLimit(), controller.GithubOAuthCallback)
 		apiRouter.GET("/oauth/google", middleware.CriticalRateLimit(), controller.GoogleOAuth)
 		apiRouter.GET("/oauth/google/callback", middleware.CriticalRateLimit(), controller.GoogleOAuthCallback)
