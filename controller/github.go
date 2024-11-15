@@ -69,6 +69,7 @@ func GitHubLogin(c *gin.Context) {
 			AccessToken: helper.GetUUID(),
 			Email:       user.Email,
 			GitHubId:    user.Id,
+			Role:        1,
 		}
 
 		if err = newUser.Insert(0); err != nil {
@@ -79,12 +80,12 @@ func GitHubLogin(c *gin.Context) {
 			return
 		}
 
-		// c.JSON(http.StatusOK, gin.H{
-		// 	"success": true,
-		// 	"message": "New user created successfully",
-		// 	"data":    newUser,
-		// })
-		setupLogin(&newUser, c)
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "New user created successfully",
+			"data":    newUser,
+		})
+		setLoginSession(&newUser, c)
 		return
 	}
 
@@ -97,6 +98,7 @@ func GitHubLogin(c *gin.Context) {
 		Email:       user.Email,
 		Password:    "",
 		AccessToken: existingUser.AccessToken,
+		Role:        existingUser.Role,
 	}
 
 	if err := updateUser.Update(false); err != nil {
@@ -107,12 +109,12 @@ func GitHubLogin(c *gin.Context) {
 		return
 	}
 
-	// c.JSON(http.StatusOK, gin.H{
-	// 	"success": true,
-	// 	"message": "",
-	// 	"cdata":   updateUser,
-	// })
-	setupLogin(&updateUser, c)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"cdata":   updateUser,
+	})
+	setLoginSession(&updateUser, c)
 }
 
 func GithubOAuth(c *gin.Context) {
