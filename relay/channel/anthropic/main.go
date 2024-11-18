@@ -137,7 +137,11 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				content.Source = &ImageSource{
 					Type: "base64",
 				}
-				mimeType, data, _ := image.GetImageFromUrl(part.ImageURL.Url)
+				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
+				if err != nil {
+					logger.SysLog(fmt.Sprintf("Error in GetImageFromUrl: %v", err))
+					return &claudeRequest
+				}
 				content.Source.MediaType = mimeType
 				content.Source.Data = data
 			}

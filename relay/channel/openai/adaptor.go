@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
-	"github.com/songquanpeng/one-api/relay/channel/minimax"
 	"github.com/songquanpeng/one-api/relay/channel/novita"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -42,8 +41,6 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 		// {your endpoint}/openai/deployments/{your azure_model}/chat/completions?api-version={api_version}
 		requestURL = fmt.Sprintf("/openai/deployments/%s/%s", model_, task)
 		return util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType), nil
-	case common.ChannelTypeMinimax:
-		return minimax.GetRequestURL(meta)
 	case common.ChannelTypeNovita:
 		return novita.GetRequestURL(meta)
 	default:

@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/middleware"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -45,6 +44,8 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 func Relay(c *gin.Context) {
 	ctx := c.Request.Context()
 	relayMode := constant.Path2RelayMode(c.Request.URL.Path)
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
 	if config.DebugEnabled {
 		requestBody, _ := common.GetRequestBody(c)
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
@@ -52,7 +53,6 @@ func Relay(c *gin.Context) {
 	channelId := c.GetInt("channel_id")
 	userId := c.GetInt("id")
 	bizErr := relayHelper(c, relayMode)
-	requestId := c.GetString(logger.RequestIdKey) // 确保在函数开始就获取requestId
 
 	if bizErr == nil {
 		monitor.Emit(channelId, true)
@@ -100,9 +100,11 @@ func Relay(c *gin.Context) {
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
-		bizErr.Error.Message = helper.MessageWithRequestId(bizErr.Error.Message, requestId)
 		c.JSON(bizErr.StatusCode, gin.H{
-			"error": util.ProcessString(bizErr.Error.Message),
+			"message": bizErr.Error.Message,
+			"type":    "api_error",
+			"param":   "",
+			"code":    bizErr.Error.Code,
 		})
 	}
 }

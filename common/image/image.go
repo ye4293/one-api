@@ -3,6 +3,7 @@ package image
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -68,33 +69,45 @@ func GetImageSizeFromUrl(url string) (width int, height int, err error) {
 	return img.Width, img.Height, nil
 }
 
-func GetImageFromUrl(url string) (mimeType string, data string, err error) {
-	// Check if the URL is a data URL
-	matches := dataURLPattern.FindStringSubmatch(url)
+func GetImageFromUrl(input string) (mimeType string, data string, err error) {
+	// Check if the input is a data URL
+	matches := dataURLPattern.FindStringSubmatch(input)
 	if len(matches) == 3 {
-		// URL is a data URL
+		// Input is a data URL
 		mimeType = "image/" + matches[1]
 		data = matches[2]
-		return
+		return mimeType, data, nil
 	}
 
-	isImage, err := IsImageUrl(url)
-	if !isImage {
-		return
-	}
-	resp, err := http.Get(url)
+	// If not a data URL, treat as a regular URL
+	isImage, err := IsImageUrl(input)
 	if err != nil {
-		return
+		return "", "", err
+	}
+	if !isImage {
+		return "", "", fmt.Errorf("URL does not point to an image")
+	}
+
+	resp, err := http.Get(input)
+	if err != nil {
+		return "", "", err
 	}
 	defer resp.Body.Close()
-	buffer := bytes.NewBuffer(nil)
+
+	buffer := new(bytes.Buffer)
 	_, err = buffer.ReadFrom(resp.Body)
 	if err != nil {
-		return
+		return "", "", err
 	}
+
 	mimeType = resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = http.DetectContentType(buffer.Bytes())
+	}
+
 	data = base64.StdEncoding.EncodeToString(buffer.Bytes())
-	return
+
+	return mimeType, data, nil
 }
 
 var (
@@ -126,7 +139,7 @@ func GetImageSizeFromBase64(encoded string) (width int, height int, err error) {
 }
 
 func GetImageSize(image string) (width int, height int, err error) {
-	if strings.HasPrefix(image, "data:image/") {
+	if strings.HasPrefix(image, "data:") {
 		return GetImageSizeFromBase64(image)
 	}
 	return GetImageSizeFromUrl(image)

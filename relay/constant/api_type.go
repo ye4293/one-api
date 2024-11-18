@@ -20,6 +20,7 @@ const (
 	APITypeCoze
 	APITypeCohere
 	APITypeReplicate
+	APITypeMinimax
 
 	APITypeDummy // this one is only for count, do not add any channel after this
 )
@@ -55,6 +56,8 @@ func ChannelType2APIType(channelType int) int {
 		apiType = APITypeReplicate
 	case common.ChannelTypeAwsClaude:
 		apiType = APITypeAwsClaude
+	case common.ChannelTypeMinimax:
+		apiType = APITypeMinimax
 
 	}
 	return apiType

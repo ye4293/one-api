@@ -80,12 +80,13 @@ func GitHubLogin(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "New user created successfully",
-			"data":    newUser,
-		})
-		setLoginSession(&newUser, c)
+		// c.JSON(http.StatusOK, gin.H{
+		// 	"success": true,
+		// 	"message": "New user created successfully",
+		// 	"data":    newUser,
+		// })
+		// setLoginSession(&newUser, c)
+		setupLogin(&newUser, c) // 使用统一的登录处理函数
 		return
 	}
 
@@ -109,12 +110,8 @@ func GitHubLogin(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    updateUser,
-	})
-	setLoginSession(&updateUser, c)
+	setupLogin(&updateUser, c) // 使用统一的登录处理函数
+
 }
 
 func GithubOAuth(c *gin.Context) {
