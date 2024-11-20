@@ -49,7 +49,7 @@ func GetAllUserTask(userId int, page int, pageSize int, queryParams TaskQueryPar
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
 	if queryParams.EndTimestamp != "" {
-		query = query.Where("submit_time <= ?", queryParams.EndTimestamp)
+		query = query.Where("finish_time <= ?", queryParams.EndTimestamp)
 	}
 
 	// 首先计算满足条件的总数
@@ -86,7 +86,7 @@ func GetAllTask(page int, pageSize int, queryParams TaskQueryParams) (tasks []*M
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
 	if queryParams.EndTimestamp != "" {
-		query = query.Where("end_time <= ?", queryParams.EndTimestamp)
+		query = query.Where("finish_time <= ?", queryParams.EndTimestamp)
 	}
 
 	// 首先计算满足条件的总数
