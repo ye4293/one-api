@@ -668,7 +668,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		Provider:  provider,
 		Username:  dbmodel.GetUsernameById(meta.UserId),
 		ChannelId: meta.ChannelId,
-		UseId:     meta.UserId,
+		UserId:    meta.UserId,
 		Mode:      mode, //keling
 		Type:      videoType,
 		Model:     meta.ActualModelName,

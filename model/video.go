@@ -17,7 +17,7 @@ type Video struct {
 	Duration  string `json:"duration"`
 	Username  string `json:"username"`
 	ChannelId int    `json:"channel_id"`
-	UseId     int    `json:"user_id"`
+	UserId    int    `json:"user_id"`
 	Model     string `json:"model"`
 }
 
@@ -39,13 +39,21 @@ func GetVideoTaskById(taskId string) (*Video, error) {
 	return &video, nil
 }
 
-func GetCurrentAllVideosAndCount(startTimestamp int64, endTimestamp int64, taskId string, provider string, username string, modelName string, page int, pageSize int, channel int) (videos []*Video, total int64, err error) {
-	var tx *gorm.DB
+func GetCurrentAllVideosAndCount(
+	startTimestamp int64,
+	endTimestamp int64,
+	taskId string,
+	provider string,
+	username string,
+	modelName string,
+	page int,
+	pageSize int,
+	channel int,
+) (videos []*Video, total int64, err error) {
+	// 初始化查询，直接指定模型
+	tx := DB.Model(&Video{})
 
-	// 初始化查询
-	tx = DB // 假设你的数据库连接是 DB
-
-	// 根据提供的参数筛选视频
+	// 添加查询条件
 	if taskId != "" {
 		tx = tx.Where("task_id = ?", taskId)
 	}
@@ -56,7 +64,7 @@ func GetCurrentAllVideosAndCount(startTimestamp int64, endTimestamp int64, taskI
 		tx = tx.Where("username = ?", username)
 	}
 	if modelName != "" {
-		tx = tx.Where("model = ?", modelName) // 假设 modelName 对应 Video 结构体中的 Type 字段
+		tx = tx.Where("model = ?", modelName)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("created_at >= ?", startTimestamp)
@@ -68,22 +76,35 @@ func GetCurrentAllVideosAndCount(startTimestamp int64, endTimestamp int64, taskI
 		tx = tx.Where("channel_id = ?", channel)
 	}
 
-	// 计算满足条件的总数
-	err = tx.Model(&Video{}).Count(&total).Error
+	// 获取总数
+	err = tx.Count(&total).Error
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("count videos error: %w", err)
 	}
 
-	// 计算分页的起始索引
+	// 如果没有数据，直接返回空结果
+	if total == 0 {
+		return make([]*Video, 0), 0, nil
+	}
+
+	// 处理分页参数
+	if pageSize <= 0 {
+		pageSize = 10
+	}
+	if page <= 0 {
+		page = 1
+	}
 	offset := (page - 1) * pageSize
-	if offset < 0 {
-		offset = 0
-	}
 
-	// 获取分页数据
-	err = tx.Order("created_at desc").Limit(pageSize).Offset(offset).Find(&videos).Error
+	// 执行分页查询
+	err = tx.
+		Order("created_at DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&videos).Error
+
 	if err != nil {
-		return nil, total, err
+		return nil, 0, fmt.Errorf("find videos error: %w", err)
 	}
 
 	return videos, total, nil
@@ -101,8 +122,8 @@ func GetCurrentUserVideosAndCount(
 ) (videos []*Video, total int64, err error) {
 	var tx *gorm.DB
 
-	// 初始化查询
-	tx = DB // 假设你的数据库连接是 DB
+	// 初始化查询，并指定模型
+	tx = DB.Model(&Video{}) // 明确指定使用 Video 模型
 
 	// 构建查询条件
 	tx = tx.Where("user_id = ?", userId)
