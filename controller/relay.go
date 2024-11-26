@@ -366,7 +366,6 @@ func RelayVideoGenearte(c *gin.Context) {
 
 	}
 	bizErr := controller.DoVideoRequest(c, modelRequest.Model)
-	logger.SysLog(fmt.Sprintf("bizErr:%s", bizErr))
 	if bizErr != nil {
 		logger.SysLog(fmt.Sprintf("bizErr:%s", bizErr))
 		if bizErr.StatusCode == http.StatusTooManyRequests {

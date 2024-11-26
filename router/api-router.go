@@ -142,6 +142,10 @@ func SetApiRouter(router *gin.Engine) {
 	mjRoute.GET("/self", middleware.UserAuth(), controller.GetUserMidjourney)
 	mjRoute.GET("/", middleware.AdminAuth(), controller.GetAllMidjourney)
 
+	videoRoute := apiRouter.Group("/video")
+	videoRoute.GET("/self", middleware.UserAuth(), controller.GetUserVideos)
+	videoRoute.GET("/", middleware.AdminAuth(), controller.GetAllVideos)
+
 	chargeRoute := apiRouter.Group("/charge")
 	chargeRoute.GET("/get_config", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetChargeConfigs)
 	chargeRoute.POST("/create_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CreateChargeOrder)

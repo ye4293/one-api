@@ -671,6 +671,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		UseId:     meta.UserId,
 		Mode:      mode, //keling
 		Type:      videoType,
+		Model:     meta.ActualModelName,
 		Duration:  duration,
 	}
 
