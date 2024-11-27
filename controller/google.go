@@ -17,6 +17,10 @@ import (
 	"github.com/songquanpeng/one-api/model"
 )
 
+func GoogleLogin(c *gin.Context) {
+
+}
+
 const (
 	GoogleOAuthURL = "https://accounts.google.com/o/oauth2/auth"
 	GetTokenUrl    = "https://accounts.google.com/o/oauth2/token"

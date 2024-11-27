@@ -8,17 +8,19 @@ import (
 )
 
 type Video struct {
-	Prompt    string `json:"prompt"`
-	CreatedAt int64  `json:"created_at"`
-	TaskId    string `json:"task_id"`
-	Type      string `json:"type"`
-	Provider  string `json:"provider"`
-	Mode      string `json:"mode"`
-	Duration  string `json:"duration"`
-	Username  string `json:"username"`
-	ChannelId int    `json:"channel_id"`
-	UserId    int    `json:"user_id"`
-	Model     string `json:"model"`
+	Prompt     string `json:"prompt"`
+	CreatedAt  int64  `json:"created_at"`
+	TaskId     string `json:"task_id"`
+	Type       string `json:"type"`
+	Provider   string `json:"provider"`
+	Mode       string `json:"mode"`
+	Duration   string `json:"duration"`
+	Username   string `json:"username"`
+	ChannelId  int    `json:"channel_id"`
+	UserId     int    `json:"user_id"`
+	Model      string `json:"model"`
+	Status     string `json:"status"`
+	FailReason string `json:"fail_reason"`
 }
 
 func (video *Video) Insert() error {

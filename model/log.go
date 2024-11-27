@@ -250,80 +250,6 @@ func DeleteOldLog(targetTimestamp int64) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
-type UsageData struct {
-	TotalQuota  int64
-	TotalTokens int64
-	LogCount    int64
-}
-
-func GetAllUsageAndTokenAndCount(timestamp int64) (UsageData, error) {
-	var usageData UsageData
-	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-
-	// 计算当天的日志总数
-	err := LOG_DB.Model(&Log{}).
-		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
-		Count(&usageData.LogCount).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	// 计算当天的总Quota
-	err = LOG_DB.Model(&Log{}).
-		Select("COALESCE(SUM(quota), 0) as total_quota").
-		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
-		Scan(&usageData.TotalQuota).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	// 计算当天的PromptTokens和CompletionTokens的总和
-	err = LOG_DB.Model(&Log{}).
-		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens").
-		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
-		Scan(&usageData.TotalTokens).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	return usageData, nil
-}
-
-func GetUserUsageAndTokenAndCount(userId int, timestamp int64) (UsageData, error) {
-	var usageData UsageData
-	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-
-	// 计算当天的日志总数
-	err := LOG_DB.Model(&Log{}).
-		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
-		Count(&usageData.LogCount).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	// 计算当天的总Quota
-	err = LOG_DB.Model(&Log{}).
-		Select("COALESCE(SUM(quota), 0) as total_quota").
-		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
-		Scan(&usageData.TotalQuota).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	// 计算当天的PromptTokens和CompletionTokens的总和
-	err = LOG_DB.Model(&Log{}).
-		Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens").
-		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
-		Scan(&usageData.TotalTokens).Error
-	if err != nil {
-		return usageData, err
-	}
-
-	return usageData, nil
-}
-
 type HourlyData struct {
 	Hour   string `json:"hour"`
 	Amount int64  `json:"amount"`
@@ -421,4 +347,156 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	}
 
 	return hourlyData, nil
+
+}
+
+func GetAllMetrics() (rpm int64, tpm int64, quotaSum int64, err error) {
+	// 获取当前时间戳
+	currentTime := time.Now().Unix()
+	// 一分钟前的时间戳
+	oneMinuteAgo := currentTime - 60
+
+	// 单次查询获取所有指标
+	err = LOG_DB.Model(&Log{}).
+		Select(`
+            COUNT(*) as rpm, 
+            COALESCE(SUM(prompt_tokens + completion_tokens), 0) as tpm,
+            COALESCE(SUM(quota), 0) as quota_sum
+        `).
+		Where("created_at >= ? AND created_at <= ?",
+			oneMinuteAgo, currentTime).
+		Row().Scan(&rpm, &tpm, &quotaSum)
+
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return rpm, tpm, quotaSum, nil
+}
+
+func GetUserMetrics(userId int) (rpm int64, tpm int64, quotaSum int64, err error) {
+	// 获取当前时间戳
+	currentTime := time.Now().Unix()
+	// 一分钟前的时间戳
+	oneMinuteAgo := currentTime - 60
+
+	// 单次查询获取所有指标
+	err = LOG_DB.Model(&Log{}).
+		Select(`
+            COUNT(*) as rpm, 
+            COALESCE(SUM(prompt_tokens + completion_tokens), 0) as tpm,
+            COALESCE(SUM(quota), 0) as quota_sum
+        `).
+		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
+			userId, oneMinuteAgo, currentTime).
+		Row().Scan(&rpm, &tpm, &quotaSum)
+
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return rpm, tpm, quotaSum, nil
+}
+
+// GetDailyMetrics 获取当天所有用户的请求总数和配额消耗总数
+func GetDailyMetrics() (requestPD int64, usedPD int64, err error) {
+	// 获取当天开始和结束的时间戳
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
+
+	// 单次查询获取当天的统计数据
+	err = LOG_DB.Model(&Log{}).
+		Select(`
+            COUNT(*) as request_pd,
+            COALESCE(SUM(quota), 0) as used_pd
+        `).
+		Where("created_at >= ? AND created_at <= ?",
+			startOfDay, endOfDay).
+		Row().Scan(&requestPD, &usedPD)
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return requestPD, usedPD, nil
+}
+
+// GetUserDailyMetrics 获取指定用户当天的请求总数和配额消耗总数
+func GetUserDailyMetrics(userId int) (requestPD int64, usedPD int64, err error) {
+	// 获取当天开始和结束的时间戳
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
+
+	// 单次查询获取当天的统计数据
+	err = LOG_DB.Model(&Log{}).
+		Select(`
+            COUNT(*) as request_pd,
+            COALESCE(SUM(quota), 0) as used_pd
+        `).
+		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
+			userId, startOfDay, endOfDay).
+		Row().Scan(&requestPD, &usedPD)
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return requestPD, usedPD, nil
+}
+
+// ModelQuotaStats 模型消耗统计结构
+type ModelQuotaStats struct {
+	ModelName string `json:"model_name"`
+	QuotaSum  int64  `json:"quota_sum"`
+}
+
+// GetTopModelQuotaStats 管理员查询当天消耗最高的前5个模型
+func GetTopModelQuotaStats() ([]ModelQuotaStats, error) {
+	// 获取当天的开始和结束时间戳
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
+
+	var stats []ModelQuotaStats
+
+	err := LOG_DB.Model(&Log{}).
+		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum").
+		Where("created_at >= ? AND created_at <= ?", startOfDay, endOfDay).
+		Group("model_name").
+		Order("quota_sum DESC").
+		Limit(5).
+		Scan(&stats).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
+// GetUserTopModelQuotaStats 普通用户查询自己当天消耗最高的前5个模型
+func GetUserTopModelQuotaStats(userId int) ([]ModelQuotaStats, error) {
+	// 获取当天的开始和结束时间戳
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
+
+	var stats []ModelQuotaStats
+
+	err := LOG_DB.Model(&Log{}).
+		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum").
+		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
+			userId, startOfDay, endOfDay).
+		Group("model_name").
+		Order("quota_sum DESC").
+		Limit(5).
+		Scan(&stats).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return stats, nil
 }

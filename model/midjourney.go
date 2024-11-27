@@ -33,6 +33,8 @@ type TaskQueryParams struct {
 	MjID           string
 	StartTimestamp string
 	EndTimestamp   string
+	Type           string
+	Status         string
 }
 
 // 记得加入分页
@@ -52,6 +54,12 @@ func GetAllUserTask(userId int, page int, pageSize int, queryParams TaskQueryPar
 		query = query.Where("finish_time <= ?", queryParams.EndTimestamp)
 	}
 
+	if queryParams.Type != "" {
+		query = query.Where("type = ?", queryParams.Type)
+	}
+	if queryParams.Status != "" {
+		query = query.Where("status = ?", queryParams.Status)
+	}
 	// 首先计算满足条件的总数
 	err = query.Model(&Midjourney{}).Count(&total).Error
 	if err != nil {
@@ -89,6 +97,12 @@ func GetAllTask(page int, pageSize int, queryParams TaskQueryParams) (tasks []*M
 		query = query.Where("finish_time <= ?", queryParams.EndTimestamp)
 	}
 
+	if queryParams.Type != "" {
+		query = query.Where("type = ?", queryParams.Type)
+	}
+	if queryParams.Status != "" {
+		query = query.Where("status = ?", queryParams.Status)
+	}
 	// 首先计算满足条件的总数
 	err = query.Model(&Midjourney{}).Count(&total).Error
 	if err != nil {
