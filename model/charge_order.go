@@ -250,7 +250,14 @@ func HandleStripeCallback(req *http.Request) error {
 	endpointSecret := config.StripeEndpointSecret
 	logger.SysLog(fmt.Sprintf("StripeEndpointSecret:%+v\n", endpointSecret))
 	signatureHeader := req.Header.Get("Stripe-Signature")
-	event, err = webhook.ConstructEvent(payload, signatureHeader, endpointSecret)
+	event, err = webhook.ConstructEventWithOptions(
+		payload,
+		signatureHeader,
+		endpointSecret,
+		webhook.ConstructEventOptions{
+			IgnoreAPIVersionMismatch: true,
+		},
+	)
 	if err != nil {
 		logger.SysLog(fmt.Sprintf("eventerr:%+v\n", err))
 		return err
