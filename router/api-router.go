@@ -132,7 +132,7 @@ func SetApiRouter(router *gin.Engine) {
 	orderRoute.GET("/", middleware.AdminAuth(), controller.GetAllOrders)
 	orderRoute.GET("/self", middleware.UserAuth(), controller.GetUserOrders)
 
-	dashboardRoute := apiRouter.Group("/dashboard1")
+	dashboardRoute := apiRouter.Group("/dashboard")
 	dashboardRoute.GET("/", middleware.AdminAuth(), controller.GetAdminDashboard)
 	dashboardRoute.GET("/graph", middleware.AdminAuth(), controller.GetAllGraph)
 	dashboardRoute.GET("/self", middleware.UserAuth(), controller.GetUserDashboard)
