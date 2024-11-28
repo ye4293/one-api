@@ -18,7 +18,16 @@ import (
 )
 
 func GoogleLogin(c *gin.Context) {
+	var data map[string]interface{}
+	if err := c.ShouldBindJSON(&data); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
+	// 打印完整的 JSON 数据
+	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
+	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
+	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
 }
 
 const (
