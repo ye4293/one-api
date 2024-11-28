@@ -12,22 +12,82 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/message"
 	"github.com/songquanpeng/one-api/model"
 )
 
+type NextGoogleUser struct {
+	Id    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"` // 修正这里的 josn 为 json
+	Image string `json:"image"`
+}
+
 func GoogleLogin(c *gin.Context) {
-	var data map[string]interface{}
-	if err := c.ShouldBindJSON(&data); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	var user NextGoogleUser
+	if err := c.ShouldBindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request data: " + err.Error(),
+		})
+		return
+	}
+	existingUser, err := model.GetUserByEmail(user.Email)
+	if err != nil {
+		// 检查用户名是否已存在
+		_, err := model.GetUserByUsername(user.Name, false)
+		if err == nil { // 用户名已存在
+			// 获取最大用户ID
+			maxId := model.GetMaxUserId()
+			// 创建新的用户名 (原用户名_新ID)
+			user.Name = fmt.Sprintf("%s_%d", user.Name, maxId+1)
+		}
+
+		// 创建新用户
+		newUser := model.User{
+			DisplayName: user.Name,
+			Username:    user.Name,
+			AccessToken: helper.GetUUID(),
+			Email:       user.Email,
+			GoogleId:    user.Id,
+			Role:        1,
+		}
+
+		if err = newUser.Insert(0); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to create user: " + err.Error(),
+			})
+			return
+		}
+
+		setupLogin(&newUser, c) // 使用统一的登录处理函数
 		return
 	}
 
-	// 打印完整的 JSON 数据
-	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
-	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
-	logger.SysLog(fmt.Sprint("Received Google user data: %+v\n", data))
+	// 用户存在，更新信息
+	updateUser := model.User{
+		Id:          existingUser.Id,
+		GoogleId:    user.Id,
+		Username:    user.Name,
+		DisplayName: user.Name,
+		Email:       user.Email,
+		Password:    "",
+		AccessToken: existingUser.AccessToken,
+		Role:        existingUser.Role,
+	}
+
+	if err := updateUser.Update(false); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	setupLogin(&updateUser, c) // 使用统一的登录处理函数
 }
 
 const (
