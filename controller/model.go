@@ -217,3 +217,20 @@ func ListTypes(c *gin.Context) {
 		"data":   channelOptions,
 	})
 }
+
+type PriceItem struct {
+	Type       string                 `json:"type"`       // 价格类型，如 "Standard", "HD", "Input", "Output"
+	Unit       string                 `json:"unit"`       // 单位，如 "M tokens", "image", "minute"
+	Price      float64                `json:"price"`      // 价格数值
+	Currency   string                 `json:"currency"`   // 货币类型，如 "USD"
+	Attributes map[string]interface{} `json:"attributes"` // 额外属性，如分辨率、大小等
+}
+
+type APIModel struct {
+	Provider    string      `json:"providers"`   // 提供商列表
+	Name        string      `json:"name"`        // API名称
+	Tags        []string    `json:"tags"`        // 标签列表
+	PriceType   string      `json:"price_type"`  // 价格类型(如"按量计费")
+	Prices      []PriceItem `json:"prices"`      // 价格列表
+	Description string      `json:"description"` // 描述
+}

@@ -260,36 +260,38 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 初始化每个小时的数据为0，格式化小时为 "00", "01", ... "23"
+	// 初始化每个小时的数据为0
 	for i := 0; i < 24; i++ {
 		hourlyData = append(hourlyData, HourlyData{Hour: fmt.Sprintf("%02d", i), Amount: 0})
 	}
 
-	// 根据target选择要查询的字段
+	// 构建查询
 	var field string
+	hourExpr := "LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0')"
 	switch target {
 	case "quota":
-		field = "COALESCE(SUM(quota), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(SUM(quota), 0) as amount, %s as hour", hourExpr)
 	case "token":
-		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, %s as hour", hourExpr)
 	case "count":
-		field = "COALESCE(COUNT(*), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(COUNT(*), 0) as amount, %s as hour", hourExpr)
 	default:
 		return nil, errors.New("invalid target")
 	}
 
-	// 从数据库获取数据
+	// 执行查询
 	var results []HourlyData
 	err := LOG_DB.Model(&Log{}).
 		Select(field).
 		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
-		Group("HOUR(FROM_UNIXTIME(created_at))").
+		Group(hourExpr).
 		Scan(&results).Error
+
 	if err != nil {
 		return nil, err
 	}
 
-	// 更新hourlyData中的数据
+	// 更新数据
 	for _, result := range results {
 		for i, h := range hourlyData {
 			if h.Hour == result.Hour {
@@ -307,36 +309,38 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	startOfDay := time.Unix(timestamp, 0).UTC().Truncate(24 * time.Hour)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// 初始化每个小时的数据为0，格式化小时为 "00", "01", ... "23"
+	// 初始化每个小时的数据为0
 	for i := 0; i < 24; i++ {
 		hourlyData = append(hourlyData, HourlyData{Hour: fmt.Sprintf("%02d", i), Amount: 0})
 	}
 
-	// 根据target选择要查询的字段
+	// 构建查询
 	var field string
+	hourExpr := "LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0')"
 	switch target {
 	case "quota":
-		field = "COALESCE(SUM(quota), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(SUM(quota), 0) as amount, %s as hour", hourExpr)
 	case "token":
-		field = "COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(SUM(prompt_tokens + completion_tokens), 0) as amount, %s as hour", hourExpr)
 	case "count":
-		field = "COALESCE(COUNT(*), 0) as amount, LPAD(HOUR(FROM_UNIXTIME(created_at)), 2, '0') as hour"
+		field = fmt.Sprintf("COALESCE(COUNT(*), 0) as amount, %s as hour", hourExpr)
 	default:
 		return nil, errors.New("invalid target")
 	}
 
-	// 从数据库获取数据
+	// 执行查询
 	var results []HourlyData
 	err := LOG_DB.Model(&Log{}).
 		Select(field).
 		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
-		Group("HOUR(FROM_UNIXTIME(created_at))").
+		Group(hourExpr).
 		Scan(&results).Error
+
 	if err != nil {
 		return nil, err
 	}
 
-	// 更新hourlyData中的数据
+	// 更新数据
 	for _, result := range results {
 		for i, h := range hourlyData {
 			if h.Hour == result.Hour {
@@ -347,7 +351,6 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	}
 
 	return hourlyData, nil
-
 }
 
 func GetAllMetrics() (rpm int64, tpm int64, quotaSum int64, err error) {
