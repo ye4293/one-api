@@ -233,11 +233,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 		}
 
-		// 如果有 revised_prompt，只保留第一个
-		// if len(finalResult.Input.Prompt) > 0 {
-		//     dalleResp.Data[0].RevisedPrompt = finalResult.Input.Prompt
-		// }
-
 		flux := model.Flux{
 			Id:        finalResult.ID,
 			UserId:    meta.UserId,

@@ -210,6 +210,7 @@ func ListTypes(c *gin.Context) {
 		{Key: 41, Text: "可灵", Value: 41, Color: "purple"},
 		{Key: 42, Text: "Runway", Value: 42, Color: "purple"},
 		{Key: 43, Text: "Recraft", Value: 43, Color: "purple"},
+		{Key: 44, Text: "Luma", Value: 44, Color: "purple"},
 	}
 
 	c.JSON(200, gin.H{

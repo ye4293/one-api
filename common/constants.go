@@ -81,7 +81,9 @@ const (
 	ChannelTypeNovita
 	ChannelTypeReplicate
 	ChannelTypeKeling
-
+	ChannelTypeRunway
+	ChannelTypeRecraft
+	ChannelTypeLuma
 	ChannelTypeDummy
 )
 

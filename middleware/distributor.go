@@ -17,7 +17,8 @@ import (
 )
 
 type ModelRequest struct {
-	Model string `json:"model"`
+	Model     string `json:"model,omitempty"`
+	ModelName string `json:"model_name,omitempty"`
 }
 
 func Distribute() func(c *gin.Context) {
