@@ -235,3 +235,7 @@ type APIModel struct {
 	Prices      []PriceItem `json:"prices"`      // 价格列表
 	Description string      `json:"description"` // 描述
 }
+
+func ListModelDetails(c *gin.Context) {
+
+}
