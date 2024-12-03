@@ -44,7 +44,7 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleKelingVideoRequest(c, ctx, meta)
 	} else if modelName == "gen3a_turbo" {
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
-	} else if modelName == "luma" {
+	} else if strings.HasPrefix(modelName, "luma") {
 		return handleLumaVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		// 处理其他模型的逻辑

@@ -333,6 +333,8 @@ var DefaultModelPrice = map[string]float64{
 	"kling-v1":                0.25,
 	"gen3a_turbo":             0.25,
 	"luma":                    0.4,
+	"dall-e-3":                0.04,
+	"dall-e-2":                0.02,
 }
 
 //后续进行修正

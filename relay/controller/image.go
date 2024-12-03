@@ -18,7 +18,6 @@ import (
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/replicate"
-	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -26,15 +25,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func isWithinRange(element string, value int) bool {
-	if _, ok := constant.DalleGenerationImageAmounts[element]; !ok {
-		return false
-	}
-	min := constant.DalleGenerationImageAmounts[element][0]
-	max := constant.DalleGenerationImageAmounts[element][1]
+// func isWithinRange(element string, value int) bool {
+// 	if _, ok := constant.DalleGenerationImageAmounts[element]; !ok {
+// 		return false
+// 	}
+// 	min := constant.DalleGenerationImageAmounts[element][0]
+// 	max := constant.DalleGenerationImageAmounts[element][1]
 
-	return value >= min && value <= max
-}
+// 	return value >= min && value <= max
+// }
+
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
 	startTime := time.Now()
 	ctx := c.Request.Context()
@@ -52,10 +52,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	meta.ActualModelName = imageRequest.Model
 
 	// model validation
-	bizErr := validateImageRequest(imageRequest, meta)
-	if bizErr != nil {
-		return bizErr
-	}
+	// bizErr := validateImageRequest(imageRequest, meta)
+	// if bizErr != nil {
+	// 	return bizErr
+	// }
 
 	imageCostRatio, err := getImageCostRatio(imageRequest)
 	if err != nil {
@@ -105,7 +105,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	ratio := modelRatio * groupRatio * userModelTypeRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 
-	quota := int64(ratio*imageCostRatio*1000) * int64(imageRequest.N)
+	var modelPrice float64
+	defaultPrice, ok := common.DefaultModelPrice[imageRequest.Model]
+	if !ok {
+		modelPrice = 0.1
+	} else {
+		modelPrice = defaultPrice
+	}
+	quota := int64(modelPrice*500000*imageCostRatio) * int64(imageRequest.N)
+
+	// quota := int64(ratio*imageCostRatio*1000) * int64(imageRequest.N)
 
 	if userQuota-quota < 0 {
 		return openai.ErrorWrapper(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)

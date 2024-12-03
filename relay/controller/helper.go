@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -56,62 +55,81 @@ func getImageRequest(c *gin.Context, relayMode int) (*relaymodel.ImageRequest, e
 	return imageRequest, nil
 }
 
-func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
-	if strings.HasPrefix(imageRequest.Model, "flux") {
-		return nil
-	}
-	if strings.HasPrefix(imageRequest.Model, "recraft") {
-		return nil
-	}
-	if strings.HasPrefix(imageRequest.Model, "black") {
-		return nil
-	}
-	// model validation
-	_, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
-	if !hasValidSize {
-		return openai.ErrorWrapper(errors.New("size not supported for this image model"), "size_not_supported", http.StatusBadRequest)
-	}
-	// check prompt length
-	if imageRequest.Prompt == "" {
-		return openai.ErrorWrapper(errors.New("prompt is required"), "prompt_missing", http.StatusBadRequest)
-	}
-	if len(imageRequest.Prompt) > constant.DalleImagePromptLengthLimitations[imageRequest.Model] {
-		return openai.ErrorWrapper(errors.New("prompt is too long"), "prompt_too_long", http.StatusBadRequest)
-	}
-	// Number of generated images validation
-	if !isWithinRange(imageRequest.Model, imageRequest.N) {
-		// channel not azure
-		if meta.ChannelType != common.ChannelTypeAzure {
-			return openai.ErrorWrapper(errors.New("invalid value of n"), "n_not_within_range", http.StatusBadRequest)
-		}
-	}
-	return nil
-}
+// func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+// 	if strings.HasPrefix(imageRequest.Model, "flux") {
+// 		return nil
+// 	}
+// 	if strings.HasPrefix(imageRequest.Model, "recraft") {
+// 		return nil
+// 	}
+// 	if strings.HasPrefix(imageRequest.Model, "black") {
+// 		return nil
+// 	}
+// 	// model validation
+// 	_, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
+// 	if !hasValidSize {
+// 		return openai.ErrorWrapper(errors.New("size not supported for this image model"), "size_not_supported", http.StatusBadRequest)
+// 	}
+// 	// check prompt length
+// 	if imageRequest.Prompt == "" {
+// 		return openai.ErrorWrapper(errors.New("prompt is required"), "prompt_missing", http.StatusBadRequest)
+// 	}
+// 	if len(imageRequest.Prompt) > constant.DalleImagePromptLengthLimitations[imageRequest.Model] {
+// 		return openai.ErrorWrapper(errors.New("prompt is too long"), "prompt_too_long", http.StatusBadRequest)
+// 	}
+// 	// Number of generated images validation
+// 	if !isWithinRange(imageRequest.Model, imageRequest.N) {
+// 		// channel not azure
+// 		if meta.ChannelType != common.ChannelTypeAzure {
+// 			return openai.ErrorWrapper(errors.New("invalid value of n"), "n_not_within_range", http.StatusBadRequest)
+// 		}
+// 	}
+// 	return nil
+// }
 
 func getImageCostRatio(imageRequest *relaymodel.ImageRequest) (float64, error) {
-	if strings.HasPrefix(imageRequest.Model, "flux") {
-		return 1, nil
-	}
-	if strings.HasPrefix(imageRequest.Model, "recraft") {
-		return 1, nil
-	}
-	if strings.HasPrefix(imageRequest.Model, "black") {
-		return 1, nil
-	}
+	// 检查空指针
 	if imageRequest == nil {
 		return 0, errors.New("imageRequest is nil")
 	}
-	imageCostRatio, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
-	if !hasValidSize {
-		return 0, fmt.Errorf("size not supported for this image model: %s", imageRequest.Size)
-	}
-	if imageRequest.Quality == "hd" && imageRequest.Model == "dall-e-3" {
-		if imageRequest.Size == "1024x1024" {
-			imageCostRatio *= 2
-		} else {
-			imageCostRatio *= 1.5
+
+	// 初始化基础倍率
+	var imageCostRatio float64 = 1.0
+
+	switch imageRequest.Model {
+	case "dall-e-2":
+		switch imageRequest.Size {
+		case "1024x1024":
+			imageCostRatio = 1.0 // 1x 基准价格
+		case "512x512":
+			imageCostRatio = 0.9 // 0.9x 基准价格
+		case "256x256":
+			imageCostRatio = 0.8 // 0.8x 基准价格
+		default:
+			return 0, fmt.Errorf("size not supported for DALL-E 2: %s", imageRequest.Size)
 		}
+	case "dall-e-3":
+		switch imageRequest.Size {
+		case "1024x1024":
+			imageCostRatio = 1.0 // 1x 基准价格
+		case "1024x1792", "1792x1024":
+			imageCostRatio = 2.0 // 2x 基准价格
+		default:
+			return 0, fmt.Errorf("size not supported for DALL-E 3: %s", imageRequest.Size)
+		}
+
+		// HD质量的价格调整
+		if imageRequest.Quality == "hd" || imageRequest.Model == "dall-e-3" {
+			if imageRequest.Size == "1024x1024" {
+				imageCostRatio = 2 // 2x 基准价格
+			} else {
+				imageCostRatio = 3 // 3x 基准价格
+			}
+		}
+	default:
+		return 1, nil // 处理所有其他模型
 	}
+
 	return imageCostRatio, nil
 }
 
