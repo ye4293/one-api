@@ -37,7 +37,7 @@ func authHelper(c *gin.Context, minRole int) {
 			id = user.Id
 			status = user.Status
 		} else {
-			c.JSON(http.StatusOK, gin.H{
+			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
 				"message": "Not authorized to perform this operation, access token is invalid",
 			})
@@ -57,7 +57,7 @@ func authHelper(c *gin.Context, minRole int) {
 		return
 	}
 	if role.(int) < minRole {
-		c.JSON(http.StatusOK, gin.H{
+		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "You do not have permission to perform this operation. Insufficient permissions.",
 		})
