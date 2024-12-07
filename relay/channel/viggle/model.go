@@ -24,10 +24,11 @@ type ViggleResponse struct {
 
 // 响应体中的 data 结构
 type TaskData struct {
-	TaskID string `json:"taskID"` // 任务ID
-	MqType int    `json:"mqType"` // 消息队列类型
-	PlayAd bool   `json:"playAd"` // 是否播放广告
-	AdType int    `json:"adType"` // 广告类型
+	TaskID        string `json:"taskID"`         // 任务ID
+	MqType        int    `json:"mqType"`         // 消息队列类型
+	PlayAd        bool   `json:"playAd"`         // 是否播放广告
+	AdType        int    `json:"adType"`         // 广告类型
+	SubtractScore int    `json:"subtract_score"` // 扣除分数
 }
 
 type ViggleFinalResponse struct {

@@ -145,7 +145,13 @@ func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleRespon
 
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
-		return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "")
+
+		if viggleResponse.Data.SubtractScore == 2 {
+			return handleSuccessfulResponse(c, ctx, meta, "viggle", "2", "")
+		} else {
+			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "")
+		}
+
 	} else {
 		return openai.ErrorWrapper(
 			fmt.Errorf("error: %s", viggleResponse.Message),
@@ -868,6 +874,10 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 			multiplier = 1
 		}
 		quota = int64(float64(quota) * multiplier)
+	}
+
+	if modelName == "viggle" && duration == "2" {
+		quota = quota * 2 //viggle超过15s 二倍计费
 	}
 
 	value, exists := c.Get("duration")
