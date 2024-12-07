@@ -17,8 +17,8 @@ import (
 )
 
 type ModelRequest struct {
-	Model     string `json:"model,omitempty"`
-	ModelName string `json:"model_name,omitempty"`
+	Model     string `json:"model,omitempty" form:"model"`
+	ModelName string `json:"model_name,omitempty" form:"model_name"`
 }
 
 func Distribute() func(c *gin.Context) {
@@ -97,6 +97,8 @@ func Distribute() func(c *gin.Context) {
 			} else {
 				err = common.UnmarshalBodyReusable(c, &modelRequest)
 				if err != nil {
+
+					logger.SysLog(fmt.Sprintf("err:%+v", err))
 					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
 					return
 				}

@@ -71,7 +71,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/threads/:id/runs/:runsId/cancel", controller.RelayNotImplemented)
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps/:stepId", controller.RelayNotImplemented)
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps", controller.RelayNotImplemented)
-		relayV1Router.POST("/video/generations", controller.RelayVideoGenearte)
+		relayV1Router.POST("/video/generations", controller.RelayVideoGenerate)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {

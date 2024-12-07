@@ -41,6 +41,7 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	}
 	return err
 }
+
 func Relay(c *gin.Context) {
 	ctx := c.Request.Context()
 	relayMode := constant.Path2RelayMode(c.Request.URL.Path)
@@ -133,7 +134,6 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Message)
-	// https://platform.openai.com/docs/guides/error-codes/api-errors
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 		monitor.DisableChannel(channelId, channelName, err.Message)
 	} else {
@@ -349,25 +349,63 @@ func RelayNotFound(c *gin.Context) {
 	})
 }
 
-type ModelRequest struct {
-	Model string `json:"model"`
-}
-
-func RelayVideoGenearte(c *gin.Context) {
+func RelayVideoGenerate(c *gin.Context) {
 	ctx := c.Request.Context()
-	if config.DebugEnabled {
-		requestBody, _ := common.GetRequestBody(c)
-		logger.Debugf(ctx, "request body: %s", string(requestBody))
-	}
-	var modelRequest ModelRequest
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
 
-	err := common.UnmarshalBodyReusable(c, &modelRequest)
-	if err != nil {
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
 
+	bizErr := controller.DoVideoRequest(c, modelName)
+
+	if bizErr == nil {
+		return
 	}
-	bizErr := controller.DoVideoRequest(c, modelRequest.Model)
+
+	lastFailedChannelId := channelId
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+		logger.Errorf(ctx, "Video generation error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
+		retryTimes = 0
+	}
+
+	for i := retryTimes; i > 0; i-- {
+		// 获取新的可用通道
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+		if channel.Id == lastFailedChannelId {
+			continue
+		}
+		logger.Infof(ctx, "Using channel #%d to retry video generation (remain times %d)", channel.Id, i)
+
+		// 使用新通道的配置更新上下文
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		requestBody, err := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		bizErr = controller.DoVideoRequest(c, modelName)
+		if bizErr == nil {
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName = c.GetString("channel_name")
+		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+	}
+
+	// 所有重试都失败后的处理
 	if bizErr != nil {
-		logger.SysLog(fmt.Sprintf("bizErr:%s", bizErr))
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}

@@ -2,11 +2,11 @@ package common
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 const KeyRequestBody = "key_request_body"
@@ -25,24 +25,56 @@ func GetRequestBody(c *gin.Context) ([]byte, error) {
 	return requestBody.([]byte), nil
 }
 
+// func UnmarshalBodyReusable(c *gin.Context, v any) error {
+// 	requestBody, err := GetRequestBody(c)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	contentType := c.Request.Header.Get("Content-Type")
+// 	if strings.HasPrefix(contentType, "application/json") {
+// 		err = json.Unmarshal(requestBody, &v)
+// 	} else {
+// 		// skip for now
+// 		// TODO: someday non json request have variant model, we will need to implementation this
+// 	}
+// 	if err != nil {
+// 		return err
+// 	}
+// 	// Reset request body
+// 	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+// 	return nil
+// }
+
 func UnmarshalBodyReusable(c *gin.Context, v any) error {
+	// 保存原始请求体
 	requestBody, err := GetRequestBody(c)
 	if err != nil {
 		return err
 	}
+
 	contentType := c.Request.Header.Get("Content-Type")
+
+	// 根据 Content-Type 选择绑定方式
 	if strings.HasPrefix(contentType, "application/json") {
-		err = json.Unmarshal(requestBody, &v)
-	} else {
-		// skip for now
-		// TODO: someday non json request have variant model, we will need to implementation this
+		// 重置请求体
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		return c.ShouldBindJSON(v)
+	} else if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+		strings.HasPrefix(contentType, "multipart/form-data") {
+		// 重置请求体
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		return c.ShouldBindWith(v, binding.Form)
 	}
-	if err != nil {
-		return err
-	}
-	// Reset request body
+
+	// 没有 Content-Type 时先尝试 JSON
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-	return nil
+	if err := c.ShouldBindJSON(v); err == nil {
+		return nil
+	}
+
+	// JSON 失败则尝试 Form
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+	return c.ShouldBindWith(v, binding.Form)
 }
 
 func SetEventStreamHeaders(c *gin.Context) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
+	"github.com/songquanpeng/one-api/relay/channel/viggle"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -46,9 +48,110 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "luma") {
 		return handleLumaVideoRequest(c, ctx, videoRequest, meta)
+	} else if modelName == "viggle" {
+		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		// 处理其他模型的逻辑
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
+	}
+}
+
+func handleViggleVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 使用map定义URL映射关系
+	urlMap := map[string]string{
+		"mix":   "/api/video/gen",
+		"multi": "/api/video/gen/multi",
+		"move":  "/api/video/gen/move",
+	}
+
+	// 获取type参数，默认为"mix"
+	typeValue := c.DefaultPostForm("type", "mix")
+
+	// 获取对应的URL路径
+	path, exists := urlMap[typeValue]
+	if !exists {
+		return openai.ErrorWrapper(errors.New("invalid type"), "invalid_type", http.StatusBadRequest)
+	}
+
+	fullRequestUrl := meta.BaseURL + path
+
+	// 直接转发原始请求
+	return sendRequestAndHandleViggleResponse(c, ctx, fullRequestUrl, meta, "luma")
+}
+
+func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+
+	// 创建新请求
+	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 复制原始请求头
+	req.Header = c.Request.Header.Clone()
+	req.Header.Set("Access-Token", meta.APIKey)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	// 解析响应
+	var viggleResponse viggle.ViggleResponse
+	if err := json.Unmarshal(respBody, &viggleResponse); err != nil {
+		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
+	}
+
+	viggleResponse.StatusCode = resp.StatusCode
+	return handleViggleVideoResponse(c, ctx, viggleResponse, respBody, meta, "")
+}
+
+func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleResponse viggle.ViggleResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	if viggleResponse.Code == 0 && viggleResponse.Message == "成功" {
+		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", "", "")
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("API error: %s", err),
+				"api_error",
+				http.StatusBadRequest,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     viggleResponse.Data.TaskID,
+			Message:    viggleResponse.Message,
+			TaskStatus: "succeed",
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "")
+	} else {
+		return openai.ErrorWrapper(
+			fmt.Errorf("error: %s", viggleResponse.Message),
+			"internal_error",
+			http.StatusInternalServerError,
+		)
 	}
 }
 
@@ -71,85 +174,52 @@ func handleLumaVideoRequest(c *gin.Context, ctx context.Context, videoRequest mo
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
 
-	return sendRequestAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "luma")
+	return sendRequestAndHandleLumaResponse(c, ctx, fullRequestUrl, jsonData, meta, "luma")
 }
 
-func sendRequestAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
 	// 1. 获取频道信息
-	log.Printf("Getting channel info for channelId: %d", meta.ChannelId)
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
-		log.Printf("Error getting channel: %v", err)
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 	}
-	log.Printf("Successfully got channel info")
 
 	// 2. 创建请求
-	log.Printf("Creating request to URL: %s", fullRequestUrl)
-	log.Printf("Request payload: %s", string(jsonData))
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("Error creating request: %v", err)
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
 	// 3. 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+channel.Key)
-	log.Printf("Request headers set: %+v", req.Header)
 
 	// 4. 发送请求
-	log.Printf("Sending request to Luma API...")
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error sending request: %v", err)
 		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
 	}
 	defer resp.Body.Close()
-	log.Printf("Received response with status code: %d", resp.StatusCode)
 
 	// 5. 读取响应体
-	log.Printf("Reading response body...")
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Error reading response body: %v", err)
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
-	log.Printf("Response body: %s", string(body))
 
 	// 6. 解析响应
-	log.Printf("Parsing Luma response...")
 	var lumaResponse luma.LumaGenerationResponse
 	err = json.Unmarshal(body, &lumaResponse)
 	if err != nil {
-		log.Printf("Error parsing response: %v", err)
 		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
 	}
 
-	// 7. 设置状态码并记录响应信息
+	// 7. 设置状态码
 	lumaResponse.StatusCode = resp.StatusCode
-	log.Printf("Parsed Luma response: %+v", lumaResponse)
 
-	// 8. 记录关键响应字段
-	log.Printf("Luma Response Details:")
-	log.Printf("- ID: %s", lumaResponse.ID)
-	log.Printf("- State: %s", lumaResponse.State)
-	log.Printf("- Created At: %s", lumaResponse.CreatedAt)
-	if lumaResponse.FailureReason != nil {
-		log.Printf("- Failure Reason: %s", *lumaResponse.FailureReason)
-	} else {
-		log.Printf("- Failure Reason: nil")
-	}
-
-	// 9. 处理响应
-	log.Printf("Handling Luma video response...")
-	result := handleLumaVideoResponse(c, ctx, lumaResponse, body, meta, s)
-	if result != nil {
-		log.Printf("Error handling response: %+v", result)
-	} else {
-		log.Printf("Successfully handled response")
-	}
+	// 8. 处理响
+	result := handleLumaVideoResponse(c, ctx, lumaResponse, body, meta, "")
 
 	return result
 }
@@ -970,6 +1040,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			fullRequestUrl = fmt.Sprintf("%s/luma/dream-machine/v1/generations/%s", *channel.BaseURL, taskId)
 		}
 
+	case "viggle":
+		fullRequestUrl = fmt.Sprintf("%s/api/video/task?task_id=%s", *channel.BaseURL, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -996,6 +1068,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Runway-Version", "2024-11-06")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	} else if videoTask.Provider == "viggle" {
+		req.Header.Set("Access-Token", channel.Key)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -1235,6 +1309,72 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		} else {
 			log.Printf("Task not completed or no assets. State: %s, Assets: %v",
 				lumaResp.State, lumaResp.Assets)
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	} else if videoTask.Provider == "viggle" {
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 解析JSON响应
+		var viggleResp viggle.ViggleFinalResponse
+		if err := json.Unmarshal(body, &viggleResp); err != nil {
+			log.Printf("Failed to parse response: %v, body: %s", err, string(body))
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      taskId,
+			TaskStatus:  "",
+			Message:     viggleResp.Message, // 添加错误信息
+			VideoResult: "",
+		}
+
+		// 首先检查 Data 切片是否为空
+		if len(viggleResp.Data.Data) == 0 {
+			generalResponse.TaskStatus = "failed"
+		} else {
+			// 处理不同状态的情况
+			if viggleResp.Data.Code == 0 {
+				if viggleResp.Data.Data[0].Result == "" {
+					generalResponse.TaskStatus = "processing"
+				} else {
+					generalResponse.TaskStatus = "succeed"
+					generalResponse.VideoResult = viggleResp.Data.Data[0].Result
+				}
+			} else {
+				// code 不为 0 的情况都视为失败
+				generalResponse.TaskStatus = "failed"
+				// 如果有错误信息，可以更新 Message
+				if viggleResp.Data.Message != "" {
+					generalResponse.Message = viggleResp.Data.Message
+				}
+			}
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
