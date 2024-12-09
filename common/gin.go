@@ -66,7 +66,7 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	}
 
 	// 添加日志
-	fmt.Printf("Received request body: %s\n", string(requestBody))
+	// fmt.Printf("Received request body: %s\n", string(requestBody))
 
 	contentType := c.Request.Header.Get("Content-Type")
 	fmt.Printf("Content-Type: %s\n", contentType)

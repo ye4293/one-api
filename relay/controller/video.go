@@ -76,20 +76,38 @@ func handleViggleVideoRequest(c *gin.Context, ctx context.Context, videoRequest 
 	fullRequestUrl := meta.BaseURL + path
 
 	// 直接转发原始请求
-	return sendRequestAndHandleViggleResponse(c, ctx, fullRequestUrl, meta, "luma")
+	return sendRequestAndHandleViggleResponse(c, ctx, fullRequestUrl, meta, "viggle")
 }
 
 func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
 
-	// 创建新请求
-	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, c.Request.Body)
+	// 先读取请求体
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_error", http.StatusInternalServerError)
+	}
+
+	// 打印完整请求体
+	// log.Printf("Original request body: %s", string(bodyBytes))
+
+	// 重新设置请求体，因为读取后需要重置
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// 创建新请求时使用保存的请求体
+	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
+	// // 打印请求的详细信息
+	// log.Printf("Request Method: %s", req.Method)
+	// log.Printf("Request URL: %s", fullRequestUrl)
+	// log.Printf("Request Headers: %+v", req.Header)
+
 	// 复制原始请求头
-	req.Header = c.Request.Header.Clone()
 	req.Header.Set("Access-Token", meta.APIKey)
+	// 确保设置正确的 Content-Type
+	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 
 	// 发送请求
 	client := &http.Client{}
@@ -104,6 +122,8 @@ func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, ful
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
+
+	log.Printf("Raw response body: %s", string(respBody))
 
 	// 解析响应
 	var viggleResponse viggle.ViggleResponse
