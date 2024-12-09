@@ -167,9 +167,9 @@ func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleRespon
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
 		if viggleResponse.Data.SubtractScore == 2 {
-			return handleSuccessfulResponse(c, ctx, meta, "viggle", "2", "")
+			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "2")
 		} else {
-			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "")
+			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "1")
 		}
 
 	} else {
