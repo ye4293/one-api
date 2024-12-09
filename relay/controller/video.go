@@ -137,7 +137,7 @@ func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, ful
 
 func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleResponse viggle.ViggleResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	if viggleResponse.Code == 0 && viggleResponse.Message == "成功" {
-		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", "", "")
+		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", string(viggleResponse.Data.SubtractScore), "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
