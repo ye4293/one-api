@@ -65,8 +65,9 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		ModelMapping: c.GetStringMapString("model_mapping"),
 		BaseURL:      c.GetString("base_url"),
 		// APIVersion:     c.GetString(common.ConfigKeyAPIVersion),
-		APIKey:         strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
-		RequestURLPath: c.Request.URL.String(),
+		APIKey:          strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
+		RequestURLPath:  c.Request.URL.String(),
+		OriginModelName: c.GetString("original_model"),
 	}
 	cfg, ok := c.Get("Config")
 	if ok {

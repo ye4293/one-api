@@ -679,6 +679,7 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 }
 
 func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoResponse keling.KelingVideoResponse, body []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
+	modelName2 := c.GetString("original_model")
 	switch videoResponse.StatusCode {
 	case 200:
 		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
@@ -715,7 +716,8 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
-		return handleSuccessfulResponse(c, ctx, meta, modelName, mode, duration)
+
+		return handleSuccessfulResponse(c, ctx, meta, modelName2, mode, duration)
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error (400): %s\nFull response: %s", videoResponse.Message, string(body)),
@@ -895,6 +897,23 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 		quota = int64(float64(quota) * multiplier)
 	}
+	if modelName == "kling-v1-5" {
+		var multiplier float64
+		switch {
+		case mode == "std" && duration == "5":
+			multiplier = 1
+		case mode == "std" && duration == "10":
+			multiplier = 2
+		case mode == "pro" && duration == "5":
+			multiplier = 1.75
+		case mode == "pro" && duration == "10":
+			multiplier = 3.5
+		default:
+			// 如果不匹配任何条件，使用默认倍率 1
+			multiplier = 1
+		}
+		quota = int64(float64(quota) * multiplier)
+	}
 
 	if modelName == "viggle" && duration == "2" {
 		quota = quota * 2 //viggle超过15s 二倍计费
@@ -945,7 +964,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		UserId:    meta.UserId,
 		Mode:      mode, //keling
 		Type:      videoType,
-		Model:     meta.ActualModelName,
+		Model:     meta.OriginModelName,
 		Duration:  duration,
 	}
 

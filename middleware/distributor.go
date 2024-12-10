@@ -28,6 +28,7 @@ func Distribute() func(c *gin.Context) {
 		c.Set("group", userGroup)
 		var requestModel string
 		var channel *model.Channel
+		var modelRequest ModelRequest
 		channelId, ok := c.Get("specific_channel_id")
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
@@ -47,7 +48,7 @@ func Distribute() func(c *gin.Context) {
 		} else {
 			shouldSelectChannel := true
 			// Select a channel for the user
-			var modelRequest ModelRequest
+			// var modelRequest ModelRequest
 			var err error
 			if strings.HasPrefix(c.Request.URL.Path, "/mj") {
 				relayMode := relayconstant.Path2RelayModeMidjourney((c.Request.URL.Path))
@@ -95,7 +96,9 @@ func Distribute() func(c *gin.Context) {
 				modelRequest.Model = sdModel
 				c.Set("relay_mode", relayMode)
 			} else {
+
 				err = common.UnmarshalBodyReusable(c, &modelRequest)
+
 				if err != nil {
 
 					logger.SysLog(fmt.Sprintf("err:%+v", err))
@@ -124,10 +127,14 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 			requestModel = modelRequest.Model
+			if requestModel == "" {
+				requestModel = modelRequest.ModelName
+			}
+
 			if shouldSelectChannel {
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, false)
+				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)
 				if err != nil {
-					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
+					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", requestModel, userGroup)
 					if channel != nil {
 						logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
 						message = "Database consistency has been violated, please contact the administrator"

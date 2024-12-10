@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"strings"
@@ -138,15 +139,21 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 	}
 
-	requestBody := &bytes.Buffer{}
-	_, err = io.Copy(requestBody, c.Request.Body)
-	if err != nil {
-		return openai.ErrorWrapper(err, "new_request_body_failed", http.StatusInternalServerError)
-	}
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody.Bytes()))
+	// requestBody := &bytes.Buffer{}
+	// _, err = io.Copy(requestBody, c.Request.Body)
+	// if err != nil {
+	// 	return openai.ErrorWrapper(err, "new_request_body_failed", http.StatusInternalServerError)
+	// }
+	// c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody.Bytes()))
+
+	// 方法 2
+	body, err := io.ReadAll(c.Request.Body)
+
+	fmt.Printf("Request body: %s\n", string(body)) // 将 []byte 转换为 string
+
 	responseFormat := c.DefaultPostForm("response_format", "json")
 
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, c.Request.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 	}
@@ -160,6 +167,7 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	} else {
 		req.Header.Set("Authorization", c.Request.Header.Get("Authorization"))
 	}
+
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
 
@@ -186,6 +194,8 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if err != nil {
 			return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
 		}
+
+		log.Printf("Raw response body: %s", string(responseBody))
 
 		var openAIErr openai.SlimTextResponse
 		if err = json.Unmarshal(responseBody, &openAIErr); err == nil {
