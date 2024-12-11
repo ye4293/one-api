@@ -80,6 +80,24 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		requestBody = c.Request.Body
 	}
 
+	if meta.ChannelType == common.ChannelTypeRecraft {
+		// 将请求体解析为 map
+		var requestMap map[string]interface{}
+		if err := json.NewDecoder(c.Request.Body).Decode(&requestMap); err != nil {
+			return openai.ErrorWrapper(err, "decode_request_failed", http.StatusBadRequest)
+		}
+
+		// 删除 model 字段
+		delete(requestMap, "model")
+
+		// 重新序列化
+		jsonStr, err := json.Marshal(requestMap)
+		if err != nil {
+			return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(jsonStr)
+	}
+
 	adaptor := helper.GetAdaptor(meta.APIType)
 	if adaptor == nil {
 		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
