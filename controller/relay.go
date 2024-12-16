@@ -133,9 +133,9 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 }
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
-	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Message)
+	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		monitor.DisableChannel(channelId, channelName, err.Message)
+		monitor.DisableChannel(channelId, channelName, err.Error.Message)
 	} else {
 		monitor.Emit(channelId, false)
 	}

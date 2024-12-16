@@ -119,7 +119,7 @@ func getImageCostRatio(imageRequest *relaymodel.ImageRequest) (float64, error) {
 		}
 
 		// HD质量的价格调整
-		if imageRequest.Quality == "hd" || imageRequest.Model == "dall-e-3" {
+		if imageRequest.Quality == "hd" && imageRequest.Model == "dall-e-3" {
 			if imageRequest.Size == "1024x1024" {
 				imageCostRatio = 2 // 2x 基准价格
 			} else {

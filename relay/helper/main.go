@@ -2,19 +2,14 @@ package helper
 
 import (
 	"github.com/songquanpeng/one-api/relay/channel"
-	"github.com/songquanpeng/one-api/relay/channel/aiproxy"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/aws"
 	"github.com/songquanpeng/one-api/relay/channel/baidu"
 	"github.com/songquanpeng/one-api/relay/channel/cohere"
-	"github.com/songquanpeng/one-api/relay/channel/coze"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
-	"github.com/songquanpeng/one-api/relay/channel/ollama"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
-	"github.com/songquanpeng/one-api/relay/channel/palm"
-	"github.com/songquanpeng/one-api/relay/channel/replicate"
 	"github.com/songquanpeng/one-api/relay/channel/tencent"
 	"github.com/songquanpeng/one-api/relay/channel/xunfei"
 	"github.com/songquanpeng/one-api/relay/channel/zhipu"
@@ -23,8 +18,6 @@ import (
 
 func GetAdaptor(apiType int) channel.Adaptor {
 	switch apiType {
-	case constant.APITypeAIProxyLibrary:
-		return &aiproxy.Adaptor{}
 	case constant.APITypeAli:
 		return &ali.Adaptor{}
 	case constant.APITypeAnthropic:
@@ -35,24 +28,16 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &gemini.Adaptor{}
 	case constant.APITypeOpenAI:
 		return &openai.Adaptor{}
-	case constant.APITypePaLM:
-		return &palm.Adaptor{}
 	case constant.APITypeTencent:
 		return &tencent.Adaptor{}
 	case constant.APITypeXunfei:
 		return &xunfei.Adaptor{}
 	case constant.APITypeZhipu:
 		return &zhipu.Adaptor{}
-	case constant.APITypeOllama:
-		return &ollama.Adaptor{}
 	case constant.APITypeAwsClaude:
 		return &aws.Adaptor{}
-	case constant.APITypeCoze:
-		return &coze.Adaptor{}
 	case constant.APITypeCohere:
 		return &cohere.Adaptor{}
-	case constant.APITypeReplicate:
-		return &replicate.Adaptor{}
 	case constant.APITypeMinimax:
 		return &minimax.Adaptor{}
 	}

@@ -18,5 +18,6 @@ type Adaptor interface {
 	DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error)
 	DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode)
 	GetModelList() []string
+	GetModelDetails() []model.APIModel
 	GetChannelName() string
 }

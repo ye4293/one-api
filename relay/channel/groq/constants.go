@@ -1,5 +1,7 @@
 package groq
 
+import "github.com/songquanpeng/one-api/relay/model"
+
 // https://console.groq.com/docs/models
 
 var ModelList = []string{
@@ -10,3 +12,5 @@ var ModelList = []string{
 	"llama3-8b-8192",
 	"llama3-70b-8192",
 }
+
+var ModelDetails = []model.APIModel{}

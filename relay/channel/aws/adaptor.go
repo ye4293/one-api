@@ -52,13 +52,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	return a.awsAdapter.DoResponse(c, a.AwsClient, meta)
 }
 
-func (a *Adaptor) GetModelList() (models []string) {
-	for model := range adaptors {
-		models = append(models, model)
-	}
-	return
-}
-
 func (a *Adaptor) GetChannelName() string {
 	return "aws"
 }
@@ -80,4 +73,15 @@ func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) 
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
 	return nil, nil
+}
+
+func (a *Adaptor) GetModelList() (models []string) {
+	for model := range adaptors {
+		models = append(models, model)
+	}
+	return
+}
+
+func (a *Adaptor) GetModelDetails() []model.APIModel {
+	return []model.APIModel{}
 }

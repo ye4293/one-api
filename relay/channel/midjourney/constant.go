@@ -1,5 +1,7 @@
 package midjourney
 
+import "github.com/songquanpeng/one-api/relay/model"
+
 var ModelList = []string{
 	"mj_imagine",
 	"mj_variation",
@@ -16,4 +18,18 @@ var ModelList = []string{
 	"mj_describe",
 	"mj_upscale",
 	"swap_face",
+}
+
+var ModelDetails = []model.APIModel{
+	{
+		Name:        "mj_imagine",
+		Provider:    "Midjourney",
+		Description: "Midjourney API - Fast and efficient for everyday tasks",
+		Tags:        []string{"midjourney", "video"},
+		PriceType:   "pay-per-token",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$0.25 /M tokens",
+			"OutputTokens": "$1.25 /M tokens",
+		},
+	},
 }

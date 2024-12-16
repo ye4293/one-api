@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
+	"github.com/songquanpeng/one-api/relay/model"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -63,9 +64,6 @@ func init() {
 	})
 	// https://platform.openai.com/docs/models/model-endpoint-compatibility
 	for i := 0; i < constant.APITypeDummy; i++ {
-		if i == constant.APITypeAIProxyLibrary {
-			continue
-		}
 		adaptor := helper.GetAdaptor(i)
 		channelName := adaptor.GetChannelName()
 		modelNames := adaptor.GetModelList()
@@ -167,51 +165,52 @@ func RetrieveModel(c *gin.Context) {
 	}
 }
 
+type ChannelOption struct {
+	Key   int    `json:"key"`
+	Text  string `json:"text"`
+	Value int    `json:"value"`
+	Color string `json:"color"`
+}
+
+// 创建返回数据
+var channelOptions = []ChannelOption{
+	{Key: 1, Text: "OpenAI", Value: 1, Color: "green"},
+	{Key: 14, Text: "Anthropic Claude", Value: 14, Color: "black"},
+	{Key: 3, Text: "Azure OpenAI", Value: 3, Color: "olive"},
+	// {Key: 11, Text: "Google PaLM2", Value: 11, Color: "orange"},
+	{Key: 24, Text: "Google Gemini", Value: 24, Color: "orange"},
+	{Key: 28, Text: "Mistral AI", Value: 28, Color: "orange"},
+	{Key: 31, Text: "零一万物", Value: 31, Color: "green"},
+	{Key: 32, Text: "midjourney-Plus", Value: 32, Color: "green"},
+	{Key: 33, Text: "AWS Claude", Value: 33, Color: "black"},
+	// {Key: 34, Text: "Coze", Value: 34, Color: "blue"},
+	{Key: 35, Text: "Cohere", Value: 35, Color: "green"},
+	{Key: 36, Text: "together", Value: 36, Color: "blue"},
+	{Key: 37, Text: "Deepseek", Value: 37, Color: "green"},
+	{Key: 38, Text: "Stability", Value: 38, Color: "blue"},
+	// {Key: 39, Text: "Novita", Value: 39, Color: "blue"},
+	// {Key: 40, Text: "Replicate", Value: 40, Color: "blue"},
+	// {Key: 30, Text: "Ollama", Value: 30, Color: "orange"},
+	{Key: 29, Text: "Groq", Value: 29, Color: "orange"},
+	{Key: 15, Text: "百度文心千帆", Value: 15, Color: "blue"},
+	{Key: 17, Text: "阿里通义千问", Value: 17, Color: "orange"},
+	{Key: 18, Text: "讯飞星火认知", Value: 18, Color: "blue"},
+	{Key: 16, Text: "智谱 ChatGLM", Value: 16, Color: "violet"},
+	// {Key: 19, Text: "360 智脑", Value: 19, Color: "blue"},
+	{Key: 25, Text: "Moonshot AI", Value: 25, Color: "black"},
+	{Key: 23, Text: "腾讯混元", Value: 23, Color: "teal"},
+	{Key: 26, Text: "百川大模型", Value: 26, Color: "orange"},
+	{Key: 27, Text: "MiniMax", Value: 27, Color: "red"},
+	{Key: 8, Text: "自定义渠道", Value: 8, Color: "pink"},
+	{Key: 41, Text: "可灵", Value: 41, Color: "purple"},
+	{Key: 42, Text: "Runway", Value: 42, Color: "purple"},
+	{Key: 43, Text: "Recraft", Value: 43, Color: "purple"},
+	{Key: 44, Text: "Luma", Value: 44, Color: "purple"},
+}
+
 // 定义返回的数据结构
 func ListTypes(c *gin.Context) {
 	// 定义返回的数据结构
-	type ChannelOption struct {
-		Key   int    `json:"key"`
-		Text  string `json:"text"`
-		Value int    `json:"value"`
-		Color string `json:"color"`
-	}
-
-	// 创建返回数据
-	channelOptions := []ChannelOption{
-		{Key: 1, Text: "OpenAI", Value: 1, Color: "green"},
-		{Key: 14, Text: "Anthropic Claude", Value: 14, Color: "black"},
-		{Key: 3, Text: "Azure OpenAI", Value: 3, Color: "olive"},
-		{Key: 11, Text: "Google PaLM2", Value: 11, Color: "orange"},
-		{Key: 24, Text: "Google Gemini", Value: 24, Color: "orange"},
-		{Key: 28, Text: "Mistral AI", Value: 28, Color: "orange"},
-		{Key: 31, Text: "零一万物", Value: 31, Color: "green"},
-		{Key: 32, Text: "midjourney-Plus", Value: 32, Color: "green"},
-		{Key: 33, Text: "AWS Claude", Value: 33, Color: "black"},
-		{Key: 34, Text: "Coze", Value: 34, Color: "blue"},
-		{Key: 35, Text: "Cohere", Value: 35, Color: "green"},
-		{Key: 36, Text: "together", Value: 36, Color: "blue"},
-		{Key: 37, Text: "Deepseek", Value: 37, Color: "green"},
-		{Key: 38, Text: "Stability", Value: 38, Color: "blue"},
-		{Key: 39, Text: "Novita", Value: 39, Color: "blue"},
-		{Key: 40, Text: "Replicate", Value: 40, Color: "blue"},
-		{Key: 30, Text: "Ollama", Value: 30, Color: "orange"},
-		{Key: 29, Text: "Groq", Value: 29, Color: "orange"},
-		{Key: 15, Text: "百度文心千帆", Value: 15, Color: "blue"},
-		{Key: 17, Text: "阿里通义千问", Value: 17, Color: "orange"},
-		{Key: 18, Text: "讯飞星火认知", Value: 18, Color: "blue"},
-		{Key: 16, Text: "智谱 ChatGLM", Value: 16, Color: "violet"},
-		{Key: 19, Text: "360 智脑", Value: 19, Color: "blue"},
-		{Key: 25, Text: "Moonshot AI", Value: 25, Color: "black"},
-		{Key: 23, Text: "腾讯混元", Value: 23, Color: "teal"},
-		{Key: 26, Text: "百川大模型", Value: 26, Color: "orange"},
-		{Key: 27, Text: "MiniMax", Value: 27, Color: "red"},
-		{Key: 8, Text: "自定义渠道", Value: 8, Color: "pink"},
-		{Key: 41, Text: "可灵", Value: 41, Color: "purple"},
-		{Key: 42, Text: "Runway", Value: 42, Color: "purple"},
-		{Key: 43, Text: "Recraft", Value: 43, Color: "purple"},
-		{Key: 44, Text: "Luma", Value: 44, Color: "purple"},
-	}
 
 	c.JSON(200, gin.H{
 		"object": "list",
@@ -219,82 +218,21 @@ func ListTypes(c *gin.Context) {
 	})
 }
 
-// type PriceItem struct {
-// 	Type       string                 `json:"type"`       // 价格类型，如 "Standard", "HD", "Input", "Output"
-// 	Unit       string                 `json:"unit"`       // 单位，如 "M tokens", "image", "minute"
-// 	Price      float64                `json:"price"`      // 价格数值
-// 	Currency   string                 `json:"currency"`   // 货币类型，如 "USD"
-// 	Attributes map[string]interface{} `json:"attributes"` // 额外属性，如分辨率、大小等
-// }
-
-type APIModel struct {
-	Provider    string                 `json:"providers"`   // 提供商列表
-	Name        string                 `json:"name"`        // API名称
-	Tags        []string               `json:"tags"`        // 标签列表
-	PriceType   string                 `json:"price_type"`  // 价格类型(如"按量计费")
-	Prices      map[string]interface{} `json:"prices"`      // 价格列表
-	Description string                 `json:"description"` // 描述
-}
-
 func ListModelDetails(c *gin.Context) {
-	modelDetails := []APIModel{
-		{
-			Provider:    "Runway",
-			Name:        "gen3a_turbo",
-			Tags:        []string{"video", "AI"},
-			PriceType:   "pay-per-use",
-			Description: "Runway Gen-3 text-to-video generation model",
-			Prices: map[string]interface{}{
-				"5s":  "$0.25",
-				"10s": "$0.50",
-			},
-		},
-		{
-			Provider:    "Luma",
-			Name:        "luma-api",
-			Tags:        []string{"video", "AI"},
-			PriceType:   "pay-per-use",
-			Description: "Luma AI text-to-video generation service",
-			Prices: map[string]interface{}{
-				"standard": "$0.40",
-			},
-		},
-		{
-			Provider:    "Claude",
-			Name:        "claude-3-5-haiku-20241022",
-			Tags:        []string{"chat", "AI"},
-			PriceType:   "pay-per-use",
-			Description: "Luma AI text-to-video generation service",
-			Prices: map[string]interface{}{
-				"InputTokens":  "$0.80/M tokens",
-				"OutputTokens": "$4.00/M tokens",
-			},
-		},
-		{
-			Provider:    "Claude",
-			Name:        "claude-3-5-sonnet-20241022",
-			Tags:        []string{"chat", "AI"},
-			PriceType:   "pay-per-use",
-			Description: "Luma AI text-to-video generation service",
-			Prices: map[string]interface{}{
-				"InputTokens":  "$3.00/M tokens",
-				"OutputTokens": "$15.00/M tokens",
-			},
-		},
-		{
-			Provider:    "Claude",
-			Name:        "claude-3-5-sonnet-20240620",
-			Tags:        []string{"chat", "AI"},
-			PriceType:   "pay-per-use",
-			Description: "Luma AI text-to-video generation service",
-			Prices: map[string]interface{}{
-				"InputTokens":  "$3.00/M tokens",
-				"OutputTokens": "$15.00/M tokens",
-			},
-		},
+	var allModelDetails []model.APIModel // 一维数组
+
+	for _, channelOption := range channelOptions {
+		adaptor := helper.GetAdaptor(channelOption.Value - 1)
+		if adaptor == nil {
+			continue
+		}
+		modelDetails := adaptor.GetModelDetails()
+		allModelDetails = append(allModelDetails, modelDetails...)
 	}
-	c.JSON(200, gin.H{
-		"success": true,
-		"data":    modelDetails,
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": allModelDetails, // 直接返回模型数组
+		"msg":  "success",
 	})
 }

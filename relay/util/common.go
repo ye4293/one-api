@@ -58,6 +58,7 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "Operation not allowed") {
 		return true
 	}
+
 	return false
 }
 

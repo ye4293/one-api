@@ -1,11 +1,7 @@
-package tencent
+package viggle
 
 import "github.com/songquanpeng/one-api/relay/model"
 
-var ModelList = []string{
-	"ChatPro",
-	"ChatStd",
-	"hunyuan",
-}
+var ModelList = []string{}
 
 var ModelDetails = []model.APIModel{}

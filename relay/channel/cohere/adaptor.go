@@ -68,3 +68,7 @@ func (a *Adaptor) GetModelList() []string {
 func (a *Adaptor) GetChannelName() string {
 	return "cohere"
 }
+
+func (a *Adaptor) GetModelDetails() []model.APIModel {
+	return ModelDetails
+}

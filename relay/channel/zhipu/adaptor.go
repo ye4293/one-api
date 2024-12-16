@@ -105,3 +105,7 @@ func (a *Adaptor) GetModelList() []string {
 func (a *Adaptor) GetChannelName() string {
 	return "zhipu"
 }
+
+func (a *Adaptor) GetModelDetails() []model.APIModel {
+	return ModelDetails
+}
