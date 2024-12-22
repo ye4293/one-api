@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,11 +60,19 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 	// get request body
 	var requestBody io.Reader
+	// 在主要代码流程中
 	if meta.APIType == constant.APITypeOpenAI {
-		// no need to convert request for openai
-		shouldResetRequestBody := isModelMapped || meta.ChannelType == common.ChannelTypeBaichuan // frequency_penalty 0 is not acceptable for baichuan
+		// 始终通过 ConvertRequest 处理请求
+		convertedRequest, err := adaptor.ConvertRequest(c, meta.Mode, textRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)
+		}
+
+		shouldResetRequestBody := isModelMapped || meta.ChannelType == common.ChannelTypeBaichuan ||
+			(strings.Contains(strings.ToLower(textRequest.Model), "audio") && textRequest.Stream)
+
 		if shouldResetRequestBody {
-			jsonStr, err := json.Marshal(textRequest)
+			jsonStr, err := json.Marshal(convertedRequest) // 使用转换后的请求
 			if err != nil {
 				return openai.ErrorWrapper(err, "json_marshal_failed", http.StatusInternalServerError)
 			}
@@ -72,6 +81,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 			requestBody = c.Request.Body
 		}
 	} else {
+		// 其他API类型的处理保持不变
 		convertedRequest, err := adaptor.ConvertRequest(c, meta.Mode, textRequest)
 		if err != nil {
 			return openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)

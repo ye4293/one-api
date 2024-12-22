@@ -1,7 +1,13 @@
 package model
 
 type ResponseFormat struct {
-	Type string `json:"type,omitempty"`
+	Type       string         `json:"type,omitempty"`        // "json_object" 或 "json_schema"
+	JSONSchema map[string]any `json:"json_schema,omitempty"` // 当 Type 为 "json_schema" 时使用
+}
+
+// StreamOptions 定义流式响应的选项
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
 type GeneralOpenAIRequest struct {
@@ -15,6 +21,7 @@ type GeneralOpenAIRequest struct {
 	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
 	Seed             float64         `json:"seed,omitempty"`
 	Stream           bool            `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions  `json:"stream_options,omitempty"` // 新增字段
 	Temperature      float64         `json:"temperature,omitempty"`
 	TopP             float64         `json:"top_p,omitempty"`
 	TopK             int             `json:"top_k,omitempty"`
@@ -34,6 +41,14 @@ type GeneralOpenAIRequest struct {
 	NumOutputs       int             `json:"num_outputs,omitempty"`
 	OutputFormat     string          `json:"output_format,omitempty"`
 	OutputQuality    int             `json:"output_quality,omitempty"`
+	Modalities       []string        `json:"modalities,omitempty"`
+	Audio            *AudioConfig    `json:"audio,omitempty"`
+}
+
+// 新增音频配置结构体
+type AudioConfig struct {
+	Voice  string `json:"voice,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 func (r GeneralOpenAIRequest) ParseInput() []string {
