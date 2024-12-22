@@ -119,6 +119,9 @@ func removeModePrefix(path string) string {
 }
 
 func Path2RelayModeSd(path string) int {
+	// 如果路径以 /sd/v2beta 开头，将其转换为 /v2beta 开头的路径
+	path = strings.Replace(path, "/sd/v2beta", "/v2beta", 1)
+
 	relayMode := RelayModeUnknown
 	if strings.HasPrefix(path, "/v2beta/stable-image/generate/core") {
 		relayMode = RelayModelGenerateCore

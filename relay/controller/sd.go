@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -34,10 +35,16 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(err, "Failed to bind request", http.StatusBadRequest)
 	}
 
+	// 获取原始请求URL
 	requestURL := c.Request.URL.String()
 
-	baseURL := c.GetString("base_url")
+	// 只有当路径以 "/sd/v2beta" 开头时才进行替换
+	if strings.HasPrefix(requestURL, "/sd/v2beta") {
+		requestURL = strings.Replace(requestURL, "/sd/v2beta", "/v2beta", 1)
+	}
+	// 如果是 "/v2beta" 开头的路径则保持不变
 
+	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
 
 	var modelPrice float64
