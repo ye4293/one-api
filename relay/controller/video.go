@@ -897,7 +897,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 		quota = int64(float64(quota) * multiplier)
 	}
-	if modelName == "kling-v1-5" {
+	if modelName == "kling-v1-5" || modelName == "kling-v1-6" {
 		var multiplier float64
 		switch {
 		case mode == "std" && duration == "5":
