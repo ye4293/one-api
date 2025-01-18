@@ -1,7 +1,7 @@
 package keling
 
 type TextToVideoRequest struct {
-	Model          string         `json:"model,omitempty"`
+	ModelName      string         `json:"model_name,omitempty"`
 	Prompt         string         `json:"prompt"`
 	NegativePrompt string         `json:"negative_prompt,omitempty"`
 	CfgScale       float64        `json:"cfg_scale,omitempty"`
@@ -27,7 +27,7 @@ type CameraConfig struct {
 }
 
 type ImageToVideoRequest struct {
-	Model          string  `json:"model,omitempty"`
+	ModelName      string  `json:"model_name,omitempty"`
 	Image          string  `json:"image"`
 	ImageTail      string  `json:"image_tail,omitempty"`
 	Prompt         string  `json:"prompt,omitempty"`

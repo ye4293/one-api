@@ -1296,10 +1296,15 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralFinalVideoResponse{
 			TaskId:      klingResp.Data.TaskID,
-			VideoId:     klingResp.Data.TaskResult.Videos[0].ID,
 			Message:     klingResp.Data.TaskStatusMsg,
 			VideoResult: "",
 			Duration:    "",
+		}
+
+		// 检查是否有视频结果
+		if len(klingResp.Data.TaskResult.Videos) > 0 {
+			generalResponse.VideoId = klingResp.Data.TaskResult.Videos[0].ID
+			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
 		}
 
 		// 处理任务状态
