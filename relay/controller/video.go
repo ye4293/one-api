@@ -346,6 +346,17 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
+
+			// 如果 Model 有值，将其赋给 ModelNames
+			if imageToVideoReq.Model != "" {
+				imageToVideoReq.ModelName = imageToVideoReq.Model
+				imageToVideoReq.Model = "" // 清除 Model 字段
+			}
+
+			// 打印最终的 JSON
+			finalJSON, _ := json.MarshalIndent(imageToVideoReq, "", "  ")
+			log.Printf("Final request JSON (image-to-video): %s", string(finalJSON))
+
 			requestBody = imageToVideoReq
 		} else {
 			requestType = "text-to-video"
@@ -354,8 +365,20 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			if err := common.UnmarshalBodyReusable(c, &textToVideoReq); err != nil {
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
+
+			// 如果 Model 有值，将其赋给 ModelName
+			if textToVideoReq.Model != "" {
+				textToVideoReq.ModelName = textToVideoReq.Model
+				textToVideoReq.Model = "" // 清除 Model 字段
+			}
+
+			// 打印最终的 JSON
+			finalJSON, _ := json.MarshalIndent(textToVideoReq, "", "  ")
+			log.Printf("Final request JSON (text-to-video): %s", string(finalJSON))
+
 			requestBody = textToVideoReq
 		}
+
 	}
 
 	// 构建完整URL
@@ -742,7 +765,19 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 	modelName2 := c.GetString("original_model")
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType, videoResponse.Data.TaskResult.Videos[0].ID)
+		// 首先打印完整的响应内容以便调试
+		log.Printf("Video Response: %+v", videoResponse)
+
+		// 现在可以安全地访问这些字段
+		err := CreateVideoLog(
+			"kling",
+			videoResponse.Data.TaskID,
+			meta,
+			mode,
+			duration,
+			videoType,
+			"",
+		)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
