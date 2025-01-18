@@ -7,8 +7,11 @@ type VideoRequest struct {
 }
 
 type VideoRequestMinimax struct {
-	Model  string `json:"model,omitempty"`
-	Prompt string `json:"prompt,omitempty"`
+	Model           string `json:"model,omitempty"`             // 调用的算法模型ID
+	Prompt          string `json:"prompt,omitempty"`            // 生成视频的描述
+	PromptOptimizer bool   `json:"prompt_optimizer,omitempty"`  // 默认为 True，模型会自动优化传入的prompt
+	FirstFrameImage string `json:"first_frame_image,omitempty"` // 模型将以此参考中传入的图片为首帧画面生成视频
+	CallbackUrl     string `json:"callback_url,omitempty"`      // 回调通知地址
 }
 
 type VideoRequestZhipu struct {

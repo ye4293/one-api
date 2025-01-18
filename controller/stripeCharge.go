@@ -60,6 +60,7 @@ func GetChargeConfigs(c *gin.Context) {
 		},
 	})
 }
+
 func CreateChargeOrder(c *gin.Context) {
 	var CreateChargeOrderRequest struct {
 		ChrargeId int `json:"charge_id"`

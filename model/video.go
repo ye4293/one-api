@@ -21,6 +21,7 @@ type Video struct {
 	Model      string `json:"model"`
 	Status     string `json:"status"`
 	FailReason string `json:"fail_reason"`
+	VideoId    string `json:"video_id"`
 }
 
 func (video *Video) Insert() error {
@@ -35,6 +36,18 @@ func GetVideoTaskById(taskId string) (*Video, error) {
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("no record found for task_id: %s", taskId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
+func GetVideoTaskByVideoId(videoId string) (*Video, error) {
+	var video Video
+	result := DB.Where("video_id = ?", videoId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for video_id: %s", videoId)
 		}
 		return nil, result.Error
 	}

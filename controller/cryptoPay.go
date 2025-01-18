@@ -33,6 +33,7 @@ func GetQrcode(c *gin.Context) {
 		})
 	}
 }
+
 func GetPayChannel(c *gin.Context) {
 	data := make(map[string][]string, 5)
 	data["usdt"] = []string{"polygon"}
@@ -42,6 +43,7 @@ func GetPayChannel(c *gin.Context) {
 		"data":    data,
 	})
 }
+
 func CryptCallback(c *gin.Context) {
 	var response model.CryptCallbackResponse
 	if err := c.ShouldBindQuery(&response); err != nil {

@@ -37,7 +37,7 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
 	}
 
-	if modelName == "video-01" { // minimax
+	if modelName == "video-01" || modelName == "video-01-live2d" { // minimax
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		// 处理其他模型的逻辑
@@ -137,7 +137,7 @@ func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, ful
 
 func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleResponse viggle.ViggleResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	if viggleResponse.Code == 0 && viggleResponse.Message == "成功" {
-		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", strconv.Itoa(viggleResponse.Data.SubtractScore), "")
+		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", strconv.Itoa(viggleResponse.Data.SubtractScore), "", "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -251,12 +251,22 @@ func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullR
 }
 
 func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 验证必填参数
+	if videoRequest.Prompt == "" {
+		return openai.ErrorWrapper(
+			fmt.Errorf("prompt is required"),
+			"invalid_request_error",
+			http.StatusBadRequest,
+		)
+	}
+
 	baseUrl := meta.BaseURL
 	fullRequestUrl := baseUrl + "/v1/video_generation"
 
-	videoRequestMinimax := model.VideoRequestMinimax{
-		Model:  videoRequest.Model,
-		Prompt: videoRequest.Prompt,
+	// 直接绑定请求体到 VideoRequestMinimax 结构体
+	var videoRequestMinimax model.VideoRequestMinimax
+	if err := c.ShouldBindJSON(&videoRequestMinimax); err != nil {
+		return openai.ErrorWrapper(err, "invalid_request_error", http.StatusBadRequest)
 	}
 
 	jsonData, err := json.Marshal(videoRequestMinimax)
@@ -264,7 +274,7 @@ func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
 
-	return sendRequestMinimaxAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "video-01")
+	return sendRequestMinimaxAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, videoRequest.Model)
 }
 
 func handleZhipuVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -286,57 +296,92 @@ func handleZhipuVideoRequest(c *gin.Context, ctx context.Context, videoRequest m
 }
 
 func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 构建基础URL和路由映射
 	baseUrl := meta.BaseURL
-
-	// 只解析 image 参数
-	var imageCheck struct {
-		Image string `json:"image"`
-		// Model string `json:"model"`
-		Mode     string `json:"mode"`
-		Duration string `json:"duration"`
+	routeMap := map[string]map[int]string{
+		"kling-lip": {
+			41: "/v1/videos/lip-sync",
+			0:  "/kling/v1/videos/lip2video",
+		},
+		"text-to-video": {
+			41: "/v1/videos/text2video",
+			0:  "/kling/v1/videos/text2video",
+		},
+		"image-to-video": {
+			41: "/v1/videos/image2video",
+			0:  "/kling/v1/videos/image2video",
+		},
 	}
 
-	if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
-		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-	}
-
+	// 确定请求类型和URL
+	var requestType string
 	var requestBody interface{}
-	var fullRequestUrl string
 	var videoType string
+	var videoId string
 
-	if imageCheck.Image != "" {
-		// 图生视频请求
-		if meta.ChannelType == 41 {
-			fullRequestUrl = baseUrl + "/v1/videos/image2video"
-		} else {
-			fullRequestUrl = baseUrl + "/kling/v1/videos/image2video"
+	if meta.OriginModelName == "kling-lip" {
+		requestType = "kling-lip"
+		videoType = "kling-lip"
+		var lipRequest keling.KlingLipRequest
+		if err := common.UnmarshalBodyReusable(c, &lipRequest); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 		}
-		videoType = "image-to-video"
-		var imageToVideoReq keling.ImageToVideoRequest
-		if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
-			return openai.ErrorWrapper(err, "invalid_image_to_video_request", http.StatusBadRequest)
-		}
-		requestBody = imageToVideoReq
+		requestBody = lipRequest
+		videoId = lipRequest.Input.VideoId
 	} else {
-		// 文生视频请求
-		if meta.ChannelType == 41 {
-			fullRequestUrl = baseUrl + "/v1/videos/text2video"
+		// 检查是否为图生视频请求
+		var imageCheck struct {
+			Image    string `json:"image"`
+			Mode     string `json:"mode"`
+			Duration string `json:"duration"`
+		}
+		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+		}
+
+		if imageCheck.Image != "" {
+			requestType = "image-to-video"
+			videoType = "image-to-video"
+			var imageToVideoReq keling.ImageToVideoRequest
+			if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
+				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
+			}
+			requestBody = imageToVideoReq
 		} else {
-			fullRequestUrl = baseUrl + "/kling/v1/videos/text2video"
+			requestType = "text-to-video"
+			videoType = "text-to-video"
+			var textToVideoReq keling.TextToVideoRequest
+			if err := common.UnmarshalBodyReusable(c, &textToVideoReq); err != nil {
+				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
+			}
+			requestBody = textToVideoReq
 		}
-		videoType = "text-to-video"
-		var videoGenerationReq keling.TextToVideoRequest
-		if err := common.UnmarshalBodyReusable(c, &videoGenerationReq); err != nil {
-			return openai.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
-		}
-		requestBody = videoGenerationReq
 	}
 
+	// 构建完整URL
+	channelType := meta.ChannelType
+	if channelType != 41 {
+		channelType = 0
+	}
+	fullRequestUrl := baseUrl + routeMap[requestType][channelType]
+
+	// 序列化请求体
 	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
-	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "kling-v1", imageCheck.Mode, imageCheck.Duration, videoType)
+
+	// 获取mode和duration（如果存在）
+	mode := ""
+	duration := ""
+	if v, ok := requestBody.(interface{ GetMode() string }); ok {
+		mode = v.GetMode()
+	}
+	if v, ok := requestBody.(interface{ GetDuration() string }); ok {
+		duration = v.GetDuration()
+	}
+
+	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
 }
 
 func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -444,12 +489,27 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 
 }
 
-func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
+func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string, videoId string) *model.ErrorWithStatusCode {
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
+
 	var token string
+
+	if meta.OriginModelName == "kling-lip" {
+		video, err := dbmodel.GetVideoTaskByVideoId(videoId)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_video_task_error", http.StatusInternalServerError)
+		}
+		meta.ChannelId = video.ChannelId
+		channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+		}
+		meta.ChannelType = channel.Type
+	}
+
 	if meta.ChannelType == 41 {
 		ak := meta.Config.AK
 		sk := meta.Config.SK
@@ -561,7 +621,7 @@ func getStatusMessage(statusCode int) string {
 func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.BaseResp.StatusCode {
 	case 0:
-		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "")
+		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "", "")
 		if err != nil {
 
 		}
@@ -620,7 +680,7 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "")
+		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "", "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -682,7 +742,7 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 	modelName2 := c.GetString("original_model")
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType)
+		err := CreateVideoLog("kling", videoResponse.Data.TaskID, meta, mode, duration, videoType, videoResponse.Data.TaskResult.Videos[0].ID)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -750,7 +810,7 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoResponse runway.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "")
+		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "", "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err.Error()),
@@ -805,7 +865,7 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse luma.LumaGenerationResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch lumaResponse.StatusCode {
 	case 201:
-		err := CreateVideoLog("luma", lumaResponse.ID, meta, "", "", "")
+		err := CreateVideoLog("luma", lumaResponse.ID, meta, "", "", "", "")
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -952,7 +1012,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 	return nil
 }
 
-func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string) error {
+func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string) error {
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
 		Prompt:    "prompt",
@@ -966,6 +1026,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		Type:      videoType,
 		Model:     meta.OriginModelName,
 		Duration:  duration,
+		VideoId:   videoId,
 	}
 
 	// 调用 Insert 方法插入记录
@@ -1073,6 +1134,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/image2video/%s", *channel.BaseURL, taskId)
 			} else {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/image2video/%s", *channel.BaseURL, taskId)
+			}
+		} else if videoTask.Type == "kling-lip" {
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/lip-sync/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/lip2video/%s", *channel.BaseURL, taskId)
 			}
 		}
 	case "runway":
@@ -1213,6 +1280,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		}
 		defer resp.Body.Close()
 
+		// 打印完整响应体
+		log.Printf("Kling response body: %s", string(body))
+
 		// 解析JSON响应
 		var klingResp keling.KelingVideoResponse
 		if err := json.Unmarshal(body, &klingResp); err != nil {
@@ -1226,6 +1296,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 创建 GeneralVideoResponse 结构体
 		generalResponse := model.GeneralFinalVideoResponse{
 			TaskId:      klingResp.Data.TaskID,
+			VideoId:     klingResp.Data.TaskResult.Videos[0].ID,
 			Message:     klingResp.Data.TaskStatusMsg,
 			VideoResult: "",
 			Duration:    "",
@@ -1525,3 +1596,11 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	c.Data(http.StatusOK, "application/json", jsonResponse)
 	return nil
 }
+
+// func UpdateVideoTask(c *gin.Context, provider string) *model.ErrorWithStatusCode {
+
+// }
+
+// func CompensateVideoTask(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
+
+// }

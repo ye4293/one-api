@@ -79,6 +79,7 @@ type GeneralVideoResponse struct {
 type GeneralFinalVideoResponse struct {
 	TaskId      string `json:"task_id"`
 	VideoResult string `json:"video_result"`
+	VideoId     string `json:"video_id"`
 	TaskStatus  string `json:"task_status"`
 	Message     string `json:"message"`
 	Duration    string `json:"duration"`
