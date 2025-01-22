@@ -3,11 +3,13 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,11 +19,13 @@ import (
 	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/viggle"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -37,7 +41,7 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
 	}
 
-	if modelName == "video-01" || modelName == "video-01-live2d" { // minimax
+	if modelName == "video-01" || modelName == "video-01-live2d" || modelName == "S2V-01" { // minimax
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		// 处理其他模型的逻辑
@@ -50,9 +54,261 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleLumaVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "viggle" {
 		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
+	} else if modelName == "v3.5" {
+		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		// 处理其他模型的逻辑
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
+	}
+}
+
+func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	var fullRequestUrl string
+	var jsonData []byte
+
+	// 1. 读取原始请求体
+	jsonData, err = io.ReadAll(c.Request.Body)
+	if err != nil {
+		log.Printf("Error reading request body: %v", err)
+		return openai.ErrorWrapper(err, "read_request_error", http.StatusBadRequest)
+	}
+	// 重新设置请求体
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+
+	var imageCheck struct {
+		ImgUrl     string `json:"img_url"`
+		Duration   int    `json:"duration"`
+		Quality    string `json:"quality"`
+		MotionMode string `json:"motion_mode"`
+	}
+
+	if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
+		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+	}
+
+	c.Set("Duration", imageCheck.Duration)
+	c.Set("Quality", imageCheck.Quality)
+	c.Set("MotionMode", imageCheck.MotionMode)
+
+	if imageCheck.ImgUrl != "" {
+		// 1. 先上传图片
+		uploadUrl := meta.BaseURL + "/openapi/v2/image/upload"
+
+		// 创建multipart表单
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		// 创建文件表单字段
+		part, err := writer.CreateFormFile("image", "image.png")
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed_to_create_form", http.StatusInternalServerError)
+		}
+
+		// 检查是否为base64格式
+		isBase64 := strings.HasPrefix(imageCheck.ImgUrl, "data:")
+
+		if isBase64 {
+			// 处理base64格式
+			// 移除 "data:image/jpeg;base64," 这样的前缀
+			base64Data := imageCheck.ImgUrl
+			if i := strings.Index(base64Data, ","); i != -1 {
+				base64Data = base64Data[i+1:]
+			}
+
+			// 解码base64数据
+			imgData, err := base64.StdEncoding.DecodeString(base64Data)
+			if err != nil {
+				return openai.ErrorWrapper(err, "invalid_base64_image", http.StatusBadRequest)
+			}
+
+			// 写入图片数据
+			if _, err = part.Write(imgData); err != nil {
+				return openai.ErrorWrapper(err, "failed_to_write_image", http.StatusInternalServerError)
+			}
+		} else {
+			// 处理URL格式
+			// 检查是否是有效的URL
+			if !strings.HasPrefix(imageCheck.ImgUrl, "http://") && !strings.HasPrefix(imageCheck.ImgUrl, "https://") {
+				return openai.ErrorWrapper(fmt.Errorf("invalid URL format"), "invalid_url", http.StatusBadRequest)
+			}
+
+			resp, err := http.Get(imageCheck.ImgUrl)
+			if err != nil {
+				return openai.ErrorWrapper(err, "failed_to_download_image", http.StatusBadRequest)
+			}
+			defer resp.Body.Close()
+
+			// 复制图片数据到表单
+			if _, err = io.Copy(part, resp.Body); err != nil {
+				return openai.ErrorWrapper(err, "failed_to_copy_image", http.StatusInternalServerError)
+			}
+		}
+
+		writer.Close()
+
+		// 创建上传请求
+		uploadReq, err := http.NewRequest("POST", uploadUrl, body)
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed_to_create_request", http.StatusInternalServerError)
+		}
+
+		log.Printf("key:%s", channel.Key)
+		// 设置请求头
+		uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
+		uploadReq.Header.Set("API-KEY", channel.Key)
+		uploadReq.Header.Set("AI-trace-id", helper.GetUUID())
+
+		// 发送请求
+		client := &http.Client{}
+		uploadResp, err := client.Do(uploadReq)
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed_to_upload_image", http.StatusInternalServerError)
+		}
+		defer uploadResp.Body.Close()
+
+		// 解析响应
+		var uploadResponse pixverse.UploadImageResponse
+		if err := json.NewDecoder(uploadResp.Body).Decode(&uploadResponse); err != nil {
+			return openai.ErrorWrapper(err, "failed_to_parse_upload_response", http.StatusInternalServerError)
+		}
+
+		// 检查上传是否成功
+		if uploadResponse.ErrCode != 0 {
+			return openai.ErrorWrapper(
+				fmt.Errorf("image upload failed: %s", uploadResponse.ErrMsg),
+				"image_upload_failed",
+				http.StatusBadRequest,
+			)
+		}
+
+		// 2. 使用返回的图片ID构建视频生成请求
+		fullRequestUrl = meta.BaseURL + "/openapi/v2/video/img/generate"
+
+		// 将原始请求体中的img_url替换为img_id
+		var originalBody pixverse.PixverseRequest2
+		if err := common.UnmarshalBodyReusable(c, &originalBody); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+		}
+		originalBody.ImgId = uploadResponse.Resp.ImgId
+		originalBody.ImgUrl = ""
+
+		// 将修改后的请求体重新设置到context中，同时更新jsonData
+		jsonData, err = json.Marshal(originalBody)
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed_to_marshal_request", http.StatusInternalServerError)
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+
+	} else {
+		fullRequestUrl = meta.BaseURL + "/openapi/v2/video/text/generate"
+	}
+	return sendRequestAndHandlePixverseResponse(c, ctx, fullRequestUrl, jsonData, meta, "pixverse")
+}
+
+func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+	// 添加请求体日志
+	log.Printf("Request URL: %s", fullRequestUrl)
+	log.Printf("Request Body: %s", string(jsonData))
+
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		log.Printf("Get channel error: %v", err)
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Create request error: %v", err)
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 添加请求头日志
+	req.Header.Set("Ai-trace-id", helper.GetUUID())
+	req.Header.Set("API-KEY", channel.Key)
+	req.Header.Set("Content-Type", "application/json") // 添加 Content-Type 头
+	log.Printf("Request Headers: %v", req.Header)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Request error: %v", err)
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Read response error: %v", err)
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	// 添加响应日志
+	log.Printf("Response Status: %d", resp.StatusCode)
+	log.Printf("Response Body: %s", string(body))
+
+	var PixverseFinalResp pixverse.PixverseVideoResponse
+	err = json.Unmarshal(body, &PixverseFinalResp)
+	if err != nil {
+		log.Printf("Response parse error: %v", err)
+		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
+	}
+
+	PixverseFinalResp.StatusCode = resp.StatusCode
+	return handlePixverseVideoResponse(c, ctx, PixverseFinalResp, body, meta, "")
+}
+
+func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoResponse pixverse.PixverseVideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	duration := c.GetInt("Duration")
+	quality := c.GetString("Quality")
+	motionMode := c.GetString("MotionMode")
+	if videoResponse.ErrCode == 0 && videoResponse.StatusCode == 200 {
+		err := CreateVideoLog("pixverse", strconv.Itoa(videoResponse.Resp.VideoId), meta,
+			quality,
+			strconv.Itoa(duration),
+			motionMode,
+			"",
+		)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("API error: %s", err),
+				"api_error",
+				http.StatusBadRequest,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     strconv.Itoa(videoResponse.Resp.VideoId),
+			Message:    videoResponse.ErrMsg,
+			TaskStatus: "succeed",
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送 JSON 响应给客户端
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+
+		return handleSuccessfulResponse(c, ctx, meta, "V3.5", "", "")
+
+	} else {
+		return openai.ErrorWrapper(
+			fmt.Errorf("error: %s", videoResponse.ErrMsg),
+			"internal_error",
+			http.StatusInternalServerError,
+		)
 	}
 }
 
@@ -353,9 +609,9 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				imageToVideoReq.Model = "" // 清除 Model 字段
 			}
 
-			// 打印最终的 JSON
-			finalJSON, _ := json.MarshalIndent(imageToVideoReq, "", "  ")
-			log.Printf("Final request JSON (image-to-video): %s", string(finalJSON))
+			// // 打印最终的 JSON
+			// finalJSON, _ := json.MarshalIndent(imageToVideoReq, "", "  ")
+			// log.Printf("Final request JSON (image-to-video): %s", string(finalJSON))
 
 			requestBody = imageToVideoReq
 		} else {
@@ -372,9 +628,9 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				textToVideoReq.Model = "" // 清除 Model 字段
 			}
 
-			// 打印最终的 JSON
-			finalJSON, _ := json.MarshalIndent(textToVideoReq, "", "  ")
-			log.Printf("Final request JSON (text-to-video): %s", string(finalJSON))
+			// // 打印最终的 JSON
+			// finalJSON, _ := json.MarshalIndent(textToVideoReq, "", "  ")
+			// log.Printf("Final request JSON (text-to-video): %s", string(finalJSON))
 
 			requestBody = textToVideoReq
 		}
@@ -1022,6 +1278,45 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 	}
 
+	if modelName == "V3.5" {
+		duration := c.GetInt("Duration")        // 获取时长
+		mode := c.GetString("Mode")             // 获取模式
+		motionMode := c.GetString("MotionMode") // 获取运动模式
+		var multiplier float64
+		switch {
+		// Turbo mode
+		case mode == "Turbo" && duration == 5 && motionMode == "Normal":
+			multiplier = 1 // 45 credits
+		case mode == "Turbo" && duration == 5 && motionMode == "Performance":
+			multiplier = 2 // 90 credits
+		case mode == "Turbo" && duration == 8 && motionMode == "Normal":
+			multiplier = 2 // 90 credits
+		// 540P mode
+		case mode == "540P" && duration == 5 && motionMode == "Normal":
+			multiplier = 1 // 45 credits
+		case mode == "540P" && duration == 5 && motionMode == "Performance":
+			multiplier = 2 // 90 credits
+		case mode == "540P" && duration == 8 && motionMode == "Normal":
+			multiplier = 2 // 90 credits
+		// 720P mode
+		case mode == "720P" && duration == 5 && motionMode == "Normal":
+			multiplier = 1.33 // 60 credits
+		case mode == "720P" && duration == 5 && motionMode == "Performance":
+			multiplier = 2.67 // 120 credits
+		case mode == "720P" && duration == 8 && motionMode == "Normal":
+			multiplier = 2.67 // 120 credits
+
+		// 1080P mode
+		case mode == "1080P" && duration == 5 && motionMode == "Normal":
+			multiplier = 2.67 // 120 credits
+
+		default:
+			// 如果不匹配任何条件，使用默认倍率 1
+			multiplier = 1
+		}
+		quota = int64(float64(45) * multiplier) // 基础额度是45，乘以相应的倍率
+	}
+
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -1193,6 +1488,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 	case "viggle":
 		fullRequestUrl = fmt.Sprintf("%s/api/video/task?task_id=%s", *channel.BaseURL, taskId)
+	case "pixverse":
+		fullRequestUrl = fmt.Sprintf("%s/openapi/v2/video/result/%s", *channel.BaseURL, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -1221,6 +1518,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
 	} else if videoTask.Provider == "viggle" {
 		req.Header.Set("Access-Token", channel.Key)
+	} else if videoTask.Provider == "pixverse" {
+		req.Header.Set("API-KEY", channel.Key)
+		req.Header.Set("Ai-trace-id", "aaaaa")
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -1550,10 +1850,60 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "pixverse" {
+		// 读取响应体
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		defer resp.Body.Close()
+
+		// 打印响应体用于调试
+		log.Printf("Pixverse response body: %s", string(body))
+
+		// 解析JSON响应
+		var pixverseResp pixverse.PixverseFinalResponse
+		if err := json.Unmarshal(body, &pixverseResp); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建通用响应结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      strconv.Itoa(pixverseResp.Resp.Id),
+			VideoResult: "",
+			VideoId:     strconv.Itoa(pixverseResp.Resp.Id),
+			TaskStatus:  "succeed",
+			Message:     pixverseResp.ErrMsg,
+		}
+
+		if pixverseResp.Resp.Url != "" {
+			generalResponse.VideoResult = pixverseResp.Resp.Url
+
+		}
+
+		// 将响应转换为JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
-
 	return nil
-
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {

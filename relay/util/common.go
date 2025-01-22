@@ -62,9 +62,9 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "resource pack exhausted") {
 		return true
 	}
-	if strings.Contains(err.Message, "quota") || strings.Contains(err.Message, "enough") {
-		return true
-	}
+	// if strings.Contains(err.Message, "quota") || strings.Contains(err.Message, "enough") {
+	// 	return true
+	// }
 
 	return false
 }
