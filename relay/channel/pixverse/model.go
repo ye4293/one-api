@@ -2,33 +2,33 @@ package pixverse
 
 // PixverseRequest1 represents the request parameters for Pixverse API
 type PixverseRequest1 struct {
-	AspectRatio    string `json:"aspect_ratio" binding:"required"` // e.g. "16:9"
-	Duration       int    `json:"duration" binding:"required"`     // video duration in seconds
-	Model          string `json:"model" binding:"required"`        // e.g. "v1.5"
-	MotionMode     string `json:"motion_mode,omitempty"`           // e.g. "normal", "fast"
-	NegativePrompt string `json:"negative_prompt,omitempty"`       // max 2048 characters
-	Prompt         string `json:"prompt" binding:"required"`       // max 2048 characters
-	Quality        string `json:"quality" binding:"required"`      // e.g. "540p", "720p", "1080p"
-	Seed           int    `json:"seed,omitempty"`                  // range: 0-2147483647
-	Style          string `json:"style,omitempty"`                 // e.g. "anime", "3d_animation"
-	TemplateId     int    `json:"template_id,omitempty"`           // template ID if needed
-	WaterMark      bool   `json:"water_mark,omitempty"`            // default: false
+	AspectRatio    string      `json:"aspect_ratio" binding:"required"` // e.g. "16:9"
+	Duration       interface{} `json:"duration" binding:"required"`     // video duration in seconds
+	Model          string      `json:"model" binding:"required"`        // e.g. "v1.5"
+	MotionMode     string      `json:"motion_mode,omitempty"`           // e.g. "normal", "fast"
+	NegativePrompt string      `json:"negative_prompt,omitempty"`       // max 2048 characters
+	Prompt         string      `json:"prompt" binding:"required"`       // max 2048 characters
+	Quality        string      `json:"quality" binding:"required"`      // e.g. "540p", "720p", "1080p"
+	Seed           int         `json:"seed,omitempty"`                  // range: 0-2147483647
+	Style          string      `json:"style,omitempty"`                 // e.g. "anime", "3d_animation"
+	TemplateId     int         `json:"template_id,omitempty"`           // template ID if needed
+	WaterMark      bool        `json:"water_mark,omitempty"`            // default: false
 }
 
 // PixverseRequest2 represents the request parameters for Pixverse API with image input
 type PixverseRequest2 struct {
-	Duration       int    `json:"duration"`                   // video duration in seconds
-	ImgId          int    `json:"img_id,omitempty"`           // Image ID from Upload Image API
-	Image          string `json:"image,omitempty"`            // Image URL from Upload Image API
-	Model          string `json:"model" binding:"required"`   // e.g. "v1.5"
-	MotionMode     string `json:"motion_mode,omitempty"`      // e.g. "normal", "fast"
-	NegativePrompt string `json:"negative_prompt,omitempty"`  // max 2048 characters
-	Prompt         string `json:"prompt" binding:"required"`  // max 2048 characters
-	Quality        string `json:"quality" binding:"required"` // e.g. "540p", "720p", "1080p"
-	Seed           int    `json:"seed,omitempty"`             // range: 0-2147483647
-	Style          string `json:"style,omitempty"`            // e.g. "anime", "3d_animation"
-	TemplateId     int    `json:"template_id,omitempty"`      // template ID if needed
-	WaterMark      bool   `json:"water_mark,omitempty"`       // default: false
+	Duration       interface{} `json:"duration"`                   // video duration in seconds
+	ImgId          int         `json:"img_id,omitempty"`           // Image ID from Upload Image API
+	Image          string      `json:"image,omitempty"`            // Image URL from Upload Image API
+	Model          string      `json:"model" binding:"required"`   // e.g. "v1.5"
+	MotionMode     string      `json:"motion_mode,omitempty"`      // e.g. "normal", "fast"
+	NegativePrompt string      `json:"negative_prompt,omitempty"`  // max 2048 characters
+	Prompt         string      `json:"prompt" binding:"required"`  // max 2048 characters
+	Quality        string      `json:"quality" binding:"required"` // e.g. "540p", "720p", "1080p"
+	Seed           int         `json:"seed,omitempty"`             // range: 0-2147483647
+	Style          string      `json:"style,omitempty"`            // e.g. "anime", "3d_animation"
+	TemplateId     int         `json:"template_id,omitempty"`      // template ID if needed
+	WaterMark      bool        `json:"water_mark,omitempty"`       // default: false
 }
 
 // UploadImageResponse represents the response structure for image upload API

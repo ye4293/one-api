@@ -9,7 +9,7 @@ type TextToVideoRequest struct {
 	Mode           string         `json:"mode,omitempty"`
 	CameraControl  *CameraControl `json:"camera_control,omitempty"`
 	AspectRatio    string         `json:"aspect_ratio,omitempty"`
-	Duration       string         `json:"duration,omitempty"`
+	Duration       interface{}    `json:"duration,omitempty"`
 	CallbackURL    string         `json:"callback_url,omitempty"`
 }
 
@@ -28,16 +28,16 @@ type CameraConfig struct {
 }
 
 type ImageToVideoRequest struct {
-	Model          string  `json:"model,omitempty"`
-	ModelName      string  `json:"model_name,omitempty"`
-	Image          string  `json:"image"`
-	ImageTail      string  `json:"image_tail,omitempty"`
-	Prompt         string  `json:"prompt,omitempty"`
-	NegativePrompt string  `json:"negative_prompt,omitempty"`
-	CfgScale       float64 `json:"cfg_scale,omitempty"`
-	Mode           string  `json:"mode,omitempty"`
-	Duration       string  `json:"duration,omitempty"`
-	CallbackURL    string  `json:"callback_url,omitempty"`
+	Model          string      `json:"model,omitempty"`
+	ModelName      string      `json:"model_name,omitempty"`
+	Image          string      `json:"image"`
+	ImageTail      string      `json:"image_tail,omitempty"`
+	Prompt         string      `json:"prompt,omitempty"`
+	NegativePrompt string      `json:"negative_prompt,omitempty"`
+	CfgScale       float64     `json:"cfg_scale,omitempty"`
+	Mode           string      `json:"mode,omitempty"`
+	Duration       interface{} `json:"duration,omitempty"`
+	CallbackURL    string      `json:"callback_url,omitempty"`
 }
 
 // Video 表示单个视频的信息

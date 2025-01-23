@@ -81,17 +81,34 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
 
 	var imageCheck struct {
-		Image      string `json:"image"`
-		Duration   int    `json:"duration"`
-		Quality    string `json:"quality"`
-		MotionMode string `json:"motion_mode"`
+		Image      string      `json:"image"`
+		Duration   interface{} `json:"duration"`
+		Quality    string      `json:"quality"`
+		MotionMode string      `json:"motion_mode"`
 	}
 
 	if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
 		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 	}
 
-	c.Set("Duration", imageCheck.Duration)
+	// Convert duration to int
+	var duration int
+	switch v := imageCheck.Duration.(type) {
+	case float64:
+		duration = int(v)
+	case string:
+		var err error
+		duration, err = strconv.Atoi(v)
+		if err != nil {
+			return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
+		}
+	case int:
+		duration = v
+	default:
+		return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
+	}
+
+	c.Set("Duration", duration)
 	c.Set("Quality", imageCheck.Quality)
 	c.Set("MotionMode", imageCheck.MotionMode)
 
@@ -194,6 +211,23 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 		if err := common.UnmarshalBodyReusable(c, &originalBody); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		}
+
+		// Convert duration to int in originalBody
+		switch v := originalBody.Duration.(type) {
+		case float64:
+			originalBody.Duration = int(v)
+		case string:
+			duration, err := strconv.Atoi(v)
+			if err != nil {
+				return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
+			}
+			originalBody.Duration = duration
+		case int:
+			// already in correct format
+		default:
+			return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
+		}
+
 		originalBody.ImgId = uploadResponse.Resp.ImgId
 		originalBody.Image = ""
 
@@ -203,8 +237,34 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 			return openai.ErrorWrapper(err, "failed_to_marshal_request", http.StatusInternalServerError)
 		}
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
-
 	} else {
+		// 处理 PixverseRequest1 的情况
+		var textRequest pixverse.PixverseRequest1
+		if err := common.UnmarshalBodyReusable(c, &textRequest); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+		}
+		// Convert duration to int in textRequest
+		switch v := textRequest.Duration.(type) {
+		case float64:
+			textRequest.Duration = int(v)
+		case string:
+			duration, err := strconv.Atoi(v)
+			if err != nil {
+				return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
+			}
+			textRequest.Duration = duration
+		case int:
+			// already in correct format
+		default:
+			return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
+		}
+
+		jsonData, err = json.Marshal(textRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "failed_to_marshal_request", http.StatusInternalServerError)
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+
 		fullRequestUrl = meta.BaseURL + "/openapi/v2/video/text/generate"
 	}
 	return sendRequestAndHandlePixverseResponse(c, ctx, fullRequestUrl, jsonData, meta, "pixverse")
@@ -552,6 +612,10 @@ func handleZhipuVideoRequest(c *gin.Context, ctx context.Context, videoRequest m
 }
 
 func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 声明 mode 和 duration 变量
+	var mode string = "std"   // 默认值
+	var duration string = "5" // 默认值
+
 	// 构建基础URL和路由映射
 	baseUrl := meta.BaseURL
 	routeMap := map[string]map[int]string{
@@ -587,12 +651,25 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	} else {
 		// 检查是否为图生视频请求
 		var imageCheck struct {
-			Image    string `json:"image"`
-			Mode     string `json:"mode"`
-			Duration string `json:"duration"`
+			Image    string      `json:"image"`
+			Mode     string      `json:"mode"`
+			Duration interface{} `json:"duration"`
 		}
 		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+		}
+
+		if imageCheck.Mode != "" {
+			mode = imageCheck.Mode
+		}
+
+		if imageCheck.Duration != nil {
+			switch v := imageCheck.Duration.(type) {
+			case float64:
+				duration = strconv.Itoa(int(v))
+			case string:
+				duration = v
+			}
 		}
 
 		if imageCheck.Image != "" {
@@ -603,15 +680,15 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
 
+			// 设置处理好的 mode 和 duration
+			imageToVideoReq.Mode = mode
+			imageToVideoReq.Duration = duration
+
 			// 如果 Model 有值，将其赋给 ModelNames
 			if imageToVideoReq.Model != "" {
 				imageToVideoReq.ModelName = imageToVideoReq.Model
 				imageToVideoReq.Model = "" // 清除 Model 字段
 			}
-
-			// // 打印最终的 JSON
-			// finalJSON, _ := json.MarshalIndent(imageToVideoReq, "", "  ")
-			// log.Printf("Final request JSON (image-to-video): %s", string(finalJSON))
 
 			requestBody = imageToVideoReq
 		} else {
@@ -622,19 +699,18 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
 
+			// 设置处理好的 mode 和 duration
+			textToVideoReq.Mode = mode
+			textToVideoReq.Duration = duration
+
 			// 如果 Model 有值，将其赋给 ModelName
 			if textToVideoReq.Model != "" {
 				textToVideoReq.ModelName = textToVideoReq.Model
 				textToVideoReq.Model = "" // 清除 Model 字段
 			}
 
-			// // 打印最终的 JSON
-			// finalJSON, _ := json.MarshalIndent(textToVideoReq, "", "  ")
-			// log.Printf("Final request JSON (text-to-video): %s", string(finalJSON))
-
 			requestBody = textToVideoReq
 		}
-
 	}
 
 	// 构建完整URL
@@ -650,19 +726,8 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
 
-	// 获取mode和duration（如果存在）
-	mode := ""
-	duration := ""
-	if v, ok := requestBody.(interface{ GetMode() string }); ok {
-		mode = v.GetMode()
-	}
-	if v, ok := requestBody.(interface{ GetDuration() string }); ok {
-		duration = v.GetDuration()
-	}
-
 	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
 }
-
 func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	baseUrl := meta.BaseURL
 	var fullRequestUrl string
