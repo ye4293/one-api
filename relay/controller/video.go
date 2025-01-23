@@ -81,7 +81,7 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
 
 	var imageCheck struct {
-		ImgUrl     string `json:"img_url"`
+		Image      string `json:"image"`
 		Duration   int    `json:"duration"`
 		Quality    string `json:"quality"`
 		MotionMode string `json:"motion_mode"`
@@ -95,7 +95,7 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 	c.Set("Quality", imageCheck.Quality)
 	c.Set("MotionMode", imageCheck.MotionMode)
 
-	if imageCheck.ImgUrl != "" {
+	if imageCheck.Image != "" {
 		// 1. 先上传图片
 		uploadUrl := meta.BaseURL + "/openapi/v2/image/upload"
 
@@ -110,12 +110,12 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 		}
 
 		// 检查是否为base64格式
-		isBase64 := strings.HasPrefix(imageCheck.ImgUrl, "data:")
+		isBase64 := strings.HasPrefix(imageCheck.Image, "data:")
 
 		if isBase64 {
 			// 处理base64格式
 			// 移除 "data:image/jpeg;base64," 这样的前缀
-			base64Data := imageCheck.ImgUrl
+			base64Data := imageCheck.Image
 			if i := strings.Index(base64Data, ","); i != -1 {
 				base64Data = base64Data[i+1:]
 			}
@@ -133,11 +133,11 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 		} else {
 			// 处理URL格式
 			// 检查是否是有效的URL
-			if !strings.HasPrefix(imageCheck.ImgUrl, "http://") && !strings.HasPrefix(imageCheck.ImgUrl, "https://") {
+			if !strings.HasPrefix(imageCheck.Image, "http://") && !strings.HasPrefix(imageCheck.Image, "https://") {
 				return openai.ErrorWrapper(fmt.Errorf("invalid URL format"), "invalid_url", http.StatusBadRequest)
 			}
 
-			resp, err := http.Get(imageCheck.ImgUrl)
+			resp, err := http.Get(imageCheck.Image)
 			if err != nil {
 				return openai.ErrorWrapper(err, "failed_to_download_image", http.StatusBadRequest)
 			}
@@ -195,7 +195,7 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		}
 		originalBody.ImgId = uploadResponse.Resp.ImgId
-		originalBody.ImgUrl = ""
+		originalBody.Image = ""
 
 		// 将修改后的请求体重新设置到context中，同时更新jsonData
 		jsonData, err = json.Marshal(originalBody)

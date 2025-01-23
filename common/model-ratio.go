@@ -337,7 +337,9 @@ var DefaultModelPrice = map[string]float64{
 	"dall-e-3":                0.04,
 	"dall-e-2":                0.02,
 	"viggle":                  0.2,
-	"V3.5":                    0.3,
+	"v3.5":                    0.45,
+	"video-01-live2d":         0.45,
+	"S2V-01":                  0.6,
 }
 
 //后续进行修正
