@@ -271,9 +271,9 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 }
 
 func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
-	// 添加请求体日志
-	log.Printf("Request URL: %s", fullRequestUrl)
-	log.Printf("Request Body: %s", string(jsonData))
+	// // 添加请求体日志
+	// log.Printf("Request URL: %s", fullRequestUrl)
+	// log.Printf("Request Body: %s", string(jsonData))
 
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -291,7 +291,7 @@ func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, f
 	req.Header.Set("Ai-trace-id", helper.GetUUID())
 	req.Header.Set("API-KEY", channel.Key)
 	req.Header.Set("Content-Type", "application/json") // 添加 Content-Type 头
-	log.Printf("Request Headers: %v", req.Header)
+	// log.Printf("Request Headers: %v", req.Header)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -307,9 +307,9 @@ func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, f
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
 
-	// 添加响应日志
-	log.Printf("Response Status: %d", resp.StatusCode)
-	log.Printf("Response Body: %s", string(body))
+	// // 添加响应日志
+	// log.Printf("Response Status: %d", resp.StatusCode)
+	// log.Printf("Response Body: %s", string(body))
 
 	var PixverseFinalResp pixverse.PixverseVideoResponse
 	err = json.Unmarshal(body, &PixverseFinalResp)
@@ -361,7 +361,7 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponse(c, ctx, meta, "V3.5", "", "")
+		return handleSuccessfulResponse(c, ctx, meta, "v3.5", "", "")
 
 	} else {
 		return openai.ErrorWrapper(
@@ -612,10 +612,6 @@ func handleZhipuVideoRequest(c *gin.Context, ctx context.Context, videoRequest m
 }
 
 func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	// 声明 mode 和 duration 变量
-	var mode string = "std"   // 默认值
-	var duration string = "5" // 默认值
-
 	// 构建基础URL和路由映射
 	baseUrl := meta.BaseURL
 	routeMap := map[string]map[int]string{
@@ -638,6 +634,8 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	var requestBody interface{}
 	var videoType string
 	var videoId string
+	var mode string
+	var duration string
 
 	if meta.OriginModelName == "kling-lip" {
 		requestType = "kling-lip"
@@ -659,6 +657,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		}
 
+		// 只有当请求体中包含这些字段时才设置它们
 		if imageCheck.Mode != "" {
 			mode = imageCheck.Mode
 		}
@@ -680,9 +679,13 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
 
-			// 设置处理好的 mode 和 duration
-			imageToVideoReq.Mode = mode
-			imageToVideoReq.Duration = duration
+			// 只有当有值时才设置这些字段
+			if mode != "" {
+				imageToVideoReq.Mode = mode
+			}
+			if duration != "" {
+				imageToVideoReq.Duration = duration
+			}
 
 			// 如果 Model 有值，将其赋给 ModelNames
 			if imageToVideoReq.Model != "" {
@@ -699,9 +702,13 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 			}
 
-			// 设置处理好的 mode 和 duration
-			textToVideoReq.Mode = mode
-			textToVideoReq.Duration = duration
+			// 只有当有值时才设置这些字段
+			if mode != "" {
+				textToVideoReq.Mode = mode
+			}
+			if duration != "" {
+				textToVideoReq.Duration = duration
+			}
 
 			// 如果 Model 有值，将其赋给 ModelName
 			if textToVideoReq.Model != "" {
@@ -728,6 +735,9 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 
 	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
 }
+
+// ... rest of the code ...
+
 func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	baseUrl := meta.BaseURL
 	var fullRequestUrl string
@@ -1343,7 +1353,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 	}
 
-	if modelName == "V3.5" {
+	if modelName == "v3.5" {
 		duration := c.GetInt("Duration")        // 获取时长
 		mode := c.GetString("Mode")             // 获取模式
 		motionMode := c.GetString("MotionMode") // 获取运动模式
