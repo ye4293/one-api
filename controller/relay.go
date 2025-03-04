@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/middleware"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -426,4 +428,140 @@ func RelayVideoResult(c *gin.Context) {
 			"error": util.ProcessString(bizErr.Error.Message),
 		})
 	}
+}
+
+func RelayDirectFlux(c *gin.Context) {
+	// Get the full path
+	fullPath := c.Request.URL.Path
+
+	// Extract the model name (last part of the path)
+	// For a path like "/v1/flux-pro-1.1", this will extract "flux-pro-1.1"
+	pathParts := strings.Split(fullPath, "/")
+	modelName := pathParts[len(pathParts)-1]
+
+	// You can now use modelName ("flux-pro-1.1") for further processing
+	// For example, you might want to set it in the context for use downstream
+	c.Set("model_name", modelName)
+
+	userId := c.GetInt("id")
+	userGroup, _ := dbmodel.CacheGetUserGroup(userId)
+	c.Set("group", userGroup)
+
+	var fullRequestUrl string
+
+	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(userGroup, modelName, false)
+	if err != nil {
+		message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelName, userGroup)
+		if channel != nil {
+			logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
+			message = "Database consistency has been violated, please contact the administrator"
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{
+				"message": helper.MessageWithRequestId(message, c.GetString(logger.RequestIdKey)),
+				"type":    "api_error",
+			},
+		})
+		c.Abort()
+		logger.Error(c.Request.Context(), message)
+		return
+	}
+	middleware.SetupContextForSelectedChannel(c, channel, modelName)
+
+	if channel.Type == 46 {
+		fullRequestUrl = *channel.BaseURL + fullPath
+	} else {
+		fullRequestUrl = *channel.BaseURL + "/flux" + fullPath
+	}
+
+	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, c.Request.Body)
+	if err != nil {
+		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to create request: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("x-key", channel.Key)
+
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to send request: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request to provider"})
+		return
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to read provider response: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read provider response"})
+		return
+	}
+
+	// 处理不同状态码的响应
+	if response.StatusCode == 422 {
+		// 如果是422错误，直接返回原始错误信息
+		var errorResponse map[string]interface{}
+		if err := json.Unmarshal(responseBody, &errorResponse); err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to parse error response: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse error response"})
+			return
+		}
+		c.JSON(422, errorResponse)
+		return
+	} else if response.StatusCode == 200 {
+		// 如果是200成功，解析JSON并获取polling_url
+		var successResponse map[string]interface{}
+		if err := json.Unmarshal(responseBody, &successResponse); err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to parse success response: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse success response"})
+			return
+		}
+
+		// 获取polling_url并发起第二次请求
+		pollingURL, ok := successResponse["polling_url"].(string)
+		if !ok {
+			logger.Error(c.Request.Context(), "polling_url not found or not a string")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid response format, polling_url not found"})
+			return
+		}
+
+		// 创建并发送polling请求
+		pollingRequest, err := http.NewRequest("GET", pollingURL, nil)
+		if err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to create polling request: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create polling request"})
+			return
+		}
+
+		// 设置polling请求的头信息
+		pollingRequest.Header.Set("x-key", channel.Key)
+
+		// 执行polling请求
+		pollingResponse, err := client.Do(pollingRequest)
+		if err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to execute polling request: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to execute polling request"})
+			return
+		}
+		defer pollingResponse.Body.Close()
+
+		// 读取并返回polling响应
+		pollingBody, err := io.ReadAll(pollingResponse.Body)
+		if err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to read polling response: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read polling response"})
+			return
+		}
+
+		c.Writer.WriteHeader(pollingResponse.StatusCode)
+		c.Writer.Write(pollingBody)
+	} else {
+		// 处理其他状态码
+		c.Writer.WriteHeader(response.StatusCode)
+		c.Writer.Write(responseBody)
+	}
+
 }

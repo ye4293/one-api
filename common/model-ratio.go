@@ -340,6 +340,7 @@ var DefaultModelPrice = map[string]float64{
 	"v3.5":                    0.45,
 	"video-01-live2d":         0.45,
 	"S2V-01":                  0.6,
+	"image-01":                0.025,
 }
 
 //后续进行修正

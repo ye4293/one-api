@@ -51,6 +51,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		apiVersion := util.GetAzureAPIVersion(c)
 		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
 	}
+	if meta.ChannelType == 27 {
+		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
+	}
 
 	var requestBody io.Reader
 	if isModelMapped || meta.ChannelType == common.ChannelTypeAzure {
@@ -172,9 +175,69 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
 	}
-	err = json.Unmarshal(responseBody, &imageResponse)
-	if err != nil {
-		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+
+	// Handle channel type 27 response format conversion
+	if meta.ChannelType == 27 {
+		var channelResponse struct {
+			ID   string `json:"id"`
+			Data struct {
+				ImageURLs []string `json:"image_urls"`
+			} `json:"data"`
+			Metadata struct {
+				FailedCount  string `json:"failed_count"`
+				SuccessCount string `json:"success_count"`
+			} `json:"metadata"`
+			BaseResp struct {
+				StatusCode int    `json:"status_code"`
+				StatusMsg  string `json:"status_msg"`
+			} `json:"base_resp"`
+		}
+
+		err = json.Unmarshal(responseBody, &channelResponse)
+		if err != nil {
+			return openai.ErrorWrapper(err, "unmarshal_channel_response_failed", http.StatusInternalServerError)
+		}
+
+		// Convert to OpenAI DALL-E 3 format
+		if channelResponse.BaseResp.StatusCode == 0 {
+			var openaiImages []struct {
+				Url string `json:"url"`
+			}
+
+			for _, url := range channelResponse.Data.ImageURLs {
+				openaiImages = append(openaiImages, struct {
+					Url string `json:"url"`
+				}{
+					Url: url,
+				})
+			}
+
+			imageResponse = openai.ImageResponse{
+				Created: int(time.Now().Unix()),
+				Data:    openaiImages,
+			}
+
+			// Re-marshal to the OpenAI format
+			responseBody, err = json.Marshal(imageResponse)
+			if err != nil {
+				return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
+			}
+		} else {
+			// If there's an error in the original response, keep it as is
+			return openai.ErrorWrapper(
+				fmt.Errorf("channel error: %s (code: %d)",
+					channelResponse.BaseResp.StatusMsg,
+					channelResponse.BaseResp.StatusCode),
+				"channel_error",
+				http.StatusInternalServerError,
+			)
+		}
+	} else {
+		// For other channel types, unmarshal as usual
+		err = json.Unmarshal(responseBody, &imageResponse)
+		if err != nil {
+			return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+		}
 	}
 
 	// 设置响应头

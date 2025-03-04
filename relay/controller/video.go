@@ -649,9 +649,9 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	} else {
 		// 检查是否为图生视频请求
 		var imageCheck struct {
-			Image    string      `json:"image"`
-			Mode     string      `json:"mode"`
-			Duration interface{} `json:"duration"`
+			Image    string      `json:"image,omitempty"`
+			Mode     string      `json:"mode,omitempty"`
+			Duration interface{} `json:"duration,omitempty"`
 		}
 		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
@@ -732,11 +732,10 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
+	log.Printf("Request body JSON: %s", string(jsonData))
 
 	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
 }
-
-// ... rest of the code ...
 
 func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	baseUrl := meta.BaseURL
@@ -844,6 +843,7 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 }
 
 func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string, videoId string) *model.ErrorWithStatusCode {
+	log.Printf("Request body JSON: %s", string(jsonData))
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
@@ -887,6 +887,9 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
+
+	// 添加原始响应日志
+	log.Printf("Raw response body: %s", string(body))
 
 	var KelingvideoResponse keling.KelingVideoResponse
 	err = json.Unmarshal(body, &KelingvideoResponse)

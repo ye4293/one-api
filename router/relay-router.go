@@ -20,6 +20,8 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		relayV1Router.POST("/files", controller.UploadFile)
 		relayV1Router.GET("/video/generations/result", controller.RelayVideoResult)
+		relayV1Router.POST("/flux-pro-1.1", controller.RelayDirectFlux)
+		relayV1Router.POST("/flux-pro", controller.RelayDirectFlux)
 	}
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{

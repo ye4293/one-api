@@ -207,6 +207,7 @@ var channelOptions = []ChannelOption{
 	{Key: 43, Text: "Recraft", Value: 43, Color: "purple"},
 	{Key: 44, Text: "Luma", Value: 44, Color: "purple"},
 	{Key: 45, Text: "Pixverse", Value: 45, Color: "purple"},
+	{Key: 46, Text: "Flux", Value: 46, Color: "green"},
 }
 
 // 定义返回的数据结构
