@@ -75,7 +75,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 如果存在 size 参数，将其值赋给 AspectRatio 并删除 size
 		if size, ok := requestMap["size"].(string); ok {
-			requestMap["AspectRatio"] = size
+			requestMap["aspect_ratio"] = size
 			delete(requestMap, "size")
 		}
 
@@ -84,6 +84,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if err != nil {
 			return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
 		}
+
 		requestBody = bytes.NewBuffer(jsonStr)
 	} else if meta.ChannelType == common.ChannelTypeRecraft {
 		// 将请求体解析为 map
