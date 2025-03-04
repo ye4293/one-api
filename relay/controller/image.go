@@ -66,7 +66,26 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		requestBody = c.Request.Body
 	}
 
-	if meta.ChannelType == common.ChannelTypeRecraft {
+	if meta.ChannelType == 27 {
+		// 将请求体解析为 map
+		var requestMap map[string]interface{}
+		if err := json.NewDecoder(c.Request.Body).Decode(&requestMap); err != nil {
+			return openai.ErrorWrapper(err, "decode_request_failed", http.StatusBadRequest)
+		}
+
+		// 如果存在 size 参数，将其值赋给 AspectRatio 并删除 size
+		if size, ok := requestMap["size"].(string); ok {
+			requestMap["AspectRatio"] = size
+			delete(requestMap, "size")
+		}
+
+		// 重新序列化
+		jsonStr, err := json.Marshal(requestMap)
+		if err != nil {
+			return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+		}
+		requestBody = bytes.NewBuffer(jsonStr)
+	} else if meta.ChannelType == common.ChannelTypeRecraft {
 		// 将请求体解析为 map
 		var requestMap map[string]interface{}
 		if err := json.NewDecoder(c.Request.Body).Decode(&requestMap); err != nil {
