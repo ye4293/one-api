@@ -11,6 +11,7 @@ type VideoRequestMinimax struct {
 	Prompt           string `json:"prompt,omitempty"`            // 生成视频的描述
 	PromptOptimizer  bool   `json:"prompt_optimizer,omitempty"`  // 默认为 True，模型会自动优化传入的prompt
 	FirstFrameImage  string `json:"first_frame_image,omitempty"` // 模型将以此参考中传入的图片为首帧画面生成视频
+	Image            string `json:"image,omitempty"`             // 模型将以此参考中传入的图片为首帧画面生成视频
 	SubjectReference []struct {
 		Type  string `json:"type"`  // 主体类型，目前仅支持 "character"
 		Image string `json:"image"` // Base64编码的图片数据或URL

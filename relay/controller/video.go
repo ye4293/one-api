@@ -590,6 +590,12 @@ func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest
 		return openai.ErrorWrapper(err, "invalid_request_error", http.StatusBadRequest)
 	}
 
+	// 如果存在 image 参数，将其值赋给 FirstFrameImage 并清空 image
+	if videoRequestMinimax.Image != "" {
+		videoRequestMinimax.FirstFrameImage = videoRequestMinimax.Image
+		videoRequestMinimax.Image = ""
+	}
+
 	jsonData, err := json.Marshal(videoRequestMinimax)
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
