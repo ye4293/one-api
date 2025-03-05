@@ -41,10 +41,16 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
 	}
 
-	if modelName == "video-01" || modelName == "video-01-live2d" || modelName == "S2V-01" { // minimax
+	if modelName == "video-01" ||
+		modelName == "video-01-live2d" ||
+		modelName == "S2V-01" ||
+		modelName == "T2V-01" ||
+		modelName == "I2V-01" ||
+		modelName == "T2V-01-Director" ||
+		modelName == "I2V-01-Director" ||
+		modelName == "I2V-01-live" {
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
-		// 处理其他模型的逻辑
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "kling") {
 		return handleKelingVideoRequest(c, ctx, meta)
@@ -57,7 +63,6 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else {
-		// 处理其他模型的逻辑
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
 }
