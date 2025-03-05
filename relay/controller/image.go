@@ -75,7 +75,29 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 如果存在 size 参数，将其值赋给 AspectRatio 并删除 size
 		if size, ok := requestMap["size"].(string); ok {
-			requestMap["aspect_ratio"] = size
+			// 处理不同格式的 size
+			if strings.Contains(size, "x") {
+				// 处理分辨率格式 (如 "1024x1024")
+				parts := strings.Split(size, "x")
+				if len(parts) == 2 {
+					width, wErr := strconv.Atoi(parts[0])
+					height, hErr := strconv.Atoi(parts[1])
+					if wErr == nil && hErr == nil && width > 0 && height > 0 {
+						// 计算宽高比并简化
+						gcd := gcd(width, height)
+						aspectRatio := fmt.Sprintf("%d:%d", width/gcd, height/gcd)
+						requestMap["aspect_ratio"] = aspectRatio
+					} else {
+						// 如果解析失败，直接使用原始值
+						requestMap["aspect_ratio"] = size
+					}
+				} else {
+					requestMap["aspect_ratio"] = size
+				}
+			} else {
+				// 直接使用比例格式 (如 "1:1", "4:3")
+				requestMap["aspect_ratio"] = size
+			}
 			delete(requestMap, "size")
 		}
 
@@ -279,4 +301,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	return nil
 
+}
+
+// 计算最大公约数
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
