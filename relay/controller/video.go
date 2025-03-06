@@ -743,7 +743,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
-	log.Printf("Request body JSON: %s", string(jsonData))
+	// log.Printf("Request body JSON: %s", string(jsonData))
 
 	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
 }
@@ -854,7 +854,7 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 }
 
 func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string, videoId string) *model.ErrorWithStatusCode {
-	log.Printf("Request body JSON: %s", string(jsonData))
+	// log.Printf("Request body JSON: %s", string(jsonData))
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
