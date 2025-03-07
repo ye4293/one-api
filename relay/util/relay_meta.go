@@ -1,8 +1,6 @@
 package util
 
 import (
-	"strings"
-
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/model"
@@ -54,6 +52,8 @@ type RelayMeta struct {
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
+	channelId := c.GetInt("channel_id")
+	channel, _ := model.GetChannelById(channelId, false)
 	meta := RelayMeta{
 		Mode:         constant.Path2RelayMode(c.Request.URL.Path),
 		ChannelType:  c.GetInt("channel"),
@@ -65,7 +65,8 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		ModelMapping: c.GetStringMapString("model_mapping"),
 		BaseURL:      c.GetString("base_url"),
 		// APIVersion:     c.GetString(common.ConfigKeyAPIVersion),
-		APIKey:          strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
+		APIKey: channel.Key,
+		// APIKey:          strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
 		RequestURLPath:  c.Request.URL.String(),
 		OriginModelName: c.GetString("original_model"),
 	}
