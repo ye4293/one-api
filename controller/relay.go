@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -564,4 +565,121 @@ func RelayDirectFlux(c *gin.Context) {
 		c.Writer.Write(responseBody)
 	}
 
+}
+
+func RelayOcr(c *gin.Context) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+	channel, err := dbmodel.GetChannelById(channelId, true)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("Failed to get channel: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel"})
+		return
+	}
+
+	userId := c.GetInt("id")
+	startTime := time.Now()
+
+	fullRequestUrl := "https://api.mistral.ai/v1/ocr"
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("Failed to read request body: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	// Create the request to forward to Mistral API
+	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBody))
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("Failed to create request: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set necessary headers
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	// Send the request
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("Failed to send request: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request to provider"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read response body
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("Failed to read provider response: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read provider response"})
+		return
+	}
+
+	// Calculate duration
+	duration := float64(time.Since(startTime).Milliseconds()) / 1000.0
+
+	// Process the response based on status code
+	if response.StatusCode == http.StatusOK {
+		// For successful responses, extract usage info
+		var ocrResponse map[string]interface{}
+		if err := json.Unmarshal(responseBody, &ocrResponse); err != nil {
+			logger.Error(ctx, fmt.Sprintf("Failed to parse OCR response: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse OCR response"})
+			return
+		}
+
+		// Extract usage info if available
+		if usageInfo, ok := ocrResponse["usage_info"].(map[string]interface{}); ok {
+			pagesProcessed := 0
+			docSizeBytes := 0
+
+			if pp, ok := usageInfo["pages_processed"].(float64); ok {
+				pagesProcessed = int(pp)
+			}
+			if dsb, ok := usageInfo["doc_size_bytes"].(float64); ok {
+				docSizeBytes = int(dsb)
+			}
+
+			// Log usage info
+			logger.Infof(ctx, "OCR usage info - channel #%d: pages processed: %d, doc size: %d bytes",
+				channelId, pagesProcessed, docSizeBytes)
+
+			// Define model name and token name
+			modelName := "mistral-ocr-latest"
+			tokenName := c.GetString("token_name")
+
+			// Calculate quota: pages_processed * 1/1000 * 500000
+			quota := float64(pagesProcessed) * 0.001 * 500000
+
+			// Record consumption log with all required parameters
+			logContent := fmt.Sprintf("OCR pages processed: %d, doc size: %d bytes", pagesProcessed, docSizeBytes)
+			title := ""
+			httpReferer := ""
+
+			dbmodel.RecordConsumeLog(ctx, userId, channelId, pagesProcessed, docSizeBytes, modelName, tokenName, int64(quota), logContent, duration, title, httpReferer)
+
+			// Update user and channel quota
+			err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), int64(quota))
+			if err != nil {
+				logger.SysError("error consuming token remain quota: " + err.Error())
+			}
+
+			err = dbmodel.CacheUpdateUserQuota(ctx, userId)
+			if err != nil {
+				logger.SysError("error update user quota cache: " + err.Error())
+			}
+
+			dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, int64(quota))
+			dbmodel.UpdateChannelUsedQuota(channelId, int64(quota))
+		}
+
+		// Return the original response to the client
+		c.Data(http.StatusOK, "application/json", responseBody)
+	} else {
+		// For error responses, just forward the error
+		c.Data(response.StatusCode, "application/json", responseBody)
+	}
 }
