@@ -22,6 +22,7 @@ type Video struct {
 	Status     string `json:"status"`
 	FailReason string `json:"fail_reason"`
 	VideoId    string `json:"video_id"`
+	StoreUrl   string `json:"store_url"`
 }
 
 func (video *Video) Insert() error {

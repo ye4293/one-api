@@ -22,6 +22,18 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/video/generations/result", controller.RelayVideoResult)
 		relayV1Router.POST("/flux-pro-1.1", controller.RelayDirectFlux)
 		relayV1Router.POST("/flux-pro", controller.RelayDirectFlux)
+		// Image generation endpoints
+		// relayV1Router.POST("/images/generations", controller.RelayRecraft)
+		relayV1Router.POST("/images/imageToImage", controller.RelayRecraft)
+		relayV1Router.POST("/images/inpaint", controller.RelayRecraft)
+		relayV1Router.POST("/images/replaceBackground", controller.RelayRecraft)
+		relayV1Router.POST("/images/vectorize", controller.RelayRecraft)
+		relayV1Router.POST("/images/removeBackground", controller.RelayRecraft)
+		relayV1Router.POST("/images/crispUpscale", controller.RelayRecraft)
+		relayV1Router.POST("/images/creativeUpscale", controller.RelayRecraft)
+
+		relayV1Router.POST("/styles", controller.RelayRecraft)
+
 	}
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{

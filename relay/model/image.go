@@ -34,6 +34,10 @@ type ImageRequest struct {
 	OutputQuality   int       `json:"output_quality,omitempty"`
 	Controls        *Controls `json:"controls,omitempty"`
 	PromptOptimizer bool      `json:"prompt_optimizer,omitempty"`
+
+	// Missing fields:
+	TextLayout     []interface{} `json:"text_layout,omitempty"`
+	NegativePrompt string        `json:"negative_prompt,omitempty"`
 }
 
 type Controls struct {

@@ -16,6 +16,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
@@ -51,7 +52,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		apiVersion := util.GetAzureAPIVersion(c)
 		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
 	}
-	if meta.ChannelType == 27 {
+	if meta.ChannelType == 27 { //minimax
 		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
 	}
 
@@ -64,6 +65,38 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		requestBody = bytes.NewBuffer(jsonStr)
 	} else {
 		requestBody = c.Request.Body
+	}
+
+	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		// Create Gemini image request structure
+		geminiImageRequest := gemini.ChatRequest{
+			Contents: []gemini.ChatContent{
+				{
+					Role: "user",
+					Parts: []gemini.Part{
+						{
+							Text: imageRequest.Prompt,
+						},
+					},
+				},
+			},
+			GenerationConfig: gemini.ChatGenerationConfig{
+				ResponseModalities: []string{"TEXT", "IMAGE"},
+			},
+		}
+
+		// Convert to JSON
+		jsonStr, err := json.Marshal(geminiImageRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
+
+		}
+		requestBody = bytes.NewBuffer(jsonStr)
+
+		// Update URL for Gemini API
+
+		fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
+		logger.Infof(ctx, "Gemini request URL: %s", fullRequestURL)
 	}
 
 	if meta.ChannelType == 27 {
@@ -115,8 +148,21 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(err, "decode_request_failed", http.StatusBadRequest)
 		}
 
-		// 删除 model 字段
-		delete(requestMap, "model")
+		// 检查 model 字段
+		if model, ok := requestMap["model"].(string); ok {
+			if model == "recraftv2" {
+				imageRequest.Model = "recraftv2"
+				meta.ActualModelName = "recraftv2"
+			} else {
+				// 默认设置为 recraftv3
+				imageRequest.Model = "recraftv3"
+				meta.ActualModelName = "recraftv3"
+			}
+		} else {
+			// 如果没有 model 字段，默认设置为 recraftv3
+			imageRequest.Model = "recraftv3"
+			meta.ActualModelName = "recraftv3"
+		}
 
 		// 重新序列化
 		jsonStr, err := json.Marshal(requestMap)
@@ -156,10 +202,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if err != nil {
 		return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 	}
+
 	token := c.Request.Header.Get("Authorization")
 	if meta.ChannelType == common.ChannelTypeAzure {
 		token = strings.TrimPrefix(token, "Bearer ")
 		req.Header.Set("api-key", token)
+	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
+		// For Gemini, we're using the API key in the URL, so don't set Authorization header
+		logger.Infof(ctx, "Skipping Authorization header for Gemini API request")
 	} else {
 		req.Header.Set("Authorization", token)
 	}
@@ -218,8 +268,81 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// Handle channel type 27 response format conversion
-	if meta.ChannelType == 27 {
+	// Handle Gemini response format conversion
+	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Infof(ctx, "Processing Gemini image response, raw response: %s", string(responseBody))
+
+		var geminiResponse struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						InlineData *gemini.InlineData `json:"inlineData,omitempty"`
+						Text       string             `json:"text,omitempty"`
+					} `json:"parts,omitempty"`
+					Role string `json:"role,omitempty"`
+				} `json:"content,omitempty"`
+				FinishReason string `json:"finishReason,omitempty"`
+				Index        int    `json:"index,omitempty"`
+			} `json:"candidates,omitempty"`
+			ModelVersion  string `json:"modelVersion,omitempty"`
+			UsageMetadata struct {
+				PromptTokenCount int `json:"promptTokenCount,omitempty"`
+				TotalTokenCount  int `json:"totalTokenCount,omitempty"`
+			} `json:"usageMetadata,omitempty"`
+		}
+
+		err = json.Unmarshal(responseBody, &geminiResponse)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to unmarshal Gemini response: %s", err.Error())
+			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
+		}
+
+		logger.Infof(ctx, "Gemini response unmarshaled, candidates count: %d", len(geminiResponse.Candidates))
+
+		// Convert to OpenAI DALL-E 3 format
+		var imageData []struct {
+			Url string `json:"url"`
+		}
+
+		// Extract image data from Gemini response
+		for i, candidate := range geminiResponse.Candidates {
+			logger.Infof(ctx, "Processing candidate %d, parts count: %d", i, len(candidate.Content.Parts))
+			for j, part := range candidate.Content.Parts {
+				if part.InlineData != nil {
+					logger.Infof(ctx, "Found inline data in part %d, mime type: %s, data length: %d",
+						j, part.InlineData.MimeType, len(part.InlineData.Data))
+					// Use the base64 data as the URL (for DALL-E compatibility)
+					imageData = append(imageData, struct {
+						Url string `json:"url"`
+					}{
+						Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
+					})
+				} else if part.Text != "" {
+					logger.Infof(ctx, "Found text in part %d: %s", j, part.Text)
+				} else {
+					logger.Infof(ctx, "Part %d has no inline data or text", j)
+				}
+			}
+		}
+
+		logger.Infof(ctx, "Extracted image data count: %d", len(imageData))
+
+		// Use the existing OpenAI ImageResponse struct
+		imageResponse = openai.ImageResponse{
+			Created: int(time.Now().Unix()),
+			Data:    imageData,
+		}
+
+		// Re-marshal to the OpenAI format
+		responseBody, err = json.Marshal(imageResponse)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to marshal converted response: %s", err.Error())
+			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
+		}
+
+		logger.Infof(ctx, "Final converted response: %s", string(responseBody))
+	} else if meta.ChannelType == 27 {
+		// Handle channel type 27 response format conversion
 		var channelResponse struct {
 			ID   string `json:"id"`
 			Data struct {
@@ -300,7 +423,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 
 	return nil
-
 }
 
 // 计算最大公约数

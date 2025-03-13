@@ -432,24 +432,43 @@ func RelayVideoResult(c *gin.Context) {
 }
 
 func RelayDirectFlux(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+
 	// Get the full path
 	fullPath := c.Request.URL.Path
+	logger.Debugf(ctx, "[%s] RelayDirectFlux called with path: %s, method: %s", requestID, fullPath, c.Request.Method)
 
 	// Extract the model name (last part of the path)
 	// For a path like "/v1/flux-pro-1.1", this will extract "flux-pro-1.1"
 	pathParts := strings.Split(fullPath, "/")
 	modelName := pathParts[len(pathParts)-1]
+	logger.Debugf(ctx, "[%s] Extracted model name: %s", requestID, modelName)
 
 	// You can now use modelName ("flux-pro-1.1") for further processing
 	// For example, you might want to set it in the context for use downstream
 	c.Set("model_name", modelName)
 
 	userId := c.GetInt("id")
-	userGroup, _ := dbmodel.CacheGetUserGroup(userId)
+	logger.Debugf(ctx, "[%s] User ID: %d", requestID, userId)
+
+	userGroup, err := dbmodel.CacheGetUserGroup(userId)
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to get user group: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{
+				"message": helper.MessageWithRequestId("Failed to get user group", requestID),
+				"type":    "api_error",
+			},
+		})
+		return
+	}
+	logger.Debugf(ctx, "[%s] User group: %s", requestID, userGroup)
 	c.Set("group", userGroup)
 
 	var fullRequestUrl string
 
+	logger.Debugf(ctx, "[%s] Looking for channel with model: %s, group: %s", requestID, modelName, userGroup)
 	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(userGroup, modelName, false)
 	if err != nil {
 		message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelName, userGroup)
@@ -457,16 +476,17 @@ func RelayDirectFlux(c *gin.Context) {
 			logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
 			message = "Database consistency has been violated, please contact the administrator"
 		}
+		logger.Errorf(ctx, "[%s] %s: %v", requestID, message, err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error": gin.H{
-				"message": helper.MessageWithRequestId(message, c.GetString(logger.RequestIdKey)),
+				"message": helper.MessageWithRequestId(message, requestID),
 				"type":    "api_error",
 			},
 		})
 		c.Abort()
-		logger.Error(c.Request.Context(), message)
 		return
 	}
+	logger.Debugf(ctx, "[%s] Found channel ID: %d, type: %d, base URL: %s", requestID, channel.Id, channel.Type, *channel.BaseURL)
 	middleware.SetupContextForSelectedChannel(c, channel, modelName)
 
 	if channel.Type == 46 {
@@ -474,49 +494,87 @@ func RelayDirectFlux(c *gin.Context) {
 	} else {
 		fullRequestUrl = *channel.BaseURL + "/flux" + fullPath
 	}
+	logger.Debugf(ctx, "[%s] Full request URL: %s", requestID, fullRequestUrl)
 
-	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, c.Request.Body)
+	// Read and log request body for debugging
+	requestBodyBytes, err := common.GetRequestBody(c)
 	if err != nil {
-		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to create request: %v", err))
+		logger.Errorf(ctx, "[%s] Failed to read request body: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read request body"})
+		return
+	}
+	if len(requestBodyBytes) > 0 {
+		// Only log a portion of the body if it's large
+		bodyPreview := string(requestBodyBytes)
+		if len(bodyPreview) > 200 {
+			bodyPreview = bodyPreview[:200] + "... (truncated)"
+		}
+		logger.Debugf(ctx, "[%s] Request body: %s", requestID, bodyPreview)
+	} else {
+		logger.Debugf(ctx, "[%s] Request body is empty", requestID)
+	}
+
+	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBodyBytes))
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to create request: %v", requestID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
 
+	// Copy all headers from original request
+	for name, values := range c.Request.Header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
+
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("x-key", channel.Key)
+	logger.Debugf(ctx, "[%s] Request headers set, sending request", requestID)
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
 	response, err := client.Do(request)
 	if err != nil {
-		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to send request: %v", err))
+		logger.Errorf(ctx, "[%s] Failed to send request: %v", requestID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request to provider"})
 		return
 	}
 	defer response.Body.Close()
+	logger.Debugf(ctx, "[%s] Received response with status code: %d", requestID, response.StatusCode)
 
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
-		logger.Error(c.Request.Context(), fmt.Sprintf("Failed to read provider response: %v", err))
+		logger.Errorf(ctx, "[%s] Failed to read provider response: %v", requestID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read provider response"})
 		return
 	}
 
+	// Log response body preview
+	responsePreview := string(responseBody)
+	if len(responsePreview) > 200 {
+		responsePreview = responsePreview[:200] + "... (truncated)"
+	}
+	logger.Debugf(ctx, "[%s] Response body: %s", requestID, responsePreview)
+
 	// 处理不同状态码的响应
-	if response.StatusCode == 422 {
+	if response.StatusCode != 200 {
 		// 如果是422错误，直接返回原始错误信息
 		var errorResponse map[string]interface{}
 		if err := json.Unmarshal(responseBody, &errorResponse); err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to parse error response: %v", err))
+			logger.Errorf(ctx, "[%s] Failed to parse error response: %v", requestID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse error response"})
 			return
 		}
-		c.JSON(422, errorResponse)
+		logger.Debugf(ctx, "[%s] Returning error response with status code: %d", requestID, response.StatusCode)
+		c.JSON(response.StatusCode, errorResponse)
 		return
 	} else if response.StatusCode == 200 {
 		// 如果是200成功，解析JSON并获取polling_url
 		var successResponse map[string]interface{}
 		if err := json.Unmarshal(responseBody, &successResponse); err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to parse success response: %v", err))
+			logger.Errorf(ctx, "[%s] Failed to parse success response: %v", requestID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse success response"})
 			return
 		}
@@ -524,47 +582,59 @@ func RelayDirectFlux(c *gin.Context) {
 		// 获取polling_url并发起第二次请求
 		pollingURL, ok := successResponse["polling_url"].(string)
 		if !ok {
-			logger.Error(c.Request.Context(), "polling_url not found or not a string")
+			logger.Errorf(ctx, "[%s] polling_url not found or not a string in response: %v", requestID, successResponse)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid response format, polling_url not found"})
 			return
 		}
+		logger.Debugf(ctx, "[%s] Found polling URL: %s", requestID, pollingURL)
 
 		// 创建并发送polling请求
 		pollingRequest, err := http.NewRequest("GET", pollingURL, nil)
 		if err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to create polling request: %v", err))
+			logger.Errorf(ctx, "[%s] Failed to create polling request: %v", requestID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create polling request"})
 			return
 		}
 
 		// 设置polling请求的头信息
 		pollingRequest.Header.Set("x-key", channel.Key)
+		logger.Debugf(ctx, "[%s] Sending polling request", requestID)
 
 		// 执行polling请求
 		pollingResponse, err := client.Do(pollingRequest)
 		if err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to execute polling request: %v", err))
+			logger.Errorf(ctx, "[%s] Failed to execute polling request: %v", requestID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to execute polling request"})
 			return
 		}
 		defer pollingResponse.Body.Close()
+		logger.Debugf(ctx, "[%s] Received polling response with status code: %d", requestID, pollingResponse.StatusCode)
 
 		// 读取并返回polling响应
 		pollingBody, err := io.ReadAll(pollingResponse.Body)
 		if err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to read polling response: %v", err))
+			logger.Errorf(ctx, "[%s] Failed to read polling response: %v", requestID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read polling response"})
 			return
 		}
 
+		// Log polling response preview
+		pollingPreview := string(pollingBody)
+		if len(pollingPreview) > 200 {
+			pollingPreview = pollingPreview[:200] + "... (truncated)"
+		}
+		logger.Debugf(ctx, "[%s] Polling response body: %s", requestID, pollingPreview)
+
+		logger.Debugf(ctx, "[%s] Returning polling response to client", requestID)
 		c.Writer.WriteHeader(pollingResponse.StatusCode)
 		c.Writer.Write(pollingBody)
 	} else {
 		// 处理其他状态码
+		logger.Debugf(ctx, "[%s] Returning original response with status code: %d", requestID, response.StatusCode)
 		c.Writer.WriteHeader(response.StatusCode)
 		c.Writer.Write(responseBody)
 	}
-
+	logger.Debugf(ctx, "[%s] RelayDirectFlux completed", requestID)
 }
 
 func RelayOcr(c *gin.Context) {
@@ -682,4 +752,166 @@ func RelayOcr(c *gin.Context) {
 		// For error responses, just forward the error
 		c.Data(response.StatusCode, "application/json", responseBody)
 	}
+}
+
+func RelayRecraft(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	startTime := time.Now()
+
+	channel, err := dbmodel.GetChannelById(channelId, true)
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to get channel: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel"})
+		return
+	}
+
+	// Extract model name from path
+	fullPath := c.Request.URL.Path
+	pathParts := strings.Split(fullPath, "/")
+	var modelName string
+
+	// Determine model name based on endpoint
+	if len(pathParts) >= 3 {
+		endpoint := pathParts[len(pathParts)-1]
+		switch endpoint {
+		case "generations":
+			modelName = "recraft-image-generation"
+		case "imageToImage":
+			modelName = "recraft-image-to-image"
+		case "inpaint":
+			modelName = "recraft-inpaint"
+		case "replaceBackground":
+			modelName = "recraft-replace-background"
+		case "vectorize":
+			modelName = "recraft-vectorize"
+		case "removeBackground":
+			modelName = "recraft-remove-background"
+		case "crispUpscale":
+			modelName = "recraft-crisp-upscale"
+		case "creativeUpscale":
+			modelName = "recraft-creative-upscale"
+		case "styles":
+			modelName = "recraft-styles"
+		default:
+			modelName = "recraft-" + endpoint
+		}
+	} else {
+		modelName = "recraft-api"
+	}
+
+	logger.Debugf(ctx, "[%s] Using model name: %s for path: %s", requestID, modelName, fullPath)
+
+	// Construct the full request URL
+	var fullRequestUrl string
+	if channel.Type == 43 {
+		fullRequestUrl = *channel.BaseURL + fullPath
+	} else {
+		fullRequestUrl = *channel.BaseURL + "/recraft" + fullPath
+	}
+	logger.Debugf(ctx, "[%s] Full request URL: %s", requestID, fullRequestUrl)
+
+	// Read request body
+	requestBodyBytes, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to read request body: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	// Create the request to forward
+	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBodyBytes))
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to create request: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	// Set necessary headers
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	// Send the request
+	client := &http.Client{
+		Timeout: 600 * time.Second,
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to send request: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request to provider"})
+		return
+	}
+	defer response.Body.Close()
+
+	// Read response body
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		logger.Errorf(ctx, "[%s] Failed to read provider response: %v", requestID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read provider response"})
+		return
+	}
+
+	// Calculate duration
+	duration := float64(time.Since(startTime).Milliseconds()) / 1000.0
+
+	// Process the response based on status code
+	if response.StatusCode == http.StatusOK {
+		// For successful responses, deduct quota
+
+		// Define default quota based on endpoint
+
+		var modelPrice float64
+		defaultPrice, ok := common.DefaultModelPrice[modelName]
+		if !ok {
+			modelPrice = 0.1
+		} else {
+			modelPrice = defaultPrice
+		}
+		quota := int64(modelPrice * 500000)
+
+		// Record consumption log
+		tokenName := c.GetString("token_name")
+		logContent := fmt.Sprintf("Recraft API call: %s", modelName)
+		title := ""
+		httpReferer := ""
+
+		// Use placeholder values for input/output tokens since we don't have actual token counts
+		inputTokens := 0
+		outputTokens := 0
+
+		dbmodel.RecordConsumeLog(ctx, userId, channelId, inputTokens, outputTokens,
+			modelName, tokenName, quota, logContent, duration, title, httpReferer)
+
+		// Update user and channel quota
+		err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)
+		if err != nil {
+			logger.SysError("error consuming token remain quota: " + err.Error())
+		}
+
+		err = dbmodel.CacheUpdateUserQuota(ctx, userId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
+		dbmodel.UpdateChannelUsedQuota(channelId, quota)
+
+		logger.Infof(ctx, "[%s] Recraft API call completed - model: %s, channel #%d, quota: %d",
+			requestID, modelName, channelId, quota)
+	} else {
+		// Log error responses
+		logger.Errorf(ctx, "[%s] Recraft API error: %d - %s", requestID, response.StatusCode, string(responseBody))
+
+		// Check if we should disable the channel
+		if response.StatusCode == 401 || response.StatusCode == 403 {
+			monitor.DisableChannel(channelId, channel.Name, "Authentication error with Recraft API")
+		}
+	}
+
+	// Pass through the response regardless of status code
+	c.Data(response.StatusCode, response.Header.Get("Content-Type"), responseBody)
 }

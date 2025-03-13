@@ -32,10 +32,25 @@ type ChatTools struct {
 }
 
 type ChatGenerationConfig struct {
-	Temperature     float64  `json:"temperature,omitempty"`
-	TopP            float64  `json:"topP,omitempty"`
-	TopK            float64  `json:"topK,omitempty"`
-	MaxOutputTokens int      `json:"maxOutputTokens,omitempty"`
-	CandidateCount  int      `json:"candidateCount,omitempty"`
-	StopSequences   []string `json:"stopSequences,omitempty"`
+	Temperature        float64  `json:"temperature,omitempty"`
+	TopP               float64  `json:"topP,omitempty"`
+	TopK               float64  `json:"topK,omitempty"`
+	MaxOutputTokens    int      `json:"maxOutputTokens,omitempty"`
+	CandidateCount     int      `json:"candidateCount,omitempty"`
+	StopSequences      []string `json:"stopSequences,omitempty"`
+	ResponseModalities []string `json:"response_modalities,omitempty"`
 }
+
+// type GeminiImageRequest struct {
+// 	Model            string               `json:"model"`
+// 	Contents         string               `json:"contents"`
+// 	GenerationConfig ChatGenerationConfig `json:"generation_config,omitempty"`
+// }
+
+// type GeminiImg3 struct {
+// 	Prompt            string `json:"prompt"`
+// 	NumberOfImages    int    `json:"number_of_images,omitempty"`
+// 	AspectRatio       string `json:"aspect_ratio,omitempty"`
+// 	SafetyFilterLevel string `json:"safety_filter_level,omitempty"`
+// 	PersonGeneration  string `json:"person_generation,omitempty"`
+// }
