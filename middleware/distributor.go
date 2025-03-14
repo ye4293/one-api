@@ -126,10 +126,51 @@ func Distribute() func(c *gin.Context) {
 					modelRequest.Model = "whisper-1"
 				}
 			}
+
+			// Check for Recraft API endpoints
+			fullPath := c.Request.URL.Path
+			if modelRequest.Model == "" && (strings.Contains(fullPath, "/generations") ||
+				strings.Contains(fullPath, "/imageToImage") ||
+				strings.Contains(fullPath, "/inpaint") ||
+				strings.Contains(fullPath, "/replaceBackground") ||
+				strings.Contains(fullPath, "/vectorize") ||
+				strings.Contains(fullPath, "/removeBackground") ||
+				strings.Contains(fullPath, "/crispUpscale") ||
+				strings.Contains(fullPath, "/creativeUpscale") ||
+				strings.Contains(fullPath, "/styles")) {
+
+				pathParts := strings.Split(fullPath, "/")
+				endpoint := pathParts[len(pathParts)-1]
+
+				switch endpoint {
+				case "generations":
+					modelRequest.Model = "recraft-image-generation"
+				case "imageToImage":
+					modelRequest.Model = "recraft-image-to-image"
+				case "inpaint":
+					modelRequest.Model = "recraft-inpaint"
+				case "replaceBackground":
+					modelRequest.Model = "recraft-replace-background"
+				case "vectorize":
+					modelRequest.Model = "recraft-vectorize"
+				case "removeBackground":
+					modelRequest.Model = "recraft-remove-background"
+				case "crispUpscale":
+					modelRequest.Model = "recraft-crisp-upscale"
+				case "creativeUpscale":
+					modelRequest.Model = "recraft-creative-upscale"
+				case "styles":
+					modelRequest.Model = "recraft-styles"
+				default:
+					modelRequest.Model = "recraft-" + endpoint
+				}
+			}
+
 			requestModel = modelRequest.Model
 			if requestModel == "" {
 				requestModel = modelRequest.ModelName
 			}
+			c.Set("model", requestModel)
 
 			if shouldSelectChannel {
 				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)

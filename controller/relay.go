@@ -514,6 +514,7 @@ func RelayDirectFlux(c *gin.Context) {
 		logger.Debugf(ctx, "[%s] Request body is empty", requestID)
 	}
 
+	// Create the request to forward
 	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to create request: %v", requestID, err)
@@ -521,15 +522,15 @@ func RelayDirectFlux(c *gin.Context) {
 		return
 	}
 
-	// Copy all headers from original request
-	for name, values := range c.Request.Header {
-		for _, value := range values {
-			request.Header.Add(name, value)
-		}
+	// Get Content-Type from original request or use default
+	contentType := c.Request.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/json"
 	}
+	request.Header.Set("Content-Type", contentType)
 
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("x-key", channel.Key)
+	// Set authorization header
+	request.Header.Set("Authorization", "Bearer "+channel.Key)
 	logger.Debugf(ctx, "[%s] Request headers set, sending request", requestID)
 
 	client := &http.Client{
@@ -762,6 +763,7 @@ func RelayRecraft(c *gin.Context) {
 	channelId := c.GetInt("channel_id")
 	userId := c.GetInt("id")
 	startTime := time.Now()
+	modelName := c.GetString("model")
 
 	channel, err := dbmodel.GetChannelById(channelId, true)
 	if err != nil {
@@ -770,43 +772,7 @@ func RelayRecraft(c *gin.Context) {
 		return
 	}
 
-	// Extract model name from path
 	fullPath := c.Request.URL.Path
-	pathParts := strings.Split(fullPath, "/")
-	var modelName string
-
-	// Determine model name based on endpoint
-	if len(pathParts) >= 3 {
-		endpoint := pathParts[len(pathParts)-1]
-		switch endpoint {
-		case "generations":
-			modelName = "recraft-image-generation"
-		case "imageToImage":
-			modelName = "recraft-image-to-image"
-		case "inpaint":
-			modelName = "recraft-inpaint"
-		case "replaceBackground":
-			modelName = "recraft-replace-background"
-		case "vectorize":
-			modelName = "recraft-vectorize"
-		case "removeBackground":
-			modelName = "recraft-remove-background"
-		case "crispUpscale":
-			modelName = "recraft-crisp-upscale"
-		case "creativeUpscale":
-			modelName = "recraft-creative-upscale"
-		case "styles":
-			modelName = "recraft-styles"
-		default:
-			modelName = "recraft-" + endpoint
-		}
-	} else {
-		modelName = "recraft-api"
-	}
-
-	logger.Debugf(ctx, "[%s] Using model name: %s for path: %s", requestID, modelName, fullPath)
-
-	// Construct the full request URL
 	var fullRequestUrl string
 	if channel.Type == 43 {
 		fullRequestUrl = *channel.BaseURL + fullPath
@@ -823,6 +789,32 @@ func RelayRecraft(c *gin.Context) {
 		return
 	}
 
+	// Parse request to check for normalizeResponseFormat parameter
+	var requestData map[string]interface{}
+	normalizeFormat := false
+	if len(requestBodyBytes) > 0 {
+		if err := json.Unmarshal(requestBodyBytes, &requestData); err == nil {
+			// Check if normalizeResponseFormat is present and true
+			if format, ok := requestData["normalizeResponseFormat"].(bool); ok && format {
+				normalizeFormat = true
+				logger.Debugf(ctx, "[%s] Response format will be normalized to OpenAI format", requestID)
+
+				// Remove the parameter before forwarding to Recraft
+				delete(requestData, "normalizeResponseFormat")
+
+				// Re-encode the modified request
+				modifiedRequestBytes, err := json.Marshal(requestData)
+				if err == nil {
+					requestBodyBytes = modifiedRequestBytes
+				} else {
+					logger.Warnf(ctx, "[%s] Failed to re-encode modified request: %v", requestID, err)
+				}
+			} else {
+				logger.Debugf(ctx, "[%s] Using native Recraft response format", requestID)
+			}
+		}
+	}
+
 	// Create the request to forward
 	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
@@ -831,13 +823,19 @@ func RelayRecraft(c *gin.Context) {
 		return
 	}
 
-	// Set necessary headers
-	request.Header.Set("Content-Type", "application/json")
+	// Get Content-Type from original request or use default
+	contentType := c.Request.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	request.Header.Set("Content-Type", contentType)
+
+	// Set authorization header
 	request.Header.Set("Authorization", "Bearer "+channel.Key)
 
 	// Send the request
 	client := &http.Client{
-		Timeout: 600 * time.Second,
+		Timeout: 120 * time.Second,
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -863,7 +861,6 @@ func RelayRecraft(c *gin.Context) {
 		// For successful responses, deduct quota
 
 		// Define default quota based on endpoint
-
 		var modelPrice float64
 		defaultPrice, ok := common.DefaultModelPrice[modelName]
 		if !ok {
@@ -902,6 +899,45 @@ func RelayRecraft(c *gin.Context) {
 
 		logger.Infof(ctx, "[%s] Recraft API call completed - model: %s, channel #%d, quota: %d",
 			requestID, modelName, channelId, quota)
+
+		// Handle response format normalization if requested
+		if normalizeFormat {
+			var recraftResponse map[string]interface{}
+			if err := json.Unmarshal(responseBody, &recraftResponse); err == nil {
+				// Convert Recraft response to OpenAI DALL-E format
+				openaiResponse := map[string]interface{}{
+					"created": time.Now().Unix(),
+					"data": []map[string]interface{}{
+						{
+							"url":            "",
+							"revised_prompt": "",
+						},
+					},
+				}
+
+				// Extract image URL from Recraft response
+				if image, ok := recraftResponse["image"].(map[string]interface{}); ok {
+					if url, ok := image["url"].(string); ok {
+						openaiResponse["data"].([]map[string]interface{})[0]["url"] = url
+					}
+				}
+
+				// Convert to JSON
+				normalizedResponse, err := json.Marshal(openaiResponse)
+				if err == nil {
+					responseBody = normalizedResponse
+					logger.Debugf(ctx, "[%s] Response normalized to OpenAI format", requestID)
+				} else {
+					logger.Warnf(ctx, "[%s] Failed to normalize response: %v", requestID, err)
+				}
+			} else {
+				logger.Warnf(ctx, "[%s] Failed to parse Recraft response for normalization: %v", requestID, err)
+			}
+		} else {
+			// When normalizeResponseFormat is false or not present, use native Recraft format
+			logger.Debugf(ctx, "[%s] Using native Recraft response format", requestID)
+			// responseBody is already the native format, no processing needed
+		}
 	} else {
 		// Log error responses
 		logger.Errorf(ctx, "[%s] Recraft API error: %d - %s", requestID, response.StatusCode, string(responseBody))
@@ -909,6 +945,44 @@ func RelayRecraft(c *gin.Context) {
 		// Check if we should disable the channel
 		if response.StatusCode == 401 || response.StatusCode == 403 {
 			monitor.DisableChannel(channelId, channel.Name, "Authentication error with Recraft API")
+		}
+
+		// Handle error format normalization if requested
+		if normalizeFormat {
+			var recraftError map[string]interface{}
+			if err := json.Unmarshal(responseBody, &recraftError); err == nil {
+				// Convert Recraft error to OpenAI error format
+				openaiError := map[string]interface{}{
+					"error": map[string]interface{}{
+						"message": "An error occurred",
+						"type":    "api_error",
+						"code":    "recraft_error",
+					},
+				}
+
+				// Extract error message and code from Recraft response
+				if message, ok := recraftError["message"].(string); ok {
+					openaiError["error"].(map[string]interface{})["message"] = message
+				}
+				if code, ok := recraftError["code"].(string); ok {
+					openaiError["error"].(map[string]interface{})["code"] = code
+				}
+
+				// Convert to JSON
+				normalizedError, err := json.Marshal(openaiError)
+				if err == nil {
+					responseBody = normalizedError
+					logger.Debugf(ctx, "[%s] Error response normalized to OpenAI format", requestID)
+				} else {
+					logger.Warnf(ctx, "[%s] Failed to normalize error response: %v", requestID, err)
+				}
+			} else {
+				logger.Warnf(ctx, "[%s] Failed to parse Recraft error for normalization: %v", requestID, err)
+			}
+		} else {
+			// When normalizeResponseFormat is false or not present, use native Recraft error format
+			logger.Debugf(ctx, "[%s] Using native Recraft error format", requestID)
+			// responseBody is already the native format, no processing needed
 		}
 	}
 

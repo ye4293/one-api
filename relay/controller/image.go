@@ -85,16 +85,53 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			},
 		}
 
+		// Check if there's an image parameter in the request
+		var requestMap map[string]interface{}
+		if err := json.NewDecoder(c.Request.Body).Decode(&requestMap); err == nil {
+			if image, ok := requestMap["image"].(string); ok && image != "" {
+				// Parse the base64 image data
+				// Format is typically: data:image/png;base64,BASE64_DATA
+				parts := strings.SplitN(image, ",", 2)
+
+				var mimeType string
+				var imageData string
+
+				if len(parts) == 2 {
+					// Extract mime type from the prefix
+					mimeTypeParts := strings.SplitN(parts[0], ":", 2)
+					if len(mimeTypeParts) == 2 {
+						mimeTypeParts = strings.SplitN(mimeTypeParts[1], ";", 2)
+						if len(mimeTypeParts) > 0 {
+							mimeType = mimeTypeParts[0]
+						}
+					}
+					imageData = parts[1]
+				} else {
+					// If no comma found, assume it's just the base64 data
+					mimeType = "image/png" // Default to PNG if not specified
+					imageData = image
+				}
+
+				// Add the image to the Gemini request
+				geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, gemini.Part{
+					InlineData: &gemini.InlineData{
+						MimeType: mimeType,
+						Data:     imageData,
+					},
+				})
+
+				logger.Infof(ctx, "Added image to Gemini request with mime type: %s", mimeType)
+			}
+		}
+
 		// Convert to JSON
 		jsonStr, err := json.Marshal(geminiImageRequest)
 		if err != nil {
 			return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
-
 		}
 		requestBody = bytes.NewBuffer(jsonStr)
 
 		// Update URL for Gemini API
-
 		fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
 		logger.Infof(ctx, "Gemini request URL: %s", fullRequestURL)
 	}
