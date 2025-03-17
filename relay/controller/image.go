@@ -119,8 +119,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 						Data:     imageData,
 					},
 				})
-
-				logger.Infof(ctx, "Added image to Gemini request with mime type: %s", mimeType)
 			}
 		}
 
@@ -133,7 +131,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// Update URL for Gemini API
 		fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
-		logger.Infof(ctx, "Gemini request URL: %s", fullRequestURL)
 	}
 
 	if meta.ChannelType == 27 {
@@ -307,7 +304,29 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
-		logger.Infof(ctx, "Processing Gemini image response, raw response: %s", string(responseBody))
+		// Check if response is an error
+		var geminiError struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+
+		if err := json.Unmarshal(responseBody, &geminiError); err == nil && geminiError.Error.Message != "" {
+			// Use the existing ErrorWrapper function to handle the error
+			errorMsg := fmt.Errorf("Gemini API error: %s (status: %s)",
+				geminiError.Error.Message,
+				geminiError.Error.Status)
+
+			errorCode := "gemini_" + strings.ToLower(geminiError.Error.Status)
+			statusCode := geminiError.Error.Code
+			if statusCode == 0 {
+				statusCode = http.StatusBadRequest
+			}
+
+			return openai.ErrorWrapper(errorMsg, errorCode, statusCode)
+		}
 
 		var geminiResponse struct {
 			Candidates []struct {
@@ -334,35 +353,24 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
 
-		logger.Infof(ctx, "Gemini response unmarshaled, candidates count: %d", len(geminiResponse.Candidates))
-
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
 			Url string `json:"url"`
 		}
 
 		// Extract image data from Gemini response
-		for i, candidate := range geminiResponse.Candidates {
-			logger.Infof(ctx, "Processing candidate %d, parts count: %d", i, len(candidate.Content.Parts))
-			for j, part := range candidate.Content.Parts {
+		for _, candidate := range geminiResponse.Candidates {
+			for _, part := range candidate.Content.Parts {
 				if part.InlineData != nil {
-					logger.Infof(ctx, "Found inline data in part %d, mime type: %s, data length: %d",
-						j, part.InlineData.MimeType, len(part.InlineData.Data))
 					// Use the base64 data as the URL (for DALL-E compatibility)
 					imageData = append(imageData, struct {
 						Url string `json:"url"`
 					}{
 						Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
 					})
-				} else if part.Text != "" {
-					logger.Infof(ctx, "Found text in part %d: %s", j, part.Text)
-				} else {
-					logger.Infof(ctx, "Part %d has no inline data or text", j)
 				}
 			}
 		}
-
-		logger.Infof(ctx, "Extracted image data count: %d", len(imageData))
 
 		// Use the existing OpenAI ImageResponse struct
 		imageResponse = openai.ImageResponse{
@@ -376,8 +384,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logger.Errorf(ctx, "Failed to marshal converted response: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 		}
-
-		logger.Infof(ctx, "Final converted response: %s", string(responseBody))
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {
