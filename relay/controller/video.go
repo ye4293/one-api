@@ -1540,7 +1540,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	case "zhipu":
 		fullRequestUrl = fmt.Sprintf("https://open.bigmodel.cn/api/paas/v4/async-result/%s", taskId)
 	case "minimax":
-		fullRequestUrl = fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
+		fullRequestUrl = fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
 	case "kling":
 		if videoTask.Type == "text-to-video" {
 			if channel.Type == 41 {
@@ -1997,7 +1997,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
 	// 第一次请求，获取初始状态
-	url := fmt.Sprintf("https://api.minimax.chat/v1/query/video_generation?task_id=%s", taskId)
+	url := fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to create request: %v", err), "api_error", http.StatusInternalServerError)
@@ -2040,7 +2040,7 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	}
 
 	// 如果 FileID 不为空，获取文件信息
-	fileUrl := fmt.Sprintf("https://api.minimax.chat/v1/files/retrieve?file_id=%s", minimaxResp.FileID)
+	fileUrl := fmt.Sprintf("%s/v1/files/retrieve?file_id=%s", *channel.BaseURL, minimaxResp.FileID)
 	fileReq, err := http.NewRequest("GET", fileUrl, nil)
 	if err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to create file request: %v", err), "api_error", http.StatusInternalServerError)
@@ -2075,11 +2075,3 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	c.Data(http.StatusOK, "application/json", jsonResponse)
 	return nil
 }
-
-// func UpdateVideoTask(c *gin.Context, provider string) *model.ErrorWithStatusCode {
-
-// }
-
-// func CompensateVideoTask(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
-
-// }

@@ -66,10 +66,6 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		return nil, errors.New("request is nil")
 	}
 
-	// 打印原始请求
-	// originalJSON, _ := json.MarshalIndent(request, "", "  ")
-	// log.Printf("Original request:\n%s", string(originalJSON))
-
 	if strings.Contains(strings.ToLower(request.Model), "audio") && request.Stream {
 		// 直接在原请求结构中设置 StreamOptions
 		request.StreamOptions = &model.StreamOptions{

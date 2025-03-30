@@ -68,6 +68,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Infof(ctx, "处理 Gemini 图像请求，模型: %s", imageRequest.Model)
+
 		// Create Gemini image request structure
 		geminiImageRequest := gemini.ChatRequest{
 			Contents: []gemini.ChatContent{
@@ -85,52 +87,78 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			},
 		}
 
-		// Check if there's an image parameter in the request
+		// 记录原始请求体
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			logger.Errorf(ctx, "读取请求体失败: %s", err.Error())
+			return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+		}
+
+		// 恢复请求体以供后续使用
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		logger.Infof(ctx, "原始请求体: %s", string(bodyBytes))
+
 		var requestMap map[string]interface{}
-		if err := json.NewDecoder(c.Request.Body).Decode(&requestMap); err == nil {
-			if image, ok := requestMap["image"].(string); ok && image != "" {
-				// Parse the base64 image data
-				// Format is typically: data:image/png;base64,BASE64_DATA
-				parts := strings.SplitN(image, ",", 2)
+		if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
+			logger.Errorf(ctx, "解析请求 JSON 失败: %s，请求体: %s", err.Error(), string(bodyBytes))
+			return openai.ErrorWrapper(fmt.Errorf("请求中的 JSON 无效: %w", err), "invalid_request_json", http.StatusBadRequest)
+		}
 
-				var mimeType string
-				var imageData string
+		logger.Infof(ctx, "解析后的请求映射: %+v", requestMap)
 
-				if len(parts) == 2 {
-					// Extract mime type from the prefix
-					mimeTypeParts := strings.SplitN(parts[0], ":", 2)
-					if len(mimeTypeParts) == 2 {
-						mimeTypeParts = strings.SplitN(mimeTypeParts[1], ";", 2)
-						if len(mimeTypeParts) > 0 {
-							mimeType = mimeTypeParts[0]
-						}
+		if image, ok := requestMap["image"].(string); ok && image != "" {
+			logger.Infof(ctx, "检测到图像数据，长度: %d", len(image))
+
+			// Parse the base64 image data
+			// Format is typically: data:image/png;base64,BASE64_DATA
+			parts := strings.SplitN(image, ",", 2)
+
+			var mimeType string
+			var imageData string
+
+			if len(parts) == 2 {
+				// Extract mime type from the prefix
+				mimeTypeParts := strings.SplitN(parts[0], ":", 2)
+				if len(mimeTypeParts) == 2 {
+					mimeTypeParts = strings.SplitN(mimeTypeParts[1], ";", 2)
+					if len(mimeTypeParts) > 0 {
+						mimeType = mimeTypeParts[0]
 					}
-					imageData = parts[1]
-				} else {
-					// If no comma found, assume it's just the base64 data
-					mimeType = "image/png" // Default to PNG if not specified
-					imageData = image
 				}
-
-				// Add the image to the Gemini request
-				geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, gemini.Part{
-					InlineData: &gemini.InlineData{
-						MimeType: mimeType,
-						Data:     imageData,
-					},
-				})
+				imageData = parts[1]
+				logger.Infof(ctx, "解析图像数据成功，MIME 类型: %s，数据长度: %d", mimeType, len(imageData))
+			} else {
+				// If no comma found, assume it's just the base64 data
+				mimeType = "image/png" // Default to PNG if not specified
+				imageData = image
+				logger.Infof(ctx, "未找到 MIME 类型分隔符，使用默认 MIME 类型: %s，数据长度: %d", mimeType, len(imageData))
 			}
+
+			// Add the image to the Gemini request
+			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, gemini.Part{
+				InlineData: &gemini.InlineData{
+					MimeType: mimeType,
+					Data:     imageData,
+				},
+			})
+			logger.Infof(ctx, "已将图像添加到 Gemini 请求中")
+		} else {
+			logger.Infof(ctx, "请求中未包含图像数据")
 		}
 
 		// Convert to JSON
 		jsonStr, err := json.Marshal(geminiImageRequest)
 		if err != nil {
+			logger.Errorf(ctx, "序列化 Gemini 请求失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 		}
+		logger.Infof(ctx, "序列化后的 Gemini 请求: %s", string(jsonStr))
+
 		requestBody = bytes.NewBuffer(jsonStr)
 
 		// Update URL for Gemini API
 		fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
+		logger.Infof(ctx, "Gemini API 请求 URL: %s", fullRequestURL)
 	}
 
 	if meta.ChannelType == 27 {
@@ -304,18 +332,34 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
+		logger.Infof(ctx, "原始响应体: %s", string(responseBody))
+
 		// Check if response is an error
 		var geminiError struct {
 			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-				Status  string `json:"status"`
+				Code    int                      `json:"code"`
+				Message string                   `json:"message"`
+				Status  string                   `json:"status"`
+				Details []map[string]interface{} `json:"details,omitempty"`
 			} `json:"error"`
 		}
 
-		if err := json.Unmarshal(responseBody, &geminiError); err == nil && geminiError.Error.Message != "" {
+		if err := json.Unmarshal(responseBody, &geminiError); err != nil {
+			logger.Errorf(ctx, "解析 Gemini 错误响应失败: %s", err.Error())
+		} else if geminiError.Error.Message != "" {
+			logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
+				geminiError.Error.Code,
+				geminiError.Error.Message,
+				geminiError.Error.Status)
+
+			if len(geminiError.Error.Details) > 0 {
+				detailsJson, _ := json.Marshal(geminiError.Error.Details)
+				logger.Errorf(ctx, "错误详情: %s", string(detailsJson))
+			}
+
 			// Use the existing ErrorWrapper function to handle the error
-			errorMsg := fmt.Errorf("Gemini API error: %s (status: %s)",
+			errorMsg := fmt.Errorf("Gemini API 错误: %s (状态: %s)",
 				geminiError.Error.Message,
 				geminiError.Error.Status)
 
@@ -349,9 +393,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		err = json.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
-			logger.Errorf(ctx, "Failed to unmarshal Gemini response: %s", err.Error())
+			logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
+
+		logger.Infof(ctx, "成功解析 Gemini 响应，候选项数量: %d", len(geminiResponse.Candidates))
 
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
@@ -359,15 +405,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// Extract image data from Gemini response
-		for _, candidate := range geminiResponse.Candidates {
-			for _, part := range candidate.Content.Parts {
+		for i, candidate := range geminiResponse.Candidates {
+			logger.Infof(ctx, "处理候选项 #%d, 部分数量: %d", i, len(candidate.Content.Parts))
+			for j, part := range candidate.Content.Parts {
 				if part.InlineData != nil {
+					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含内联数据，MIME 类型: %s, 数据长度: %d",
+						i, j, part.InlineData.MimeType, len(part.InlineData.Data))
 					// Use the base64 data as the URL (for DALL-E compatibility)
 					imageData = append(imageData, struct {
 						Url string `json:"url"`
 					}{
 						Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
 					})
+				} else if part.Text != "" {
+					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
 				}
 			}
 		}
@@ -378,12 +429,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			Data:    imageData,
 		}
 
+		logger.Infof(ctx, "转换后的图像数量: %d", len(imageData))
+
 		// Re-marshal to the OpenAI format
 		responseBody, err = json.Marshal(imageResponse)
 		if err != nil {
-			logger.Errorf(ctx, "Failed to marshal converted response: %s", err.Error())
+			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 		}
+
+		logger.Infof(ctx, "转换后的响应体: %s", string(responseBody))
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {
