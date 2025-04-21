@@ -68,7 +68,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
-		logger.Infof(ctx, "处理 Gemini 图像请求，模型: %s", imageRequest.Model)
+		// Print the original request body
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+		}
+
+		// Restore the request body for further use
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		// Create Gemini image request structure
 		geminiImageRequest := gemini.ChatRequest{
@@ -88,27 +95,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 记录原始请求体
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		bodyBytes, err = io.ReadAll(c.Request.Body)
 		if err != nil {
-			logger.Errorf(ctx, "读取请求体失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
 		}
 
 		// 恢复请求体以供后续使用
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		logger.Infof(ctx, "原始请求体: %s", string(bodyBytes))
 
 		var requestMap map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
-			logger.Errorf(ctx, "解析请求 JSON 失败: %s，请求体: %s", err.Error(), string(bodyBytes))
 			return openai.ErrorWrapper(fmt.Errorf("请求中的 JSON 无效: %w", err), "invalid_request_json", http.StatusBadRequest)
 		}
 
-		logger.Infof(ctx, "解析后的请求映射: %+v", requestMap)
-
 		if image, ok := requestMap["image"].(string); ok && image != "" {
-			logger.Infof(ctx, "检测到图像数据，长度: %d", len(image))
-
 			// Parse the base64 image data
 			// Format is typically: data:image/png;base64,BASE64_DATA
 			parts := strings.SplitN(image, ",", 2)
@@ -126,12 +126,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					}
 				}
 				imageData = parts[1]
-				logger.Infof(ctx, "解析图像数据成功，MIME 类型: %s，数据长度: %d", mimeType, len(imageData))
 			} else {
 				// If no comma found, assume it's just the base64 data
 				mimeType = "image/png" // Default to PNG if not specified
 				imageData = image
-				logger.Infof(ctx, "未找到 MIME 类型分隔符，使用默认 MIME 类型: %s，数据长度: %d", mimeType, len(imageData))
 			}
 
 			// Add the image to the Gemini request
@@ -141,24 +139,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					Data:     imageData,
 				},
 			})
-			logger.Infof(ctx, "已将图像添加到 Gemini 请求中")
-		} else {
-			logger.Infof(ctx, "请求中未包含图像数据")
 		}
 
 		// Convert to JSON
 		jsonStr, err := json.Marshal(geminiImageRequest)
 		if err != nil {
-			logger.Errorf(ctx, "序列化 Gemini 请求失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 		}
-		logger.Infof(ctx, "序列化后的 Gemini 请求: %s", string(jsonStr))
 
 		requestBody = bytes.NewBuffer(jsonStr)
 
 		// Update URL for Gemini API
 		fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
-		logger.Infof(ctx, "Gemini API 请求 URL: %s", fullRequestURL)
 	}
 
 	if meta.ChannelType == 27 {
@@ -325,6 +317,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
+
+	// 打印原始响应体内容
+	fmt.Println("原始响应体内容:", string(responseBody))
+
 	err = resp.Body.Close()
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
@@ -333,7 +329,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
-		logger.Infof(ctx, "原始响应体: %s", string(responseBody))
 
 		// Check if response is an error
 		var geminiError struct {
@@ -397,7 +392,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
 
-		logger.Infof(ctx, "成功解析 Gemini 响应，候选项数量: %d", len(geminiResponse.Candidates))
+		// Check if any candidate has a finish reason that isn't STOP
+		for _, candidate := range geminiResponse.Candidates {
+			if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
+				logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
+				errorMsg := fmt.Errorf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
+				errorCode := "gemini_incomplete_generation"
+				return openai.ErrorWrapper(errorMsg, errorCode, http.StatusBadRequest)
+			}
+		}
 
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
@@ -406,11 +409,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// Extract image data from Gemini response
 		for i, candidate := range geminiResponse.Candidates {
-			logger.Infof(ctx, "处理候选项 #%d, 部分数量: %d", i, len(candidate.Content.Parts))
 			for j, part := range candidate.Content.Parts {
 				if part.InlineData != nil {
-					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含内联数据，MIME 类型: %s, 数据长度: %d",
-						i, j, part.InlineData.MimeType, len(part.InlineData.Data))
 					// Use the base64 data as the URL (for DALL-E compatibility)
 					imageData = append(imageData, struct {
 						Url string `json:"url"`
@@ -429,16 +429,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			Data:    imageData,
 		}
 
-		logger.Infof(ctx, "转换后的图像数量: %d", len(imageData))
-
 		// Re-marshal to the OpenAI format
 		responseBody, err = json.Marshal(imageResponse)
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 		}
-
-		logger.Infof(ctx, "转换后的响应体: %s", string(responseBody))
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {

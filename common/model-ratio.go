@@ -67,6 +67,12 @@ var ModelRatio = map[string]float64{
 	"text-moderation-latest":  0.1,
 	"dall-e-2":                8,  // $0.016 - $0.020 / image
 	"dall-e-3":                20, // $0.040 - $0.120 / image
+	"gpt-4.1":                 1,
+	"gpt-4.1-2025-04-14":      1,
+	"gpt-4.1-mini-2025-04-14": 0.2,
+	"gpt-4.1-mini":            0.2,
+	"gpt-4.1-nano-2025-04-14": 0.05,
+	"gpt-4.1-nano":            0.05,
 	// https://www.anthropic.com/api#pricing
 	"claude-instant-1.2":       0.8 / 1000 * USD,
 	"claude-2.0":               8.0 / 1000 * USD,
@@ -252,6 +258,9 @@ func GetCompletionRatio(name string) float64 {
 			return 2
 		}
 		return 4.0 / 3.0
+	}
+	if strings.HasPrefix(name, "gpt-4.1") {
+		return 4
 	}
 	if strings.HasPrefix(name, "gpt-4") {
 		if strings.HasPrefix(name, "gpt-4-turbo") ||

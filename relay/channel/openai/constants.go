@@ -18,8 +18,9 @@ var ModelList = []string{
 	"text-davinci-edit-001",
 	"davinci-002", "babbage-002",
 	"dall-e-2", "dall-e-3",
-	"whisper-1", "o1", "o3-mini", "o3-mini-2025-01-31", "o1-2024-12-17",
-	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
+	"whisper-1", "o1", "o3-mini", "o3-mini-2025-01-31", "o1-2024-12-17", "gpt-4.1",
+	"gpt-4.1-2025-04-14", "gpt-4.1-mini", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano", "gpt-4.1-nano-2025-04-14",
+	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106", "o4-mini", "o3-2025-04-16", "o4-mini-2025-04-16", "o3",
 }
 
 var ModelDetails = []model.APIModel{

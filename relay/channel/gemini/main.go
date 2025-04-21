@@ -54,6 +54,9 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 			MaxOutputTokens: textRequest.MaxTokens,
 		},
 	}
+	if textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
+		geminiRequest.GenerationConfig.ResponseModalities = []string{"TEXT", "IMAGE"}
+	}
 	if textRequest.Functions != nil {
 		geminiRequest.Tools = []ChatTools{
 			{
