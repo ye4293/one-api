@@ -116,10 +116,20 @@ type EmbeddingResponse struct {
 }
 
 type ImageResponse struct {
-	Created int `json:"created"`
+	Created int `json:"created,omitempty"`
 	Data    []struct {
-		Url string `json:"url"`
-	}
+		Url     string `json:"url,omitempty"`
+		B64Json string `json:"b64_json,omitempty"`
+	} `json:"data,omitempty"`
+	Usage struct {
+		InputTokens        int `json:"input_tokens,omitempty"`
+		InputTokensDetails struct {
+			ImageTokens int `json:"image_tokens,omitempty"`
+			TextTokens  int `json:"text_tokens,omitempty"`
+		} `json:"input_tokens_details,omitempty"`
+		OutputTokens int `json:"output_tokens,omitempty"`
+		TotalTokens  int `json:"total_tokens,omitempty"`
+	} `json:"usage,omitempty"`
 }
 
 type ChatCompletionsStreamResponseChoice struct {

@@ -66,6 +66,11 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 	}
 	shouldAddDummyModelMessage := false
 	for _, message := range textRequest.Messages {
+		// Skip system messages for image generation model
+		if message.Role == "system" && textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
+			continue
+		}
+
 		content := ChatContent{
 			Role: message.Role,
 			Parts: []Part{
@@ -105,12 +110,16 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 		// Converting system prompt to prompt from user for the same reason
 		if content.Role == "system" {
 			content.Role = "user"
-			shouldAddDummyModelMessage = true
+			// Only add dummy message for non-image-generation models
+			if textRequest.Model != "gemini-2.0-flash-exp-image-generation" {
+				shouldAddDummyModelMessage = true
+			}
 		}
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
 
 		// If a system message is the last message, we need to add a dummy model message to make gemini happy
-		if shouldAddDummyModelMessage {
+		// Skip this for image generation model
+		if shouldAddDummyModelMessage && textRequest.Model != "gemini-2.0-flash-exp-image-generation" {
 			geminiRequest.Contents = append(geminiRequest.Contents, ChatContent{
 				Role: "model",
 				Parts: []Part{
@@ -121,6 +130,14 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 			})
 			shouldAddDummyModelMessage = false
 		}
+	}
+
+	// 打印转换后的geminiRequest为JSON格式
+	requestJSON, err := json.MarshalIndent(geminiRequest, "", "  ")
+	if err != nil {
+		logger.SysError("error marshalling gemini request: " + err.Error())
+	} else {
+		logger.SysLog("Converted Gemini Request: " + string(requestJSON))
 	}
 
 	return &geminiRequest

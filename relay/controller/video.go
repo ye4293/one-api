@@ -660,9 +660,10 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 	} else {
 		// 检查是否为图生视频请求
 		var imageCheck struct {
-			Image    string      `json:"image,omitempty"`
-			Mode     string      `json:"mode,omitempty"`
-			Duration interface{} `json:"duration,omitempty"`
+			Image     string      `json:"image,omitempty"`
+			Mode      string      `json:"mode,omitempty"`
+			Duration  interface{} `json:"duration,omitempty"`
+			ImageTail string      `json:"image_tail,omitempty"`
 		}
 		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
@@ -682,7 +683,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			}
 		}
 
-		if imageCheck.Image != "" {
+		if imageCheck.Image != "" || imageCheck.ImageTail != "" {
 			requestType = "image-to-video"
 			videoType = "image-to-video"
 			var imageToVideoReq keling.ImageToVideoRequest

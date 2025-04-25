@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -38,54 +39,53 @@ func getAndValidateTextRequest(c *gin.Context, relayMode int) (*relaymodel.Gener
 }
 
 func getImageRequest(c *gin.Context, relayMode int) (*relaymodel.ImageRequest, error) {
-	imageRequest := &relaymodel.ImageRequest{}
-	err := common.UnmarshalBodyReusable(c, imageRequest)
-	if err != nil {
-		return nil, err
-	}
-	if imageRequest.N == 0 {
-		imageRequest.N = 1
-	}
-	if imageRequest.Size == "" {
-		imageRequest.Size = "1024x1024"
-	}
-	if imageRequest.Model == "" {
-		imageRequest.Model = "dall-e-2"
-	}
-	return imageRequest, nil
-}
+	// 检查内容类型
+	contentType := c.GetHeader("Content-Type")
+	isFormRequest := strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded")
 
-// func validateImageRequest(imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
-// 	if strings.HasPrefix(imageRequest.Model, "flux") {
-// 		return nil
-// 	}
-// 	if strings.HasPrefix(imageRequest.Model, "recraft") {
-// 		return nil
-// 	}
-// 	if strings.HasPrefix(imageRequest.Model, "black") {
-// 		return nil
-// 	}
-// 	// model validation
-// 	_, hasValidSize := constant.DalleSizeRatios[imageRequest.Model][imageRequest.Size]
-// 	if !hasValidSize {
-// 		return openai.ErrorWrapper(errors.New("size not supported for this image model"), "size_not_supported", http.StatusBadRequest)
-// 	}
-// 	// check prompt length
-// 	if imageRequest.Prompt == "" {
-// 		return openai.ErrorWrapper(errors.New("prompt is required"), "prompt_missing", http.StatusBadRequest)
-// 	}
-// 	if len(imageRequest.Prompt) > constant.DalleImagePromptLengthLimitations[imageRequest.Model] {
-// 		return openai.ErrorWrapper(errors.New("prompt is too long"), "prompt_too_long", http.StatusBadRequest)
-// 	}
-// 	// Number of generated images validation
-// 	if !isWithinRange(imageRequest.Model, imageRequest.N) {
-// 		// channel not azure
-// 		if meta.ChannelType != common.ChannelTypeAzure {
-// 			return openai.ErrorWrapper(errors.New("invalid value of n"), "n_not_within_range", http.StatusBadRequest)
-// 		}
-// 	}
-// 	return nil
-// }
+	if isFormRequest {
+		// 对于表单请求，我们只需要获取基本信息，不消费请求体
+		imageRequest := &relaymodel.ImageRequest{
+			N:     1,
+			Size:  "1024x1024",
+			Model: "dall-e-2",
+		}
+
+		// 尝试获取model字段，但不解析整个表单
+		if strings.Contains(contentType, "multipart/form-data") {
+			// 尝试只解析model字段，不读取文件
+			c.Request.ParseMultipartForm(1 << 10) // 只解析1KB的数据
+			if model := c.Request.FormValue("model"); model != "" {
+				imageRequest.Model = model
+			}
+		} else {
+			// 对于url编码的表单
+			c.Request.ParseForm()
+			if model := c.Request.FormValue("model"); model != "" {
+				imageRequest.Model = model
+			}
+		}
+
+		return imageRequest, nil
+	} else {
+		// 对于JSON请求，使用原有逻辑
+		imageRequest := &relaymodel.ImageRequest{}
+		err := common.UnmarshalBodyReusable(c, imageRequest)
+		if err != nil {
+			return nil, err
+		}
+		if imageRequest.N == 0 {
+			imageRequest.N = 1
+		}
+		if imageRequest.Size == "" {
+			imageRequest.Size = "1024x1024"
+		}
+		if imageRequest.Model == "" {
+			imageRequest.Model = "dall-e-2"
+		}
+		return imageRequest, nil
+	}
+}
 
 func getImageCostRatio(imageRequest *relaymodel.ImageRequest) (float64, error) {
 	// 检查空指针
