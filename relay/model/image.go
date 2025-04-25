@@ -36,6 +36,7 @@ type ImageRequest struct {
 	PromptOptimizer bool          `json:"prompt_optimizer,omitempty"`
 	TextLayout      []interface{} `json:"text_layout,omitempty"`
 	NegativePrompt  string        `json:"negative_prompt,omitempty"`
+	Background      string        `json:"background,omitempty"`
 
 	// 添加 image 字段
 	Image string `json:"image,omitempty"`

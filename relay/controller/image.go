@@ -450,21 +450,26 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			if err := json.Unmarshal(responseBody, &parsedResponse); err != nil {
 				logger.SysError("error parsing gpt-image-1 response: " + err.Error())
 			} else {
-				// 计算 quota
+				// 先将令牌数转换为浮点数
 				textTokens := float64(parsedResponse.Usage.InputTokensDetails.TextTokens)
 				imageTokens := float64(parsedResponse.Usage.InputTokensDetails.ImageTokens)
 				outputTokens := float64(parsedResponse.Usage.OutputTokens)
 
-				// 应用公式 - 这里的问题是直接覆盖了之前计算的quota，而不是根据实际使用量计算
-				oldQuota := quota // 保存旧的 quota 值用于日志
+				// 保存旧的 quota 值用于日志
+				oldQuota := quota
 
-				// 修复：计算实际的quota，并应用ratio
-				calculatedQuota := int64(((textTokens / 1000000 * 5) + (imageTokens / 1000000 * 10) + (outputTokens / 100000 * 40)) * 500000)
+				// 修复：先乘后除，避免小数被截断为0
+				textCost := textTokens * 5 / 1000000
+				imageCost := imageTokens * 10 / 1000000
+				outputCost := outputTokens * 40 / 1000000
+
+				// 计算总成本并转换为quota单位
+				calculatedQuota := int64((textCost + imageCost + outputCost) * 500000)
 				quota = int64(float64(calculatedQuota) * ratio)
+
 				// 记录日志
 				logger.Infof(ctx, "GPT-Image-1 token usage: text=%d, image=%d, output=%d, old quota=%d, new quota=%d",
 					int(textTokens), int(imageTokens), int(outputTokens), oldQuota, quota)
-
 			}
 		}
 
