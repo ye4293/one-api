@@ -84,3 +84,17 @@ type GeneralFinalVideoResponse struct {
 	Message     string `json:"message"`
 	Duration    string `json:"duration"`
 }
+
+type GeneralImageResponseAsync struct {
+	TaskId     string `json:"task_id"`
+	TaskStatus string `json:"task_status"`
+	Message    string `json:"message"`
+}
+
+type GeneralFinalImageResponseAsync struct {
+	TaskId      string `json:"task_id"`
+	ImageResult string `json:"image_result"`
+	ImageId     string `json:"image_id"`
+	TaskStatus  string `json:"task_status"`
+	Message     string `json:"message"`
+}

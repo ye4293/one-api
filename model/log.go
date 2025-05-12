@@ -34,6 +34,7 @@ type Log struct {
 	HttpReferer      string  `json:"http_referer"`
 	Provider         string  `json:"provider"`
 	XRequestID       string  `json:"x_request_id"`
+	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
 }
 
 const (

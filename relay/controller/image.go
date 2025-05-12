@@ -276,6 +276,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 			}
 
+			// Print the transformed Gemini request body for debugging
+			logger.Infof(ctx, "Gemini 转换后的请求体: %s", string(jsonStr))
+
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
@@ -509,6 +512,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		// Add debug logging for the original response body
+		logger.Infof(ctx, "Gemini 原始响应体: %s", string(responseBody))
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
 
 		// Check if response is an error
@@ -763,3 +768,15 @@ func gcd(a, b int) int {
 func escapeQuotes(s string) string {
 	return strings.Replace(s, `"`, `\"`, -1)
 }
+
+// func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatusCode {
+// 	ctx := c.Request.Context()
+
+// 	if strings.HasPrefix(modelName, "kling") {
+// 		return handleKlingImageRequest(c, ctx, modelName)
+// 	}
+// }
+
+// func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName string) *relaymodel.ErrorWithStatusCode {
+
+// }

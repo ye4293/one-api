@@ -51,6 +51,9 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "credit") {
 		return true
 	}
+	if strings.Contains(err.Message, "not_enough_credits") { //recraft
+		return true
+	}
 	if strings.Contains(err.Message, "balance") {
 		return true
 	}
@@ -171,6 +174,9 @@ func GetFullRequestURL(baseURL string, requestURL string, channelType int) strin
 		case common.ChannelTypeAzure:
 			fullRequestURL = fmt.Sprintf("%s%s", baseURL, strings.TrimPrefix(requestURL, "/openai/deployments"))
 		}
+	}
+	if channelType == 24 { //google gemini
+		fullRequestURL = fmt.Sprintf("%s/v1beta/openai/images/generations", baseURL)
 	}
 	return fullRequestURL
 }

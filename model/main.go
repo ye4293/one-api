@@ -166,6 +166,10 @@ func InitDB(envName string) (db *gorm.DB, err error) {
 		if err != nil {
 			return nil, err
 		}
+		err = db.AutoMigrate(&Image{})
+		if err != nil {
+			return nil, err
+		}
 		logger.SysLog("database migrated")
 		return db, err
 	} else {
