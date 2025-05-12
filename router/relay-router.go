@@ -23,14 +23,26 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/flux-pro-1.1", controller.RelayDirectFlux)
 		relayV1Router.POST("/flux-pro", controller.RelayDirectFlux)
 		// Image generation endpoints
-
 	}
+
+	// Create separate router groups for POST and GET
+	asyncImagePostRouter := router.Group("/v1/async")
+	asyncImagePostRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		asyncImagePostRouter.POST("/images/generations", controller.RelayImageGenerateAsync)
+	}
+
+	asyncImageGetRouter := router.Group("/v1/async")
+	asyncImageGetRouter.Use(middleware.TokenAuth())
+	{
+		asyncImageGetRouter.GET("/images/generations", controller.RelayImageResult)
+	}
+
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
 		relayV1Router.POST("/completions", controller.Relay)
 		relayV1Router.POST("/chat/completions", controller.Relay)
 		relayV1Router.POST("/edits", controller.Relay)
-		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/images/edits", controller.Relay)
 		relayV1Router.POST("/images/variations", controller.RelayNotImplemented)
 		relayV1Router.POST("/embeddings", controller.Relay)
@@ -77,8 +89,6 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps", controller.RelayNotImplemented)
 		relayV1Router.POST("/video/generations", controller.RelayVideoGenerate)
 		relayV1Router.POST("/ocr", controller.RelayOcr)
-		relayV1Router.POST("/images/generations/async", controller.RelayImageGenerateAsync)
-
 		relayV1Router.POST("/images/imageToImage", controller.RelayRecraft)
 		relayV1Router.POST("/images/inpaint", controller.RelayRecraft)
 		relayV1Router.POST("/images/replaceBackground", controller.RelayRecraft)
@@ -87,6 +97,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/images/crispUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/images/creativeUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/styles", controller.RelayRecraft)
+		relayV1Router.POST("/images/generations", controller.Relay)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {

@@ -139,30 +139,34 @@ func Distribute() func(c *gin.Context) {
 				strings.Contains(fullPath, "/creativeUpscale") ||
 				strings.Contains(fullPath, "/styles")) {
 
-				pathParts := strings.Split(fullPath, "/")
-				endpoint := pathParts[len(pathParts)-1]
+				if modelRequest.ModelName == "" {
+					pathParts := strings.Split(fullPath, "/")
+					endpoint := pathParts[len(pathParts)-1]
 
-				switch endpoint {
-				case "generations":
-					modelRequest.Model = "recraft-image-generation"
-				case "imageToImage":
-					modelRequest.Model = "recraft-image-to-image"
-				case "inpaint":
-					modelRequest.Model = "recraft-inpaint"
-				case "replaceBackground":
-					modelRequest.Model = "recraft-replace-background"
-				case "vectorize":
-					modelRequest.Model = "recraft-vectorize"
-				case "removeBackground":
-					modelRequest.Model = "recraft-remove-background"
-				case "crispUpscale":
-					modelRequest.Model = "recraft-crisp-upscale"
-				case "creativeUpscale":
-					modelRequest.Model = "recraft-creative-upscale"
-				case "styles":
-					modelRequest.Model = "recraft-styles"
-				default:
-					modelRequest.Model = "recraft-" + endpoint
+					switch endpoint {
+					case "generations":
+						modelRequest.Model = "recraft-image-generation"
+					case "imageToImage":
+						modelRequest.Model = "recraft-image-to-image"
+					case "inpaint":
+						modelRequest.Model = "recraft-inpaint"
+					case "replaceBackground":
+						modelRequest.Model = "recraft-replace-background"
+					case "vectorize":
+						modelRequest.Model = "recraft-vectorize"
+					case "removeBackground":
+						modelRequest.Model = "recraft-remove-background"
+					case "crispUpscale":
+						modelRequest.Model = "recraft-crisp-upscale"
+					case "creativeUpscale":
+						modelRequest.Model = "recraft-creative-upscale"
+					case "styles":
+						modelRequest.Model = "recraft-styles"
+					default:
+						modelRequest.Model = "recraft-" + endpoint
+					}
+				} else {
+					modelRequest.Model = modelRequest.ModelName
 				}
 			}
 

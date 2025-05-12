@@ -96,3 +96,38 @@ type KlingLipRequest struct {
 	} `json:"input"`
 	CallbackUrl string `json:"callback_url,omitempty"` // 回调通知地址
 }
+
+type KlingImageResponse struct {
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	RequestID string `json:"request_id"`
+	Data      struct {
+		TaskID     string `json:"task_id"`
+		TaskStatus string `json:"task_status"`
+		CreatedAt  int64  `json:"created_at"`
+		UpdatedAt  int64  `json:"updated_at"`
+	} `json:"data"`
+}
+
+type KlingImageResult struct {
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	RequestID string `json:"request_id"`
+	Data      struct {
+		TaskID        string      `json:"task_id"`
+		TaskStatus    string      `json:"task_status"`
+		TaskStatusMsg string      `json:"task_status_msg,omitempty"`
+		CreatedAt     int64       `json:"created_at"`
+		UpdatedAt     int64       `json:"updated_at"`
+		TaskResult    ImageResult `json:"task_result,omitempty"`
+	} `json:"data"`
+}
+
+type ImageResult struct {
+	Images []Image `json:"images"`
+}
+
+type Image struct {
+	Index int    `json:"index"`
+	URL   string `json:"url"`
+}

@@ -992,23 +992,37 @@ func RelayRecraft(c *gin.Context) {
 
 func RelayImageGenerateAsync(c *gin.Context) {
 	// ctx := c.Request.Context()
-	// requestID := c.GetHeader("X-Request-ID")
-	// c.Set("X-Request-ID", requestID)
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
 
 	// channelId := c.GetInt("channel_id")
 	// userId := c.GetInt("id")
-	// modelName := c.GetString("original_model")
-	// bizErr := controller.DoImageRequest(c, modelName)
-	// if bizErr == nil {
-	// 	return
-	// }
-	// // 所有重试都失败后的处理
-	// if bizErr != nil {
-	// 	if bizErr.StatusCode == http.StatusTooManyRequests {
-	// 		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
-	// 	}
-	// 	c.JSON(bizErr.StatusCode, gin.H{
-	// 		"error": util.ProcessString(bizErr.Error.Message),
-	// 	})
-	// }
+	modelName := c.GetString("original_model")
+	bizErr := controller.DoImageRequest(c, modelName)
+	if bizErr == nil {
+		return
+	}
+	// 所有重试都失败后的处理
+	if bizErr != nil {
+		if bizErr.StatusCode == http.StatusTooManyRequests {
+			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+		}
+		c.JSON(bizErr.StatusCode, gin.H{
+			"error": util.ProcessString(bizErr.Error.Message),
+		})
+	}
+}
+
+func RelayImageResult(c *gin.Context) {
+	taskId := c.Query("taskid")
+	bizErr := controller.GetImageResult(c, taskId)
+	if bizErr != nil {
+		if bizErr.StatusCode == http.StatusTooManyRequests {
+			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+		}
+		c.JSON(bizErr.StatusCode, gin.H{
+			"error": util.ProcessString(bizErr.Error.Message),
+		})
+	}
+
 }

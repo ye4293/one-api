@@ -20,7 +20,9 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
+	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
@@ -769,14 +771,376 @@ func escapeQuotes(s string) string {
 	return strings.Replace(s, `"`, `\"`, -1)
 }
 
-// func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatusCode {
-// 	ctx := c.Request.Context()
+func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatusCode {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	if strings.HasPrefix(modelName, "kling") {
+		return handleKlingImageRequest(c, ctx, modelName, meta)
+	}
+	// 需要添加处理其他模型类型的逻辑
+	return openai.ErrorWrapper(fmt.Errorf("unsupported model: %s", modelName), "unsupported_model", http.StatusBadRequest)
+}
 
-// 	if strings.HasPrefix(modelName, "kling") {
-// 		return handleKlingImageRequest(c, ctx, modelName)
-// 	}
-// }
+func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName string, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+	baseUrl := meta.BaseURL
+	var fullRequestUrl string
 
-// func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName string) *relaymodel.ErrorWithStatusCode {
+	if meta.ChannelType == 41 {
+		fullRequestUrl = fmt.Sprintf("%s/v1/images/generations", baseUrl)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/kling/v1/images/generations", baseUrl)
+	}
 
-// }
+	// Read the original request body
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Restore the request body for further use
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Parse the request body
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Determine the mode based on whether an image parameter exists
+	mode := "texttoimage"
+	if _, hasImage := requestMap["image"]; hasImage {
+		mode = "imagetoimage"
+	}
+
+	logger.Debugf(ctx, "Kling API request mode: %s", mode)
+
+	// Transform 'model' to 'model_name'
+	if model, ok := requestMap["model"]; ok {
+		requestMap["model_name"] = model
+		delete(requestMap, "model")
+	}
+
+	// Re-marshal the modified request
+	modifiedBody, err := json.Marshal(requestMap)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_modified_request_failed", http.StatusInternalServerError)
+	}
+
+	// Create a new request with the modified body
+	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(modifiedBody))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_failed", http.StatusInternalServerError)
+	}
+
+	var token string
+
+	if meta.ChannelType == 41 {
+		ak := meta.Config.AK
+		sk := meta.Config.SK
+
+		// Generate JWT token
+		token = encodeJWTToken(ak, sk)
+	} else {
+		token = meta.APIKey
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Send the request
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 在记录日志时使用更安全的方式
+	logger.Debugf(ctx, "Kling API original response: %s", string(responseBody))
+
+	// Parse the Kling API response
+	var klingImageResponse keling.KlingImageResponse
+
+	if err := json.Unmarshal(responseBody, &klingImageResponse); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 检查错误时提供更详细的信息
+	if klingImageResponse.Code != 0 {
+		return openai.ErrorWrapper(
+			fmt.Errorf("Kling API error: %s (code: %d, task_id: %s)",
+				klingImageResponse.Message,
+				klingImageResponse.Code,
+				klingImageResponse.Data.TaskID),
+			"kling_api_error",
+			http.StatusBadRequest,
+		)
+	}
+
+	// 记录图像生成日志，传递mode参数
+	err = CreateImageLog(
+		"kling",                            // provider
+		klingImageResponse.Data.TaskID,     // taskId
+		meta,                               // meta
+		klingImageResponse.Data.TaskStatus, // status
+		"",                                 // failReason (空，因为请求成功)
+		mode,                               // 新增的mode参数
+	)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to create image log: %v", err)
+		// 继续处理，不因日志记录失败而中断响应
+	}
+
+	// Convert to the format expected by the client
+	asyncResponse := relaymodel.GeneralImageResponseAsync{
+		TaskId:  klingImageResponse.Data.TaskID,
+		Message: klingImageResponse.Message,
+	}
+
+	// Normalize task status to match the expected format (only "failed" or "succeed")
+	switch klingImageResponse.Data.TaskStatus {
+	case "failed":
+		asyncResponse.TaskStatus = "failed"
+	default:
+		asyncResponse.TaskStatus = "succeed"
+	}
+
+	// Marshal the response
+	responseJSON, err := json.Marshal(asyncResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// Set response headers
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseJSON)))
+
+	// Write the response
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(responseJSON)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	// Handle billing based on mode and modelName
+	err = handleSuccessfulResponseImage(c, ctx, meta, modelName, mode)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to process billing: %v", err)
+		// Continue processing, don't interrupt the response due to billing failure
+	}
+
+	return nil
+}
+
+// 更新 CreateImageLog 函数以接受 mode 参数
+func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string) error {
+	// 创建新的 Image 实例
+	image := &dbmodel.Image{
+		Username:   dbmodel.GetUsernameById(meta.UserId),
+		ChannelId:  meta.ChannelId,
+		UserId:     meta.UserId,
+		Model:      meta.OriginModelName,
+		Status:     status,
+		FailReason: failReason,
+		Provider:   provider,
+		CreatedAt:  time.Now().Unix(), // 使用当前时间戳
+		TaskId:     taskId,
+		Mode:       mode, // 添加 mode 字段
+	}
+
+	// 调用 Insert 方法插入记录
+	err := image.Insert()
+	if err != nil {
+		return fmt.Errorf("failed to insert image log: %v", err)
+	}
+
+	return nil
+}
+
+// Update handleSuccessfulResponseImage to accept mode parameter
+func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string) error {
+	// Base price for the simplest model and operation
+	basePrice := 0.025
+	var multiplier float64 = 1.0
+
+	// Apply multipliers based on model version
+	if strings.Contains(modelName, "v1.0") {
+		multiplier = 1.0 // Base multiplier for v1.0
+	} else if strings.Contains(modelName, "v1.5") {
+		if mode == "texttoimage" {
+			multiplier = 4.0 // 0.1 / 0.025 = 4
+		} else if mode == "imagetoimage" {
+			multiplier = 8.0 // 0.2 / 0.025 = 8
+		}
+	} else if strings.Contains(modelName, "v2") {
+		multiplier = 4.0 // 0.1 / 0.025 = 4
+	} else {
+		// Default multiplier for unknown models
+		multiplier = 4.0
+	}
+
+	// Calculate the model price based on the base price and multiplier
+	modelPrice := basePrice * multiplier
+
+	// Calculate quota based on model price
+	quota := int64(modelPrice * 500000)
+
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+
+	err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+		return err
+	}
+
+	err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+		return err
+	}
+
+	if quota != 0 {
+		tokenName := c.GetString("token_name")
+		// Include pricing details in log content
+		logContent := fmt.Sprintf("基准价格 %.3f$, 倍率 %.1f, 最终价格 %.3f$, 模式: %s",
+			basePrice, multiplier, modelPrice, mode)
+		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
+		channelId := c.GetInt("channel_id")
+		dbmodel.UpdateChannelUsedQuota(channelId, quota)
+	}
+
+	return nil
+}
+
+func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCode {
+	image, err := dbmodel.GetImageByTaskId(taskId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "failed to get image", http.StatusInternalServerError)
+	}
+	channel, err := dbmodel.GetChannelById(image.ChannelId, true)
+	cfg, _ := channel.LoadConfig()
+	if err != nil {
+		return openai.ErrorWrapper(err, "failed to get channel", http.StatusInternalServerError)
+	}
+
+	var fullRequestUrl string
+	switch image.Provider {
+	case "kling":
+		fullRequestUrl = fmt.Sprintf("%s/kling/v1/images/generations/%s", *channel.BaseURL, taskId)
+	}
+	req, err := http.NewRequest("GET", fullRequestUrl, nil)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to create request: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+	if image.Provider == "kling" && channel.Type == 41 {
+		token := encodeJWTToken(cfg.AK, cfg.SK)
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to fetch video result: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to read response body: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return openai.ErrorWrapper(
+			fmt.Errorf("API error: %s", string(body)),
+			"api_error",
+			resp.StatusCode,
+		)
+	}
+
+	var klingImageResult keling.KlingImageResult
+	if err := json.Unmarshal(body, &klingImageResult); err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to unmarshal response body: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	if klingImageResult.Code != 0 {
+		return openai.ErrorWrapper(
+			fmt.Errorf("Kling API error: %s (code: %d)", klingImageResult.Message, klingImageResult.Code),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	// Create the final response
+	finalResponse := relaymodel.GeneralFinalImageResponseAsync{
+		TaskId:  taskId,
+		Message: klingImageResult.Message,
+	}
+
+	// 处理任务状态，将 submitted 也处理为 processing
+	if klingImageResult.Data.TaskStatus == "submitted" {
+		finalResponse.TaskStatus = "processing"
+	} else {
+		finalResponse.TaskStatus = klingImageResult.Data.TaskStatus
+	}
+
+	// Check if there are images in the result and the task is completed
+	if klingImageResult.Data.TaskStatus == "succeed" &&
+		len(klingImageResult.Data.TaskResult.Images) > 0 &&
+		klingImageResult.Data.TaskResult.Images[0].URL != "" {
+		// Use the first image URL as the result
+		finalResponse.ImageResult = klingImageResult.Data.TaskResult.Images[0].URL
+		finalResponse.ImageId = klingImageResult.Data.TaskID
+	}
+
+	// Marshal and send the response
+	responseJSON, err := json.Marshal(finalResponse)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to marshal response: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(responseJSON)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to write response: %v", err),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
+
+	return nil
+}
