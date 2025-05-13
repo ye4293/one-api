@@ -860,8 +860,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 	}
 
 	// 在记录日志时使用更安全的方式
-	logger.Debugf(ctx, "Kling API original response: %s", string(responseBody))
-
+	logger.Infof(ctx, "Kling API modified request: %s", string(responseBody))
 	// Parse the Kling API response
 	var klingImageResponse keling.KlingImageResponse
 
@@ -1074,6 +1073,9 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 		)
 	}
 
+	// Log the original response body for debugging
+	logger.Infof(c.Request.Context(), "Kling image result original response: %s", string(body))
+
 	if resp.StatusCode != http.StatusOK {
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", string(body)),
@@ -1114,10 +1116,22 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 
 	// Check if there are images in the result and the task is completed
 	if klingImageResult.Data.TaskStatus == "succeed" &&
-		len(klingImageResult.Data.TaskResult.Images) > 0 &&
-		klingImageResult.Data.TaskResult.Images[0].URL != "" {
-		// Use the first image URL as the result
-		finalResponse.ImageResult = klingImageResult.Data.TaskResult.Images[0].URL
+		len(klingImageResult.Data.TaskResult.Images) > 0 {
+		// Create an array to store all image URLs
+		var imageUrls []string
+		for _, image := range klingImageResult.Data.TaskResult.Images {
+			if image.URL != "" {
+				imageUrls = append(imageUrls, image.URL)
+			}
+		}
+
+		// Set the first image as the main result for backward compatibility
+		if len(imageUrls) > 0 {
+			finalResponse.ImageResult = imageUrls[0]
+		}
+
+		// Add all image URLs to the response
+		finalResponse.ImageUrls = imageUrls
 		finalResponse.ImageId = klingImageResult.Data.TaskID
 	}
 

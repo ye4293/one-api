@@ -92,9 +92,10 @@ type GeneralImageResponseAsync struct {
 }
 
 type GeneralFinalImageResponseAsync struct {
-	TaskId      string `json:"task_id"`
-	ImageResult string `json:"image_result"`
-	ImageId     string `json:"image_id"`
-	TaskStatus  string `json:"task_status"`
-	Message     string `json:"message"`
+	TaskId      string   `json:"task_id"`
+	ImageResult string   `json:"image_result"`
+	ImageId     string   `json:"image_id"`
+	TaskStatus  string   `json:"task_status"`
+	Message     string   `json:"message"`
+	ImageUrls   []string `json:"image_urls"`
 }
