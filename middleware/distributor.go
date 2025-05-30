@@ -203,10 +203,13 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	logger.SysLog(fmt.Sprintf("channel:%d;requestModel:%s\n", channel.Id, modelName))
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
 	c.Set("base_url", channel.GetBaseURL())
+	cfg, _ := channel.LoadConfig()
 	// this is for backward compatibility
 	switch channel.Type {
 	case common.ChannelTypeAzure:
-		c.Set(common.ConfigKeyAPIVersion, channel.Other)
+		if cfg.APIVersion == "" {
+			cfg.APIVersion = channel.Other
+		}
 	case common.ChannelTypeXunfei:
 		c.Set(common.ConfigKeyAPIVersion, channel.Other)
 	case common.ChannelTypeGemini:
@@ -216,6 +219,5 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	case common.ChannelTypeAli:
 		c.Set(common.ConfigKeyPlugin, channel.Other)
 	}
-	cfg, _ := channel.LoadConfig()
 	c.Set("Config", cfg)
 }

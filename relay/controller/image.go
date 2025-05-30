@@ -512,6 +512,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
 	}
 
+	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		logger.Errorf(ctx, "API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
+		return openai.ErrorWrapper(
+			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
+			"api_error",
+			resp.StatusCode,
+		)
+	}
+
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
 		// Add debug logging for the original response body
@@ -746,8 +756,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 设置新的 Content-Length
 	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
 
-	// 设置状态码
-	c.Writer.WriteHeader(http.StatusOK)
+	// 设置状态码 - 使用原始响应的状态码
+	c.Writer.WriteHeader(resp.StatusCode)
 
 	// 写入响应体
 	_, err = c.Writer.Write(responseBody)
@@ -806,13 +816,35 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		return openai.ErrorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
 	}
 
+	// Extract the 'n' parameter (number of images) from the request
+	n := 1 // Default to 1 if not specified
+	if nValue, ok := requestMap["n"]; ok {
+		// Try to convert to float64 first (JSON numbers are decoded as float64)
+		if nFloat, ok := nValue.(float64); ok {
+			n = int(nFloat)
+		} else if nInt, ok := nValue.(int); ok {
+			// Also try int just in case
+			n = nInt
+		} else if nString, ok := nValue.(string); ok {
+			// Also try string conversion
+			if nInt, err := strconv.Atoi(nString); err == nil {
+				n = nInt
+			}
+		}
+	}
+
+	// Ensure n is at least 1
+	if n < 1 {
+		n = 1
+	}
+
 	// Determine the mode based on whether an image parameter exists
 	mode := "texttoimage"
 	if _, hasImage := requestMap["image"]; hasImage {
 		mode = "imagetoimage"
 	}
 
-	logger.Debugf(ctx, "Kling API request mode: %s", mode)
+	logger.Debugf(ctx, "Kling API request mode: %s, generating %d images", mode, n)
 
 	// Transform 'model' to 'model_name'
 	if model, ok := requestMap["model"]; ok {
@@ -888,6 +920,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		klingImageResponse.Data.TaskStatus, // status
 		"",                                 // failReason (空，因为请求成功)
 		mode,                               // 新增的mode参数
+		n,                                  // 新增的n参数
 	)
 	if err != nil {
 		logger.Warnf(ctx, "Failed to create image log: %v", err)
@@ -925,8 +958,8 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
 	}
 
-	// Handle billing based on mode and modelName
-	err = handleSuccessfulResponseImage(c, ctx, meta, modelName, mode)
+	// Handle billing based on mode, modelName and number of images (n)
+	err = handleSuccessfulResponseImage(c, ctx, meta, modelName, mode, n)
 	if err != nil {
 		logger.Warnf(ctx, "Failed to process billing: %v", err)
 		// Continue processing, don't interrupt the response due to billing failure
@@ -936,7 +969,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 }
 
 // 更新 CreateImageLog 函数以接受 mode 参数
-func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string) error {
+func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string, n int) error {
 	// 创建新的 Image 实例
 	image := &dbmodel.Image{
 		Username:   dbmodel.GetUsernameById(meta.UserId),
@@ -949,6 +982,7 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 		CreatedAt:  time.Now().Unix(), // 使用当前时间戳
 		TaskId:     taskId,
 		Mode:       mode, // 添加 mode 字段
+		N:          n,    // 添加 n 字段
 	}
 
 	// 调用 Insert 方法插入记录
@@ -960,8 +994,8 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 	return nil
 }
 
-// Update handleSuccessfulResponseImage to accept mode parameter
-func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string) error {
+// Update handleSuccessfulResponseImage to accept mode and n parameters
+func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, n int) error {
 	// Base price for the simplest model and operation
 	basePrice := 0.025
 	var multiplier float64 = 1.0
@@ -985,8 +1019,8 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 	// Calculate the model price based on the base price and multiplier
 	modelPrice := basePrice * multiplier
 
-	// Calculate quota based on model price
-	quota := int64(modelPrice * 500000)
+	// Calculate quota based on model price and number of images
+	quota := int64(modelPrice*500000) * int64(n)
 
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
@@ -1006,8 +1040,8 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 	if quota != 0 {
 		tokenName := c.GetString("token_name")
 		// Include pricing details in log content
-		logContent := fmt.Sprintf("基准价格 %.3f$, 倍率 %.1f, 最终价格 %.3f$, 模式: %s",
-			basePrice, multiplier, modelPrice, mode)
+		logContent := fmt.Sprintf("基准价格 %.3f$, 倍率 %.1f, 最终价格 %.3f$, 模式: %s, 图片数量: %d",
+			basePrice, multiplier, modelPrice, mode, n)
 		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
@@ -1123,11 +1157,6 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			if image.URL != "" {
 				imageUrls = append(imageUrls, image.URL)
 			}
-		}
-
-		// Set the first image as the main result for backward compatibility
-		if len(imageUrls) > 0 {
-			finalResponse.ImageResult = imageUrls[0]
 		}
 
 		// Add all image URLs to the response

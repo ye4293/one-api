@@ -13,6 +13,7 @@ type Image struct {
 	Provider   string `json:"provider"`
 	CreatedAt  int64  `json:"created_at"`
 	Mode       string `json:"mode"`
+	N          int    `json:"n"`
 }
 
 func (image *Image) Insert() error {

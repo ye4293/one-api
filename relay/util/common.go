@@ -65,9 +65,9 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "resource pack exhausted") {
 		return true
 	}
-	// if strings.Contains(err.Message, "quota") || strings.Contains(err.Message, "enough") {
-	// 	return true
-	// }
+	if strings.Contains(err.Message, "Imagen API") {
+		return true
+	}
 
 	return false
 }
@@ -178,6 +178,8 @@ func GetFullRequestURL(baseURL string, requestURL string, channelType int) strin
 	if channelType == 24 { //google gemini
 		fullRequestURL = fmt.Sprintf("%s/v1beta/openai/images/generations", baseURL)
 	}
+	logger.SysLog("fullRequestURL: " + fullRequestURL)
+
 	return fullRequestURL
 }
 
