@@ -131,3 +131,20 @@ type Image struct {
 	Index int    `json:"index"`
 	URL   string `json:"url"`
 }
+
+type MultiImageToVideoRequest struct {
+	Model          string      `json:"model,omitempty"`
+	ModelName      string      `json:"model_name,omitempty"`
+	ImageList      []ImageItem `json:"image_list"`
+	Prompt         string      `json:"prompt"`
+	NegativePrompt string      `json:"negative_prompt,omitempty"`
+	Mode           string      `json:"mode,omitempty"`
+	Duration       interface{} `json:"duration,omitempty"`
+	AspectRatio    string      `json:"aspect_ratio,omitempty"`
+	CallbackURL    string      `json:"callback_url,omitempty"`
+	ExternalTaskID string      `json:"external_task_id,omitempty"`
+}
+
+type ImageItem struct {
+	Image string `json:"image"`
+}

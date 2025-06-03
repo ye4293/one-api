@@ -638,6 +638,10 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			41: "/v1/videos/image2video",
 			0:  "/kling/v1/videos/image2video",
 		},
+		"multi-image-to-video": {
+			41: "/v1/videos/multi-image2video",
+			0:  "/kling/v1/videos/multi-image2video",
+		},
 	}
 
 	// 确定请求类型和URL
@@ -658,12 +662,15 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		requestBody = lipRequest
 		videoId = lipRequest.Input.VideoId
 	} else {
-		// 检查是否为图生视频请求
+		// 检查是否为多图生视频请求或单图生视频请求
 		var imageCheck struct {
 			Image     string      `json:"image,omitempty"`
 			Mode      string      `json:"mode,omitempty"`
 			Duration  interface{} `json:"duration,omitempty"`
 			ImageTail string      `json:"image_tail,omitempty"`
+			ImageList []struct {
+				Image string `json:"image"`
+			} `json:"image_list,omitempty"`
 		}
 		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
@@ -683,7 +690,31 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			}
 		}
 
-		if imageCheck.Image != "" || imageCheck.ImageTail != "" {
+		// 检查是否为多图生视频请求
+		if len(imageCheck.ImageList) > 0 {
+			requestType = "multi-image-to-video"
+			videoType = "multi-image-to-video"
+			var multiImageToVideoReq keling.MultiImageToVideoRequest
+			if err := common.UnmarshalBodyReusable(c, &multiImageToVideoReq); err != nil {
+				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
+			}
+
+			// 只有当有值时才设置这些字段
+			if mode != "" {
+				multiImageToVideoReq.Mode = mode
+			}
+			if duration != "" {
+				multiImageToVideoReq.Duration = duration
+			}
+
+			// 如果 Model 有值，将其赋给 ModelName
+			if multiImageToVideoReq.Model != "" {
+				multiImageToVideoReq.ModelName = multiImageToVideoReq.Model
+				multiImageToVideoReq.Model = "" // 清除 Model 字段
+			}
+
+			requestBody = multiImageToVideoReq
+		} else if imageCheck.Image != "" || imageCheck.ImageTail != "" {
 			requestType = "image-to-video"
 			videoType = "image-to-video"
 			var imageToVideoReq keling.ImageToVideoRequest
@@ -880,10 +911,20 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 		ak := meta.Config.AK
 		sk := meta.Config.SK
 
+		// Add logging for AK and SK
+		log.Printf("AK: %s", ak)
+		log.Printf("SK: %s", sk)
+
 		// Generate JWT token
 		token = encodeJWTToken(ak, sk)
+
+		// Add logging for generated token
+		log.Printf("Generated JWT token: %s", token)
 	} else {
 		token = meta.APIKey
+
+		// Add logging for API key token
+		log.Printf("Using API key as token: %s", token)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1560,6 +1601,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/lip-sync/%s", *channel.BaseURL, taskId)
 			} else {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/lip2video/%s", *channel.BaseURL, taskId)
+			}
+		} else if videoTask.Type == "multi-image-to-video" {
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
 			}
 		}
 	case "runway":
