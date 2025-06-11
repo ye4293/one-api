@@ -23,11 +23,22 @@ type Video struct {
 	FailReason string `json:"fail_reason"`
 	VideoId    string `json:"video_id"`
 	StoreUrl   string `json:"store_url"`
+	Quota      int64  `json:"quota"`
 }
 
 func (video *Video) Insert() error {
 	var err error
 	err = DB.Create(video).Error
+	return err
+}
+
+func (video *Video) Update() error {
+	var err error
+	err = DB.Model(video).Updates(video).Error
+	if err != nil {
+		return err
+	}
+	DB.Model(video).First(video, "task_id = ?", video.TaskId)
 	return err
 }
 

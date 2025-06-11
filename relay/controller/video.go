@@ -62,9 +62,21 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.HasPrefix(modelName, "Doubao") {
+		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
+}
+
+func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	var fullRequestUrl string
+
 }
 
 func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -332,11 +344,15 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 	quality := c.GetString("Quality")
 	motionMode := c.GetString("MotionMode")
 	if videoResponse.ErrCode == 0 && videoResponse.StatusCode == 200 {
+		// 先计算quota
+		quota := calculateQuota(meta, "v3.5", "", strconv.Itoa(duration), c)
+
 		err := CreateVideoLog("pixverse", strconv.Itoa(videoResponse.Resp.VideoId), meta,
 			quality,
 			strconv.Itoa(duration),
 			motionMode,
 			"",
+			quota,
 		)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -366,7 +382,7 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponse(c, ctx, meta, "v3.5", "", "")
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, "v3.5", "", "", quota)
 
 	} else {
 		return openai.ErrorWrapper(
@@ -458,7 +474,10 @@ func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, ful
 
 func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleResponse viggle.ViggleResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	if viggleResponse.Code == 0 && viggleResponse.Message == "成功" {
-		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", strconv.Itoa(viggleResponse.Data.SubtractScore), "", "")
+		// 先计算quota
+		quota := calculateQuota(meta, "viggle", "", strconv.Itoa(viggleResponse.Data.SubtractScore), c)
+
+		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", strconv.Itoa(viggleResponse.Data.SubtractScore), "", "", quota)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -488,9 +507,9 @@ func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleRespon
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
 		if viggleResponse.Data.SubtractScore == 2 {
-			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "2")
+			return handleSuccessfulResponseWithQuota(c, ctx, meta, "viggle", "", "2", quota)
 		} else {
-			return handleSuccessfulResponse(c, ctx, meta, "viggle", "", "1")
+			return handleSuccessfulResponseWithQuota(c, ctx, meta, "viggle", "", "1", quota)
 		}
 
 	} else {
@@ -1031,7 +1050,10 @@ func getStatusMessage(statusCode int) string {
 func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.BaseResp.StatusCode {
 	case 0:
-		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "", "")
+		// 先计算quota
+		quota := calculateQuota(meta, modelName, "", "", c)
+
+		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "", "", quota)
 		if err != nil {
 
 		}
@@ -1059,7 +1081,7 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
-		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
 	case 1002, 1008:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", videoResponse.BaseResp.StatusMsg),
@@ -1090,7 +1112,10 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "", "")
+		// 先计算quota
+		quota := calculateQuota(meta, modelName, "", "", c)
+
+		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "", "", quota)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -1126,7 +1151,7 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -1155,6 +1180,9 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 首先打印完整的响应内容以便调试
 		log.Printf("Video Response: %+v", videoResponse)
 
+		// 先计算quota
+		quota := calculateQuota(meta, modelName2, mode, duration, c)
+
 		// 现在可以安全地访问这些字段
 		err := CreateVideoLog(
 			"kling",
@@ -1164,6 +1192,7 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 			duration,
 			videoType,
 			"",
+			quota,
 		)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -1199,7 +1228,7 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponse(c, ctx, meta, modelName2, mode, duration)
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName2, mode, duration, quota)
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error (400): %s\nFull response: %s", videoResponse.Message, string(body)),
@@ -1232,7 +1261,10 @@ func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoResponse runway.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
-		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "", "")
+		// 先计算quota
+		quota := calculateQuota(meta, modelName, "", "", c)
+
+		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "", "", quota)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err.Error()),
@@ -1261,7 +1293,7 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponse(c, ctx, meta, modelName, "", "")
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", videoResponse.Error),
@@ -1287,7 +1319,10 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse luma.LumaGenerationResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch lumaResponse.StatusCode {
 	case 201:
-		err := CreateVideoLog("luma", lumaResponse.ID, meta, "", "", "", "")
+		// 先计算quota
+		quota := calculateQuota(meta, "luma", "", "", c)
+
+		err := CreateVideoLog("luma", lumaResponse.ID, meta, "", "", "", "", quota)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err),
@@ -1321,7 +1356,7 @@ func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse l
 
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
-		return handleSuccessfulResponse(c, ctx, meta, "luma", "", "")
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, "luma", "", "", quota)
 	case 400:
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error (400): %s\nFull response: %s", *lumaResponse.FailureReason, string(body)),
@@ -1351,7 +1386,8 @@ func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse l
 	}
 }
 
-func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string) *model.ErrorWithStatusCode {
+// 新增计算quota的函数
+func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duration string, c *gin.Context) int64 {
 	var modelPrice float64
 	defaultPrice, ok := common.DefaultModelPrice[modelName]
 	if !ok {
@@ -1374,7 +1410,6 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		case mode == "pro" && duration == "10":
 			multiplier = 7
 		default:
-			// 如果不匹配任何条件，使用默认倍率 1
 			multiplier = 1
 		}
 		quota = int64(float64(quota) * multiplier)
@@ -1391,14 +1426,13 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 		case mode == "pro" && duration == "10":
 			multiplier = 3.5
 		default:
-			// 如果不匹配任何条件，使用默认倍率 1
 			multiplier = 1
 		}
 		quota = int64(float64(quota) * multiplier)
 	}
 
 	if modelName == "viggle" && duration == "2" {
-		quota = quota * 2 //viggle超过15s 二倍计费
+		quota = quota * 2
 	}
 
 	value, exists := c.Get("duration")
@@ -1410,44 +1444,42 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 	}
 
 	if modelName == "v3.5" {
-		duration := c.GetInt("Duration")        // 获取时长
-		mode := c.GetString("Mode")             // 获取模式
-		motionMode := c.GetString("MotionMode") // 获取运动模式
+		durationInt := c.GetInt("Duration")
+		modeStr := c.GetString("Mode")
+		motionMode := c.GetString("MotionMode")
 		var multiplier float64
 		switch {
-		// Turbo mode
-		case mode == "Turbo" && duration == 5 && motionMode == "Normal":
-			multiplier = 1 // 45 credits
-		case mode == "Turbo" && duration == 5 && motionMode == "Performance":
-			multiplier = 2 // 90 credits
-		case mode == "Turbo" && duration == 8 && motionMode == "Normal":
-			multiplier = 2 // 90 credits
-		// 540P mode
-		case mode == "540P" && duration == 5 && motionMode == "Normal":
-			multiplier = 1 // 45 credits
-		case mode == "540P" && duration == 5 && motionMode == "Performance":
-			multiplier = 2 // 90 credits
-		case mode == "540P" && duration == 8 && motionMode == "Normal":
-			multiplier = 2 // 90 credits
-		// 720P mode
-		case mode == "720P" && duration == 5 && motionMode == "Normal":
-			multiplier = 1.33 // 60 credits
-		case mode == "720P" && duration == 5 && motionMode == "Performance":
-			multiplier = 2.67 // 120 credits
-		case mode == "720P" && duration == 8 && motionMode == "Normal":
-			multiplier = 2.67 // 120 credits
-
-		// 1080P mode
-		case mode == "1080P" && duration == 5 && motionMode == "Normal":
-			multiplier = 2.67 // 120 credits
-
+		case modeStr == "Turbo" && durationInt == 5 && motionMode == "Normal":
+			multiplier = 1
+		case modeStr == "Turbo" && durationInt == 5 && motionMode == "Performance":
+			multiplier = 2
+		case modeStr == "Turbo" && durationInt == 8 && motionMode == "Normal":
+			multiplier = 2
+		case modeStr == "540P" && durationInt == 5 && motionMode == "Normal":
+			multiplier = 1
+		case modeStr == "540P" && durationInt == 5 && motionMode == "Performance":
+			multiplier = 2
+		case modeStr == "540P" && durationInt == 8 && motionMode == "Normal":
+			multiplier = 2
+		case modeStr == "720P" && durationInt == 5 && motionMode == "Normal":
+			multiplier = 1.33
+		case modeStr == "720P" && durationInt == 5 && motionMode == "Performance":
+			multiplier = 2.67
+		case modeStr == "720P" && durationInt == 8 && motionMode == "Normal":
+			multiplier = 2.67
+		case modeStr == "1080P" && durationInt == 5 && motionMode == "Normal":
+			multiplier = 2.67
 		default:
-			// 如果不匹配任何条件，使用默认倍率 1
 			multiplier = 1
 		}
-		quota = int64(float64(45) * multiplier) // 基础额度是45，乘以相应的倍率
+		quota = int64(float64(45) * multiplier)
 	}
 
+	return quota
+}
+
+// 新增带quota参数的成功响应处理函数
+func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string, quota int64) *model.ErrorWithStatusCode {
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -1462,6 +1494,14 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 	}
 
 	if quota != 0 {
+		var modelPrice float64
+		defaultPrice, ok := common.DefaultModelPrice[modelName]
+		if !ok {
+			modelPrice = 0.1
+		} else {
+			modelPrice = defaultPrice
+		}
+
 		tokenName := c.GetString("token_name")
 		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
 		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
@@ -1473,7 +1513,7 @@ func handleSuccessfulResponse(c *gin.Context, ctx context.Context, meta *util.Re
 	return nil
 }
 
-func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string) error {
+func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64) error {
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
 		Prompt:    "prompt",
@@ -1488,6 +1528,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		Model:     meta.OriginModelName,
 		Duration:  duration,
 		VideoId:   videoId,
+		Quota:     quota,
 	}
 
 	// 调用 Insert 方法插入记录
@@ -2122,4 +2163,30 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 
 	c.Data(http.StatusOK, "application/json", jsonResponse)
 	return nil
+}
+
+func UpdateVideoTaskStatus(taskid string, status string, failreason string) {
+	videoTask, err := dbmodel.GetVideoTaskById(taskid)
+	if err != nil {
+		log.Printf("Failed to get video task: %v", err)
+		return
+	}
+	videoTask.Status = status
+	if failreason != "" {
+		videoTask.FailReason = failreason
+	}
+	err = videoTask.Update()
+	if err != nil {
+		log.Printf("Failed to update video task: %v", err)
+	}
+}
+
+func CompensateVideoTask(taskid string) {
+	videoTask, err := dbmodel.GetVideoTaskById(taskid)
+	if err != nil {
+		log.Printf("Failed to get video task: %v", err)
+		return
+	}
+	quota := videoTask.Quota
+	dbmodel.IncreaseUserQuota(videoTask.UserId, quota)
 }
