@@ -27,6 +27,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
+	"github.com/songquanpeng/one-api/relay/channel/vertexai"
 	"github.com/songquanpeng/one-api/relay/channel/viggle"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -64,19 +65,303 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "Doubao") {
 		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.HasPrefix(modelName, "veo") {
+		return handleVeoVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
 }
 
 func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	}
+	// channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	// if err != nil {
+	// 	return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	// }
+
+	// var fullRequestUrl string
+
+	return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
+
+}
+
+func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 
 	var fullRequestUrl string
+	region := meta.Config.Region
 
+	if region == "global" {
+		fullRequestUrl = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning", meta.Config.VertexAIProjectID, meta.OriginModelName)
+	} else {
+		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
+	}
+
+	// 打印URL信息
+	log.Printf("=== VEO URL INFO ===")
+	log.Printf("Full Request URL: %s", fullRequestUrl)
+	log.Printf("Project ID: %s", meta.Config.VertexAIProjectID)
+	log.Printf("Model Name: %s", meta.ActualModelName)
+	log.Printf("Region: %s", region)
+
+	// 读取原始请求体
+	var reqBody map[string]interface{}
+	if err := common.UnmarshalBodyReusable(c, &reqBody); err != nil {
+		log.Printf("Error unmarshaling request body: %v", err)
+		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+	}
+
+	// 打印原始请求体
+	log.Printf("Original Request Body: %+v", reqBody)
+
+	// 删除model参数（如果存在）
+	if _, exists := reqBody["model"]; exists {
+		log.Printf("Removing 'model' parameter from request body")
+		delete(reqBody, "model")
+	}
+
+	// 检查parameters字段
+	params, ok := reqBody["parameters"].(map[string]interface{})
+	if !ok {
+		params = make(map[string]interface{})
+	}
+
+	// 处理generateAudio
+	if generateAudio, ok := params["generateAudio"]; ok {
+		c.Set("generateAudio", generateAudio)
+		log.Printf("Found generateAudio parameter: %v", generateAudio)
+	}
+
+	// 处理durationSeconds
+	duration := 8
+	if v, ok := params["durationSeconds"]; ok {
+		// 允许int/float64/string三种类型
+		switch val := v.(type) {
+		case float64:
+			duration = int(val)
+		case int:
+			duration = val
+		case string:
+			if d, err := strconv.Atoi(val); err == nil {
+				duration = d
+			}
+		}
+		log.Printf("Found durationSeconds parameter: %v (converted to: %d)", v, duration)
+	} else {
+		params["durationSeconds"] = duration
+		log.Printf("Setting default durationSeconds: %d", duration)
+	}
+	c.Set("durationSeconds", duration)
+
+	// 更新parameters
+	reqBody["parameters"] = params
+
+	// 打印最终请求体
+	log.Printf("Final Request Body: %+v", reqBody)
+
+	// 重新序列化
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		log.Printf("Error marshaling final request body: %v", err)
+		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
+	}
+
+	log.Printf("Final JSON Data: %s", string(jsonData))
+
+	// 发送请求并处理响应
+	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.ActualModelName)
+}
+
+func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+
+	// 创建VertexAI适配器实例
+	var credentials vertexai.Credentials
+	if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err != nil {
+		log.Printf("Error unmarshaling credentials: %v", err)
+		return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
+	}
+
+	adaptor := &vertexai.Adaptor{
+		AccountCredentials: credentials,
+	}
+
+	// 获取访问令牌
+	accessToken, err := vertexai.GetAccessToken(adaptor, meta)
+	if err != nil {
+		log.Printf("Error getting access token: %v", err)
+		return openai.ErrorWrapper(err, "get_access_token_error", http.StatusInternalServerError)
+	}
+
+	// 打印请求信息
+	log.Printf("=== VEO REQUEST INFO ===")
+	log.Printf("Request URL: %s", fullRequestUrl)
+	log.Printf("Model Name: %s", modelName)
+	log.Printf("Request Body: %s", string(jsonData))
+
+	// 安全地打印访问令牌的前几个字符
+	tokenPreview := accessToken
+	if len(accessToken) > 20 {
+		tokenPreview = accessToken[:20] + "..."
+	}
+	log.Printf("Access Token preview: %s", tokenPreview)
+
+	// 创建HTTP请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("Error creating HTTP request: %v", err)
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// 打印请求头信息
+	log.Printf("Request Headers: %+v", req.Header)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error sending HTTP request: %v", err)
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 打印响应状态
+	log.Printf("=== VEO RESPONSE INFO ===")
+	log.Printf("Response Status Code: %d", resp.StatusCode)
+	log.Printf("Response Headers: %+v", resp.Header)
+
+	// 读取响应体
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response body: %v", err)
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	// 打印完整响应体
+	log.Printf("Response Body: %s", string(body))
+
+	// 解析响应
+	var veoResponse map[string]interface{}
+	err = json.Unmarshal(body, &veoResponse)
+	if err != nil {
+		log.Printf("Error parsing response JSON: %v", err)
+		log.Printf("Raw response body: %s", string(body))
+		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
+	}
+
+	// 打印解析后的响应结构
+	log.Printf("Parsed Response: %+v", veoResponse)
+
+	// 处理响应
+	result := handleVeoVideoResponse(c, ctx, veoResponse, body, meta, modelName, resp.StatusCode)
+
+	log.Printf("=== VEO REQUEST COMPLETED ===")
+
+	return result
+}
+
+func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map[string]interface{}, body []byte, meta *util.RelayMeta, modelName string, statusCode int) *model.ErrorWithStatusCode {
+	if statusCode == 200 {
+		// 从响应中提取任务ID或操作名称
+		var taskId string
+		if name, ok := veoResponse["name"].(string); ok {
+			taskId = name
+		}
+
+		// 获取存储的参数
+		generateAudio, _ := c.Get("generateAudio")
+		durationSeconds := c.GetInt("durationSeconds")
+
+		// 计算配额 - 这里需要根据generateAudio和durationSeconds来计算
+		quota := calculateVeoQuota(meta, modelName, generateAudio, durationSeconds)
+
+		// 创建视频日志
+		err := CreateVideoLog("vertexai", taskId, meta, "", strconv.Itoa(durationSeconds), "", "", quota)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("API error: %s", err),
+				"api_error",
+				http.StatusBadRequest,
+			)
+		}
+
+		// 创建通用响应
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     taskId,
+			Message:    "Request submitted successfully",
+			TaskStatus: "succeed",
+		}
+
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", strconv.Itoa(durationSeconds), quota)
+	} else {
+		// 处理错误响应
+		errorMsg := "Unknown error"
+		if msg, ok := veoResponse["error"].(map[string]interface{}); ok {
+			if message, ok := msg["message"].(string); ok {
+				errorMsg = message
+			}
+		}
+
+		return openai.ErrorWrapper(
+			fmt.Errorf("API error: %s", errorMsg),
+			"api_error",
+			statusCode,
+		)
+	}
+}
+
+// 计算Veo配额的函数
+func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio interface{}, durationSeconds int) int64 {
+	// 基础价格：根据模型类型设置
+	var basePrice float64
+	switch modelName {
+	case "veo-3.0-generate-preview":
+		basePrice = 0.75 // Veo 3版本带音频的价格
+	case "veo-2.0-generate-001":
+		basePrice = 0.50 // Veo 2版本价格
+	default:
+		basePrice = 0.50
+	}
+
+	// 如果有音频生成，价格可能不同
+	if generateAudio != nil {
+		if hasAudio, ok := generateAudio.(bool); ok && hasAudio {
+			// 如果是veo-3.0-generate-preview模型且生成音频，使用带音频价格
+			if modelName == "veo-3.0-generate-preview" {
+				basePrice = 0.75
+			}
+		} else {
+			// 如果是veo-3.0但不生成音频，使用不带音频价格
+			if modelName == "veo-3.0-generate-preview" {
+				basePrice = 0.50
+			}
+		}
+	}
+
+	// 按秒计费，基础是8秒
+	durationMultiplier := float64(durationSeconds) / 8.0
+	if durationMultiplier < 1 {
+		durationMultiplier = 1
+	}
+
+	finalPrice := basePrice * durationMultiplier
+	quota := int64(finalPrice * config.QuotaPerUnit)
+
+	return quota
 }
 
 func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -382,7 +667,7 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 		// 发送 JSON 响应给客户端
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 
-		return handleSuccessfulResponseWithQuota(c, ctx, meta, "v3.5", "", "", quota)
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
 
 	} else {
 		return openai.ErrorWrapper(
