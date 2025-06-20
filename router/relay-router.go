@@ -200,5 +200,8 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
 	}
-
+	// 豆包API兼容路由组 - 支持原始豆包API路径格式
+	doubaoApiRouter := router.Group("/api/v3/contents/generations")
+	doubaoApiRouter.Use(middleware.TokenAuth()).GET("/tasks/:taskid", controller.RelayDouBaoVideoResultById)
+	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
 }

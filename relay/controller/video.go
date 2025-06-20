@@ -22,6 +22,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -62,21 +63,179 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
-	} else if strings.HasPrefix(modelName, "Doubao") {
-		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.HasPrefix(modelName, "doubao") {
+		return handleDoubaoVideoRequest(c, ctx, meta)
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
 }
 
-func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+
+	// 读取原始请求体
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// 恢复请求体
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// 解析为豆包请求格式
+	var doubaoRequest doubao.DoubaoVideoRequest
+	if err := json.Unmarshal(bodyBytes, &doubaoRequest); err != nil {
+		return openai.ErrorWrapper(err, "parse_doubao_request_failed", http.StatusBadRequest)
+	}
+	log.Printf("doubao-request-data: %+v", doubaoRequest)
+	log.Printf("doubao-model-name: %s", doubaoRequest.Model)
+
+	// 验证必填参数
+	if doubaoRequest.Model == "" {
+		return openai.ErrorWrapper(
+			fmt.Errorf("model is required"),
+			"invalid_request_error",
+			http.StatusBadRequest,
+		)
+	}
+
+	if len(doubaoRequest.Content) == 0 {
+		return openai.ErrorWrapper(
+			fmt.Errorf("content is required"),
+			"invalid_request_error",
+			http.StatusBadRequest,
+		)
+	}
+	//     doubaoRequest.CallbackURL = config.ServerAddress + "/api/v3/contents/generations/tasks/" + doubaoRequest.ID
+	// 构建请求URL - 匹配豆包实际API端点
+	baseUrl := meta.BaseURL
+	fullRequestUrl := baseUrl + "/api/v3/contents/generations/tasks"
+	log.Printf("fullRequestUrl: %s", fullRequestUrl)
+	// 序列化请求
+	jsonData, err := json.Marshal(doubaoRequest)
+
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+	}
+
+	// 发送请求并处理响应
+	return sendRequestDoubaoAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, doubaoRequest.Model)
+}
+func sendRequestDoubaoAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 	}
+	//预扣0.1 后续处理完多退少补
+	quota := int64(1 * config.QuotaPerUnit)
+	userQuota,err:= dbmodel.CacheGetUserQuota(ctx,meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+    if userQuota - quota < 0 {
+		return openai.ErrorWrapper(err, "User balance is not enough", http.StatusBadRequest)
+	}
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
 
-	var fullRequestUrl string
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	log.Printf("doubao-response-Authorization: %s", channel.Key)
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
 
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+	log.Printf("doubao-response-Authorization: %s", body)
+	// 解析响应
+	var doubaoResponse doubao.DoubaoVideoResponse
+	if err := json.Unmarshal(body, &doubaoResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_response_error", http.StatusInternalServerError)
+	}
+	log.Printf("doubao-response-json-data: %v", doubaoResponse)
+	doubaoResponse.StatusCode = resp.StatusCode
+	return handleDoubaoVideoResponse(c, ctx, doubaoResponse, body, meta, modelName,quota)
+}
+func handleDoubaoVideoResponse(c *gin.Context, ctx context.Context, doubaoResponse doubao.DoubaoVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64) *model.ErrorWithStatusCode {
+	switch doubaoResponse.StatusCode {
+	case 200:
+		// 解析模型参数来确定视频参数
+		duration := "5"         // 默认5秒
+		mode := "text-to-video" // 默认模式
+
+		//		// 先计算quota - 修复函数调用，改为基于视频规格的计费
+		//quota := calculateQuotaForDoubaoVideo(meta, modelName, mode, duration, c)
+
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     doubaoResponse.ID,
+			Message:    "",
+			TaskStatus: "succeed",
+		}
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		// 创建视频日志 - 使用计算出的quota而不是0
+		err = CreateVideoLog("doubao", doubaoResponse.ID, meta, mode, duration, "", "", quota)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to create video log: %v", err)
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error create video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, mode, duration, quota)
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	case 400:
+		errorMsg := "豆包API错误"
+		if doubaoResponse.Error != nil{
+			errorMsg = fmt.Sprintf("豆包API错误: %s", doubaoResponse.Error.Message)
+		}
+		return openai.ErrorWrapper(
+			fmt.Errorf(errorMsg),
+			"api_error",
+			http.StatusBadRequest,
+		)
+	case 401:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API认证失败"),
+			"api_error",
+			http.StatusUnauthorized,
+		)
+	case 429:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API请求过于频繁"),
+			"api_error",
+			http.StatusTooManyRequests,
+		)
+	default:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API未知错误 (状态码: %d)", doubaoResponse.StatusCode),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
 }
 
 func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -1668,6 +1827,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		fullRequestUrl = fmt.Sprintf("%s/api/video/task?task_id=%s", *channel.BaseURL, taskId)
 	case "pixverse":
 		fullRequestUrl = fmt.Sprintf("%s/openapi/v2/video/result/%s", *channel.BaseURL, taskId)
+	case "doubao":
+		fullRequestUrl = fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", *channel.BaseURL, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -1684,6 +1845,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			http.StatusInternalServerError,
 		)
 	}
+
 	if videoTask.Provider == "kling" && channel.Type == 41 {
 		token := encodeJWTToken(cfg.AK, cfg.SK)
 
@@ -1715,7 +1877,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		)
 	}
 	defer resp.Body.Close()
-
+	log.Printf("video response body: %+v", resp)
 	// 检查响应状态码
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -2080,8 +2242,127 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "doubao" {
+
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 解析JSON响应
+		var doubaoResp doubao.DoubaoVideoResult
+		if err := json.Unmarshal(body, &doubaoResp); err != nil {
+			log.Printf("Failed to parse doubao response: %v, body: %s", err, string(body))
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建通用响应结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      doubaoResp.ID,
+			VideoResult: "",
+			VideoId:     doubaoResp.ID,
+			Message:     "",
+		}
+
+		// 处理任务状态映射
+		switch doubaoResp.Status {
+		case "queued":
+			generalResponse.TaskStatus = "processing"
+		case "running":
+			generalResponse.TaskStatus = "processing"
+		case "succeeded":
+			generalResponse.TaskStatus = "succeeded"
+			if doubaoResp.Content.VideoURL != "" {
+				generalResponse.VideoResult = doubaoResp.Content.VideoURL
+			}
+		case "failed":
+			generalResponse.TaskStatus = "failed"
+			generalResponse.Message = doubaoResp.Error.Message
+		default:
+			generalResponse.TaskStatus = "unknown"
+		}
+
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		// 处理任务状态变更 - 原子性操作防止并发
+		if generalResponse.TaskStatus == "succeeded" && videoTask.Status != "succeeded" {
+			quota := calculateQuotaForDoubao(doubaoResp.Model, int64(doubaoResp.Usage.TotalTokens), c)
+
+			// 使用原子更新操作，只有当状态未变时才更新
+			success := dbmodel.UpdateVideoTaskStatusWithCondition(taskId, videoTask.Status, "succeeded", quota)
+			if success {
+				preQuota := videoTask.Quota
+				// 构建RelayMeta对象
+				ctx := c.Request.Context()
+				relayMeta := &util.RelayMeta{
+					UserId:    videoTask.UserId,
+					ChannelId: videoTask.ChannelId,
+					TokenId:   c.GetInt("token_id"),
+				}
+				c.Set("channel_id", videoTask.ChannelId)
+				handleSuccessfulResponseWithQuota(c, ctx, relayMeta, videoTask.Model, "", "", int64(quota-preQuota))
+			}
+		}
+		// 处理失败状态 - 原子性操作防止并发
+		if generalResponse.TaskStatus == "failed" && videoTask.Status != "failed" {
+			// 使用原子更新操作，只有当状态未变时才更新
+			preQuota := videoTask.Quota
+			success := dbmodel.UpdateVideoTaskStatusWithCondition(taskId, videoTask.Status, "failed", preQuota)
+			if success {
+
+				// 构建RelayMeta对象
+				ctx := c.Request.Context()
+				relayMeta := &util.RelayMeta{
+					UserId:    videoTask.UserId,
+					ChannelId: videoTask.ChannelId,
+					TokenId:   c.GetInt("token_id"),
+				}
+				c.Set("channel_id", videoTask.ChannelId)
+				// 退回预扣费用
+				handleSuccessfulResponseWithQuota(c, ctx, relayMeta, videoTask.Model, "", "", -preQuota)
+			}
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
 	return nil
+}
+
+// 豆包专用的quota计算函数（基于token，用于查询结果时的实际计费）
+func calculateQuotaForDoubao(modelName string, tokens int64, c *gin.Context) int64 {
+	var basePrice float64
+
+	// 根据不同模型设置基础价格
+	switch {
+	case strings.Contains(modelName, "doubao-seedance-1-0-lite"):
+		basePrice = 10 / 1000000.0 // 专业版价格更高
+	case strings.Contains(modelName, "doubao-seaweed"):
+		basePrice = 30 / 1000000.0 // 轻量版价格适中
+	case strings.Contains(modelName, "wan2.1-14b"):
+		basePrice = 50 / 1000000.0 // 标准价格
+	default:
+		basePrice = 50 / 1000000.0 // 默认价格
+	}
+	return int64(basePrice * float64(tokens) * config.QuotaPerUnit)
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {

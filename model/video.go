@@ -66,6 +66,21 @@ func GetVideoTaskByVideoId(videoId string) (*Video, error) {
 	return &video, nil
 }
 
+// UpdateVideoTaskStatusWithCondition 原子性更新视频任务状态，防止并发冲突
+// 只有当当前状态等于expectedStatus时才更新为newStatus
+func UpdateVideoTaskStatusWithCondition(taskId string, expectedStatus string, newStatus string, quota int64) bool {
+	// 使用WHERE条件确保原子性更新
+	result := DB.Model(&Video{}).
+		Where("task_id = ? AND status = ?", taskId, expectedStatus).
+		Updates(map[string]interface{}{
+			"status": newStatus,
+			"quota":  quota,
+		})
+
+	// 如果RowsAffected为1，说明更新成功
+	return result.RowsAffected == 1
+}
+
 func GetCurrentAllVideosAndCount(
 	startTimestamp int64,
 	endTimestamp int64,
