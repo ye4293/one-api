@@ -22,6 +22,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -49,7 +50,8 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		modelName == "I2V-01" ||
 		modelName == "T2V-01-Director" ||
 		modelName == "I2V-01-Director" ||
-		modelName == "I2V-01-live" {
+		modelName == "I2V-01-live" ||
+		modelName == "MiniMax-Hailuo-02" {
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
@@ -63,7 +65,7 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
-	} else if strings.HasPrefix(modelName, "Doubao") {
+	} else if strings.HasPrefix(modelName, "doubao") {
 		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "veo") {
 		return handleVeoVideoRequest(c, ctx, videoRequest, meta)
@@ -73,15 +75,168 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 }
 
 func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	// channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	// if err != nil {
-	// 	return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	// }
 
-	// var fullRequestUrl string
+	// 读取原始请求体
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
 
-	return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
+	// 恢复请求体
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
+	// 解析为豆包请求格式
+	var doubaoRequest doubao.DoubaoVideoRequest
+	if err := json.Unmarshal(bodyBytes, &doubaoRequest); err != nil {
+		return openai.ErrorWrapper(err, "parse_doubao_request_failed", http.StatusBadRequest)
+	}
+	log.Printf("doubao-request-data: %+v", doubaoRequest)
+	log.Printf("doubao-model-name: %s", doubaoRequest.Model)
+
+	// 验证必填参数
+	if doubaoRequest.Model == "" {
+		return openai.ErrorWrapper(
+			fmt.Errorf("model is required"),
+			"invalid_request_error",
+			http.StatusBadRequest,
+		)
+	}
+
+	if len(doubaoRequest.Content) == 0 {
+		return openai.ErrorWrapper(
+			fmt.Errorf("content is required"),
+			"invalid_request_error",
+			http.StatusBadRequest,
+		)
+	}
+	//     doubaoRequest.CallbackURL = config.ServerAddress + "/api/v3/contents/generations/tasks/" + doubaoRequest.ID
+	// 构建请求URL - 匹配豆包实际API端点
+	baseUrl := meta.BaseURL
+	fullRequestUrl := baseUrl + "/api/v3/contents/generations/tasks"
+	log.Printf("fullRequestUrl: %s", fullRequestUrl)
+	// 序列化请求
+	jsonData, err := json.Marshal(doubaoRequest)
+
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+	}
+
+	// 发送请求并处理响应
+	return sendRequestDoubaoAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, doubaoRequest.Model)
+}
+func sendRequestDoubaoAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+	//预扣0.2 后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+	// 解析响应
+	var doubaoResponse doubao.DoubaoVideoResponse
+	if err := json.Unmarshal(body, &doubaoResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_response_error", http.StatusInternalServerError)
+	}
+	log.Printf("doubao-response-json-data: %v", doubaoResponse)
+	doubaoResponse.StatusCode = resp.StatusCode
+	return handleDoubaoVideoResponse(c, ctx, doubaoResponse, body, meta, modelName, quota)
+}
+func handleDoubaoVideoResponse(c *gin.Context, ctx context.Context, doubaoResponse doubao.DoubaoVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64) *model.ErrorWithStatusCode {
+	switch doubaoResponse.StatusCode {
+	case 200:
+		// 解析模型参数来确定视频参数
+		// duration := "5"         // 默认5秒
+		// mode := "text-to-video" // 默认模式
+
+		//		// 先计算quota - 修复函数调用，改为基于视频规格的计费
+		//quota := calculateQuotaForDoubaoVideo(meta, modelName, mode, duration, c)
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     doubaoResponse.ID,
+			Message:    "",
+			TaskStatus: "succeed",
+		}
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		// 创建视频日志 - 使用计算出的quota而不是0
+		err = CreateVideoLog("doubao", doubaoResponse.ID, meta, "", "", "", "", quota)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to create video log: %v", err)
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error create video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	case 400:
+		errorMsg := "豆包API错误"
+		if doubaoResponse.Error != nil {
+			errorMsg = fmt.Sprintf("豆包API错误: %s", doubaoResponse.Error.Message)
+		}
+		return openai.ErrorWrapper(
+			fmt.Errorf(errorMsg),
+			"api_error",
+			http.StatusBadRequest,
+		)
+	case 401:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API认证失败"),
+			"api_error",
+			http.StatusUnauthorized,
+		)
+	case 429:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API请求过于频繁"),
+			"api_error",
+			http.StatusTooManyRequests,
+		)
+	default:
+		return openai.ErrorWrapper(
+			fmt.Errorf("豆包API未知错误 (状态码: %d)", doubaoResponse.StatusCode),
+			"api_error",
+			http.StatusInternalServerError,
+		)
+	}
 }
 
 func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -95,26 +250,14 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
 	}
 
-	// 打印URL信息
-	log.Printf("=== VEO URL INFO ===")
-	log.Printf("Full Request URL: %s", fullRequestUrl)
-	log.Printf("Project ID: %s", meta.Config.VertexAIProjectID)
-	log.Printf("Model Name: %s", meta.ActualModelName)
-	log.Printf("Region: %s", region)
-
 	// 读取原始请求体
 	var reqBody map[string]interface{}
 	if err := common.UnmarshalBodyReusable(c, &reqBody); err != nil {
-		log.Printf("Error unmarshaling request body: %v", err)
 		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 	}
 
-	// 打印原始请求体
-	log.Printf("Original Request Body: %+v", reqBody)
-
 	// 删除model参数（如果存在）
 	if _, exists := reqBody["model"]; exists {
-		log.Printf("Removing 'model' parameter from request body")
 		delete(reqBody, "model")
 	}
 
@@ -127,7 +270,6 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	// 处理generateAudio
 	if generateAudio, ok := params["generateAudio"]; ok {
 		c.Set("generateAudio", generateAudio)
-		log.Printf("Found generateAudio parameter: %v", generateAudio)
 	}
 
 	// 处理durationSeconds
@@ -144,38 +286,38 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 				duration = d
 			}
 		}
-		log.Printf("Found durationSeconds parameter: %v (converted to: %d)", v, duration)
 	} else {
 		params["durationSeconds"] = duration
-		log.Printf("Setting default durationSeconds: %d", duration)
 	}
 	c.Set("durationSeconds", duration)
 
 	// 更新parameters
 	reqBody["parameters"] = params
 
-	// 打印最终请求体
-	log.Printf("Final Request Body: %+v", reqBody)
-
 	// 重新序列化
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		log.Printf("Error marshaling final request body: %v", err)
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
-
-	log.Printf("Final JSON Data: %s", string(jsonData))
 
 	// 发送请求并处理响应
 	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.ActualModelName)
 }
 
 func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
 
 	// 创建VertexAI适配器实例
 	var credentials vertexai.Credentials
 	if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err != nil {
-		log.Printf("Error unmarshaling credentials: %v", err)
 		return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
 	}
 
@@ -186,27 +328,12 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 	// 获取访问令牌
 	accessToken, err := vertexai.GetAccessToken(adaptor, meta)
 	if err != nil {
-		log.Printf("Error getting access token: %v", err)
 		return openai.ErrorWrapper(err, "get_access_token_error", http.StatusInternalServerError)
 	}
-
-	// 打印请求信息
-	log.Printf("=== VEO REQUEST INFO ===")
-	log.Printf("Request URL: %s", fullRequestUrl)
-	log.Printf("Model Name: %s", modelName)
-	log.Printf("Request Body: %s", string(jsonData))
-
-	// 安全地打印访问令牌的前几个字符
-	tokenPreview := accessToken
-	if len(accessToken) > 20 {
-		tokenPreview = accessToken[:20] + "..."
-	}
-	log.Printf("Access Token preview: %s", tokenPreview)
 
 	// 创建HTTP请求
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Printf("Error creating HTTP request: %v", err)
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
@@ -214,51 +341,29 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	// 打印请求头信息
-	log.Printf("Request Headers: %+v", req.Header)
-
 	// 发送请求
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("Error sending HTTP request: %v", err)
 		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
 	}
 	defer resp.Body.Close()
 
-	// 打印响应状态
-	log.Printf("=== VEO RESPONSE INFO ===")
-	log.Printf("Response Status Code: %d", resp.StatusCode)
-	log.Printf("Response Headers: %+v", resp.Header)
-
 	// 读取响应体
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Error reading response body: %v", err)
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
-
-	// 打印完整响应体
-	log.Printf("Response Body: %s", string(body))
 
 	// 解析响应
 	var veoResponse map[string]interface{}
 	err = json.Unmarshal(body, &veoResponse)
 	if err != nil {
-		log.Printf("Error parsing response JSON: %v", err)
-		log.Printf("Raw response body: %s", string(body))
 		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
 	}
 
-	// 打印解析后的响应结构
-	log.Printf("Parsed Response: %+v", veoResponse)
-
 	// 处理响应
-	result := handleVeoVideoResponse(c, ctx, veoResponse, body, meta, modelName, resp.StatusCode)
-
-	log.Printf("=== VEO REQUEST COMPLETED ===")
-
-	return result
+	return handleVeoVideoResponse(c, ctx, veoResponse, body, meta, modelName, resp.StatusCode)
 }
 
 func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map[string]interface{}, body []byte, meta *util.RelayMeta, modelName string, statusCode int) *model.ErrorWithStatusCode {
@@ -573,6 +678,16 @@ func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoReques
 }
 
 func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
 	// // 添加请求体日志
 	// log.Printf("Request URL: %s", fullRequestUrl)
 	// log.Printf("Request Body: %s", string(jsonData))
@@ -702,6 +817,15 @@ func handleViggleVideoRequest(c *gin.Context, ctx context.Context, videoRequest 
 }
 
 func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
 
 	// 先读取请求体
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -829,6 +953,16 @@ func handleLumaVideoRequest(c *gin.Context, ctx context.Context, videoRequest mo
 }
 
 func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
 	// 1. 获取频道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -1117,6 +1251,16 @@ func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest 
 }
 
 func sendRequestMinimaxAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
@@ -1154,6 +1298,16 @@ func sendRequestMinimaxAndHandleResponse(c *gin.Context, ctx context.Context, fu
 }
 
 func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
@@ -1190,6 +1344,16 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 }
 
 func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string, videoId string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
 	// log.Printf("Request body JSON: %s", string(jsonData))
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
@@ -1215,20 +1379,10 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 		ak := meta.Config.AK
 		sk := meta.Config.SK
 
-		// Add logging for AK and SK
-		log.Printf("AK: %s", ak)
-		log.Printf("SK: %s", sk)
-
 		// Generate JWT token
 		token = encodeJWTToken(ak, sk)
-
-		// Add logging for generated token
-		log.Printf("Generated JWT token: %s", token)
 	} else {
 		token = meta.APIKey
-
-		// Add logging for API key token
-		log.Printf("Using API key as token: %s", token)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1258,6 +1412,15 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 }
 
 func sendRequestRunwayAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
+	// 预扣费检查 - 预扣0.2，后续处理完多退少补
+	quota := int64(0.2 * config.QuotaPerUnit)
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
 
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -1886,8 +2049,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 
 	channel, err := dbmodel.GetChannelById(videoTask.ChannelId, true)
-	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
-	cfg, _ := channel.LoadConfig()
 	if err != nil {
 		return openai.ErrorWrapper(
 			fmt.Errorf("failed to get channel: %v", err),
@@ -1895,13 +2056,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			http.StatusInternalServerError,
 		)
 	}
-	if err != nil {
-		return openai.ErrorWrapper(
-			fmt.Errorf("failed to get videoTask: %v", err),
-			"database_error",
-			http.StatusBadRequest,
-		)
-	}
+	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
+	cfg, _ := channel.LoadConfig()
 
 	var fullRequestUrl string
 	switch videoTask.Provider {
@@ -1953,6 +2109,37 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		fullRequestUrl = fmt.Sprintf("%s/api/video/task?task_id=%s", *channel.BaseURL, taskId)
 	case "pixverse":
 		fullRequestUrl = fmt.Sprintf("%s/openapi/v2/video/result/%s", *channel.BaseURL, taskId)
+	case "doubao":
+		fullRequestUrl = fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", *channel.BaseURL, taskId)
+	case "vertexai":
+		// 对于 VertexAI Veo，taskId 是完整的操作名称
+		// 需要使用 fetchPredictOperation 方法来查询状态
+		// 解析 taskId 提取必要信息
+
+		// 示例 taskId: projects/veo3-463004/locations/global/publishers/google/models/veo-3.0-generate-preview/operations/ff8786d9-2b24-40b7-beb3-fd4147c92f8a
+		parts := strings.Split(taskId, "/")
+		if len(parts) < 8 {
+			return openai.ErrorWrapper(
+				fmt.Errorf("invalid operation name format: %s", taskId),
+				"invalid_operation_format",
+				http.StatusBadRequest,
+			)
+		}
+
+		projectId := parts[1]
+		region := parts[3]
+		modelId := parts[7]
+
+		// 构建 fetchPredictOperation URL
+		var baseURL string
+		if region == "global" {
+			baseURL = "https://aiplatform.googleapis.com"
+		} else {
+			baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
+		}
+
+		fullRequestUrl = fmt.Sprintf("%s/v1/projects/%s/locations/%s/publishers/google/models/%s:fetchPredictOperation",
+			baseURL, projectId, region, modelId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -1961,7 +2148,24 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		)
 	}
 	// 创建新的请求
-	req, err := http.NewRequest("GET", fullRequestUrl, nil)
+	var req *http.Request
+	if videoTask.Provider == "vertexai" {
+		// VertexAI 需要 POST 请求，并在请求体中包含操作名称
+		requestBody := map[string]string{
+			"operationName": taskId,
+		}
+		jsonBody, err := json.Marshal(requestBody)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to marshal request body: %v", err),
+				"marshal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		req, err = http.NewRequest("POST", fullRequestUrl, bytes.NewReader(jsonBody))
+	} else {
+		req, err = http.NewRequest("GET", fullRequestUrl, nil)
+	}
 	if err != nil {
 		return openai.ErrorWrapper(
 			fmt.Errorf("failed to create request: %v", err),
@@ -1969,6 +2173,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			http.StatusInternalServerError,
 		)
 	}
+
 	if videoTask.Provider == "kling" && channel.Type == 41 {
 		token := encodeJWTToken(cfg.AK, cfg.SK)
 
@@ -1984,6 +2189,41 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	} else if videoTask.Provider == "pixverse" {
 		req.Header.Set("API-KEY", channel.Key)
 		req.Header.Set("Ai-trace-id", "aaaaa")
+	} else if videoTask.Provider == "vertexai" {
+		// VertexAI 需要使用 OAuth2 token 进行认证
+		var credentials vertexai.Credentials
+		if err := json.Unmarshal([]byte(cfg.VertexAIADC), &credentials); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse VertexAI credentials: %v", err),
+				"credential_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		adaptor := &vertexai.Adaptor{
+			AccountCredentials: credentials,
+		}
+
+		// 创建临时的 RelayMeta 来获取访问令牌
+		tempMeta := &util.RelayMeta{
+			Config: dbmodel.ChannelConfig{
+				Region:            cfg.Region,
+				VertexAIProjectID: cfg.VertexAIProjectID,
+				VertexAIADC:       cfg.VertexAIADC,
+			},
+		}
+
+		accessToken, err := vertexai.GetAccessToken(adaptor, tempMeta)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to get VertexAI access token: %v", err),
+				"auth_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -2000,7 +2240,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		)
 	}
 	defer resp.Body.Close()
-
+	log.Printf("video response body: %+v", resp)
 	// 检查响应状态码
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -2043,6 +2283,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 如果任务成功且有视频结果，添加到响应中
 		if zhipuResp.TaskStatus == "SUCCESS" && len(zhipuResp.VideoResults) > 0 {
 			generalResponse.VideoResult = zhipuResp.VideoResults[0].URL
+		}
+
+		// 更新任务状态并检查是否需要退款
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
@@ -2119,6 +2366,17 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
 		}
 
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if klingResp.Data.TaskStatus == "failed" {
+			failReason = klingResp.Data.TaskStatusMsg
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
 		// 将 GeneralVideoResponse 结构体转换为 JSON
 		jsonResponse, err := json.Marshal(generalResponse)
 		if err != nil {
@@ -2170,6 +2428,17 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		} else {
 			log.Printf("Task not succeeded or no output. Status: %s, Output length: %d",
 				runwayResp.Status, len(runwayResp.Output))
+		}
+
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if runwayResp.Status == "FAILED" {
+			failReason = "Task failed"
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
@@ -2232,6 +2501,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		} else {
 			log.Printf("Task not completed or no assets. State: %s, Assets: %v",
 				lumaResp.State, lumaResp.Assets)
+		}
+
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if lumaResp.State == "failed" {
+			if lumaResp.FailureReason != nil {
+				failReason = *lumaResp.FailureReason
+			} else {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
 		}
 
 		// 将 GeneralVideoResponse 结构体转换为 JSON
@@ -2300,6 +2584,20 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			}
 		}
 
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+			if failReason == "" {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
 		// 将 GeneralVideoResponse 结构体转换为 JSON
 		jsonResponse, err := json.Marshal(generalResponse)
 		if err != nil {
@@ -2349,7 +2647,25 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		if pixverseResp.Resp.Url != "" {
 			generalResponse.VideoResult = pixverseResp.Resp.Url
+		}
 
+		// 检查任务状态，如果ErrCode不为0则为失败
+		if pixverseResp.ErrCode != 0 {
+			generalResponse.TaskStatus = "failed"
+		}
+
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = pixverseResp.ErrMsg
+			if failReason == "" {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
 		}
 
 		// 将响应转换为JSON
@@ -2365,8 +2681,345 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "doubao" {
+
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 解析JSON响应
+		var doubaoResp doubao.DoubaoVideoResult
+		if err := json.Unmarshal(body, &doubaoResp); err != nil {
+			log.Printf("Failed to parse doubao response: %v, body: %s", err, string(body))
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建通用响应结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      doubaoResp.ID,
+			VideoResult: "",
+			VideoId:     doubaoResp.ID,
+			Message:     "",
+		}
+
+		// 处理任务状态映射
+		switch doubaoResp.Status {
+		case "queued":
+			generalResponse.TaskStatus = "processing"
+		case "running":
+			generalResponse.TaskStatus = "processing"
+		case "succeeded":
+			generalResponse.TaskStatus = "succeeded"
+			if doubaoResp.Content.VideoURL != "" {
+				generalResponse.VideoResult = doubaoResp.Content.VideoURL
+			}
+		case "failed":
+			generalResponse.TaskStatus = "failed"
+			generalResponse.Message = doubaoResp.Error.Message
+		default:
+			generalResponse.TaskStatus = "unknown"
+		}
+
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+			if failReason == "" {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
+		// 豆包特殊处理：如果任务成功，需要基于实际token使用量进行补差价
+		if generalResponse.TaskStatus == "succeeded" {
+			quota := calculateQuotaForDoubao(doubaoResp.Model, int64(doubaoResp.Usage.TotalTokens), c)
+			preQuota := videoTask.Quota
+			// 构建RelayMeta对象
+			ctx := c.Request.Context()
+			relayMeta := &util.RelayMeta{
+				UserId:    videoTask.UserId,
+				ChannelId: videoTask.ChannelId,
+				TokenId:   c.GetInt("token_id"),
+			}
+			c.Set("channel_id", videoTask.ChannelId)
+			// 补差价（实际费用 - 预扣费用）
+			handleSuccessfulResponseWithQuota(c, ctx, relayMeta, videoTask.Model, "", "", int64(quota-preQuota))
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
+	} else if videoTask.Provider == "vertexai" {
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 首先检查是否是直接的视频数据（base64或二进制）
+		bodyStr := string(body)
+
+		// 检查是否包含视频数据（可能在JSON中或直接返回）
+		if strings.Contains(bodyStr, "mimeType:video/mp4") {
+			// 如果不是以"{"开头，可能是直接的视频数据
+			if !strings.HasPrefix(bodyStr, "{") && len(bodyStr) > 1000 {
+				// 移除mimeType部分，保留视频数据
+				videoData := strings.Split(bodyStr, "mimeType:video/mp4")[0]
+				generalResponse := model.GeneralFinalVideoResponse{
+					TaskId:      taskId,
+					VideoResult: "data:video/mp4;base64," + videoData,
+					VideoId:     taskId,
+					TaskStatus:  "succeed",
+					Message:     "Video generated successfully",
+				}
+
+				// 更新任务状态
+				UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+
+				// 序列化响应
+				var jsonResponse []byte
+				var marshalErr error
+				jsonResponse, marshalErr = json.Marshal(generalResponse)
+				if marshalErr != nil {
+					return openai.ErrorWrapper(
+						fmt.Errorf("error marshaling response: %s", marshalErr),
+						"internal_error",
+						http.StatusInternalServerError,
+					)
+				}
+
+				// 发送响应
+				c.Data(http.StatusOK, "application/json", jsonResponse)
+				return nil
+			}
+		}
+
+		// 额外检查：如果响应很大且包含大量可能的base64数据
+		if len(bodyStr) > 50000 && !strings.HasPrefix(bodyStr, "{") {
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:      taskId,
+				VideoResult: "data:video/mp4;base64," + bodyStr,
+				VideoId:     taskId,
+				TaskStatus:  "succeed",
+				Message:     "Video generated successfully (large data)",
+			}
+
+			// 更新任务状态
+			UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+
+			// 序列化响应
+			var jsonResponse []byte
+			var marshalErr error
+			jsonResponse, marshalErr = json.Marshal(generalResponse)
+			if marshalErr != nil {
+				return openai.ErrorWrapper(
+					fmt.Errorf("error marshaling response: %s", marshalErr),
+					"internal_error",
+					http.StatusInternalServerError,
+				)
+			}
+
+			// 发送响应
+			c.Data(http.StatusOK, "application/json", jsonResponse)
+			return nil
+		}
+
+		// 解析JSON响应
+		var veoResp map[string]interface{}
+		if err := json.Unmarshal(body, &veoResp); err != nil {
+			// 如果JSON解析失败，可能是二进制视频数据
+			if len(body) > 1000 { // 足够大的响应，可能是视频文件
+				generalResponse := model.GeneralFinalVideoResponse{
+					TaskId:      taskId,
+					VideoResult: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(body),
+					VideoId:     taskId,
+					TaskStatus:  "succeed",
+					Message:     "Video generated successfully (binary data)",
+				}
+
+				// 更新任务状态
+				UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+
+				// 序列化响应
+				var jsonResponse2 []byte
+				var marshalErr2 error
+				jsonResponse2, marshalErr2 = json.Marshal(generalResponse)
+				if marshalErr2 != nil {
+					return openai.ErrorWrapper(
+						fmt.Errorf("error marshaling response: %s", marshalErr2),
+						"internal_error",
+						http.StatusInternalServerError,
+					)
+				}
+
+				// 发送响应
+				c.Data(http.StatusOK, "application/json", jsonResponse2)
+				return nil
+			}
+
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建通用响应结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      taskId,
+			VideoResult: "",
+			VideoId:     taskId,
+			Message:     "",
+		}
+
+		// 处理任务状态映射 - 根据Google文档中的操作状态
+		if done, ok := veoResp["done"].(bool); ok {
+			if done {
+				// 操作已完成
+				if response, ok := veoResp["response"].(map[string]interface{}); ok {
+					// 尝试 fetchPredictOperation 格式（使用 videos 字段）
+					if videos, ok := response["videos"].([]interface{}); ok {
+						if len(videos) > 0 {
+							if video, ok := videos[0].(map[string]interface{}); ok {
+								// 检查 gcsUri 字段
+								if gcsUri, ok := video["gcsUri"].(string); ok {
+									generalResponse.VideoResult = gcsUri
+									generalResponse.TaskStatus = "succeed"
+								} else if videoData, ok := video["videoData"].(string); ok {
+									// 处理 base64 编码的视频数据
+									generalResponse.VideoResult = "data:video/mp4;base64," + videoData
+									generalResponse.TaskStatus = "succeed"
+								} else {
+									// 检查其他可能的字段名称
+									for _, value := range video {
+										if valueStr, ok := value.(string); ok && len(valueStr) > 1000 {
+											generalResponse.VideoResult = "data:video/mp4;base64," + valueStr
+											generalResponse.TaskStatus = "succeed"
+											break
+										}
+									}
+								}
+							}
+						}
+					} else if generatedSamples, ok := response["generatedSamples"].([]interface{}); ok {
+						// 尝试直接操作查询格式（使用 generatedSamples 字段）
+						if len(generatedSamples) > 0 {
+							if sample, ok := generatedSamples[0].(map[string]interface{}); ok {
+								if video, ok := sample["video"].(map[string]interface{}); ok {
+									if uri, ok := video["uri"].(string); ok {
+										generalResponse.VideoResult = uri
+										generalResponse.TaskStatus = "succeed"
+									}
+								}
+							}
+						}
+					}
+
+					// 如果没有找到视频，可能是因为有错误
+					if generalResponse.VideoResult == "" {
+						generalResponse.TaskStatus = "failed"
+						generalResponse.Message = "No video result found"
+					}
+				} else if errorInfo, ok := veoResp["error"].(map[string]interface{}); ok {
+					// 操作完成但有错误
+					generalResponse.TaskStatus = "failed"
+					if message, ok := errorInfo["message"].(string); ok {
+						generalResponse.Message = message
+					} else {
+						generalResponse.Message = "Operation failed"
+					}
+				} else {
+					// 操作完成但没有响应数据
+					generalResponse.TaskStatus = "failed"
+					generalResponse.Message = "Operation completed but no response data"
+				}
+			} else {
+				// 操作仍在进行中
+				generalResponse.TaskStatus = "processing"
+				generalResponse.Message = "Operation in progress"
+			}
+		} else {
+			// 操作仍在进行中
+			generalResponse.TaskStatus = "processing"
+			generalResponse.Message = "Operation in progress"
+		}
+
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+			if failReason == "" {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
 	return nil
+}
+
+// 豆包专用的quota计算函数（基于token，用于查询结果时的实际计费）
+func calculateQuotaForDoubao(modelName string, tokens int64, c *gin.Context) int64 {
+	var basePrice float64
+
+	// 根据不同模型设置基础价格
+	switch {
+	case strings.Contains(modelName, "doubao-seedance-1-0-lite"):
+		basePrice = 10 / 1000000.0 // 专业版价格更高
+	case strings.Contains(modelName, "doubao-seaweed"):
+		basePrice = 30 / 1000000.0 // 轻量版价格适中
+	case strings.Contains(modelName, "wan2.1-14b"):
+		basePrice = 50 / 1000000.0 // 标准价格
+	default:
+		basePrice = 50 / 1000000.0 // 默认价格
+	}
+	return int64(basePrice * float64(tokens) * config.QuotaPerUnit)
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
@@ -2405,6 +3058,20 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 
 	// 如果 FileID 为空，直接返回当前状态
 	if minimaxResp.FileID == "" {
+		// 更新任务状态并检查是否需要退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+			if failReason == "" {
+				failReason = "Task failed"
+			}
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
 		jsonResponse, err := json.Marshal(generalResponse)
 		if err != nil {
 			return openai.ErrorWrapper(fmt.Errorf("Error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
@@ -2439,7 +3106,21 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	}
 
 	generalResponse.VideoResult = fileResponse.File.DownloadURL
-	generalResponse.TaskStatus = "success" // 假设有 FileID 且能获取到下载 URL 就意味着成功
+	generalResponse.TaskStatus = "succeed" // 假设有 FileID 且能获取到下载 URL 就意味着成功
+
+	// 更新任务状态并检查是否需要退款
+	failReason := ""
+	if generalResponse.TaskStatus == "failed" {
+		failReason = generalResponse.Message
+		if failReason == "" {
+			failReason = "Task failed"
+		}
+	}
+	needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+	if needRefund {
+		log.Printf("Task %s failed, compensating user", taskId)
+		CompensateVideoTask(taskId)
+	}
 
 	jsonResponse, err := json.Marshal(generalResponse)
 	if err != nil {
@@ -2450,12 +3131,22 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	return nil
 }
 
-func UpdateVideoTaskStatus(taskid string, status string, failreason string) {
+func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool {
 	videoTask, err := dbmodel.GetVideoTaskById(taskid)
 	if err != nil {
 		log.Printf("Failed to get video task: %v", err)
-		return
+		return false
 	}
+
+	// 记录原始状态
+	oldStatus := videoTask.Status
+
+	// 检查状态是否真的发生了变化
+	if oldStatus == status {
+		log.Printf("Task %s status unchanged: %s", taskid, status)
+		return false
+	}
+
 	videoTask.Status = status
 	if failreason != "" {
 		videoTask.FailReason = failreason
@@ -2463,7 +3154,14 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) {
 	err = videoTask.Update()
 	if err != nil {
 		log.Printf("Failed to update video task: %v", err)
+		return false
 	}
+
+	log.Printf("Task %s status updated from %s to %s", taskid, oldStatus, status)
+
+	// 返回是否需要退款：只有当状态变为失败且之前不是失败状态时才退款
+	// 空字符串被视为非失败状态，这是正确的，因为任务刚创建时就是这个状态
+	return (oldStatus != "failed" && status == "failed")
 }
 
 func CompensateVideoTask(taskid string) {

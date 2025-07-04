@@ -105,6 +105,7 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 	Imager2Url := "https://pub-787c236addba492a978fd31529395f95.r2.dev"
 	return fmt.Sprintf("%s/%s", Imager2Url, objectKey), nil
 }
+
 func DeleteFileR2(ctx context.Context, filename string) error {
 	cfg, err := config.LoadDefaultConfig(ctx,
 		config.WithRegion("us-east-1"),

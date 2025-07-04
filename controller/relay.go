@@ -420,6 +420,34 @@ func RelayVideoGenerate(c *gin.Context) {
 
 func RelayVideoResult(c *gin.Context) {
 	taskId := c.Query("taskid")
+	responseFormat := c.Query("response_format")
+	c.Set("response_format", responseFormat)
+	bizErr := controller.GetVideoResult(c, taskId)
+	if bizErr != nil {
+		if bizErr.StatusCode == http.StatusTooManyRequests {
+			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+		}
+		c.JSON(bizErr.StatusCode, gin.H{
+			"error": util.ProcessString(bizErr.Error.Message),
+		})
+	}
+}
+
+// RelayVideoResultById 通过Query String参数获取视频生成结果
+// 完全匹配豆包原始API格式 /api/v3/contents/generations/tasks?id=task_id
+func RelayDouBaoVideoResultById(c *gin.Context) {
+	taskId := c.Param("taskid")
+	logger.SysLog(fmt.Sprintf("doubao-task-id: %s", taskId))
+	if taskId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"message": "Task ID is required in query parameter 'id'",
+				"type":    "invalid_request_error",
+				"code":    "missing_required_parameter",
+			},
+		})
+		return
+	}
 	bizErr := controller.GetVideoResult(c, taskId)
 	if bizErr != nil {
 		if bizErr.StatusCode == http.StatusTooManyRequests {

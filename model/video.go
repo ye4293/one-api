@@ -10,7 +10,7 @@ import (
 type Video struct {
 	Prompt     string `json:"prompt"`
 	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id"`
+	TaskId     string `json:"task_id" gorm:"type:varchar(100);index"`
 	Type       string `json:"type"`
 	Provider   string `json:"provider"`
 	Mode       string `json:"mode"`
@@ -64,6 +64,21 @@ func GetVideoTaskByVideoId(videoId string) (*Video, error) {
 		return nil, result.Error
 	}
 	return &video, nil
+}
+
+// UpdateVideoTaskStatusWithCondition 原子性更新视频任务状态，防止并发冲突
+// 只有当当前状态等于expectedStatus时才更新为newStatus
+func UpdateVideoTaskStatusWithCondition(taskId string, expectedStatus string, newStatus string, quota int64) bool {
+	// 使用WHERE条件确保原子性更新
+	result := DB.Model(&Video{}).
+		Where("task_id = ? AND status = ?", taskId, expectedStatus).
+		Updates(map[string]interface{}{
+			"status": newStatus,
+			"quota":  quota,
+		})
+
+	// 如果RowsAffected为1，说明更新成功
+	return result.RowsAffected == 1
 }
 
 func GetCurrentAllVideosAndCount(

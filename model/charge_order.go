@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
-
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -46,8 +44,6 @@ var StatusMap = map[string]int{
 	"dispute": 6, //争议
 	"fraud":   7, //欺诈
 }
-
-var stripLock sync.Mutex
 
 func GetUserChargeOrdersAndCount(conditions map[string]interface{}, page int, pageSize int) (chargeOrders []*ChargeOrder, total int64, err error) {
 	var chargeOrder ChargeOrder
@@ -157,51 +153,42 @@ func stripeChargeFraud() {
 }
 
 func stripeChargeRefund(charge *stripe.Charge) error {
-	var stripLock sync.Mutex
-	stripLock.Lock()
-	defer stripLock.Unlock()
 	if charge.Status == "succeeded" {
 		//获取meta数据里的订单id
 		orderId := charge.Metadata["appOrderId"]
 		userId := charge.Metadata["userId"]
-		var chargeOrder ChargeOrder
-		if err := DB.Model(&ChargeOrder{}).Where("app_order_id = ? ", orderId).Where("user_id = ?", userId).First(&chargeOrder).Error; err != nil {
-			return err
-		}
-		//如果已经支付成功直接返回
-		if chargeOrder.Status == StatusMap["refund"] {
+
+		// 使用原子性数据库操作防止分布式并发
+		// 只有成功状态的订单才能退款
+		success := UpdateChargeOrderStatusWithCondition(orderId, userId, StatusMap["success"], StatusMap["refund"])
+		if !success {
+			// 订单已被处理或状态不符合预期，直接返回
 			return nil
-		}
-		if err := DB.Model(chargeOrder).Updates(ChargeOrder{Status: StatusMap["refund"]}).Error; err != nil {
-			return err
 		}
 	}
 	return nil
 }
 func stripeChargeSuccess(charge *stripe.Charge) error {
-	// fmt.Printf("%+v\n",charge)
-	// return nil
-	stripLock.Lock()
-	defer stripLock.Unlock()
-
 	//获取meta数据里的订单id
 	if charge.Status == "succeeded" {
 		orderId := charge.Metadata["appOrderId"]
 		userId := charge.Metadata["userId"]
+
+		// 获取更新后的订单信息
 		var chargeOrder ChargeOrder
 		var bill Bill
 		if err := DB.Model(&ChargeOrder{}).Where("app_order_id = ? ", orderId).Where("user_id = ?", userId).First(&chargeOrder).Error; err != nil {
 			return err
 		}
-		//如果已经支付成功直接返回
-		if chargeOrder.Status == StatusMap["success"] {
-			return nil
-		}
 		if err := DB.Transaction(func(tx *gorm.DB) error {
-			//更新订单
+			// 使用原子性数据库操作防止分布式并发
+			success := UpdateChargeOrderStatusWithCondition(orderId, userId, StatusMap["create"], StatusMap["success"])
+			if !success {
+				// 订单已被处理或状态不符合预期，直接返回
+				return nil
+			}
+			//更新订单详细信息
 			amount := float64(charge.Amount / 100)
-			// orderCost := float64(charge.ApplicationFeeAmount / 100)
-			// realAmount := amount - orderCost
 			orderCost := amount*0.029 + 0.3
 			realAmount := amount - orderCost
 			if err := DB.Model(&chargeOrder).Updates(ChargeOrder{Status: StatusMap["success"], RealAmount: realAmount, OrderCost: orderCost, OrderNo: charge.ID, Amount: amount}).Error; err != nil {
@@ -220,7 +207,6 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 				return err
 			}
 
-			// 返回 nil 提交事务
 			return nil
 		}); err != nil {
 			return err
@@ -301,4 +287,16 @@ func HandleStripeCallback(req *http.Request) error {
 		logger.SysLog(fmt.Sprintf("Unhandled event type: %s\n", event.Type))
 	}
 	return nil
+}
+
+// UpdateChargeOrderStatusWithCondition 原子性更新订单状态，防止分布式并发冲突
+// 只有当当前状态等于expectedStatus时才更新为newStatus
+func UpdateChargeOrderStatusWithCondition(appOrderId, userId string, expectedStatus, newStatus int) bool {
+	// 使用WHERE条件确保原子性更新
+	result := DB.Model(&ChargeOrder{}).
+		Where("app_order_id = ? AND user_id = ? AND status = ?", appOrderId, userId, expectedStatus).
+		Update("status", newStatus)
+
+	// 如果RowsAffected为1，说明更新成功
+	return result.RowsAffected == 1
 }
