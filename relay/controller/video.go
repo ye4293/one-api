@@ -118,7 +118,7 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 	}
 
 	// 生成文件URL
-	fileUrl := "https://file.ezlinkai.com/"
+	fileUrl := "https://file.ezlinkai.com"
 	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
 }
 
