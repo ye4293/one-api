@@ -35,6 +35,7 @@ type Log struct {
 	Provider         string  `json:"provider"`
 	XRequestID       string  `json:"x_request_id"`
 	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
+	VideoTaskId      string  `json:"video_task_id" gorm:"default:''"`
 }
 
 const (
@@ -503,4 +504,65 @@ func GetUserTopModelQuotaStats(userId int) ([]ModelQuotaStats, error) {
 	}
 
 	return stats, nil
+}
+
+// GetLogsByVideoTaskId 通过视频任务ID查找日志记录
+func GetLogsByVideoTaskId(videoTaskId string) (*Log, error) {
+	var log Log
+	err := LOG_DB.Where("video_task_id = ?", videoTaskId).First(&log).Error
+	if err != nil {
+		return nil, err
+	}
+	return &log, nil
+}
+
+// RecordVideoConsumeLog 记录视频任务的消费日志，包含VideoTaskId
+func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, videoTaskId string) {
+	logger.Info(ctx, fmt.Sprintf("record video consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, videoTaskId=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, videoTaskId))
+	if !config.LogConsumeEnabled {
+		return
+	}
+
+	log := &Log{
+		UserId:           userId,
+		Username:         GetUsernameById(userId),
+		CreatedAt:        helper.GetTimestamp(),
+		Type:             LogTypeConsume,
+		Content:          content,
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TokenName:        tokenName,
+		ModelName:        modelName,
+		Quota:            int(quota),
+		ChannelId:        channelId,
+		Duration:         duration,
+		Title:            title,
+		HttpReferer:      httpReferer,
+		Speed:            0,
+		VideoTaskId:      videoTaskId,
+	}
+	err := LOG_DB.Create(log).Error
+	if err != nil {
+		logger.Error(ctx, "failed to record video log: "+err.Error())
+	}
+}
+
+// UpdateLogQuotaAndTokens 更新日志记录的Quota和CompletionTokens字段
+func UpdateLogQuotaAndTokens(videoTaskId string, quota int64, completionTokens int) error {
+	result := LOG_DB.Model(&Log{}).
+		Where("video_task_id = ?", videoTaskId).
+		Updates(map[string]interface{}{
+			"quota":             int(quota),
+			"completion_tokens": completionTokens,
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return errors.New("no log found with the given video_task_id")
+	}
+
+	return nil
 }

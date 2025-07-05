@@ -217,8 +217,17 @@ func sendRequestDoubaoAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 	}
-	//预扣0.2 后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
+	//预扣费（人民币转美元后再计算quota）
+	// 预扣人民币1.4元（大概相当于0.2美元）
+	prePayCNY := 1.4
+	prePayUSD, exchangeErr := convertCNYToUSD(prePayCNY)
+	if exchangeErr != nil {
+		// 如果汇率转换失败，使用固定汇率7.2作为备选方案
+		log.Printf("Failed to get exchange rate for Doubao pre-payment: %v, using fallback rate 7.2", exchangeErr)
+		prePayUSD = prePayCNY / 7.2
+	}
+	quota := int64(prePayUSD * config.QuotaPerUnit)
+	log.Printf("Doubao pre-payment: cny=%.2f, usd=%.6f, quota=%d", prePayCNY, prePayUSD, quota)
 	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
@@ -248,6 +257,12 @@ func sendRequestDoubaoAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
+
+	// 打印豆包完整的响应日志
+	log.Printf("doubao-full-response-body: %s", string(body))
+	log.Printf("doubao-response-status-code: %d", resp.StatusCode)
+	log.Printf("doubao-response-headers: %v", resp.Header)
+
 	// 解析响应
 	var doubaoResponse doubao.DoubaoVideoResponse
 	if err := json.Unmarshal(body, &doubaoResponse); err != nil {
@@ -292,7 +307,8 @@ func handleDoubaoVideoResponse(c *gin.Context, ctx context.Context, doubaoRespon
 				http.StatusInternalServerError,
 			)
 		}
-		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
+		// 使用带videoTaskId的日志记录函数
+		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota, doubaoResponse.ID)
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
@@ -545,13 +561,8 @@ func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio int
 		}
 	}
 
-	// 按秒计费，基础是8秒
-	durationMultiplier := float64(durationSeconds) / 8.0
-	if durationMultiplier < 1 {
-		durationMultiplier = 1
-	}
-
-	finalPrice := basePrice * durationMultiplier
+	// 按秒计费，直接按实际秒数计算
+	finalPrice := basePrice * float64(durationSeconds)
 	quota := int64(finalPrice * config.QuotaPerUnit)
 
 	return quota
@@ -2014,8 +2025,8 @@ func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duratio
 	return quota
 }
 
-// 新增带quota参数的成功响应处理函数
-func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string, quota int64) *model.ErrorWithStatusCode {
+// 新增带quota参数的成功响应处理函数，支持可选的videoTaskId参数
+func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string, quota int64, videoTaskId ...string) *model.ErrorWithStatusCode {
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -2040,7 +2051,14 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 
 		tokenName := c.GetString("token_name")
 		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
-		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+
+		// 如果提供了videoTaskId，使用RecordVideoConsumeLog，否则使用普通的RecordConsumeLog
+		if len(videoTaskId) > 0 && videoTaskId[0] != "" {
+			dbmodel.RecordVideoConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, videoTaskId[0])
+		} else {
+			dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+		}
+
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		dbmodel.UpdateChannelUsedQuota(channelId, quota)
@@ -2390,8 +2408,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "minimax" {
 		err := handleMinimaxResponse(c, channel, taskId)
@@ -2475,8 +2493,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 
 		return nil
 	} else if videoTask.Provider == "runway" {
@@ -2539,8 +2557,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "luma" {
 		defer resp.Body.Close()
@@ -2616,8 +2634,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "viggle" {
 		defer resp.Body.Close()
@@ -2696,8 +2714,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "pixverse" {
 		// 读取响应体
@@ -2766,8 +2784,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送响应
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "doubao" {
 
@@ -2844,22 +2862,38 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		// 豆包特殊处理：如果任务成功，需要基于实际token使用量进行补差价
 		if generalResponse.TaskStatus == "succeeded" {
-			quota := calculateQuotaForDoubao(doubaoResp.Model, int64(doubaoResp.Usage.TotalTokens), c)
+			actualQuota := calculateQuotaForDoubao(doubaoResp.Model, int64(doubaoResp.Usage.TotalTokens), c)
 			preQuota := videoTask.Quota
-			// 构建RelayMeta对象
-			ctx := c.Request.Context()
-			relayMeta := &util.RelayMeta{
-				UserId:    videoTask.UserId,
-				ChannelId: videoTask.ChannelId,
-				TokenId:   c.GetInt("token_id"),
+			quotaDiff := int64(actualQuota - preQuota) // 计算差价
+
+			// 更新用户配额和统计信息（只处理差价部分）
+			if quotaDiff != 0 {
+				quotaErr := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quotaDiff)
+				if quotaErr != nil {
+					log.Printf("Error consuming token quota diff: %v", quotaErr)
+				}
+
+				ctx := c.Request.Context()
+				cacheErr := dbmodel.CacheUpdateUserQuota(ctx, videoTask.UserId)
+				if cacheErr != nil {
+					log.Printf("Error update user quota cache: %v", cacheErr)
+				}
+
+				dbmodel.UpdateUserUsedQuotaAndRequestCount(videoTask.UserId, quotaDiff)
+				dbmodel.UpdateChannelUsedQuota(videoTask.ChannelId, quotaDiff)
 			}
-			c.Set("channel_id", videoTask.ChannelId)
-			// 补差价（实际费用 - 预扣费用）
-			handleSuccessfulResponseWithQuota(c, ctx, relayMeta, videoTask.Model, "", "", int64(quota-preQuota))
+
+			// 更新原有日志记录的Quota和CompletionTokens字段（显示完整的实际费用）
+			updateErr := dbmodel.UpdateLogQuotaAndTokens(doubaoResp.ID, int64(actualQuota), doubaoResp.Usage.TotalTokens)
+			if updateErr != nil {
+				log.Printf("Failed to update log quota and tokens for task %s: %v", doubaoResp.ID, updateErr)
+			} else {
+				log.Printf("Successfully updated log for task %s: quota=%d, completion_tokens=%d", doubaoResp.ID, actualQuota, doubaoResp.Usage.TotalTokens)
+			}
 		}
 
-		// 发送响应
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "vertexai" {
 		defer resp.Body.Close()
@@ -2902,8 +2936,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					Message:     "Video generated successfully",
 				}
 
-				// 更新任务状态
-				UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+				// 更新任务状态并检查是否需要退款
+				needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+				if needRefund {
+					log.Printf("Task %s failed, compensating user", taskId)
+					CompensateVideoTask(taskId)
+				}
 
 				// 序列化响应
 				var jsonResponse []byte
@@ -2917,8 +2955,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					)
 				}
 
-				// 发送响应
-				c.Data(http.StatusOK, "application/json", jsonResponse)
+				// 直接使用上游返回的状态码
+				c.Data(resp.StatusCode, "application/json", jsonResponse)
 				return nil
 			}
 		}
@@ -2945,8 +2983,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				Message:     "Video generated successfully (large data)",
 			}
 
-			// 更新任务状态
-			UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+			// 更新任务状态并检查是否需要退款
+			needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+			if needRefund {
+				log.Printf("Task %s failed, compensating user", taskId)
+				CompensateVideoTask(taskId)
+			}
 
 			// 序列化响应
 			var jsonResponse []byte
@@ -2960,8 +3002,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				)
 			}
 
-			// 发送响应
-			c.Data(http.StatusOK, "application/json", jsonResponse)
+			// 直接使用上游返回的状态码
+			c.Data(resp.StatusCode, "application/json", jsonResponse)
 			return nil
 		}
 
@@ -2991,8 +3033,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					Message:     "Video generated successfully (binary data)",
 				}
 
-				// 更新任务状态
-				UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+				// 更新任务状态并检查是否需要退款
+				needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, "")
+				if needRefund {
+					log.Printf("Task %s failed, compensating user", taskId)
+					CompensateVideoTask(taskId)
+				}
 
 				// 序列化响应
 				var jsonResponse2 []byte
@@ -3006,8 +3052,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					)
 				}
 
-				// 发送响应
-				c.Data(http.StatusOK, "application/json", jsonResponse2)
+				// 直接使用上游返回的状态码
+				c.Data(resp.StatusCode, "application/json", jsonResponse2)
 				return nil
 			}
 
@@ -3035,9 +3081,18 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					if videos, ok := response["videos"].([]interface{}); ok {
 						if len(videos) > 0 {
 							if video, ok := videos[0].(map[string]interface{}); ok {
-								// 检查 gcsUri 字段
+								// 检查多种可能的 URI 字段名
 								if gcsUri, ok := video["gcsUri"].(string); ok {
 									generalResponse.VideoResult = gcsUri
+									generalResponse.TaskStatus = "succeed"
+								} else if storageUri, ok := video["storageURI"].(string); ok {
+									generalResponse.VideoResult = storageUri
+									generalResponse.TaskStatus = "succeed"
+								} else if uri, ok := video["uri"].(string); ok {
+									generalResponse.VideoResult = uri
+									generalResponse.TaskStatus = "succeed"
+								} else if outputUri, ok := video["outputUri"].(string); ok {
+									generalResponse.VideoResult = outputUri
 									generalResponse.TaskStatus = "succeed"
 								} else if videoData, ok := video["videoData"].(string); ok {
 									// 处理 base64 编码的视频数据
@@ -3084,8 +3139,18 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 						if len(generatedSamples) > 0 {
 							if sample, ok := generatedSamples[0].(map[string]interface{}); ok {
 								if video, ok := sample["video"].(map[string]interface{}); ok {
+									// 检查多种可能的 URI 字段名
 									if uri, ok := video["uri"].(string); ok {
 										generalResponse.VideoResult = uri
+										generalResponse.TaskStatus = "succeed"
+									} else if gcsUri, ok := video["gcsUri"].(string); ok {
+										generalResponse.VideoResult = gcsUri
+										generalResponse.TaskStatus = "succeed"
+									} else if storageUri, ok := video["storageURI"].(string); ok {
+										generalResponse.VideoResult = storageUri
+										generalResponse.TaskStatus = "succeed"
+									} else if outputUri, ok := video["outputUri"].(string); ok {
+										generalResponse.VideoResult = outputUri
 										generalResponse.TaskStatus = "succeed"
 									}
 								}
@@ -3146,8 +3211,8 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 发送响应
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		// 直接使用上游返回的状态码
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	}
 	return nil
@@ -3155,20 +3220,38 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 // 豆包专用的quota计算函数（基于token，用于查询结果时的实际计费）
 func calculateQuotaForDoubao(modelName string, tokens int64, c *gin.Context) int64 {
-	var basePrice float64
+	var basePriceCNY float64
 
-	// 根据不同模型设置基础价格
+	// 根据不同模型设置基础价格（人民币，单位：元/百万token）
 	switch {
 	case strings.Contains(modelName, "doubao-seedance-1-0-lite"):
-		basePrice = 10 / 1000000.0 // 专业版价格更高
+		basePriceCNY = 10 / 1000000.0 // 轻量版价格
+	case strings.Contains(modelName, "doubao-seedance-1-0-pro"):
+		basePriceCNY = 15 / 1000000.0 // 专业版价格更高
 	case strings.Contains(modelName, "doubao-seaweed"):
-		basePrice = 30 / 1000000.0 // 轻量版价格适中
+		basePriceCNY = 30 / 1000000.0 // 海草版价格适中
 	case strings.Contains(modelName, "wan2.1-14b"):
-		basePrice = 50 / 1000000.0 // 标准价格
+		basePriceCNY = 50 / 1000000.0 // 标准价格
 	default:
-		basePrice = 50 / 1000000.0 // 默认价格
+		basePriceCNY = 50 / 1000000.0 // 默认价格
 	}
-	return int64(basePrice * float64(tokens) * config.QuotaPerUnit)
+
+	// 计算人民币费用
+	cnyAmount := basePriceCNY * float64(tokens)
+
+	// 转换为美元
+	usdAmount, exchangeErr := convertCNYToUSD(cnyAmount)
+	if exchangeErr != nil {
+		// 如果汇率转换失败，使用固定汇率7.2作为备选方案
+		log.Printf("Failed to get exchange rate for Doubao pricing: %v, using fallback rate 7.2", exchangeErr)
+		usdAmount = cnyAmount / 7.2
+	}
+
+	quota := int64(usdAmount * config.QuotaPerUnit)
+	log.Printf("Doubao pricing calculation: model=%s, tokens=%d, cny=%.6f, usd=%.6f, quota=%d",
+		modelName, tokens, cnyAmount, usdAmount, quota)
+
+	return quota
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
@@ -3225,7 +3308,7 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		if err != nil {
 			return openai.ErrorWrapper(fmt.Errorf("Error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
 		}
-		c.Data(http.StatusOK, "application/json", jsonResponse)
+		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	}
 
@@ -3276,14 +3359,14 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		return openai.ErrorWrapper(fmt.Errorf("Error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
 	}
 
-	c.Data(http.StatusOK, "application/json", jsonResponse)
+	c.Data(fileResp.StatusCode, "application/json", jsonResponse)
 	return nil
 }
 
 func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool {
 	videoTask, err := dbmodel.GetVideoTaskById(taskid)
 	if err != nil {
-		log.Printf("Failed to get video task: %v", err)
+		log.Printf("Failed to get video task for update: %v", err)
 		return false
 	}
 
@@ -3296,29 +3379,218 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 		return false
 	}
 
+	// 更新字段
 	videoTask.Status = status
 	if failreason != "" {
 		videoTask.FailReason = failreason
 	}
+
+	// 尝试更新数据库
 	err = videoTask.Update()
 	if err != nil {
-		log.Printf("Failed to update video task: %v", err)
-		return false
+		log.Printf("Failed to update video task %s using model method: %v", taskid, err)
+
+		// 如果Update失败，尝试直接使用SQL更新作为回退方案
+		log.Printf("Attempting direct SQL update for task %s", taskid)
+		updateFields := map[string]interface{}{
+			"status": status,
+		}
+		if failreason != "" {
+			updateFields["fail_reason"] = failreason
+		}
+
+		result := dbmodel.DB.Model(&dbmodel.Video{}).
+			Where("task_id = ?", taskid).
+			Updates(updateFields)
+
+		if result.Error != nil {
+			log.Printf("Direct SQL update also failed for task %s: %v", taskid, result.Error)
+			return false
+		}
+
+		if result.RowsAffected == 0 {
+			log.Printf("No rows affected for task %s update - record may not exist", taskid)
+			return false
+		}
+
+		log.Printf("Direct SQL update successful for task %s, affected rows: %d", taskid, result.RowsAffected)
+	} else {
+		log.Printf("Model update successful for task %s", taskid)
 	}
 
-	log.Printf("Task %s status updated from %s to %s", taskid, oldStatus, status)
+	log.Printf("Task %s status updated from '%s' to '%s'", taskid, oldStatus, status)
 
 	// 返回是否需要退款：只有当状态变为失败且之前不是失败状态时才退款
 	// 空字符串被视为非失败状态，这是正确的，因为任务刚创建时就是这个状态
-	return (oldStatus != "failed" && status == "failed")
+	needRefund := (oldStatus != "failed" && status == "failed")
+	log.Printf("Task %s refund decision: oldStatus='%s', newStatus='%s', needRefund=%v", taskid, oldStatus, status, needRefund)
+
+	return needRefund
 }
 
 func CompensateVideoTask(taskid string) {
 	videoTask, err := dbmodel.GetVideoTaskById(taskid)
 	if err != nil {
-		log.Printf("Failed to get video task: %v", err)
+		log.Printf("Failed to get video task for compensation: %v", err)
 		return
 	}
 	quota := videoTask.Quota
-	dbmodel.IncreaseUserQuota(videoTask.UserId, quota)
+	log.Printf("Compensating user %d for failed task %s with quota %d", videoTask.UserId, taskid, quota)
+
+	err = dbmodel.IncreaseUserQuota(videoTask.UserId, quota)
+	if err != nil {
+		log.Printf("Failed to compensate user %d for task %s: %v", videoTask.UserId, taskid, err)
+	} else {
+		log.Printf("Successfully compensated user %d for task %s with quota %d", videoTask.UserId, taskid, quota)
+	}
+}
+
+// 汇率API响应结构体
+type ExchangeRateResponse struct {
+	Result             string             `json:"result"`
+	BaseCode           string             `json:"base_code"`
+	ConversionRates    map[string]float64 `json:"conversion_rates"`
+	TimeLastUpdateUnix int64              `json:"time_last_update_unix"`
+}
+
+// 中国银行汇率API响应结构体
+type BOCRateResponse struct {
+	Success bool `json:"success"`
+	Result  struct {
+		USD float64 `json:"USD"`
+	} `json:"result"`
+}
+
+// 汇率管理器
+type ExchangeRateManager struct {
+	cnyToUSDRate  float64
+	lastUpdate    time.Time
+	cacheDuration time.Duration
+}
+
+var exchangeManager = &ExchangeRateManager{
+	cacheDuration: 10 * time.Minute, // 缓存10分钟
+}
+
+// 从ExchangeRate-API获取汇率
+func fetchRateFromExchangeRateAPI() (float64, error) {
+	url := "https://api.exchangerate-api.com/v4/latest/CNY"
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch from ExchangeRate-API: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("ExchangeRate-API returned status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	var exchangeRate ExchangeRateResponse
+	if err := json.Unmarshal(body, &exchangeRate); err != nil {
+		return 0, fmt.Errorf("failed to parse JSON response: %v", err)
+	}
+
+	usdRate, exists := exchangeRate.ConversionRates["USD"]
+	if !exists {
+		return 0, fmt.Errorf("USD rate not found in response")
+	}
+
+	return usdRate, nil
+}
+
+// 从Fixer.io获取汇率（备选方案）
+func fetchRateFromFixer() (float64, error) {
+	// 注意：免费版需要注册获取API key
+	url := "http://data.fixer.io/api/latest?access_key=YOUR_API_KEY&base=CNY&symbols=USD"
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch from Fixer: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("Fixer API returned status code: %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("failed to parse Fixer response: %v", err)
+	}
+
+	if rates, ok := result["rates"].(map[string]interface{}); ok {
+		if usdRate, ok := rates["USD"].(float64); ok {
+			return usdRate, nil
+		}
+	}
+
+	return 0, fmt.Errorf("USD rate not found in Fixer response")
+}
+
+// 获取人民币对美元汇率（带缓存）
+func (e *ExchangeRateManager) getCNYToUSDRate() (float64, error) {
+	// 检查缓存是否有效
+	if time.Since(e.lastUpdate) < e.cacheDuration && e.cnyToUSDRate > 0 {
+		log.Printf("Using cached exchange rate: %.6f", e.cnyToUSDRate)
+		return e.cnyToUSDRate, nil
+	}
+
+	log.Printf("Fetching new exchange rate...")
+
+	// 尝试多个API源
+	var rate float64
+	var err error
+
+	// 首先尝试ExchangeRate-API
+	rate, err = fetchRateFromExchangeRateAPI()
+	if err != nil {
+		log.Printf("ExchangeRate-API failed: %v", err)
+
+		// 如果第一个API失败，可以尝试其他API
+		// rate, err = fetchRateFromFixer()
+		// if err != nil {
+		//     log.Printf("Fixer API also failed: %v", err)
+		//     // 使用默认汇率作为最后的备选方案
+		//     rate = 0.14 // 大概的CNY to USD汇率
+		//     log.Printf("Using fallback exchange rate: %.6f", rate)
+		// }
+
+		// 如果API失败，使用默认汇率
+		rate = 0.14 // 大概的CNY to USD汇率
+		log.Printf("Using fallback exchange rate: %.6f", rate)
+	}
+
+	// 更新缓存
+	e.cnyToUSDRate = rate
+	e.lastUpdate = time.Now()
+
+	log.Printf("Updated exchange rate: %.6f CNY to USD", rate)
+	return rate, nil
+}
+
+// 将人民币转换为美元
+func convertCNYToUSD(cnyAmount float64) (float64, error) {
+	rate, err := exchangeManager.getCNYToUSDRate()
+	if err != nil {
+		return 0, err
+	}
+
+	usdAmount := cnyAmount * rate
+	log.Printf("Converted %.6f CNY to %.6f USD (rate: %.6f)", cnyAmount, usdAmount, rate)
+	return usdAmount, nil
+}
+
+// 手动更新汇率（可以通过API调用）
+func refreshExchangeRate() error {
+	exchangeManager.lastUpdate = time.Time{} // 重置缓存时间
+	_, err := exchangeManager.getCNYToUSDRate()
+	return err
 }
