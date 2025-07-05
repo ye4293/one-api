@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,10 +16,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	commonConfig "github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -33,6 +38,89 @@ import (
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
+
+// UploadVideoBase64ToR2 将base64编码的视频数据上传到Cloudflare R2并返回URL
+func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (string, error) {
+	// 参数检查
+	if base64Data == "" {
+		return "", fmt.Errorf("base64 data is required")
+	}
+	if videoFormat == "" {
+		videoFormat = "mp4" // 默认格式
+	}
+
+	// 解码base64数据
+	videoData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 data: %v", err)
+	}
+
+	// 生成唯一的文件名
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("%d_%d_%x.%s", userId, timestamp, randomBytes, videoFormat)
+
+	// 确定内容类型
+	var contentType string
+	switch strings.ToLower(videoFormat) {
+	case "mp4":
+		contentType = "video/mp4"
+	case "avi":
+		contentType = "video/x-msvideo"
+	case "mov":
+		contentType = "video/quicktime"
+	case "wmv":
+		contentType = "video/x-ms-wmv"
+	case "flv":
+		contentType = "video/x-flv"
+	case "webm":
+		contentType = "video/webm"
+	default:
+		contentType = "video/mp4"
+	}
+
+	// 创建上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// 加载AWS配置
+	cfg, err := awsConfig.LoadDefaultConfig(ctx,
+		awsConfig.WithRegion("us-east-1"),
+		awsConfig.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     commonConfig.CfFileAccessKey,
+				SecretAccessKey: commonConfig.CfFileSecretKey,
+			}, nil
+		}))),
+		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: commonConfig.CfFileEndpoint}, nil
+			}),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("unable to load SDK config: %w", err)
+	}
+
+	// 创建S3客户端
+	client := s3.NewFromConfig(cfg)
+
+	// 上传视频到R2
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(commonConfig.CfBucketFileName),
+		Key:         aws.String(filename),
+		Body:        bytes.NewReader(videoData),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload video to R2: %w", err)
+	}
+
+	// 生成文件URL
+	fileUrl := "https://file.ezlinkai.com/"
+	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+}
 
 func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
@@ -2794,9 +2882,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			if !strings.HasPrefix(bodyStr, "{") && len(bodyStr) > 1000 {
 				// 移除mimeType部分，保留视频数据
 				videoData := strings.Split(bodyStr, "mimeType:video/mp4")[0]
+				videoResult := "data:video/mp4;base64," + videoData
+
+				// 检查response_format，如果为"url"则上传到R2
+				responseFormat := c.GetString("response_format")
+				if responseFormat == "url" {
+					// 上传到R2并获取URL
+					if url, err := UploadVideoBase64ToR2(videoData, videoTask.UserId, "mp4"); err == nil {
+						videoResult = url
+					}
+					// 如果上传失败，继续使用原始base64数据
+				}
+
 				generalResponse := model.GeneralFinalVideoResponse{
 					TaskId:      taskId,
-					VideoResult: "data:video/mp4;base64," + videoData,
+					VideoResult: videoResult,
 					VideoId:     taskId,
 					TaskStatus:  "succeed",
 					Message:     "Video generated successfully",
@@ -2825,9 +2925,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		// 额外检查：如果响应很大且包含大量可能的base64数据
 		if len(bodyStr) > 50000 && !strings.HasPrefix(bodyStr, "{") {
+			videoResult := "data:video/mp4;base64," + bodyStr
+
+			// 检查response_format，如果为"url"则上传到R2
+			responseFormat := c.GetString("response_format")
+			if responseFormat == "url" {
+				// 上传到R2并获取URL
+				if url, err := UploadVideoBase64ToR2(bodyStr, videoTask.UserId, "mp4"); err == nil {
+					videoResult = url
+				}
+				// 如果上传失败，继续使用原始base64数据
+			}
+
 			generalResponse := model.GeneralFinalVideoResponse{
 				TaskId:      taskId,
-				VideoResult: "data:video/mp4;base64," + bodyStr,
+				VideoResult: videoResult,
 				VideoId:     taskId,
 				TaskStatus:  "succeed",
 				Message:     "Video generated successfully (large data)",
@@ -2858,9 +2970,22 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		if err := json.Unmarshal(body, &veoResp); err != nil {
 			// 如果JSON解析失败，可能是二进制视频数据
 			if len(body) > 1000 { // 足够大的响应，可能是视频文件
+				base64Data := base64.StdEncoding.EncodeToString(body)
+				videoResult := "data:video/mp4;base64," + base64Data
+
+				// 检查response_format，如果为"url"则上传到R2
+				responseFormat := c.GetString("response_format")
+				if responseFormat == "url" {
+					// 上传到R2并获取URL
+					if url, err := UploadVideoBase64ToR2(base64Data, videoTask.UserId, "mp4"); err == nil {
+						videoResult = url
+					}
+					// 如果上传失败，继续使用原始base64数据
+				}
+
 				generalResponse := model.GeneralFinalVideoResponse{
 					TaskId:      taskId,
-					VideoResult: "data:video/mp4;base64," + base64.StdEncoding.EncodeToString(body),
+					VideoResult: videoResult,
 					VideoId:     taskId,
 					TaskStatus:  "succeed",
 					Message:     "Video generated successfully (binary data)",
@@ -2916,13 +3041,37 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 									generalResponse.TaskStatus = "succeed"
 								} else if videoData, ok := video["videoData"].(string); ok {
 									// 处理 base64 编码的视频数据
-									generalResponse.VideoResult = "data:video/mp4;base64," + videoData
+									videoResult := "data:video/mp4;base64," + videoData
+
+									// 检查response_format，如果为"url"则上传到R2
+									responseFormat := c.GetString("response_format")
+									if responseFormat == "url" {
+										// 上传到R2并获取URL
+										if url, err := UploadVideoBase64ToR2(videoData, videoTask.UserId, "mp4"); err == nil {
+											videoResult = url
+										}
+										// 如果上传失败，继续使用原始base64数据
+									}
+
+									generalResponse.VideoResult = videoResult
 									generalResponse.TaskStatus = "succeed"
 								} else {
 									// 检查其他可能的字段名称
 									for _, value := range video {
 										if valueStr, ok := value.(string); ok && len(valueStr) > 1000 {
-											generalResponse.VideoResult = "data:video/mp4;base64," + valueStr
+											videoResult := "data:video/mp4;base64," + valueStr
+
+											// 检查response_format，如果为"url"则上传到R2
+											responseFormat := c.GetString("response_format")
+											if responseFormat == "url" {
+												// 上传到R2并获取URL
+												if url, err := UploadVideoBase64ToR2(valueStr, videoTask.UserId, "mp4"); err == nil {
+													videoResult = url
+												}
+												// 如果上传失败，继续使用原始base64数据
+											}
+
+											generalResponse.VideoResult = videoResult
 											generalResponse.TaskStatus = "succeed"
 											break
 										}

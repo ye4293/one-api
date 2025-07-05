@@ -3,6 +3,8 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -327,4 +329,121 @@ func DeletiFile(c *gin.Context) {
 		"success": true,
 	})
 	return
+}
+
+// UploadVideoBase64ToR2 将base64编码的视频数据上传到Cloudflare R2并返回URL
+func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (string, error) {
+	// 参数检查
+	if base64Data == "" {
+		return "", fmt.Errorf("base64 data is required")
+	}
+	if videoFormat == "" {
+		videoFormat = "mp4" // 默认格式
+	}
+
+	// 解码base64数据
+	videoData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 data: %v", err)
+	}
+
+	// 生成唯一的文件名
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("%d_%d_%x.%s", userId, timestamp, randomBytes, videoFormat)
+
+	// 确定内容类型
+	var contentType string
+	switch strings.ToLower(videoFormat) {
+	case "mp4":
+		contentType = "video/mp4"
+	case "avi":
+		contentType = "video/x-msvideo"
+	case "mov":
+		contentType = "video/quicktime"
+	case "wmv":
+		contentType = "video/x-ms-wmv"
+	case "flv":
+		contentType = "video/x-flv"
+	case "webm":
+		contentType = "video/webm"
+	default:
+		contentType = "video/mp4"
+	}
+
+	// 创建上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// 加载AWS配置
+	cfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     commonConfig.CfFileAccessKey,
+				SecretAccessKey: commonConfig.CfFileSecretKey,
+			}, nil
+		}))),
+		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: commonConfig.CfFileEndpoint}, nil
+			}),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("unable to load SDK config: %w", err)
+	}
+
+	// 创建S3客户端
+	client := s3.NewFromConfig(cfg)
+
+	// 上传视频到R2
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(commonConfig.CfBucketFileName),
+		Key:         aws.String(filename),
+		Body:        bytes.NewReader(videoData),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload video to R2: %w", err)
+	}
+
+	// 生成文件URL
+	fileUrl := "https://pub-749922e955214210b0ae4eb664a62eca.r2.dev"
+	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+}
+
+// ProcessVideoResult 处理视频结果，如果是base64数据则上传到R2并返回URL
+func ProcessVideoResult(videoResult string, userId int) string {
+	// 检查是否是base64数据格式
+	if strings.HasPrefix(videoResult, "data:video/") {
+		// 提取base64数据
+		parts := strings.Split(videoResult, ",")
+		if len(parts) != 2 {
+			return videoResult // 如果格式不正确，返回原始数据
+		}
+
+		base64Data := parts[1]
+
+		// 提取视频格式
+		mimeType := strings.Split(parts[0], ";")[0]
+		videoFormat := "mp4" // 默认格式
+		if strings.Contains(mimeType, "video/") {
+			videoFormat = strings.TrimPrefix(mimeType, "data:video/")
+		}
+
+		// 上传到R2
+		url, err := UploadVideoBase64ToR2(base64Data, userId, videoFormat)
+		if err != nil {
+			// 如果上传失败，返回原始数据
+			fmt.Printf("Failed to upload video to R2: %v\n", err)
+			return videoResult
+		}
+
+		return url
+	}
+
+	// 如果不是base64格式，直接返回
+	return videoResult
 }
