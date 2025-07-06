@@ -10,7 +10,7 @@ import (
 type Video struct {
 	Prompt     string `json:"prompt"`
 	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id" gorm:"type:varchar(200);primaryKey"`
+	TaskId     string `json:"task_id" gorm:"type:varchar(200)"`
 	Type       string `json:"type"`
 	Provider   string `json:"provider"`
 	Mode       string `json:"mode"`
@@ -34,9 +34,9 @@ func (video *Video) Insert() error {
 
 func (video *Video) Update() error {
 	var err error
-	// TaskId现在是主键，可以直接使用GORM的Updates方法
+	// TaskId现在是主键，需要提供WHERE条件进行更新
 	if video.TaskId != "" {
-		err = DB.Model(video).Updates(video).Error
+		err = DB.Model(&Video{}).Where("task_id = ?", video.TaskId).Updates(video).Error
 	} else {
 		return fmt.Errorf("TaskId must be provided for update")
 	}

@@ -354,6 +354,8 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
 	}
 
+	log.Printf("veo-full-request-url: %s", fullRequestUrl)
+
 	// 读取原始请求体
 	var reqBody map[string]interface{}
 	if err := common.UnmarshalBodyReusable(c, &reqBody); err != nil {
@@ -371,10 +373,14 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 		params = make(map[string]interface{})
 	}
 
-	// 处理generateAudio
-	if generateAudio, ok := params["generateAudio"]; ok {
-		c.Set("generateAudio", generateAudio)
+	// 处理generateAudio，默认为true
+	generateAudio := true
+	if val, ok := params["generateAudio"]; ok {
+		if boolVal, ok := val.(bool); ok {
+			generateAudio = boolVal
+		}
 	}
+	c.Set("generateAudio", generateAudio)
 
 	// 处理durationSeconds
 	duration := 8
@@ -475,23 +481,37 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 		// 从响应中提取任务ID或操作名称
 		var taskId string
 		if name, ok := veoResponse["name"].(string); ok {
-			taskId = name
+			// 只取操作ID部分，不暴露项目信息
+			parts := strings.Split(name, "/")
+			if len(parts) > 0 {
+				taskId = parts[len(parts)-1] // 取最后一部分作为taskId
+			} else {
+				taskId = name
+			}
 		}
 
-		// 获取存储的参数
 		generateAudio, _ := c.Get("generateAudio")
 		durationSeconds := c.GetInt("durationSeconds")
+
+		// 根据generateAudio设置videoMode
+		var videoMode string
+		if audioEnabled, ok := generateAudio.(bool); ok && audioEnabled {
+			videoMode = "AudioVideo"
+		} else {
+			videoMode = "NoAudioVideo"
+		}
 
 		// 计算配额 - 这里需要根据generateAudio和durationSeconds来计算
 		quota := calculateVeoQuota(meta, modelName, generateAudio, durationSeconds)
 
 		// 创建视频日志
-		err := CreateVideoLog("vertexai", taskId, meta, "", strconv.Itoa(durationSeconds), "", "", quota)
+		err := CreateVideoLog("vertexai", taskId, meta, videoMode, strconv.Itoa(durationSeconds), "", "", quota)
 		if err != nil {
+			logger.Warnf(ctx, "Failed to create video log: %v", err)
 			return openai.ErrorWrapper(
-				fmt.Errorf("API error: %s", err),
-				"api_error",
-				http.StatusBadRequest,
+				fmt.Errorf("Error create video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
 			)
 		}
 
@@ -512,10 +532,12 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 			)
 		}
 
+		// 使用带videoTaskId的日志记录函数
+		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", strconv.Itoa(durationSeconds), quota, taskId)
+
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
-
-		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", strconv.Itoa(durationSeconds), quota)
+		return nil
 	} else {
 		// 处理错误响应
 		errorMsg := "Unknown error"
@@ -2163,7 +2185,14 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		)
 	}
 	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
-	cfg, _ := channel.LoadConfig()
+	cfg, err := channel.LoadConfig()
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("failed to load channel config: %v", err),
+			"config_error",
+			http.StatusInternalServerError,
+		)
+	}
 
 	var fullRequestUrl string
 	switch videoTask.Provider {
@@ -2218,23 +2247,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	case "doubao":
 		fullRequestUrl = fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", *channel.BaseURL, taskId)
 	case "vertexai":
-		// 对于 VertexAI Veo，taskId 是完整的操作名称
-		// 需要使用 fetchPredictOperation 方法来查询状态
-		// 解析 taskId 提取必要信息
+		// 对于 VertexAI Veo，taskId 现在只是操作ID部分
+		// 需要从渠道配置重新构建完整的操作名称
+		// 配置已在函数开始时读取，直接使用
 
-		// 示例 taskId: projects/veo3-463004/locations/global/publishers/google/models/veo-3.0-generate-preview/operations/ff8786d9-2b24-40b7-beb3-fd4147c92f8a
-		parts := strings.Split(taskId, "/")
-		if len(parts) < 8 {
-			return openai.ErrorWrapper(
-				fmt.Errorf("invalid operation name format: %s", taskId),
-				"invalid_operation_format",
-				http.StatusBadRequest,
-			)
-		}
-
-		projectId := parts[1]
-		region := parts[3]
-		modelId := parts[7]
+		projectId := cfg.VertexAIProjectID
+		region := cfg.Region
+		modelId := videoTask.Model // 从数据库中的视频任务记录获取模型名
 
 		// 构建 fetchPredictOperation URL
 		var baseURL string
@@ -2255,10 +2274,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 	// 创建新的请求
 	var req *http.Request
+	var fullOperationName string // 声明变量
+
 	if videoTask.Provider == "vertexai" {
-		// VertexAI 需要 POST 请求，并在请求体中包含操作名称
+		// 配置已在函数开始时读取，直接使用
+		projectId := cfg.VertexAIProjectID
+		region := cfg.Region
+		modelId := videoTask.Model
+
+		// 重新构建完整的操作名称用于API请求
+		fullOperationName = fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s/operations/%s",
+			projectId, region, modelId, taskId)
+
+		// VertexAI 需要 POST 请求，并在请求体中包含完整的操作名称
 		requestBody := map[string]string{
-			"operationName": taskId,
+			"operationName": fullOperationName,
 		}
 		jsonBody, err := json.Marshal(requestBody)
 		if err != nil {
