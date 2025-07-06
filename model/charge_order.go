@@ -12,6 +12,7 @@ import (
 	"github.com/stripe/stripe-go/v78/paymentlink"
 	"github.com/stripe/stripe-go/v78/webhook"
 	"gorm.io/gorm"
+	"errors"
 )
 
 type ChargeOrder struct {
@@ -185,7 +186,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 			success := UpdateChargeOrderStatusWithCondition(orderId, userId, StatusMap["create"], StatusMap["success"])
 			if !success {
 				// 订单已被处理或状态不符合预期，直接返回
-				return nil
+				return errors.New("订单已被处理或状态不符合预期")
 			}
 			//更新订单详细信息
 			amount := float64(charge.Amount / 100)

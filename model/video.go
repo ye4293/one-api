@@ -10,7 +10,7 @@ import (
 type Video struct {
 	Prompt     string `json:"prompt"`
 	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id" gorm:"type:varchar(200);primaryKey"`
+	TaskId     string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:30"`
 	Type       string `json:"type"`
 	Provider   string `json:"provider"`
 	Mode       string `json:"mode"`
