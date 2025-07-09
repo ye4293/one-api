@@ -2,9 +2,11 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -185,7 +187,7 @@ func stripeChargeSuccess(charge *stripe.Charge) error {
 			success := UpdateChargeOrderStatusWithCondition(orderId, userId, StatusMap["create"], StatusMap["success"])
 			if !success {
 				// 订单已被处理或状态不符合预期，直接返回
-				return nil
+				return errors.New("订单已被处理或状态不符合预期")
 			}
 			//更新订单详细信息
 			amount := float64(charge.Amount / 100)

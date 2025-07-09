@@ -10,7 +10,7 @@ import (
 type Video struct {
 	Prompt     string `json:"prompt"`
 	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id" gorm:"type:varchar(200)"`
+	TaskId     string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:40"`
 	Type       string `json:"type"`
 	Provider   string `json:"provider"`
 	Mode       string `json:"mode"`
@@ -222,4 +222,21 @@ func GetCurrentUserVideosAndCount(
 	}
 
 	return videos, total, nil
+}
+
+// UpdateStoreUrl 更新视频任务的存储URL
+func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
+	result := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("store_url", storeUrl)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update store_url for task_id %s: %w", taskId, result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
 }

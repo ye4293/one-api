@@ -382,6 +382,10 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	}
 	c.Set("generateAudio", generateAudio)
 
+	if _, ok := params["sampleCount"]; ok { //暂时处理只支持一个视频结果
+		delete(params, "sampleCount")
+	}
+
 	// 处理durationSeconds
 	duration := 8
 	if v, ok := params["durationSeconds"]; ok {
@@ -411,18 +415,18 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	}
 
 	// 发送请求并处理响应
-	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.ActualModelName)
+	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName)
 }
 
 func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	// 预扣费检查 - 预扣0.2，后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
+	// 预扣费检查 - 预扣6.0，后续处理完多退少补
+	quota := int64(6.0 * config.QuotaPerUnit)
 	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
 		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
 	}
 	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+		return openai.ErrorWrapper(fmt.Errorf("余额不足：Veo3模型价格较高，需要预扣费约$6.0，请充值后重试"), "Insufficient balance: Veo3 model requires approximately $6.0 pre-payment, please recharge and try again", http.StatusBadRequest)
 	}
 
 	// 创建VertexAI适配器实例
@@ -532,8 +536,8 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 			)
 		}
 
-		// 使用带videoTaskId的日志记录函数
-		handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", strconv.Itoa(durationSeconds), quota, taskId)
+		// 使用带videoTaskId的日志记录函数 - 确保使用正确的模型名称
+		handleSuccessfulResponseWithQuota(c, ctx, meta, meta.OriginModelName, "", strconv.Itoa(durationSeconds), quota, taskId)
 
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
@@ -2928,6 +2932,32 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	} else if videoTask.Provider == "vertexai" {
 		defer resp.Body.Close()
 
+		// 首先检查数据库中是否已有存储的URL
+		if videoTask.StoreUrl != "" {
+			log.Printf("Found existing store URL for task %s: %s", taskId, videoTask.StoreUrl)
+
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:      taskId,
+				VideoResult: videoTask.StoreUrl,
+				VideoId:     taskId,
+				TaskStatus:  "succeed",
+				Message:     "Video retrieved from cache",
+			}
+
+			// 序列化响应
+			jsonResponse, err := json.Marshal(generalResponse)
+			if err != nil {
+				return openai.ErrorWrapper(
+					fmt.Errorf("error marshaling response: %s", err),
+					"internal_error",
+					http.StatusInternalServerError,
+				)
+			}
+
+			c.Data(resp.StatusCode, "application/json", jsonResponse)
+			return nil
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -2954,6 +2984,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					// 上传到R2并获取URL
 					if url, err := UploadVideoBase64ToR2(videoData, videoTask.UserId, "mp4"); err == nil {
 						videoResult = url
+						// 保存URL到数据库
+						if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
+							log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
+						} else {
+							log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
+						}
 					}
 					// 如果上传失败，继续使用原始base64数据
 				}
@@ -3001,6 +3037,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				// 上传到R2并获取URL
 				if url, err := UploadVideoBase64ToR2(bodyStr, videoTask.UserId, "mp4"); err == nil {
 					videoResult = url
+					// 保存URL到数据库
+					if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
+						log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
+					} else {
+						log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
+					}
 				}
 				// 如果上传失败，继续使用原始base64数据
 			}
@@ -3051,6 +3093,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					// 上传到R2并获取URL
 					if url, err := UploadVideoBase64ToR2(base64Data, videoTask.UserId, "mp4"); err == nil {
 						videoResult = url
+						// 保存URL到数据库
+						if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
+							log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
+						} else {
+							log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
+						}
 					}
 					// 如果上传失败，继续使用原始base64数据
 				}
@@ -3134,6 +3182,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 										// 上传到R2并获取URL
 										if url, err := UploadVideoBase64ToR2(videoData, videoTask.UserId, "mp4"); err == nil {
 											videoResult = url
+											// 保存URL到数据库
+											if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
+												log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
+											} else {
+												log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
+											}
 										}
 										// 如果上传失败，继续使用原始base64数据
 									}
@@ -3152,6 +3206,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 												// 上传到R2并获取URL
 												if url, err := UploadVideoBase64ToR2(valueStr, videoTask.UserId, "mp4"); err == nil {
 													videoResult = url
+													// 保存URL到数据库
+													if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
+														log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
+													} else {
+														log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
+													}
 												}
 												// 如果上传失败，继续使用原始base64数据
 											}

@@ -35,7 +35,7 @@ type Log struct {
 	Provider         string  `json:"provider"`
 	XRequestID       string  `json:"x_request_id"`
 	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
-	VideoTaskId      string  `json:"video_task_id" gorm:"default:''"`
+	VideoTaskId      string  `json:"video_task_id" gorm:"type:varchar(200);index:idx_video_task_id;default:''"`
 }
 
 const (
