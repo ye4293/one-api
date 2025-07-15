@@ -31,6 +31,7 @@ type Channel struct {
 	ModelMapping       *string `json:"model_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
+	ChannelRatio       float64 `json:"channel_ratio" gorm:"type:float;default:1.0"`
 }
 
 type ChannelConfig struct {
@@ -302,4 +303,14 @@ func DeleteChannelByStatus(status int64) (int64, error) {
 func DeleteDisabledChannel() (int64, error) {
 	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
 	return result.RowsAffected, result.Error
+}
+
+// CompensateChannelQuota 补偿渠道配额，用于任务失败时减少渠道的已使用配额
+func CompensateChannelQuota(channelId int, quota int64) error {
+	err := DB.Model(&Channel{}).Where("id = ?", channelId).Update("used_quota", gorm.Expr("used_quota - ?", quota)).Error
+	if err != nil {
+		logger.SysError("failed to compensate channel used quota: " + err.Error())
+		return err
+	}
+	return nil
 }

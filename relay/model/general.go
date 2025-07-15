@@ -76,13 +76,18 @@ type GeneralVideoResponse struct {
 	Message    string `json:"message"`
 }
 
+type VideoResultItem struct {
+	Url string `json:"url"`
+}
+
 type GeneralFinalVideoResponse struct {
-	TaskId      string `json:"task_id"`
-	VideoResult string `json:"video_result"`
-	VideoId     string `json:"video_id"`
-	TaskStatus  string `json:"task_status"`
-	Message     string `json:"message"`
-	Duration    string `json:"duration"`
+	TaskId       string            `json:"task_id"`
+	VideoResult  string            `json:"video_result,omitempty"`
+	VideoResults []VideoResultItem `json:"video_results,omitempty"`
+	VideoId      string            `json:"video_id"`
+	TaskStatus   string            `json:"task_status"`
+	Message      string            `json:"message"`
+	Duration     string            `json:"duration"`
 }
 
 type GeneralImageResponseAsync struct {

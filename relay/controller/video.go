@@ -566,6 +566,8 @@ func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio int
 	switch modelName {
 	case "veo-3.0-generate-preview":
 		basePrice = 0.75 // Veo 3版本带音频的价格
+	case "veo-3.0-fast-generate-preview":
+		basePrice = 0.40 // Veo 3 Fast版本带音频的价格
 	case "veo-2.0-generate-001":
 		basePrice = 0.50 // Veo 2版本价格
 	default:
@@ -578,11 +580,15 @@ func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio int
 			// 如果是veo-3.0-generate-preview模型且生成音频，使用带音频价格
 			if modelName == "veo-3.0-generate-preview" {
 				basePrice = 0.75
+			} else if modelName == "veo-3.0-fast-generate-preview" {
+				basePrice = 0.40
 			}
 		} else {
 			// 如果是veo-3.0但不生成音频，使用不带音频价格
 			if modelName == "veo-3.0-generate-preview" {
 				basePrice = 0.50
+			} else if modelName == "veo-3.0-fast-generate-preview" {
+				basePrice = 0.25
 			}
 		}
 	}
@@ -1505,7 +1511,7 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 		sk := meta.Config.SK
 
 		// Generate JWT token
-		token = encodeJWTToken(ak, sk)
+		token = EncodeJWTToken(ak, sk)
 	} else {
 		token = meta.APIKey
 	}
@@ -1584,7 +1590,7 @@ func sendRequestRunwayAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	return handleRunwayVideoResponse(c, ctx, videoResponse, body, meta, modelName)
 }
 
-func encodeJWTToken(ak, sk string) string {
+func EncodeJWTToken(ak, sk string) string {
 	claims := jwt.MapClaims{
 		"iss": ak,
 		"exp": time.Now().Add(30 * time.Minute).Unix(),
@@ -2315,7 +2321,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 
 	if videoTask.Provider == "kling" && channel.Type == 41 {
-		token := encodeJWTToken(cfg.AK, cfg.SK)
+		token := EncodeJWTToken(cfg.AK, cfg.SK)
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -2423,6 +2429,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 如果任务成功且有视频结果，添加到响应中
 		if zhipuResp.TaskStatus == "SUCCESS" && len(zhipuResp.VideoResults) > 0 {
 			generalResponse.VideoResult = zhipuResp.VideoResults[0].URL
+			// 同时设置 VideoResults
+			generalResponse.VideoResults = []model.VideoResultItem{
+				{Url: zhipuResp.VideoResults[0].URL},
+			}
 		}
 
 		// 更新任务状态并检查是否需要退款
@@ -2504,6 +2514,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		if klingResp.Data.TaskStatus == "succeed" && len(klingResp.Data.TaskResult.Videos) > 0 {
 			generalResponse.VideoResult = klingResp.Data.TaskResult.Videos[0].URL
 			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
+			// 同时设置 VideoResults
+			generalResponse.VideoResults = []model.VideoResultItem{
+				{Url: klingResp.Data.TaskResult.Videos[0].URL},
+			}
 		}
 
 		// 更新任务状态并检查是否需要退款
@@ -2565,6 +2579,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 如果任务成功且有视频结果，添加到响应中
 		if runwayResp.Status == "SUCCEEDED" && len(runwayResp.Output) > 0 {
 			generalResponse.VideoResult = runwayResp.Output[0]
+			// 同时设置 VideoResults
+			generalResponse.VideoResults = []model.VideoResultItem{
+				{Url: runwayResp.Output[0]},
+			}
 		} else {
 			log.Printf("Task not succeeded or no output. Status: %s, Output length: %d",
 				runwayResp.Status, len(runwayResp.Output))
@@ -2632,6 +2650,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				// 获取 video URL
 				if videoURL, ok := assets["video"].(string); ok {
 					generalResponse.VideoResult = videoURL
+					// 同时设置 VideoResults
+					generalResponse.VideoResults = []model.VideoResultItem{
+						{Url: videoURL},
+					}
 				} else {
 					log.Printf("Video URL not found or invalid type in assets")
 				}
@@ -2713,6 +2735,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				} else {
 					generalResponse.TaskStatus = "succeed"
 					generalResponse.VideoResult = viggleResp.Data.Data[0].Result
+					// 同时设置 VideoResults
+					generalResponse.VideoResults = []model.VideoResultItem{
+						{Url: viggleResp.Data.Data[0].Result},
+					}
 				}
 			} else {
 				// code 不为 0 的情况都视为失败
@@ -2787,6 +2813,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		if pixverseResp.Resp.Url != "" {
 			generalResponse.VideoResult = pixverseResp.Resp.Url
+			// 同时设置 VideoResults
+			generalResponse.VideoResults = []model.VideoResultItem{
+				{Url: pixverseResp.Resp.Url},
+			}
 		}
 
 		// 检查任务状态，如果ErrCode不为0则为失败
@@ -2863,6 +2893,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			generalResponse.TaskStatus = "succeeded"
 			if doubaoResp.Content.VideoURL != "" {
 				generalResponse.VideoResult = doubaoResp.Content.VideoURL
+				// 同时设置 VideoResults
+				generalResponse.VideoResults = []model.VideoResultItem{
+					{Url: doubaoResp.Content.VideoURL},
+				}
 			}
 		case "failed":
 			generalResponse.TaskStatus = "failed"
@@ -2942,6 +2976,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				VideoId:     taskId,
 				TaskStatus:  "succeed",
 				Message:     "Video retrieved from cache",
+				// 同时设置 VideoResults
+				VideoResults: []model.VideoResultItem{
+					{Url: videoTask.StoreUrl},
+				},
 			}
 
 			// 序列化响应
@@ -3000,6 +3038,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					VideoId:     taskId,
 					TaskStatus:  "succeed",
 					Message:     "Video generated successfully",
+					// 同时设置 VideoResults
+					VideoResults: []model.VideoResultItem{
+						{Url: videoResult},
+					},
 				}
 
 				// 更新任务状态并检查是否需要退款
@@ -3053,6 +3095,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				VideoId:     taskId,
 				TaskStatus:  "succeed",
 				Message:     "Video generated successfully (large data)",
+				// 同时设置 VideoResults
+				VideoResults: []model.VideoResultItem{
+					{Url: videoResult},
+				},
 			}
 
 			// 更新任务状态并检查是否需要退款
@@ -3109,6 +3155,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					VideoId:     taskId,
 					TaskStatus:  "succeed",
 					Message:     "Video generated successfully (binary data)",
+					// 同时设置 VideoResults
+					VideoResults: []model.VideoResultItem{
+						{Url: videoResult},
+					},
 				}
 
 				// 更新任务状态并检查是否需要退款
@@ -3163,15 +3213,31 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 								if gcsUri, ok := video["gcsUri"].(string); ok {
 									generalResponse.VideoResult = gcsUri
 									generalResponse.TaskStatus = "succeed"
+									// 同时设置 VideoResults
+									generalResponse.VideoResults = []model.VideoResultItem{
+										{Url: gcsUri},
+									}
 								} else if storageUri, ok := video["storageURI"].(string); ok {
 									generalResponse.VideoResult = storageUri
 									generalResponse.TaskStatus = "succeed"
+									// 同时设置 VideoResults
+									generalResponse.VideoResults = []model.VideoResultItem{
+										{Url: storageUri},
+									}
 								} else if uri, ok := video["uri"].(string); ok {
 									generalResponse.VideoResult = uri
 									generalResponse.TaskStatus = "succeed"
+									// 同时设置 VideoResults
+									generalResponse.VideoResults = []model.VideoResultItem{
+										{Url: uri},
+									}
 								} else if outputUri, ok := video["outputUri"].(string); ok {
 									generalResponse.VideoResult = outputUri
 									generalResponse.TaskStatus = "succeed"
+									// 同时设置 VideoResults
+									generalResponse.VideoResults = []model.VideoResultItem{
+										{Url: outputUri},
+									}
 								} else if videoData, ok := video["videoData"].(string); ok {
 									// 处理 base64 编码的视频数据
 									videoResult := "data:video/mp4;base64," + videoData
@@ -3194,6 +3260,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 									generalResponse.VideoResult = videoResult
 									generalResponse.TaskStatus = "succeed"
+									// 同时设置 VideoResults
+									generalResponse.VideoResults = []model.VideoResultItem{
+										{Url: videoResult},
+									}
 								} else {
 									// 检查其他可能的字段名称
 									for _, value := range video {
@@ -3218,6 +3288,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 											generalResponse.VideoResult = videoResult
 											generalResponse.TaskStatus = "succeed"
+											// 同时设置 VideoResults
+											generalResponse.VideoResults = []model.VideoResultItem{
+												{Url: videoResult},
+											}
 											break
 										}
 									}
@@ -3233,15 +3307,31 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 									if uri, ok := video["uri"].(string); ok {
 										generalResponse.VideoResult = uri
 										generalResponse.TaskStatus = "succeed"
+										// 同时设置 VideoResults
+										generalResponse.VideoResults = []model.VideoResultItem{
+											{Url: uri},
+										}
 									} else if gcsUri, ok := video["gcsUri"].(string); ok {
 										generalResponse.VideoResult = gcsUri
 										generalResponse.TaskStatus = "succeed"
+										// 同时设置 VideoResults
+										generalResponse.VideoResults = []model.VideoResultItem{
+											{Url: gcsUri},
+										}
 									} else if storageUri, ok := video["storageURI"].(string); ok {
 										generalResponse.VideoResult = storageUri
 										generalResponse.TaskStatus = "succeed"
+										// 同时设置 VideoResults
+										generalResponse.VideoResults = []model.VideoResultItem{
+											{Url: storageUri},
+										}
 									} else if outputUri, ok := video["outputUri"].(string); ok {
 										generalResponse.VideoResult = outputUri
 										generalResponse.TaskStatus = "succeed"
+										// 同时设置 VideoResults
+										generalResponse.VideoResults = []model.VideoResultItem{
+											{Url: outputUri},
+										}
 									}
 								}
 							}
@@ -3428,6 +3518,10 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 	}
 
 	generalResponse.VideoResult = fileResponse.File.DownloadURL
+	// 同时设置 VideoResults
+	generalResponse.VideoResults = []model.VideoResultItem{
+		{Url: fileResponse.File.DownloadURL},
+	}
 	generalResponse.TaskStatus = "succeed" // 假设有 FileID 且能获取到下载 URL 就意味着成功
 
 	// 更新任务状态并检查是否需要退款
@@ -3527,12 +3621,23 @@ func CompensateVideoTask(taskid string) {
 	quota := videoTask.Quota
 	log.Printf("Compensating user %d for failed task %s with quota %d", videoTask.UserId, taskid, quota)
 
-	err = dbmodel.IncreaseUserQuota(videoTask.UserId, quota)
+	// 1. 补偿用户配额（增加余额、减少已使用配额和请求次数）
+	err = dbmodel.CompensateVideoTaskQuota(videoTask.UserId, quota)
 	if err != nil {
-		log.Printf("Failed to compensate user %d for task %s: %v", videoTask.UserId, taskid, err)
-	} else {
-		log.Printf("Successfully compensated user %d for task %s with quota %d", videoTask.UserId, taskid, quota)
+		log.Printf("Failed to compensate user quota for task %s: %v", taskid, err)
+		return
 	}
+	log.Printf("Successfully compensated user %d quota for task %s", videoTask.UserId, taskid)
+
+	// 2. 补偿渠道配额（减少渠道已使用配额）
+	err = dbmodel.CompensateChannelQuota(videoTask.ChannelId, quota)
+	if err != nil {
+		log.Printf("Failed to compensate channel quota for task %s: %v", taskid, err)
+	} else {
+		log.Printf("Successfully compensated channel %d quota for task %s", videoTask.ChannelId, taskid)
+	}
+
+	log.Printf("Successfully completed compensation for task %s: user %d and channel %d restored quota %d", taskid, videoTask.UserId, videoTask.ChannelId, quota)
 }
 
 // 汇率API响应结构体

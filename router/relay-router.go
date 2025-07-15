@@ -35,7 +35,7 @@ func SetRelayRouter(router *gin.Engine) {
 	asyncImageGetRouter := router.Group("/v1/async")
 	asyncImageGetRouter.Use(middleware.TokenAuth())
 	{
-		asyncImageGetRouter.GET("/images/generations", controller.RelayImageResult)
+		asyncImageGetRouter.GET("/images/result", controller.RelayImageResult)
 	}
 
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())

@@ -16,26 +16,27 @@ import (
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
 type User struct {
-	Id                  int    `json:"id"`
-	Username            string `json:"username" gorm:"unique;index" validate:"max=12"`
-	Password            string `json:"password" gorm:"not null;" validate:"min=8,max=20"`
-	DisplayName         string `json:"display_name" gorm:"index" validate:"max=20"`
-	Role                int    `json:"role" gorm:"type:int;default:1"`   // admin, util
-	Status              int    `json:"status" gorm:"type:int;default:1"` // enabled, disabled
-	Email               string `json:"email" gorm:"index" validate:"max=50"`
-	GitHubId            string `json:"github_id" gorm:"column:github_id;index"`
-	GoogleId            string `json:"google_id" gorm:"column:google_id;index"`
-	WeChatId            string `json:"wechat_id" gorm:"column:wechat_id;index"`
-	VerificationCode    string `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
-	AccessToken         string `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
-	Quota               int64  `json:"quota" gorm:"type:int;default:0"`
-	UsedQuota           int64  `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
-	RequestCount        int    `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group               string `json:"group" gorm:"type:varchar(32);default:'Lv1"`
-	AffCode             string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	InviterId           int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	UserRemindThreshold int64  `json:"user_remind_threshold"`
-	UserLastNoticeTime  int64  `json:"user_last_notice_time" gorm:"default:0"`
+	Id                   int    `json:"id"`
+	Username             string `json:"username" gorm:"unique;index" validate:"max=12"`
+	Password             string `json:"password" gorm:"not null;" validate:"min=8,max=20"`
+	DisplayName          string `json:"display_name" gorm:"index" validate:"max=20"`
+	Role                 int    `json:"role" gorm:"type:int;default:1"`   // admin, util
+	Status               int    `json:"status" gorm:"type:int;default:1"` // enabled, disabled
+	Email                string `json:"email" gorm:"index" validate:"max=50"`
+	GitHubId             string `json:"github_id" gorm:"column:github_id;index"`
+	GoogleId             string `json:"google_id" gorm:"column:google_id;index"`
+	WeChatId             string `json:"wechat_id" gorm:"column:wechat_id;index"`
+	VerificationCode     string `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
+	AccessToken          string `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
+	Quota                int64  `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota            int64  `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
+	RequestCount         int    `json:"request_count" gorm:"type:int;default:0;"`               // request number
+	Group                string `json:"group" gorm:"type:varchar(32);default:'Lv1"`
+	AffCode              string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	InviterId            int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	UserRemindThreshold  int64  `json:"user_remind_threshold"`
+	UserLastNoticeTime   int64  `json:"user_last_notice_time" gorm:"default:0"`
+	UserChannelTypeRatio string `json:"user_channel_type_ratio" gorm:"type:text;default:'{}'"`
 }
 
 func GetMaxUserId() int {
@@ -492,4 +493,56 @@ func updateUserRequestCount(id int, count int) {
 func GetUsernameById(id int) (username string) {
 	DB.Model(&User{}).Where("id = ?", id).Select("username").Find(&username)
 	return username
+}
+
+// UpdateUserChannelTypeRatio 更新数据库中的用户通道类型比例
+func UpdateUserChannelTypeRatio(userId int, channelTypeRatio string) error {
+	return DB.Model(&User{}).Where("id = ?", userId).Update("user_channel_type_ratio", channelTypeRatio).Error
+}
+
+// GetUserChannelTypeRatio 从数据库获取用户的通道类型比例
+func GetUserChannelTypeRatio(userId int) (string, error) {
+	var user User
+	err := DB.Where("id = ?", userId).Select("user_channel_type_ratio").First(&user).Error
+	if err != nil {
+		return "", err
+	}
+	return user.UserChannelTypeRatio, nil
+}
+
+// CompensateVideoTaskQuota 补偿视频任务失败时的用户配额
+// 此函数会：1. 增加用户余额 2. 减少已使用配额 3. 减少请求次数
+func CompensateVideoTaskQuota(userId int, quota int64) error {
+	// 开启事务以确保所有操作的原子性
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 1. 增加用户余额
+	err := tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", quota)).Error
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 2. 减少用户已使用配额和请求次数
+	err = tx.Model(&User{}).Where("id = ?", userId).Updates(
+		map[string]interface{}{
+			"used_quota":    gorm.Expr("used_quota - ?", quota),
+			"request_count": gorm.Expr("request_count - 1"),
+		},
+	).Error
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 提交事务
+	return tx.Commit().Error
 }

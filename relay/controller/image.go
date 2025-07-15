@@ -786,9 +786,173 @@ func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatu
 	meta := util.GetRelayMeta(c)
 	if strings.HasPrefix(modelName, "kling") {
 		return handleKlingImageRequest(c, ctx, modelName, meta)
+	} else if strings.HasPrefix(modelName, "flux") {
+		return handleFluxImageRequest(c, ctx, modelName, meta)
 	}
 	// 需要添加处理其他模型类型的逻辑
 	return openai.ErrorWrapper(fmt.Errorf("unsupported model: %s", modelName), "unsupported_model", http.StatusBadRequest)
+}
+
+func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName string, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+	baseUrl := meta.BaseURL
+	// 直接使用模型名称构建URL
+
+	fullRequestUrl := ""
+	if meta.ChannelType == 46 { //flux
+		fullRequestUrl = fmt.Sprintf("%s/v1/%s", baseUrl, modelName)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/flux/v1/%s", baseUrl, modelName)
+	}
+
+	// Read the original request body
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Restore the request body for further use
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Parse the request body
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Determine the mode based on whether an image_prompt parameter exists
+	mode := "texttoimage"
+	if _, hasImagePrompt := requestMap["image_prompt"]; hasImagePrompt {
+		mode = "imagetoimage"
+	}
+
+	logger.Debugf(ctx, "Flux API request mode: %s, model: %s", mode, modelName)
+
+	// Remove the 'model' parameter as Flux API doesn't need it
+	delete(requestMap, "model")
+
+	// Re-marshal the modified request
+	modifiedBody, err := json.Marshal(requestMap)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_modified_request_failed", http.StatusInternalServerError)
+	}
+
+	// Create a new request with the modified body
+	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(modifiedBody))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_failed", http.StatusInternalServerError)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	if meta.ChannelType == 46 {
+		req.Header.Set("x-key", meta.APIKey)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+meta.APIKey)
+	}
+
+	// Send the request
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 在记录日志时使用更安全的方式
+	logger.Infof(ctx, "Flux API response status: %d, body: %s", resp.StatusCode, string(responseBody))
+
+	// Check if the request was successful
+	if resp.StatusCode != http.StatusOK {
+		// Handle error response (status code 422 or others)
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			// Parse error response format
+			var fluxError struct {
+				Detail []struct {
+					Loc  []string `json:"loc"`
+					Msg  string   `json:"msg"`
+					Type string   `json:"type"`
+				} `json:"detail"`
+			}
+
+			if err := json.Unmarshal(responseBody, &fluxError); err == nil && len(fluxError.Detail) > 0 {
+				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
+				return openai.ErrorWrapper(
+					fmt.Errorf(errorMsg),
+					"flux_validation_error",
+					resp.StatusCode,
+				)
+			}
+		}
+
+		return openai.ErrorWrapper(
+			fmt.Errorf("Flux API error: status code %d, response: %s", resp.StatusCode, string(responseBody)),
+			"flux_api_error",
+			resp.StatusCode,
+		)
+	}
+
+	// Parse the Flux API successful response
+	var fluxResponse struct {
+		ID         string `json:"id"`
+		PollingURL string `json:"polling_url"`
+	}
+
+	if err := json.Unmarshal(responseBody, &fluxResponse); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 记录图像生成日志
+	err = CreateImageLog(
+		"flux",          // provider
+		fluxResponse.ID, // taskId
+		meta,            // meta
+		"submitted",     // status (Flux API 提交成功后的初始状态)
+		"",              // failReason (空，因为请求成功)
+		mode,            // mode参数
+		1,               // n参数
+	)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to create image log: %v", err)
+		// 继续处理，不因日志记录失败而中断响应
+	}
+
+	// Convert to the format expected by the client
+	asyncResponse := relaymodel.GeneralImageResponseAsync{
+		TaskId:     fluxResponse.ID,
+		Message:    "Request submitted successfully",
+		TaskStatus: "succeed", // 请求提交成功
+	}
+
+	// Marshal the response
+	responseJSON, err := json.Marshal(asyncResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// Set response headers
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseJSON)))
+
+	// Write the response
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(responseJSON)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	// Handle billing based on mode, modelName and number of images (n)
+	err = handleSuccessfulResponseImage(c, ctx, meta, modelName, mode, 1)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to process billing: %v", err)
+		// Continue processing, don't interrupt the response due to billing failure
+	}
+
+	return nil
 }
 
 func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName string, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
@@ -871,7 +1035,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		sk := meta.Config.SK
 
 		// Generate JWT token
-		token = encodeJWTToken(ak, sk)
+		token = EncodeJWTToken(ak, sk)
 	} else {
 		token = meta.APIKey
 	}
@@ -996,28 +1160,56 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 
 // Update handleSuccessfulResponseImage to accept mode and n parameters
 func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, n int) error {
-	// Base price for the simplest model and operation
-	basePrice := 0.025
-	var multiplier float64 = 1.0
+	var modelPrice float64
 
-	// Apply multipliers based on model version
-	if strings.Contains(modelName, "v1.0") {
-		multiplier = 1.0 // Base multiplier for v1.0
-	} else if strings.Contains(modelName, "v1.5") {
-		if mode == "texttoimage" {
-			multiplier = 4.0 // 0.1 / 0.025 = 4
-		} else if mode == "imagetoimage" {
-			multiplier = 8.0 // 0.2 / 0.025 = 8
+	// Flux API official pricing - https://bfl.ai/pricing/api
+	switch modelName {
+	// FLUX Models
+	case "flux-kontext-max":
+		modelPrice = 0.08
+	case "flux-kontext-pro":
+		modelPrice = 0.04
+	case "flux-pro-1.1-ultra":
+		modelPrice = 0.06
+	case "flux-pro-1.1":
+		modelPrice = 0.04
+	case "flux-pro":
+		modelPrice = 0.05
+	case "flux-dev":
+		modelPrice = 0.025
+	// FLUX.1 Tools
+	case "flux-pro-1.0-fill":
+		modelPrice = 0.05
+	case "flux-pro-1.0-canny":
+		modelPrice = 0.05
+	case "flux-pro-1.0-depth":
+		modelPrice = 0.05
+	// Legacy Kling models (keep existing logic for compatibility)
+	default:
+		if strings.Contains(modelName, "kling") {
+			// Keep original Kling pricing logic
+			basePrice := 0.025
+			var multiplier float64 = 1.0
+
+			if strings.Contains(modelName, "v1.0") {
+				multiplier = 1.0
+			} else if strings.Contains(modelName, "v1.5") {
+				if mode == "texttoimage" {
+					multiplier = 4.0
+				} else if mode == "imagetoimage" {
+					multiplier = 8.0
+				}
+			} else if strings.Contains(modelName, "v2") {
+				multiplier = 4.0
+			} else {
+				multiplier = 4.0
+			}
+			modelPrice = basePrice * multiplier
+		} else {
+			// Default price for unknown models
+			modelPrice = 0.05
 		}
-	} else if strings.Contains(modelName, "v2") {
-		multiplier = 4.0 // 0.1 / 0.025 = 4
-	} else {
-		// Default multiplier for unknown models
-		multiplier = 4.0
 	}
-
-	// Calculate the model price based on the base price and multiplier
-	modelPrice := basePrice * multiplier
 
 	// Calculate quota based on model price and number of images
 	quota := int64(modelPrice*500000) * int64(n)
@@ -1040,8 +1232,8 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 	if quota != 0 {
 		tokenName := c.GetString("token_name")
 		// Include pricing details in log content
-		logContent := fmt.Sprintf("基准价格 %.3f$, 倍率 %.1f, 最终价格 %.3f$, 模式: %s, 图片数量: %d",
-			basePrice, multiplier, modelPrice, mode, n)
+		logContent := fmt.Sprintf("Model price: $%.3f, Mode: %s, Images: %d, Total cost: $%.3f",
+			modelPrice, mode, n, modelPrice*float64(n))
 		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
@@ -1063,24 +1255,53 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 	}
 
 	var fullRequestUrl string
+	var req *http.Request
+
 	switch image.Provider {
 	case "kling":
 		fullRequestUrl = fmt.Sprintf("%s/kling/v1/images/generations/%s", *channel.BaseURL, taskId)
-	}
-	req, err := http.NewRequest("GET", fullRequestUrl, nil)
-	if err != nil {
-		return openai.ErrorWrapper(
-			fmt.Errorf("failed to create request: %v", err),
-			"api_error",
-			http.StatusInternalServerError,
-		)
+		req, err = http.NewRequest("GET", fullRequestUrl, nil)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to create request: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+	case "flux":
+		// Flux API 使用 GET 请求查询结果，带查询参数 id
+		if channel.Type == 46 {
+			fullRequestUrl = fmt.Sprintf("%s/v1/get_result?id=%s", *channel.BaseURL, taskId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/flux/v1/get_result?id=%s", *channel.BaseURL, taskId)
+		}
+
+		req, err = http.NewRequest("GET", fullRequestUrl, nil)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to create request: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+	default:
+		req, err = http.NewRequest("GET", fullRequestUrl, nil)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to create request: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
 	}
 	if image.Provider == "kling" && channel.Type == 41 {
-		token := encodeJWTToken(cfg.AK, cfg.SK)
+		token := EncodeJWTToken(cfg.AK, cfg.SK)
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
 
+	} else if image.Provider == "flux" && channel.Type == 46 {
+		req.Header.Set("x-key", channel.Key)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -1108,7 +1329,7 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 	}
 
 	// Log the original response body for debugging
-	logger.Infof(c.Request.Context(), "Kling image result original response: %s", string(body))
+	logger.Infof(c.Request.Context(), "%s image result original response: %s", image.Provider, string(body))
 
 	if resp.StatusCode != http.StatusOK {
 		return openai.ErrorWrapper(
@@ -1118,50 +1339,166 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 		)
 	}
 
-	var klingImageResult keling.KlingImageResult
-	if err := json.Unmarshal(body, &klingImageResult); err != nil {
-		return openai.ErrorWrapper(
-			fmt.Errorf("failed to unmarshal response body: %v", err),
-			"api_error",
-			http.StatusInternalServerError,
-		)
-	}
-
-	if klingImageResult.Code != 0 {
-		return openai.ErrorWrapper(
-			fmt.Errorf("Kling API error: %s (code: %d)", klingImageResult.Message, klingImageResult.Code),
-			"api_error",
-			http.StatusInternalServerError,
-		)
-	}
-
 	// Create the final response
 	finalResponse := relaymodel.GeneralFinalImageResponseAsync{
-		TaskId:  taskId,
-		Message: klingImageResult.Message,
+		TaskId: taskId,
 	}
 
-	// 处理任务状态，将 submitted 也处理为 processing
-	if klingImageResult.Data.TaskStatus == "submitted" {
-		finalResponse.TaskStatus = "processing"
-	} else {
-		finalResponse.TaskStatus = klingImageResult.Data.TaskStatus
-	}
+	switch image.Provider {
+	case "kling":
+		var klingImageResult keling.KlingImageResult
+		if err := json.Unmarshal(body, &klingImageResult); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to unmarshal response body: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
 
-	// Check if there are images in the result and the task is completed
-	if klingImageResult.Data.TaskStatus == "succeed" &&
-		len(klingImageResult.Data.TaskResult.Images) > 0 {
-		// Create an array to store all image URLs
-		var imageUrls []string
-		for _, image := range klingImageResult.Data.TaskResult.Images {
-			if image.URL != "" {
-				imageUrls = append(imageUrls, image.URL)
+		if klingImageResult.Code != 0 {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Kling API error: %s (code: %d)", klingImageResult.Message, klingImageResult.Code),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		finalResponse.Message = klingImageResult.Message
+
+		// 处理任务状态，将 submitted 也处理为 processing
+		if klingImageResult.Data.TaskStatus == "submitted" {
+			finalResponse.TaskStatus = "processing"
+		} else {
+			finalResponse.TaskStatus = klingImageResult.Data.TaskStatus
+		}
+
+		// Check if there are images in the result and the task is completed
+		if klingImageResult.Data.TaskStatus == "succeed" &&
+			len(klingImageResult.Data.TaskResult.Images) > 0 {
+			// Create an array to store all image URLs
+			var imageUrls []string
+			for _, image := range klingImageResult.Data.TaskResult.Images {
+				if image.URL != "" {
+					imageUrls = append(imageUrls, image.URL)
+				}
+			}
+
+			// Add all image URLs to the response
+			finalResponse.ImageUrls = imageUrls
+			finalResponse.ImageId = klingImageResult.Data.TaskID
+		}
+
+	case "flux":
+		// Check for error response first (422 status code)
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			var fluxError struct {
+				Detail []struct {
+					Loc  []string `json:"loc"`
+					Msg  string   `json:"msg"`
+					Type string   `json:"type"`
+				} `json:"detail"`
+			}
+
+			if err := json.Unmarshal(body, &fluxError); err == nil && len(fluxError.Detail) > 0 {
+				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
+				return openai.ErrorWrapper(
+					fmt.Errorf(errorMsg),
+					"flux_validation_error",
+					resp.StatusCode,
+				)
 			}
 		}
 
-		// Add all image URLs to the response
-		finalResponse.ImageUrls = imageUrls
-		finalResponse.ImageId = klingImageResult.Data.TaskID
+		var fluxImageResult struct {
+			ID       string                 `json:"id"`
+			Status   string                 `json:"status"`
+			Result   interface{}            `json:"result,omitempty"`
+			Progress int                    `json:"progress,omitempty"`
+			Details  map[string]interface{} `json:"details,omitempty"`
+			Preview  map[string]interface{} `json:"preview,omitempty"`
+		}
+
+		if err := json.Unmarshal(body, &fluxImageResult); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to unmarshal flux response body: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 处理任务状态映射和消息
+		switch fluxImageResult.Status {
+		case "Ready":
+			finalResponse.TaskStatus = "succeed"
+			finalResponse.Message = "Image generation completed"
+			// 当任务完成时，result 字段包含图像URL
+			if fluxImageResult.Result != nil {
+				if resultMap, ok := fluxImageResult.Result.(map[string]interface{}); ok {
+					if sample, exists := resultMap["sample"]; exists {
+						if sampleStr, ok := sample.(string); ok && sampleStr != "" {
+							finalResponse.ImageUrls = []string{sampleStr}
+							finalResponse.ImageId = fluxImageResult.ID
+						}
+					}
+				} else if resultStr, ok := fluxImageResult.Result.(string); ok && resultStr != "" {
+					// 如果 result 直接是字符串（图像URL）
+					finalResponse.ImageUrls = []string{resultStr}
+					finalResponse.ImageId = fluxImageResult.ID
+				}
+			}
+		case "Task not found":
+			finalResponse.TaskStatus = "failed"
+			finalResponse.Message = "Task not found"
+		case "Pending":
+			finalResponse.TaskStatus = "processing"
+			finalResponse.Message = "Task is pending, please check later"
+		case "Request Moderated":
+			finalResponse.TaskStatus = "failed"
+			// 提取请求审核失败的具体原因
+			if fluxImageResult.Details != nil {
+				if moderationReasons, exists := fluxImageResult.Details["Moderation Reasons"]; exists {
+					if reasons, ok := moderationReasons.([]interface{}); ok && len(reasons) > 0 {
+						finalResponse.Message = fmt.Sprintf("Request moderated: %v", reasons[0])
+					} else {
+						finalResponse.Message = "Request moderated"
+					}
+				} else {
+					finalResponse.Message = "Request moderated"
+				}
+			} else {
+				finalResponse.Message = "Request moderated"
+			}
+		case "Content Moderated":
+			finalResponse.TaskStatus = "failed"
+			// 提取内容审核失败的具体原因
+			if fluxImageResult.Details != nil {
+				if moderationReasons, exists := fluxImageResult.Details["Moderation Reasons"]; exists {
+					if reasons, ok := moderationReasons.([]interface{}); ok && len(reasons) > 0 {
+						finalResponse.Message = fmt.Sprintf("Content moderated: %v", reasons[0])
+					} else {
+						finalResponse.Message = "Content moderated"
+					}
+				} else {
+					finalResponse.Message = "Content moderated"
+				}
+			} else {
+				finalResponse.Message = "Content moderated"
+			}
+		case "Error":
+			finalResponse.TaskStatus = "failed"
+			finalResponse.Message = "Image generation failed"
+		default:
+			// 其他未知状态
+			finalResponse.TaskStatus = "processing"
+			finalResponse.Message = fmt.Sprintf("Task processing (status: %s)", fluxImageResult.Status)
+		}
+
+	default:
+		return openai.ErrorWrapper(
+			fmt.Errorf("unsupported provider: %s", image.Provider),
+			"unsupported_provider",
+			http.StatusBadRequest,
+		)
 	}
 
 	// Marshal and send the response
