@@ -595,7 +595,7 @@ func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio int
 
 	// 按秒计费，直接按实际秒数计算
 	finalPrice := basePrice * float64(durationSeconds)
-	quota := int64(finalPrice * config.QuotaPerUnit)
+	quota := int64(finalPrice * config.QuotaPerUnit * meta.ChannelRatio * meta.UserChannelTypeRatio)
 
 	return quota
 }
