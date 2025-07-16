@@ -36,7 +36,7 @@ type User struct {
 	InviterId               int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	UserRemindThreshold     int64  `json:"user_remind_threshold"`
 	UserLastNoticeTime      int64  `json:"user_last_notice_time" gorm:"default:0"`
-	UserChannelTypeRatioMap string `json:"user_channel_type_ratio_map" gorm:"type:text;default:'{}'"`
+	UserChannelTypeRatioMap string `json:"user_channel_type_ratio_map" gorm:"type:text"`
 }
 
 func GetMaxUserId() int {
