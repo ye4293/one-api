@@ -40,8 +40,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// get model ratio & group ratio
 	modelRatio := common.GetModelRatio(textRequest.Model)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, textRequest.Model)
-	ratio := modelRatio * groupRatio * userModelTypeRatio
+	// userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, textRequest.Model)
+	ratio := modelRatio * groupRatio
 	// pre-consume quota
 	promptTokens := getPromptTokens(textRequest, meta.Mode)
 	meta.PromptTokens = promptTokens
@@ -108,8 +108,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 	}
 
-	// meta.IsStream = meta.IsStream || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
-
 	// do response
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {
@@ -127,6 +125,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	title := c.Request.Header.Get("X-Title")
 
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, userModelTypeRatio, duration, title, referer)
+	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer)
 	return nil
 }

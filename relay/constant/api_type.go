@@ -16,7 +16,8 @@ const (
 	APITypeAwsClaude
 	APITypeCohere
 	APITypeMinimax
-
+	APITypeXAI
+	APITypeVertexAI
 	APITypeDummy // this one is only for count, do not add any channel after this
 )
 
@@ -43,7 +44,10 @@ func ChannelType2APIType(channelType int) int {
 		apiType = APITypeAwsClaude
 	case common.ChannelTypeMinimax:
 		apiType = APITypeMinimax
-
+	case common.ChannelTypeXAI:
+		apiType = APITypeXAI
+	case common.ChannelTypeVertexAI:
+		apiType = APITypeVertexAI
 	}
 	return apiType
 }

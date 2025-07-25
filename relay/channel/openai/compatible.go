@@ -2,7 +2,6 @@ package openai
 
 import (
 	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/relay/channel/baichuan"
 	"github.com/songquanpeng/one-api/relay/channel/deepseek"
 	"github.com/songquanpeng/one-api/relay/channel/groq"
 	"github.com/songquanpeng/one-api/relay/channel/lingyiwanwu"
@@ -14,7 +13,6 @@ import (
 var CompatibleChannels = []int{
 	common.ChannelTypeAzure,
 	common.ChannelTypeMoonshot,
-	common.ChannelTypeBaichuan,
 	common.ChannelTypeMistral,
 	common.ChannelTypeGroq,
 	common.ChannelTypeLingYiWanWu,
@@ -27,8 +25,6 @@ func GetCompatibleChannelMeta(channelType int) (string, []string) {
 		return "azure", ModelList
 	case common.ChannelTypeMoonshot:
 		return "moonshot", moonshot.ModelList
-	case common.ChannelTypeBaichuan:
-		return "baichuan", baichuan.ModelList
 	case common.ChannelTypeMistral:
 		return "mistralai", mistral.ModelList
 	case common.ChannelTypeGroq:

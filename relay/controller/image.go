@@ -394,8 +394,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	adaptor.Init(meta)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, imageRequest.Model)
-	ratio := groupRatio * userModelTypeRatio
+	// userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, imageRequest.Model)
+	ratio := groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get user quota", http.StatusInternalServerError)
@@ -494,7 +494,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		rowDuration := time.Since(startTime).Seconds()
 		duration := math.Round(rowDuration*1000) / 1000
 		tokenName := c.GetString("token_name")
-		logContent := fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f 用户模型倍率 %.2f", modelPrice, groupRatio, userModelTypeRatio)
+		logContent := fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
 		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")

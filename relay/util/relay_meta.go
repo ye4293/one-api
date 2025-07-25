@@ -10,27 +10,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/constant"
 )
 
-// type RelayMeta struct {
-// 	Mode            int
-// 	ChannelType     int
-// 	ChannelId       int
-// 	TokenId         int
-// 	TokenName       string
-// 	UserId          int
-// 	Group           string
-// 	ModelMapping    map[string]string
-// 	BaseURL         string
-// 	APIVersion      string
-// 	APIKey          string
-// 	APIType         int
-// 	Config          map[string]string
-// 	IsStream        bool
-// 	OriginModelName string
-// 	ActualModelName string
-// 	RequestURLPath  string
-// 	PromptTokens    int // only for DoResponse
-// }
-
 type RelayMeta struct {
 	Mode         int
 	ChannelType  int
