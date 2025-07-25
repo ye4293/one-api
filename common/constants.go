@@ -84,6 +84,8 @@ const (
 	ChannelTypeRunway
 	ChannelTypeRecraft
 	ChannelTypeLuma
+	ChannelTypePixverse
+	ChannelTypeFlux
 	ChannelTypeXAI
 	ChannelTypeVertexAI
 	ChannelTypeDummy

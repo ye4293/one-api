@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
-	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -27,6 +26,8 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
+	channel.SetupCommonRequestHeader(c, req, meta)
+	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
 	return nil
 }
 
@@ -51,6 +52,13 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		request.MaxTokens = 0
 	}
 
+	if request.Stream {
+		// 直接在原请求结构中设置 StreamOptions
+		request.StreamOptions = &model.StreamOptions{
+			IncludeUsage: true,
+		}
+	}
+
 	return request, nil
 }
 
@@ -64,9 +72,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
 	if meta.IsStream {
-		err, _, usage = openai.StreamHandler(c, resp, 1)
+		err, _, usage = StreamHandler(c, resp, 1)
 	} else {
-		err, usage = openai.Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
+		err, usage = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
 	}
 	return
 }

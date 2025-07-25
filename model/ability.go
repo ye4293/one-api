@@ -76,7 +76,7 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 func (channel *Channel) AddAbilities() error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")
-	abilities := make([]Ability, 0, len(models_))
+	abilities := make([]Ability, 0, len(models_)*len(groups_))
 	for _, model := range models_ {
 		for _, group := range groups_ {
 			ability := Ability{
@@ -89,7 +89,22 @@ func (channel *Channel) AddAbilities() error {
 			abilities = append(abilities, ability)
 		}
 	}
-	return DB.Create(&abilities).Error
+
+	// 分批插入以避免 "too many SQL variables" 错误
+	// SQLite 默认限制为999个变量，每条记录5个字段，所以每批最多150条记录 (150 * 5 = 750 < 999)
+	// MySQL 限制更高，但使用相同的批量大小保持兼容性
+	batchSize := 150
+	for i := 0; i < len(abilities); i += batchSize {
+		end := i + batchSize
+		if end > len(abilities) {
+			end = len(abilities)
+		}
+		batch := abilities[i:end]
+		if err := DB.Create(&batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (channel *Channel) DeleteAbilities() error {

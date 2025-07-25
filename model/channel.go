@@ -145,10 +145,23 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 
 func BatchInsertChannels(channels []Channel) error {
 	var err error
-	err = DB.Create(&channels).Error
-	if err != nil {
-		return err
+
+	// 分批插入channels以避免 "too many SQL variables" 错误
+	// Channel结构体字段较多，保守设置每批20个channels
+	batchSize := 20
+	for i := 0; i < len(channels); i += batchSize {
+		end := i + batchSize
+		if end > len(channels) {
+			end = len(channels)
+		}
+		batch := channels[i:end]
+		err = DB.Create(&batch).Error
+		if err != nil {
+			return err
+		}
 	}
+
+	// 为每个channel添加abilities
 	for _, channel_ := range channels {
 		err = channel_.AddAbilities()
 		if err != nil {
