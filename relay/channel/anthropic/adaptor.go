@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"encoding/json"
+
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -62,6 +64,41 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		err, usage = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
 	}
 	return
+}
+
+// HandleErrorResponse 处理Anthropic特有的错误响应格式
+func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "failed to read error response body",
+				Type:    "api_error",
+				Code:    "read_error_failed",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	}
+	defer resp.Body.Close()
+
+	// 尝试解析Anthropic错误格式
+	var claudeResponse Response
+	if unmarshalErr := json.Unmarshal(responseBody, &claudeResponse); unmarshalErr == nil {
+		if claudeResponse.Error.Type != "" {
+			return &model.ErrorWithStatusCode{
+				Error: model.Error{
+					Message: claudeResponse.Error.Message,
+					Type:    claudeResponse.Error.Type,
+					Param:   "",
+					Code:    claudeResponse.Error.Type,
+				},
+				StatusCode: resp.StatusCode,
+			}
+		}
+	}
+
+	// 如果不是Anthropic格式，返回nil让通用处理器处理
+	return nil
 }
 
 func (a *Adaptor) GetModelList() []string {

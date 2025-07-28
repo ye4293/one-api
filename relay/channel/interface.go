@@ -22,6 +22,11 @@ type Adaptor interface {
 	GetChannelName() string
 }
 
+// ErrorHandler 可选接口：支持自定义错误处理的 adaptor 可以实现此接口
+type ErrorHandler interface {
+	HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode
+}
+
 type VideoAdaptor interface {
 	// 初始化适配器
 	Init(meta *util.RelayMeta)

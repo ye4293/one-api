@@ -106,10 +106,12 @@ func Relay(c *gin.Context) {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
 		c.JSON(bizErr.StatusCode, gin.H{
-			"message": bizErr.Error.Message,
-			"type":    "api_error",
-			"param":   "",
-			"code":    bizErr.Error.Code,
+			"error": gin.H{
+				"message": bizErr.Error.Message,
+				"type":    "api_error",
+				"param":   "",
+				"code":    bizErr.Error.Code,
+			},
 		})
 	}
 }
@@ -414,7 +416,12 @@ func RelayVideoGenerate(c *gin.Context) {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
 		c.JSON(bizErr.StatusCode, gin.H{
-			"error": util.ProcessString(bizErr.Error.Message),
+			"error": gin.H{
+				"message": util.ProcessString(bizErr.Error.Message),
+				"type":    bizErr.Error.Type,
+				"param":   bizErr.Error.Param,
+				"code":    bizErr.Error.Code,
+			},
 		})
 	}
 }
@@ -1037,7 +1044,12 @@ func RelayImageGenerateAsync(c *gin.Context) {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
 		c.JSON(bizErr.StatusCode, gin.H{
-			"error": util.ProcessString(bizErr.Error.Message),
+			"error": gin.H{
+				"message": util.ProcessString(bizErr.Error.Message),
+				"type":    bizErr.Error.Type,
+				"param":   bizErr.Error.Param,
+				"code":    bizErr.Error.Code,
+			},
 		})
 	}
 }
@@ -1050,7 +1062,12 @@ func RelayImageResult(c *gin.Context) {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
 		c.JSON(bizErr.StatusCode, gin.H{
-			"error": util.ProcessString(bizErr.Error.Message),
+			"error": gin.H{
+				"message": util.ProcessString(bizErr.Error.Message),
+				"type":    bizErr.Error.Type,
+				"param":   bizErr.Error.Param,
+				"code":    bizErr.Error.Code,
+			},
 		})
 	}
 

@@ -150,6 +150,7 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 	if err != nil {
 		return
 	}
+
 	var errResponse GeneralErrorResponse
 	err = json.Unmarshal(responseBody, &errResponse)
 	if err != nil {
@@ -165,6 +166,21 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 		ErrorWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
 	}
 	return
+}
+
+// RelayErrorHandlerWithAdaptor 使用 adaptor 特定的错误处理逻辑
+func RelayErrorHandlerWithAdaptor(resp *http.Response, adaptor interface{}) (ErrorWithStatusCode *relaymodel.ErrorWithStatusCode) {
+	// 首先尝试使用 adaptor 的错误处理方法（如果它实现了 ErrorHandler 接口）
+	if errorHandler, ok := adaptor.(interface {
+		HandleErrorResponse(resp *http.Response) *relaymodel.ErrorWithStatusCode
+	}); ok {
+		if adaptorError := errorHandler.HandleErrorResponse(resp); adaptorError != nil {
+			return adaptorError
+		}
+	}
+
+	// 如果 adaptor 无法处理，回退到通用处理器
+	return RelayErrorHandler(resp)
 }
 
 func GetFullRequestURL(baseURL string, requestURL string, channelType int) string {

@@ -166,6 +166,32 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 				var streamResponse XaiStreamResponse
 				err := json.Unmarshal([]byte(dataContent), &streamResponse)
 				if err != nil {
+					// 如果解析失败，检查是否是XAI错误格式
+					var xaiError map[string]interface{}
+					if unmarshalErr := json.Unmarshal([]byte(dataContent), &xaiError); unmarshalErr == nil {
+						// 检查是否是XAI错误格式（包含code和error字段）
+						if code, hasCode := xaiError["code"]; hasCode {
+							if errorMsg, hasError := xaiError["error"]; hasError {
+								// 转换为OpenAI错误格式的流式响应
+								openaiError := map[string]interface{}{
+									"error": map[string]interface{}{
+										"message": fmt.Sprintf("%v", errorMsg),
+										"type":    "api_error",
+										"param":   "",
+										"code":    fmt.Sprintf("%v", code),
+									},
+								}
+
+								// 将转换后的错误序列化为JSON
+								if convertedData, marshalErr := json.Marshal(openaiError); marshalErr == nil {
+									writeLine(c.Writer, "data: "+string(convertedData))
+									flusher.Flush()
+									continue
+								}
+							}
+						}
+					}
+
 					logger.SysError("error unmarshalling XAI stream response: " + err.Error())
 					// 发送原始数据
 					writeLine(c.Writer, originalData)
@@ -254,10 +280,34 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), nil
 	}
+
+	// 首先尝试解析为正常的XAI响应
 	err = json.Unmarshal(responseBody, &xaiResponse)
 	if err != nil {
+		// 如果解析失败，可能是XAI特有的错误格式，尝试解析并转换
+		var xaiError map[string]interface{}
+		if unmarshalErr := json.Unmarshal(responseBody, &xaiError); unmarshalErr == nil {
+			// 检查是否是XAI错误格式（包含code和error字段）
+			if code, hasCode := xaiError["code"]; hasCode {
+				if errorMsg, hasError := xaiError["error"]; hasError {
+					// 转换为OpenAI错误格式
+					convertedError := model.Error{
+						Message: fmt.Sprintf("%v", errorMsg),
+						Type:    "api_error",
+						Param:   "",
+						Code:    fmt.Sprintf("%v", code),
+					}
+					return &model.ErrorWithStatusCode{
+						Error:      convertedError,
+						StatusCode: resp.StatusCode,
+					}, nil
+				}
+			}
+		}
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
 	}
+
+	// 检查是否有OpenAI格式的错误
 	if xaiResponse.Error.Type != "" {
 		return &model.ErrorWithStatusCode{
 			Error:      xaiResponse.Error,

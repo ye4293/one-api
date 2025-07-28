@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,17 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 }
 
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
+	// 处理模型名称以 "-search" 结尾的情况
+	if strings.HasSuffix(request.Model, "-search") {
+		request.Model = strings.TrimSuffix(request.Model, "-search")
+
+		// 直接设置 SearchParameters
+		mode := "on"
+		request.SearchParameters = &model.SearchParameters{
+			Mode: &mode,
+		}
+	}
+
 	// 第一个转换：处理模型名称和 ReasoningEffort
 	modelName := request.Model
 	suffixes := []string{"low", "high", "medium"}
@@ -63,7 +75,13 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 }
 
 func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
-	return request, nil
+	xaiRequest := model.ImageRequest{
+		Model:          request.Model,
+		Prompt:         request.Prompt,
+		N:              request.N,
+		ResponseFormat: request.ResponseFormat,
+	}
+	return xaiRequest, nil
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
@@ -77,6 +95,45 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		err, usage = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
 	}
 	return
+}
+
+// HandleErrorResponse 处理XAI特有的错误响应格式
+func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "failed to read error response body",
+				Type:    "api_error",
+				Code:    "read_error_failed",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	}
+	defer resp.Body.Close()
+
+	// 尝试解析XAI错误格式
+	var xaiError map[string]interface{}
+	if unmarshalErr := json.Unmarshal(responseBody, &xaiError); unmarshalErr == nil {
+		// 检查是否是XAI错误格式（包含code和error字段）
+		if code, hasCode := xaiError["code"]; hasCode {
+			if errorMsg, hasError := xaiError["error"]; hasError {
+				// 转换为OpenAI错误格式
+				return &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: fmt.Sprintf("%v", errorMsg),
+						Type:    "api_error",
+						Param:   "",
+						Code:    fmt.Sprintf("%v", code),
+					},
+					StatusCode: resp.StatusCode,
+				}
+			}
+		}
+	}
+
+	// 如果不是XAI格式，返回nil让通用处理器处理
+	return nil
 }
 
 func (a *Adaptor) GetModelList() []string {

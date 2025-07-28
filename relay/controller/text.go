@@ -104,7 +104,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		errorHappened := (resp.StatusCode != http.StatusOK) || (meta.IsStream && resp.Header.Get("Content-Type") == "application/json")
 		if errorHappened {
 			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
-			return util.RelayErrorHandler(resp)
+			return util.RelayErrorHandlerWithAdaptor(resp, adaptor)
 		}
 	}
 
