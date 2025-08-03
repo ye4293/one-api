@@ -148,6 +148,10 @@ func SetApiRouter(router *gin.Engine) {
 	videoRoute.GET("/self", middleware.UserAuth(), controller.GetUserVideos)
 	videoRoute.GET("/", middleware.AdminAuth(), controller.GetAllVideos)
 
+	imageRoute := apiRouter.Group("/image")
+	imageRoute.GET("/self", middleware.UserAuth(), controller.GetUserImages)
+	imageRoute.GET("/", middleware.AdminAuth(), controller.GetALLImages)
+
 	chargeRoute := apiRouter.Group("/charge")
 	chargeRoute.GET("/get_config", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.GetChargeConfigs)
 	chargeRoute.POST("/create_order", middleware.UserAuth(), middleware.GlobalWebRateLimit(), controller.CreateChargeOrder)

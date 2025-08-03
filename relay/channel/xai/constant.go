@@ -3,16 +3,11 @@ package xai
 import "github.com/songquanpeng/one-api/relay/model"
 
 var modelList = []string{
+	// 原始模型
 	"grok-4-latest",
 	"grok-4-latest-low",
 	"grok-4-latest-medium",
 	"grok-4-latest-high",
-
-	"grok-4-0709",
-	"grok-4-0709-low",
-	"grok-4-0709-medium",
-	"grok-4-0709-high",
-
 	"grok-4-0709",
 	"grok-4-0709-low",
 	"grok-4-0709-medium",
@@ -33,6 +28,31 @@ var modelList = []string{
 	"grok-3-mini-fast-high",
 	"grok-2-vision-1212",
 	"grok-2-image-1212",
+
+	// 搜索版本
+	"grok-4-latest-search",
+	"grok-4-latest-low-search",
+	"grok-4-latest-medium-search",
+	"grok-4-latest-high-search",
+	"grok-4-0709-search",
+	"grok-4-0709-low-search",
+	"grok-4-0709-medium-search",
+	"grok-4-0709-high-search",
+	"grok-4-search",
+	"grok-4-low-search",
+	"grok-4-medium-search",
+	"grok-4-high-search",
+	"grok-3-search",
+	"grok-3-mini-search",
+	"grok-3-mini-low-search",
+	"grok-3-mini-medium-search",
+	"grok-3-mini-high-search",
+	"grok-3-fast-search",
+	"grok-3-mini-fast-search",
+	"grok-3-mini-fast-low-search",
+	"grok-3-mini-fast-medium-search",
+	"grok-3-mini-fast-high-search",
+	"grok-2-vision-1212-search",
 }
 
 var channelName = "xai"
@@ -88,6 +108,63 @@ var ModelDetails = []model.APIModel{
 		Tags:        []string{"grok", "vision", "multimodal"},
 		PriceType:   "pay-per-token",
 		Description: "Grok 2 Vision - Multimodal model with image understanding",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$2.00 /M tokens",
+			"OutputTokens": "$10.00 /M tokens",
+		},
+	},
+
+	// 搜索版本模型
+	{
+		Provider:    "xAI",
+		Name:        "grok-4-latest-search",
+		Tags:        []string{"grok", "chat", "search"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 4 latest with search capabilities - Most advanced reasoning model with web search",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$15.00 /M tokens",
+			"OutputTokens": "$75.00 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-4-search",
+		Tags:        []string{"grok", "chat", "search"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 4 with search capabilities - Advanced reasoning and analysis with web search",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$15.00 /M tokens",
+			"OutputTokens": "$75.00 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-3-search",
+		Tags:        []string{"grok", "chat", "search"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 3 with search capabilities - Powerful language model with reasoning and web search",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$10.00 /M tokens",
+			"OutputTokens": "$30.00 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-3-mini-search",
+		Tags:        []string{"grok", "chat", "search"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 3 Mini with search capabilities - Efficient and fast reasoning model with web search",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$0.15 /M tokens",
+			"OutputTokens": "$0.60 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-2-vision-1212-search",
+		Tags:        []string{"grok", "vision", "multimodal", "search"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 2 Vision with search capabilities - Multimodal model with image understanding and web search",
 		Prices: map[string]interface{}{
 			"InputTokens":  "$2.00 /M tokens",
 			"OutputTokens": "$10.00 /M tokens",

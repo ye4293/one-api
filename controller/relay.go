@@ -21,7 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	"github.com/songquanpeng/one-api/relay/constant"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
-	"github.com/songquanpeng/one-api/relay/controller"
+	controller "github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
 
 	"github.com/songquanpeng/one-api/relay/util"
@@ -1071,4 +1071,18 @@ func RelayImageResult(c *gin.Context) {
 		})
 	}
 
+}
+
+func RelayRunway(c *gin.Context) {
+	meta := util.GetRelayMeta(c)
+	controller.DirectRelayRunway(c, meta)
+}
+
+func RelayRunwayResult(c *gin.Context) {
+	taskId := c.Param("taskId")
+	if taskId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "taskId is required"})
+		return
+	}
+	controller.GetRunwayResult(c, taskId)
 }

@@ -204,4 +204,25 @@ func SetRelayRouter(router *gin.Engine) {
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")
 	doubaoApiRouter.Use(middleware.TokenAuth()).GET("/tasks/:taskid", controller.RelayDouBaoVideoResultById)
 	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
+
+	// Runway AI 路由组 - 在官方API路径中间插入"runway"
+	// 需要模型分发的端点
+	runwayRouter := router.Group("/runway/v1")
+	runwayRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		// 视频生成相关端点
+		runwayRouter.POST("/image_to_video", controller.RelayRunway)
+		runwayRouter.POST("/video_to_video", controller.RelayRunway)
+		runwayRouter.POST("/text_to_image", controller.RelayRunway)
+		runwayRouter.POST("/video_upscale", controller.RelayRunway)
+		runwayRouter.POST("/character_performance", controller.RelayRunway)
+	}
+
+	// 不需要模型分发的查询端点
+	runwayResultRouter := router.Group("/runway/v1")
+	runwayResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		runwayResultRouter.GET("/tasks/:taskId", controller.RelayRunwayResult)
+	}
+
 }

@@ -184,7 +184,9 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 
 func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string) {
 	if usage == nil {
-		logger.Error(ctx, "usage is nil, which is unexpected")
+		// 打印用户和请求体信息
+		logger.Error(ctx, fmt.Sprintf("usage is nil, which is unexpected. UserId: %d, RequestBody: %+v",
+			meta.UserId, textRequest))
 		return
 	}
 	var quota int64

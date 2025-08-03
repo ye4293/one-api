@@ -906,6 +906,9 @@ func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName strin
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
 	}
 
+	// 计算配额（在记录日志之前）
+	quota := calculateImageQuota(modelName, mode, 1)
+
 	// 记录图像生成日志
 	err = CreateImageLog(
 		"flux",          // provider
@@ -915,6 +918,8 @@ func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName strin
 		"",              // failReason (空，因为请求成功)
 		mode,            // mode参数
 		1,               // n参数
+		quota,           // quota参数
+
 	)
 	if err != nil {
 		logger.Warnf(ctx, "Failed to create image log: %v", err)
@@ -1076,6 +1081,9 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		)
 	}
 
+	// 计算配额（在记录日志之前）
+	quota := calculateImageQuota(modelName, mode, n)
+
 	// 记录图像生成日志，传递mode参数
 	err = CreateImageLog(
 		"kling",                            // provider
@@ -1085,6 +1093,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		"",                                 // failReason (空，因为请求成功)
 		mode,                               // 新增的mode参数
 		n,                                  // 新增的n参数
+		quota,                              // 新增的quota参数
 	)
 	if err != nil {
 		logger.Warnf(ctx, "Failed to create image log: %v", err)
@@ -1133,7 +1142,7 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 }
 
 // 更新 CreateImageLog 函数以接受 mode 参数
-func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string, n int) error {
+func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string, n int, quota int64) error {
 	// 创建新的 Image 实例
 	image := &dbmodel.Image{
 		Username:   dbmodel.GetUsernameById(meta.UserId),
@@ -1147,6 +1156,7 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 		TaskId:     taskId,
 		Mode:       mode, // 添加 mode 字段
 		N:          n,    // 添加 n 字段
+		Quota:      quota,
 	}
 
 	// 调用 Insert 方法插入记录
@@ -1158,8 +1168,8 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 	return nil
 }
 
-// Update handleSuccessfulResponseImage to accept mode and n parameters
-func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, n int) error {
+// calculateImageQuota 计算图像生成的配额
+func calculateImageQuota(modelName string, mode string, n int) int64 {
 	var modelPrice float64
 
 	// Flux API official pricing - https://bfl.ai/pricing/api
@@ -1213,6 +1223,13 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 
 	// Calculate quota based on model price and number of images
 	quota := int64(modelPrice*500000) * int64(n)
+	return quota
+}
+
+// Update handleSuccessfulResponseImage to accept mode and n parameters
+func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, n int) error {
+	// Calculate quota using the new function
+	quota := calculateImageQuota(modelName, mode, n)
 
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
@@ -1232,8 +1249,9 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 	if quota != 0 {
 		tokenName := c.GetString("token_name")
 		// Include pricing details in log content
-		logContent := fmt.Sprintf("Model price: $%.3f, Mode: %s, Images: %d, Total cost: $%.3f",
-			modelPrice, mode, n, modelPrice*float64(n))
+		totalCost := float64(quota) / 500000
+		logContent := fmt.Sprintf("Mode: %s, Images: %d, Total cost: $%.3f",
+			mode, n, totalCost)
 		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
