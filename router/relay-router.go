@@ -206,7 +206,7 @@ func SetRelayRouter(router *gin.Engine) {
 	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
 
 	// Runway AI 路由组 - 在官方API路径中间插入"runway"
-	// 需要模型分发的端点
+	// Runway API 使用直接代理模式，不需要 Distribute 中间件
 	runwayRouter := router.Group("/runway/v1")
 	runwayRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{

@@ -1074,8 +1074,183 @@ func RelayImageResult(c *gin.Context) {
 }
 
 func RelayRunway(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+
+	logger.Infof(ctx, "RelayRunway start - userId: %d, channelId: %d, model: %s, requestID: %s",
+		userId, channelId, modelName, requestID)
+
+	// 尝试第一次请求
+	success, statusCode := tryRunwayRequest(c)
+	if success {
+		logger.Infof(ctx, "RelayRunway success on first try - userId: %d, channelId: %d", userId, channelId)
+		return
+	}
+
+	// 第一次失败，处理错误和重试
+	lastFailedChannelId := channelId
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	logger.Errorf(ctx, "RelayRunway first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d",
+		userId, channelId, channelName, statusCode)
+
+	// 使用空的错误对象调用 processChannelRelayError，让它自己处理
+	go processChannelRelayError(ctx, userId, channelId, channelName, &model.ErrorWithStatusCode{
+		StatusCode: statusCode,
+		Error:      model.Error{Message: "Request failed"},
+	})
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, statusCode, "") {
+		logger.Errorf(ctx, "Runway request error happen, status code is %d, won't retry in this case", statusCode)
+		// 不重试时，需要写入第一次失败的响应
+		writeLastFailureResponse(c, statusCode)
+		return
+	}
+
+	logger.Infof(ctx, "RelayRunway will retry %d times - status code: %d", retryTimes, statusCode)
+
+	for i := retryTimes; i > 0; i-- {
+		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
+
+		// 获取新的可用通道
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+		if channel.Id == lastFailedChannelId {
+			logger.Warnf(ctx, "Got same failed channel #%d, continue to next retry", channel.Id)
+			continue
+		}
+		logger.Infof(ctx, "Using channel #%d (%s) to retry runway request (attempt %d/%d, remain times %d)",
+			channel.Id, channel.Name, retryTimes-i+1, retryTimes, i)
+
+		// 使用新通道的配置更新上下文
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		requestBody, err := common.GetRequestBody(c)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+		success, statusCode = tryRunwayRequest(c)
+		if success {
+			logger.Infof(ctx, "RelayRunway retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName = c.GetString("channel_name")
+		logger.Errorf(ctx, "RelayRunway retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
+			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)
+
+		go processChannelRelayError(ctx, userId, channelId, channelName, &model.ErrorWithStatusCode{
+			StatusCode: statusCode,
+			Error:      model.Error{Message: "Retry failed"},
+		})
+
+		// 检查这次失败是否还应该继续重试
+		if !shouldRetry(c, statusCode, "") {
+			logger.Errorf(ctx, "Retry encountered non-retryable error, status code is %d, stopping retries", statusCode)
+			writeLastFailureResponse(c, statusCode)
+			return
+		}
+	}
+
+	// 所有重试都失败后，写入最后一次失败的响应
+	logger.Errorf(ctx, "RelayRunway ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
+	writeLastFailureResponse(c, statusCode)
+}
+
+// tryRunwayRequest 尝试执行 Runway 请求，返回是否成功和状态码
+func tryRunwayRequest(c *gin.Context) (success bool, statusCode int) {
+	ctx := c.Request.Context()
 	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+
+	logger.Debugf(ctx, "tryRunwayRequest start - channelId: %d", channelId)
+
+	// 保存原始的 ResponseWriter
+	originalWriter := c.Writer
+
+	// 创建一个缓冲的 ResponseWriter 来捕获响应
+	rec := &responseRecorder{
+		ResponseWriter: originalWriter,
+		statusCode:     200,
+		body:           bytes.NewBuffer(nil),
+	}
+	c.Writer = rec
+
+	// 调用原始函数
 	controller.DirectRelayRunway(c, meta)
+
+	// 恢复原始的 ResponseWriter
+	c.Writer = originalWriter
+
+	logger.Debugf(ctx, "tryRunwayRequest response - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+
+	// 检查响应状态码
+	if rec.statusCode >= 400 {
+		logger.Debugf(ctx, "tryRunwayRequest FAILED - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+		// 失败时不写入响应，让重试逻辑处理
+		return false, rec.statusCode
+	}
+
+	// 成功时，将响应写入原始的 ResponseWriter
+	logger.Debugf(ctx, "tryRunwayRequest SUCCESS - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+	originalWriter.WriteHeader(rec.statusCode)
+	for k, v := range rec.Header() {
+		originalWriter.Header()[k] = v
+	}
+	originalWriter.Write(rec.body.Bytes())
+
+	return true, rec.statusCode
+}
+
+// writeLastFailureResponse 写入最后失败的响应到客户端
+func writeLastFailureResponse(c *gin.Context, statusCode int) {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+
+	logger.Debugf(ctx, "writeLastFailureResponse - channelId: %d, statusCode: %d", channelId, statusCode)
+
+	// 重新获取请求体
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get request body for final response: %v", err)
+		c.JSON(statusCode, gin.H{"error": "Request failed"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+	// 直接调用 DirectRelayRunway 让它写入错误响应
+	controller.DirectRelayRunway(c, meta)
+}
+
+// responseRecorder 用于捕获响应
+type responseRecorder struct {
+	gin.ResponseWriter
+	statusCode int
+	body       *bytes.Buffer
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.statusCode = code
+}
+
+func (r *responseRecorder) Write(data []byte) (int, error) {
+	return r.body.Write(data)
 }
 
 func RelayRunwayResult(c *gin.Context) {

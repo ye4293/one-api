@@ -96,15 +96,15 @@ func DirectRelayRunway(c *gin.Context, meta *util.RelayMeta) {
 
 	// 如果响应状态码是200，执行日志记录并修改响应体
 	if resp.StatusCode == 200 {
-		fmt.Printf("DEBUG: 响应状态码200，开始处理\n")
+		// fmt.Printf("DEBUG: 响应状态码200，开始处理\n")
 		// 解析响应体获取ID
 		var responseData map[string]interface{}
 		if err := json.Unmarshal(responseBody, &responseData); err == nil {
-			fmt.Printf("DEBUG: 响应体解析成功\n")
+			// fmt.Printf("DEBUG: 响应体解析成功\n")
 			if originalTaskId, ok := responseData["id"].(string); ok {
 				// 判断mode类型
 				mode := determineVideoMode(string(requestBody))
-				fmt.Printf("DEBUG: 响应解析成功，originalTaskId=%s, mode=%s\n", originalTaskId, mode)
+				// fmt.Printf("DEBUG: 响应解析成功，originalTaskId=%s, mode=%s\n", originalTaskId, mode)
 
 				// 根据mode在id前面加上前缀
 				var modifiedTaskId string
@@ -125,53 +125,53 @@ func DirectRelayRunway(c *gin.Context, meta *util.RelayMeta) {
 
 				// 根据模式类型选择不同的日志记录方式，使用修改后的id
 				if mode == "texttoimage" {
-					fmt.Printf("DEBUG: 进入图像扣费分支\n")
+					// fmt.Printf("DEBUG: 进入图像扣费分支\n")
 					// 如果是图像类型，调用图像日志记录
 					quota := calculateRunwayQuota(string(requestBody))
 					err := handleRunwayImageBilling(c, meta, meta.OriginModelName, mode, 1, quota)
 					if err != nil {
 						fmt.Printf("处理Runway图像任务扣费失败: %v\n", err)
 					} else {
-						fmt.Printf("DEBUG: 图像扣费成功，quota=%d\n", quota)
+						// fmt.Printf("DEBUG: 图像扣费成功，quota=%d\n", quota)
 					}
 
 					err = CreateImageLog("runway", modifiedTaskId, meta, "success", "", mode, 1, quota)
 					if err != nil {
 						fmt.Printf("创建图像日志失败: %v\n", err)
 					} else {
-						fmt.Printf("DEBUG: 图像日志创建成功\n")
+						// fmt.Printf("DEBUG: 图像日志创建成功\n")
 					}
 				} else {
-					fmt.Printf("DEBUG: 进入视频扣费分支，mode=%s\n", mode)
+					// fmt.Printf("DEBUG: 进入视频扣费分支，mode=%s\n", mode)
 					// 如果是视频类型，调用视频日志记录
 					// 解析请求体获取duration
 					duration := extractDurationFromRequest(string(requestBody))
 
 					// 计算quota
 					quota := calculateRunwayQuota(string(requestBody))
-					fmt.Printf("DEBUG: 视频参数 - duration=%s, quota=%d, modifiedTaskId=%s\n", duration, quota, modifiedTaskId)
+					// fmt.Printf("DEBUG: 视频参数 - duration=%s, quota=%d, modifiedTaskId=%s\n", duration, quota, modifiedTaskId)
 					err := handleRunwayVideoBilling(c, meta, meta.OriginModelName, mode, duration, quota, modifiedTaskId)
 					if err != nil {
 						fmt.Printf("处理Runway视频任务扣费失败: %v\n", err)
 					} else {
-						fmt.Printf("DEBUG: 视频扣费成功，quota=%d\n", quota)
+						// fmt.Printf("DEBUG: 视频扣费成功，quota=%d\n", quota)
 					}
 					// 创建视频日志
 					err = CreateVideoLog("runway", modifiedTaskId, meta, mode, duration, mode, modifiedTaskId, quota)
 					if err != nil {
 						fmt.Printf("创建视频日志失败: %v\n", err)
 					} else {
-						fmt.Printf("DEBUG: 视频日志创建成功\n")
+						// fmt.Printf("DEBUG: 视频日志创建成功\n")
 					}
 				}
 			} else {
-				fmt.Printf("DEBUG: 未找到响应中的id字段\n")
+				// fmt.Printf("DEBUG: 未找到响应中的id字段\n")
 			}
 		} else {
-			fmt.Printf("DEBUG: 响应体解析失败: %v\n", err)
+			// fmt.Printf("DEBUG: 响应体解析失败: %v\n", err)
 		}
 	} else {
-		fmt.Printf("DEBUG: 响应状态码不是200，是%d\n", resp.StatusCode)
+		// fmt.Printf("DEBUG: 响应状态码不是200，是%d\n", resp.StatusCode)
 	}
 
 	// 复制响应头（跳过Content-Length，让Gin自动计算）
@@ -764,7 +764,7 @@ func handleRunwayVideoBilling(c *gin.Context, meta *util.RelayMeta, modelName st
 
 	if quota != 0 {
 		tokenName := c.GetString("token_name")
-		logContent := fmt.Sprintf("Runway Video Generation   model: %s, mode: %s, duration: %s, total cost: $%.6f", modelName, mode, duration, float64(quota)/5000000)
+		logContent := fmt.Sprintf("Runway Video Generation   model: %s, mode: %s, duration: %s, total cost: $%.6f", modelName, mode, duration, float64(quota)/500000)
 
 		// 使用视频消费日志记录（包含taskId）
 		dbmodel.RecordVideoConsumeLog(context.Background(), meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, taskId)
