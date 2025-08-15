@@ -220,16 +220,17 @@ func determineVideoMode(requestBody string) string {
 		if model == "gen4_image" {
 			return "texttoimage"
 		}
+		if model == "gen4_aleph" {
+			return "videotovideo"
+		}
+		if model == "act_two" {
+			return "act_two"
+		}
 	}
 
 	// 检查是否包含 promptImage
 	if _, hasPromptImage := requestData["promptImage"]; hasPromptImage {
 		return "imagetovideo"
-	}
-
-	// 检查是否包含其他提示相关字段，如果没有promptImage可能是texttovideo
-	if _, hasPromptVideoUri := requestData["videoUri"]; hasPromptVideoUri {
-		return "videotovideo"
 	}
 
 	// 如果都没有，默认为upscalevideo
