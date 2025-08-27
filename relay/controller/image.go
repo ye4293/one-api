@@ -453,6 +453,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	var imageResponse openai.ImageResponse
 	var responseBody []byte
 
+	// 用于保存 Gemini token 信息
+	var geminiPromptTokens, geminiCompletionTokens int
+
 	defer func(ctx context.Context) {
 		if resp == nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
 			return
@@ -487,6 +490,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 		}
 
+		// 对于 Gemini 模型，跳过处理（已在响应处理中直接处理）
+		var promptTokens, completionTokens int
+		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
+			logger.Infof(ctx, "Defer 函数跳过 Gemini 模型处理（已在响应处理中完成）: ActualModelName=%s, OriginModelName=%s", meta.ActualModelName, meta.OriginModelName)
+			return // 跳过 Gemini 的处理
+		}
+
 		// 然后再处理配额消费
 		err := model.PostConsumeTokenQuota(meta.TokenId, quota)
 		if err != nil {
@@ -503,8 +513,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		rowDuration := time.Since(startTime).Seconds()
 		duration := math.Round(rowDuration*1000) / 1000
 		tokenName := c.GetString("token_name")
-		logContent := fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
-		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
+
+		// 对于 Gemini 模型，包含 token 使用信息
+		var logContent string
+		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
+			modelPriceFloat := float64(quota) / 500000
+			logContent = fmt.Sprintf("Gemini JSON Request - Model: %s, Price: $%.4f, Tokens: prompt=%d, completion=%d, total=%d",
+				meta.OriginModelName, modelPriceFloat, promptTokens, completionTokens, promptTokens+completionTokens)
+		} else {
+			logContent = fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
+		}
+
+		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
@@ -532,7 +552,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 
 	// Handle Gemini response format conversion
-	if strings.HasPrefix(imageRequest.Model, "gemini") {
+	if strings.HasPrefix(meta.OriginModelName, "gemini") {
+		logger.Infof(ctx, "进入 Gemini 响应处理逻辑，原始模型: %s, 映射后模型: %s", meta.OriginModelName, imageRequest.Model)
 		// Add debug logging for the original response body（省略具体内容，避免 base64 数据占用日志）
 		logger.Infof(ctx, "Gemini 原始响应已接收，状态码: %d", resp.StatusCode)
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
@@ -588,8 +609,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			} `json:"candidates,omitempty"`
 			ModelVersion  string `json:"modelVersion,omitempty"`
 			UsageMetadata struct {
-				PromptTokenCount int `json:"promptTokenCount,omitempty"`
-				TotalTokenCount  int `json:"totalTokenCount,omitempty"`
+				PromptTokenCount     int `json:"promptTokenCount,omitempty"`
+				CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
+				TotalTokenCount      int `json:"totalTokenCount,omitempty"`
 			} `json:"usageMetadata,omitempty"`
 		}
 
@@ -598,6 +620,21 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
+
+		// 保存 Gemini token 信息到全局变量，供 defer 函数使用
+		logger.Infof(ctx, "准备保存 Gemini token 信息")
+		logger.Infof(ctx, "原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
+			geminiResponse.UsageMetadata.PromptTokenCount,
+			geminiResponse.UsageMetadata.CandidatesTokenCount,
+			geminiResponse.UsageMetadata.TotalTokenCount)
+
+		geminiPromptTokens = geminiResponse.UsageMetadata.PromptTokenCount
+		geminiCompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount
+
+		logger.Infof(ctx, "已保存 Gemini token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
+			geminiPromptTokens, geminiCompletionTokens)
+		logger.Infof(ctx, "Gemini JSON token usage: prompt=%d, completion=%d, total=%d",
+			geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
 
 		// Check if any candidate has a finish reason that isn't STOP
 		for _, candidate := range geminiResponse.Candidates {
@@ -654,6 +691,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
+		}
+
+		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
+		err = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota)
+		if err != nil {
+			logger.Warnf(ctx, "Gemini token consumption failed: %v", err)
 		}
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
@@ -1542,7 +1585,7 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 // handleGeminiFormRequest 处理 Gemini 模型的 form 请求，转换为 JSON 格式
 func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta, fullRequestURL string) *relaymodel.ErrorWithStatusCode {
 
-	// 计算配额
+	// 计算配额 - 对于 Gemini 模型需要根据实际 token 使用量计算，这里先用默认值
 	var modelPrice float64
 	defaultPrice, ok := common.DefaultModelPrice[imageRequest.Model]
 	if !ok {
@@ -1553,6 +1596,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	groupRatio := common.GetGroupRatio(meta.Group)
 	quota := int64(modelPrice*500000*groupRatio) * int64(imageRequest.N)
+
+	// 注意：Gemini Form 请求的实际配额将在响应处理后根据真实 token 使用重新计算
 
 	// 检查用户配额是否足够
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
@@ -1844,8 +1889,17 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// 处理配额消费
-	err = model.PostConsumeTokenQuota(meta.TokenId, quota)
+	// 使用 Gemini 实际定价重新计算配额
+	groupRatio := common.GetGroupRatio(meta.Group)
+	promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+	completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+	actualQuota := calculateGeminiQuota(promptTokens, completionTokens, groupRatio)
+
+	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d",
+		promptTokens, completionTokens, groupRatio, actualQuota)
+
+	// 处理配额消费（使用重新计算的配额）
+	err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
 	}
@@ -1859,23 +1913,120 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 	tokenName := c.GetString("token_name")
-	modelPrice := float64(quota) / 500000
-	logContent := fmt.Sprintf("Gemini Form Request - Model: %s, Price: $%.4f, Tokens: prompt=%d, completion=%d, total=%d",
-		meta.OriginModelName, modelPrice,
-		geminiResponse.UsageMetadata.PromptTokenCount,
-		geminiResponse.UsageMetadata.CandidatesTokenCount,
-		geminiResponse.UsageMetadata.TotalTokenCount)
+
+	// 计算详细的成本信息
+	inputCost := float64(promptTokens) / 1000000.0 * 0.3
+	outputCost := float64(completionTokens) / 1000000.0 * 30.0
+	totalCost := inputCost + outputCost
+
+	logContent := fmt.Sprintf("Gemini Form Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d",
+		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota)
 
 	// 记录详细的 token 使用情况
 	logger.Infof(ctx, "Gemini Token Usage - Prompt: %d, Candidates: %d, Total: %d",
-		geminiResponse.UsageMetadata.PromptTokenCount,
-		geminiResponse.UsageMetadata.CandidatesTokenCount,
-		geminiResponse.UsageMetadata.TotalTokenCount)
+		promptTokens, completionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
 
-	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.OriginModelName, tokenName, quota, logContent, 0, title, referer)
-	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
+	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, 0, title, referer)
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 	channelId := c.GetInt("channel_id")
-	model.UpdateChannelUsedQuota(channelId, quota)
+	model.UpdateChannelUsedQuota(channelId, actualQuota)
 
 	return nil
+}
+
+// handleGeminiTokenConsumption 处理 Gemini JSON 请求的 token 消费和日志记录
+func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64) error {
+	// 从 geminiResponse 中提取 token 信息
+	var promptTokens, completionTokens int
+
+	// 使用类型断言来获取 UsageMetadata
+	if respStruct, ok := geminiResponse.(*struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					InlineData *gemini.InlineData `json:"inlineData,omitempty"`
+					Text       string             `json:"text,omitempty"`
+				} `json:"parts,omitempty"`
+				Role string `json:"role,omitempty"`
+			} `json:"content,omitempty"`
+			FinishReason string `json:"finishReason,omitempty"`
+			Index        int    `json:"index,omitempty"`
+		} `json:"candidates,omitempty"`
+		ModelVersion  string `json:"modelVersion,omitempty"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
+			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
+			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+		} `json:"usageMetadata,omitempty"`
+	}); ok {
+		promptTokens = respStruct.UsageMetadata.PromptTokenCount
+		completionTokens = respStruct.UsageMetadata.CandidatesTokenCount
+
+		logger.Infof(ctx, "Gemini JSON 直接处理 token: prompt=%d, completion=%d, total=%d",
+			promptTokens, completionTokens, respStruct.UsageMetadata.TotalTokenCount)
+	} else {
+		logger.Warnf(ctx, "Failed to extract token info from Gemini response")
+		return fmt.Errorf("failed to extract token info")
+	}
+
+	// 使用 Gemini 实际定价重新计算配额
+	groupRatio := common.GetGroupRatio(meta.Group)
+	actualQuota := calculateGeminiQuota(promptTokens, completionTokens, groupRatio)
+
+	logger.Infof(ctx, "Gemini 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d",
+		promptTokens, completionTokens, groupRatio, actualQuota)
+
+	// 处理配额消费（使用重新计算的配额）
+	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+		return err
+	}
+
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+		return err
+	}
+
+	// 记录消费日志
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+	tokenName := c.GetString("token_name")
+
+	// 计算详细的成本信息
+	inputCost := float64(promptTokens) / 1000000.0 * 0.3
+	outputCost := float64(completionTokens) / 1000000.0 * 30.0
+	totalCost := inputCost + outputCost
+
+	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d",
+		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota)
+
+	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, 0, title, referer)
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+	channelId := c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+	logger.Infof(ctx, "Gemini JSON token consumption completed: prompt=%d, completion=%d", promptTokens, completionTokens)
+	return nil
+}
+
+// calculateGeminiQuota 根据 Gemini 的实际定价计算配额
+// 输入: 1M tokens = $0.3, 输出: 1M tokens = $30
+// 平台换算: $1 = 500,000 quota
+func calculateGeminiQuota(promptTokens, completionTokens int, groupRatio float64) int64 {
+	// Gemini 定价
+	const inputPricePerMillion = 0.3   // $0.3 per 1M input tokens
+	const outputPricePerMillion = 30.0 // $30 per 1M output tokens
+	const quotaPerDollar = 500000.0    // 500,000 quota per $1
+
+	// 计算成本
+	inputCost := float64(promptTokens) / 1000000.0 * inputPricePerMillion
+	outputCost := float64(completionTokens) / 1000000.0 * outputPricePerMillion
+	totalCost := inputCost + outputCost
+
+	// 转换为配额并应用分组倍率
+	quota := int64(totalCost * quotaPerDollar * groupRatio)
+
+	return quota
 }
