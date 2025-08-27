@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,14 +76,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if isFormRequest {
 		// 对于表单请求，我们需要特殊处理
 		if strings.Contains(contentType, "multipart/form-data") {
-			// 创建一个新的multipart表单
-			body := &bytes.Buffer{}
-			writer := multipart.NewWriter(body)
-
 			// 解析原始表单
 			if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32MB
 				return openai.ErrorWrapper(err, "parse_multipart_form_failed", http.StatusBadRequest)
 			}
+
+			// 检查是否是 Gemini 模型的 form 请求，需要特殊处理转换为 JSON
+			if strings.HasPrefix(imageRequest.Model, "gemini") {
+				return handleGeminiFormRequest(c, ctx, imageRequest, meta, fullRequestURL)
+			}
+
+			// 对于其他模型，继续原有的 form 转发逻辑
+			// 创建一个新的multipart表单
+			body := &bytes.Buffer{}
+			writer := multipart.NewWriter(body)
 
 			// 添加所有表单字段
 			for key, values := range c.Request.MultipartForm.Value {
@@ -284,7 +291,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
-			fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=%s", meta.APIKey)
+			fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", meta.OriginModelName)
+			logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
 		}
 
 		if meta.ChannelType == 27 {
@@ -420,8 +428,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		token = strings.TrimPrefix(token, "Bearer ")
 		req.Header.Set("api-key", token)
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
-		// For Gemini, we're using the API key in the URL, so don't set Authorization header
-		logger.Infof(ctx, "Skipping Authorization header for Gemini API request")
+		// For Gemini, set the API key in the x-goog-api-key header
+		req.Header.Set("x-goog-api-key", meta.APIKey)
+		logger.Infof(ctx, "Setting x-goog-api-key header for Gemini API request")
 	} else {
 		req.Header.Set("Authorization", token)
 	}
@@ -1539,6 +1548,347 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			http.StatusInternalServerError,
 		)
 	}
+
+	return nil
+}
+
+// handleGeminiFormRequest 处理 Gemini 模型的 form 请求，转换为 JSON 格式
+func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta, fullRequestURL string) *relaymodel.ErrorWithStatusCode {
+
+	// 计算配额
+	var modelPrice float64
+	defaultPrice, ok := common.DefaultModelPrice[imageRequest.Model]
+	if !ok {
+		modelPrice = 0.1
+	} else {
+		modelPrice = defaultPrice
+	}
+
+	groupRatio := common.GetGroupRatio(meta.Group)
+	quota := int64(modelPrice*500000*groupRatio) * int64(imageRequest.N)
+
+	// 检查用户配额是否足够
+	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "failed to get user quota", http.StatusInternalServerError)
+	}
+
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)
+	}
+
+	// 从 form 中获取 prompt
+	prompt := ""
+	if prompts, ok := c.Request.MultipartForm.Value["prompt"]; ok && len(prompts) > 0 {
+		prompt = prompts[0]
+	}
+	if prompt == "" {
+		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
+	}
+
+	// 从 form 中获取图片文件
+	var imageBase64 string
+	var mimeType string
+
+	if fileHeaders, ok := c.Request.MultipartForm.File["image"]; ok && len(fileHeaders) > 0 {
+		fileHeader := fileHeaders[0]
+		file, err := fileHeader.Open()
+		if err != nil {
+			return openai.ErrorWrapper(err, "open_image_file_failed", http.StatusBadRequest)
+		}
+		defer file.Close()
+
+		// 读取文件内容
+		fileBytes, err := io.ReadAll(file)
+		if err != nil {
+			return openai.ErrorWrapper(err, "read_image_file_failed", http.StatusBadRequest)
+		}
+
+		// 将文件内容转换为 base64
+		imageBase64 = base64.StdEncoding.EncodeToString(fileBytes)
+
+		// 获取 MIME 类型
+		mimeType = fileHeader.Header.Get("Content-Type")
+		if mimeType == "" || mimeType == "application/octet-stream" {
+			// 根据文件扩展名推断 MIME 类型
+			ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+			switch ext {
+			case ".png":
+				mimeType = "image/png"
+			case ".jpg", ".jpeg":
+				mimeType = "image/jpeg"
+			case ".webp":
+				mimeType = "image/webp"
+			case ".gif":
+				mimeType = "image/gif"
+			default:
+				// 默认为 jpeg
+				mimeType = "image/jpeg"
+			}
+		}
+	} else {
+		return openai.ErrorWrapper(fmt.Errorf("image 文件不能为空"), "missing_image_file", http.StatusBadRequest)
+	}
+
+	// 构建 Gemini API 请求格式
+	geminiRequest := gemini.ChatRequest{
+		Contents: []gemini.ChatContent{
+			{
+				Parts: []gemini.Part{
+					{
+						Text: prompt,
+					},
+					{
+						InlineData: &gemini.InlineData{
+							MimeType: mimeType,
+							Data:     imageBase64,
+						},
+					},
+				},
+			},
+		},
+		GenerationConfig: gemini.ChatGenerationConfig{
+			ResponseModalities: []string{"TEXT", "IMAGE"},
+		},
+	}
+
+	// 转换为 JSON
+	jsonBytes, err := json.Marshal(geminiRequest)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
+	}
+
+	// 记录转换后的请求体
+	logger.Infof(ctx, "Gemini Form 转换后的请求体: %s", string(jsonBytes))
+
+	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
+	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
+	fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", meta.OriginModelName)
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestURL, bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-goog-api-key", meta.APIKey) // Gemini API 正确的 header 格式
+
+	// 发送请求
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 处理响应
+	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota)
+}
+
+// handleGeminiResponse 处理 Gemini API 的响应
+func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Response, imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta, quota int64) *relaymodel.ErrorWithStatusCode {
+	// 读取响应体
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 记录原始响应
+	logger.Infof(ctx, "Gemini Form API 原始响应体: %s", string(responseBody))
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		logger.Errorf(ctx, "Gemini API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
+
+		// 尝试解析错误响应
+		var geminiError struct {
+			Error struct {
+				Code    int                      `json:"code"`
+				Message string                   `json:"message"`
+				Status  string                   `json:"status"`
+				Details []map[string]interface{} `json:"details,omitempty"`
+			} `json:"error"`
+		}
+
+		if err := json.Unmarshal(responseBody, &geminiError); err == nil && geminiError.Error.Message != "" {
+			errorMsg := fmt.Errorf("Gemini API 错误: %s (状态: %s)", geminiError.Error.Message, geminiError.Error.Status)
+			errorCode := "gemini_" + strings.ToLower(geminiError.Error.Status)
+			statusCode := geminiError.Error.Code
+			if statusCode == 0 {
+				statusCode = http.StatusBadRequest
+			}
+			return openai.ErrorWrapper(errorMsg, errorCode, statusCode)
+		}
+
+		return openai.ErrorWrapper(
+			fmt.Errorf("Gemini API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
+			"gemini_api_error",
+			resp.StatusCode,
+		)
+	}
+
+	// 解析 Gemini 成功响应
+	var geminiResponse struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					InlineData *gemini.InlineData `json:"inlineData,omitempty"`
+					Text       string             `json:"text,omitempty"`
+				} `json:"parts,omitempty"`
+				Role string `json:"role,omitempty"`
+			} `json:"content,omitempty"`
+			FinishReason string `json:"finishReason,omitempty"`
+			Index        int    `json:"index,omitempty"`
+		} `json:"candidates,omitempty"`
+		ModelVersion  string `json:"modelVersion,omitempty"`
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
+			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
+			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+			PromptTokensDetails  []struct {
+				Modality   string `json:"modality"`
+				TokenCount int    `json:"tokenCount"`
+			} `json:"promptTokensDetails,omitempty"`
+			CandidatesTokensDetails []struct {
+				Modality   string `json:"modality"`
+				TokenCount int    `json:"tokenCount"`
+			} `json:"candidatesTokensDetails,omitempty"`
+		} `json:"usageMetadata,omitempty"`
+	}
+
+	err = json.Unmarshal(responseBody, &geminiResponse)
+	if err != nil {
+		logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
+		return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
+	}
+
+	// 检查是否有非正常完成的候选项
+	for _, candidate := range geminiResponse.Candidates {
+		if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
+			logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
+			errorMsg := fmt.Errorf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
+			return openai.ErrorWrapper(errorMsg, "gemini_incomplete_generation", http.StatusBadRequest)
+		}
+	}
+
+	// 转换为 OpenAI DALL-E 兼容格式
+	var imageData []struct {
+		Url string `json:"url"`
+	}
+
+	// 从 Gemini 响应中提取图像数据
+	for i, candidate := range geminiResponse.Candidates {
+		for j, part := range candidate.Content.Parts {
+			if part.InlineData != nil {
+				// 使用 base64 数据作为 URL（为了 DALL-E 兼容性）
+				imageData = append(imageData, struct {
+					Url string `json:"url"`
+				}{
+					Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
+				})
+			} else if part.Text != "" {
+				logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
+			}
+		}
+	}
+
+	// 创建兼容 OpenAI 格式的响应数据
+	var openaiCompatibleData []struct {
+		Url     string `json:"url,omitempty"`
+		B64Json string `json:"b64_json,omitempty"`
+	}
+	for _, img := range imageData {
+		openaiCompatibleData = append(openaiCompatibleData, struct {
+			Url     string `json:"url,omitempty"`
+			B64Json string `json:"b64_json,omitempty"`
+		}{
+			Url: img.Url,
+		})
+	}
+
+	// 构建包含 usage 信息的响应结构体
+	type ImageResponseWithUsage struct {
+		Created int `json:"created"`
+		Data    []struct {
+			Url     string `json:"url,omitempty"`
+			B64Json string `json:"b64_json,omitempty"`
+		} `json:"data"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage,omitempty"`
+	}
+
+	// 构建最终响应
+	imageResponse := ImageResponseWithUsage{
+		Created: int(time.Now().Unix()),
+		Data:    openaiCompatibleData,
+		Usage: struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		}{
+			PromptTokens:     geminiResponse.UsageMetadata.PromptTokenCount,
+			CompletionTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:      geminiResponse.UsageMetadata.TotalTokenCount,
+		},
+	}
+
+	// 重新序列化为 OpenAI 格式
+	finalResponseBody, err := json.Marshal(imageResponse)
+	if err != nil {
+		logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
+		return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
+	}
+
+	// 设置响应头
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(finalResponseBody)))
+
+	// 设置状态码
+	c.Writer.WriteHeader(http.StatusOK)
+
+	// 写入响应体
+	_, err = c.Writer.Write(finalResponseBody)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 处理配额消费
+	err = model.PostConsumeTokenQuota(meta.TokenId, quota)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+
+	// 记录消费日志
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+	tokenName := c.GetString("token_name")
+	modelPrice := float64(quota) / 500000
+	logContent := fmt.Sprintf("Gemini Form Request - Model: %s, Price: $%.4f, Tokens: prompt=%d, completion=%d, total=%d",
+		meta.OriginModelName, modelPrice,
+		geminiResponse.UsageMetadata.PromptTokenCount,
+		geminiResponse.UsageMetadata.CandidatesTokenCount,
+		geminiResponse.UsageMetadata.TotalTokenCount)
+
+	// 记录详细的 token 使用情况
+	logger.Infof(ctx, "Gemini Token Usage - Prompt: %d, Candidates: %d, Total: %d",
+		geminiResponse.UsageMetadata.PromptTokenCount,
+		geminiResponse.UsageMetadata.CandidatesTokenCount,
+		geminiResponse.UsageMetadata.TotalTokenCount)
+
+	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, meta.OriginModelName, tokenName, quota, logContent, 0, title, referer)
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
+	channelId := c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, quota)
 
 	return nil
 }
