@@ -285,8 +285,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 			}
 
-			// Print the transformed Gemini request body for debugging
-			logger.Infof(ctx, "Gemini 转换后的请求体: %s", string(jsonStr))
+			// Print the transformed Gemini request body for debugging（省略具体内容，避免 base64 数据占用日志）
+			logger.Infof(ctx, "Gemini JSON 请求体已构建完成，包含文本提示和图片数据")
 
 			requestBody = bytes.NewBuffer(jsonStr)
 
@@ -533,8 +533,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
-		// Add debug logging for the original response body
-		logger.Infof(ctx, "Gemini 原始响应体: %s", string(responseBody))
+		// Add debug logging for the original response body（省略具体内容，避免 base64 数据占用日志）
+		logger.Infof(ctx, "Gemini 原始响应已接收，状态码: %d", resp.StatusCode)
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
 
 		// Check if response is an error
@@ -611,18 +611,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
-			Url string `json:"url"`
+			B64Json string `json:"b64_json"`
 		}
 
 		// Extract image data from Gemini response
 		for i, candidate := range geminiResponse.Candidates {
 			for j, part := range candidate.Content.Parts {
 				if part.InlineData != nil {
-					// Use the base64 data as the URL (for DALL-E compatibility)
+					// Use the base64 data in b64_json field (OpenAI standard)
 					imageData = append(imageData, struct {
-						Url string `json:"url"`
+						B64Json string `json:"b64_json"`
 					}{
-						Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
+						B64Json: part.InlineData.Data,
 					})
 				} else if part.Text != "" {
 					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
@@ -630,30 +630,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 		}
 
-		// Use the existing OpenAI ImageResponse struct
-		// Create a properly typed slice for OpenAI's ImageResponse
-		var openaiImageData []struct {
-			Url string `json:"url"`
-		}
-		for _, img := range imageData {
-			openaiImageData = append(openaiImageData, struct {
-				Url string `json:"url"`
-			}{
-				Url: img.Url,
-			})
-		}
-
-		// Create a properly typed slice for OpenAI's ImageResponse
+		// Create OpenAI compatible response data with b64_json
 		var openaiCompatibleData []struct {
 			Url     string `json:"url,omitempty"`
 			B64Json string `json:"b64_json,omitempty"`
 		}
-		for _, img := range openaiImageData {
+		for _, img := range imageData {
 			openaiCompatibleData = append(openaiCompatibleData, struct {
 				Url     string `json:"url,omitempty"`
 				B64Json string `json:"b64_json,omitempty"`
 			}{
-				Url: img.Url,
+				B64Json: img.B64Json,
 			})
 		}
 
@@ -1658,8 +1645,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 	}
 
-	// 记录转换后的请求体
-	logger.Infof(ctx, "Gemini Form 转换后的请求体: %s", string(jsonBytes))
+	// 记录转换后的请求体（省略具体内容，避免 base64 数据占用日志）
+	logger.Infof(ctx, "Gemini Form 请求体已构建完成，包含文本提示和图片数据")
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
@@ -1695,8 +1682,8 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// 记录原始响应
-	logger.Infof(ctx, "Gemini Form API 原始响应体: %s", string(responseBody))
+	// 记录原始响应（省略具体内容，避免 base64 数据占用日志）
+	logger.Infof(ctx, "Gemini Form API 响应已接收，状态码: %d", resp.StatusCode)
 
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -1775,18 +1762,18 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	// 转换为 OpenAI DALL-E 兼容格式
 	var imageData []struct {
-		Url string `json:"url"`
+		B64Json string `json:"b64_json"`
 	}
 
 	// 从 Gemini 响应中提取图像数据
 	for i, candidate := range geminiResponse.Candidates {
 		for j, part := range candidate.Content.Parts {
 			if part.InlineData != nil {
-				// 使用 base64 数据作为 URL（为了 DALL-E 兼容性）
+				// 使用 b64_json 字段（OpenAI 标准）
 				imageData = append(imageData, struct {
-					Url string `json:"url"`
+					B64Json string `json:"b64_json"`
 				}{
-					Url: "data:" + part.InlineData.MimeType + ";base64," + part.InlineData.Data,
+					B64Json: part.InlineData.Data,
 				})
 			} else if part.Text != "" {
 				logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
@@ -1804,7 +1791,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			Url     string `json:"url,omitempty"`
 			B64Json string `json:"b64_json,omitempty"`
 		}{
-			Url: img.Url,
+			B64Json: img.B64Json,
 		})
 	}
 
