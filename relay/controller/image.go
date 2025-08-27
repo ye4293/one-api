@@ -1668,65 +1668,77 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
 	}
 
-	// 从 form 中获取图片文件
-	var imageBase64 string
-	var mimeType string
+	// 从 form 中获取图片文件（支持多个图片）
+	var imageParts []gemini.Part
 
 	if fileHeaders, ok := c.Request.MultipartForm.File["image"]; ok && len(fileHeaders) > 0 {
-		fileHeader := fileHeaders[0]
-		file, err := fileHeader.Open()
-		if err != nil {
-			return openai.ErrorWrapper(err, "open_image_file_failed", http.StatusBadRequest)
-		}
-		defer file.Close()
-
-		// 读取文件内容
-		fileBytes, err := io.ReadAll(file)
-		if err != nil {
-			return openai.ErrorWrapper(err, "read_image_file_failed", http.StatusBadRequest)
-		}
-
-		// 将文件内容转换为 base64
-		imageBase64 = base64.StdEncoding.EncodeToString(fileBytes)
-
-		// 获取 MIME 类型
-		mimeType = fileHeader.Header.Get("Content-Type")
-		if mimeType == "" || mimeType == "application/octet-stream" {
-			// 根据文件扩展名推断 MIME 类型
-			ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-			switch ext {
-			case ".png":
-				mimeType = "image/png"
-			case ".jpg", ".jpeg":
-				mimeType = "image/jpeg"
-			case ".webp":
-				mimeType = "image/webp"
-			case ".gif":
-				mimeType = "image/gif"
-			default:
-				// 默认为 jpeg
-				mimeType = "image/jpeg"
+		// 遍历所有图片文件
+		for i, fileHeader := range fileHeaders {
+			file, err := fileHeader.Open()
+			if err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("open_image_file_%d_failed: %v", i+1, err), "open_image_file_failed", http.StatusBadRequest)
 			}
+
+			// 读取文件内容
+			fileBytes, err := io.ReadAll(file)
+			file.Close() // 立即关闭文件
+			if err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("read_image_file_%d_failed: %v", i+1, err), "read_image_file_failed", http.StatusBadRequest)
+			}
+
+			// 将文件内容转换为 base64
+			imageBase64 := base64.StdEncoding.EncodeToString(fileBytes)
+
+			// 获取 MIME 类型
+			mimeType := fileHeader.Header.Get("Content-Type")
+			if mimeType == "" || mimeType == "application/octet-stream" {
+				// 根据文件扩展名推断 MIME 类型
+				ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+				switch ext {
+				case ".png":
+					mimeType = "image/png"
+				case ".jpg", ".jpeg":
+					mimeType = "image/jpeg"
+				case ".webp":
+					mimeType = "image/webp"
+				case ".gif":
+					mimeType = "image/gif"
+				default:
+					// 默认为 jpeg
+					mimeType = "image/jpeg"
+				}
+			}
+
+			// 创建图片部分
+			imagePart := gemini.Part{
+				InlineData: &gemini.InlineData{
+					MimeType: mimeType,
+					Data:     imageBase64,
+				},
+			}
+			imageParts = append(imageParts, imagePart)
 		}
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("image 文件不能为空"), "missing_image_file", http.StatusBadRequest)
 	}
 
 	// 构建 Gemini API 请求格式
+	// 按照顺序：先添加所有图片，最后添加文本提示
+	var parts []gemini.Part
+
+	// 添加所有图片部分
+	parts = append(parts, imageParts...)
+
+	// 最后添加文本提示
+	textPart := gemini.Part{
+		Text: prompt,
+	}
+	parts = append(parts, textPart)
+
 	geminiRequest := gemini.ChatRequest{
 		Contents: []gemini.ChatContent{
 			{
-				Parts: []gemini.Part{
-					{
-						Text: prompt,
-					},
-					{
-						InlineData: &gemini.InlineData{
-							MimeType: mimeType,
-							Data:     imageBase64,
-						},
-					},
-				},
+				Parts: parts,
 			},
 		},
 		GenerationConfig: gemini.ChatGenerationConfig{
@@ -1739,9 +1751,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	if err != nil {
 		return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 	}
-
-	// 记录转换后的请求体（省略具体内容，避免 base64 数据占用日志）
-	logger.Infof(ctx, "Gemini Form 请求体已构建完成，包含文本提示和图片数据")
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
