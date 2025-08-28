@@ -291,7 +291,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
-			fullRequestURL = fmt.Sprintf("https://%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
 			logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
 		}
 
@@ -1754,7 +1754,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
-	fullRequestURL = fmt.Sprintf("https://%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+	fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
 
 	// 创建请求
 	req, err := http.NewRequest("POST", fullRequestURL, bytes.NewBuffer(jsonBytes))

@@ -244,7 +244,50 @@ func SyncChannelCache(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
 		logger.SysLog("syncing channels from database")
+
+		// 检查数据一致性
+		checkDataConsistency()
+
 		InitChannelCache()
+	}
+}
+
+// checkDataConsistency 定期检查数据一致性
+func checkDataConsistency() {
+	var inconsistentCount int64
+	err := DB.Raw(`
+		SELECT COUNT(*) FROM abilities a
+		JOIN channels c ON a.channel_id = c.id
+		WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
+	`, common.ChannelStatusEnabled, common.ChannelStatusEnabled).Scan(&inconsistentCount).Error
+
+	if err != nil {
+		logger.SysError("Failed to check data consistency: " + err.Error())
+		return
+	}
+
+	if inconsistentCount > 0 {
+		logger.SysError(fmt.Sprintf("Data inconsistency detected: %d records have mismatched channel.status and ability.enabled", inconsistentCount))
+
+		// 自动修复数据不一致
+		result1 := DB.Exec(`
+			UPDATE abilities SET enabled = 1 
+			WHERE channel_id IN (
+				SELECT id FROM channels WHERE status = ?
+			)`, common.ChannelStatusEnabled)
+
+		result2 := DB.Exec(`
+			UPDATE abilities SET enabled = 0 
+			WHERE channel_id IN (
+				SELECT id FROM channels WHERE status != ?
+			)`, common.ChannelStatusEnabled)
+
+		if result1.Error == nil && result2.Error == nil {
+			logger.SysLog(fmt.Sprintf("Auto-fixed data inconsistency: enabled %d abilities, disabled %d abilities",
+				result1.RowsAffected, result2.RowsAffected))
+		} else {
+			logger.SysError("Failed to auto-fix data inconsistency")
+		}
 	}
 }
 

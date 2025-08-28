@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
 )
 
 type Ability struct {
@@ -128,7 +129,10 @@ func (channel *Channel) UpdateAbilities() error {
 	return nil
 }
 
+// UpdateAbilityStatus 已废弃：请使用 UpdateChannelStatusById 确保数据一致性
+// Deprecated: Use UpdateChannelStatusById instead to ensure data consistency
 func UpdateAbilityStatus(channelId int, status bool) error {
+	logger.SysError("WARNING: UpdateAbilityStatus is deprecated and may cause data inconsistency. Use UpdateChannelStatusById instead.")
 	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
 }
 
