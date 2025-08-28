@@ -343,15 +343,26 @@ func handleDoubaoVideoResponse(c *gin.Context, ctx context.Context, doubaoRespon
 	}
 }
 
+// handleVeoVideoRequest 处理 Veo 视频生成请求，支持两种 API 方式：
+// 1. Vertex AI API: 使用 OAuth2 认证，需要项目ID和区域配置
+// 2. Gemini API: 使用 API Key 认证，端点为 generativelanguage.googleapis.com
+// 两种 API 的请求体格式完全相同，只是端点和认证方式不同
 func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 
 	var fullRequestUrl string
-	region := meta.Config.Region
 
-	if region == "global" {
-		fullRequestUrl = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning", meta.Config.VertexAIProjectID, meta.OriginModelName)
+	// 根据渠道类型选择不同的 API 端点
+	if meta.ChannelType == common.ChannelTypeGemini {
+		// Gemini API 端点
+		fullRequestUrl = fmt.Sprintf("%s/v1beta/models/%s:predictLongRunning", meta.BaseURL, meta.OriginModelName)
 	} else {
-		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
+		// Vertex AI 端点（默认）
+		region := meta.Config.Region
+		if region == "global" {
+			fullRequestUrl = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning", meta.Config.VertexAIProjectID, meta.OriginModelName)
+		} else {
+			fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
+		}
 	}
 
 	log.Printf("veo-full-request-url: %s", fullRequestUrl)
@@ -429,31 +440,39 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 		return openai.ErrorWrapper(fmt.Errorf("余额不足：Veo3模型价格较高，需要预扣费约$6.0，请充值后重试"), "Insufficient balance: Veo3 model requires approximately $6.0 pre-payment, please recharge and try again", http.StatusBadRequest)
 	}
 
-	// 创建VertexAI适配器实例
-	var credentials vertexai.Credentials
-	if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err != nil {
-		return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
-	}
-
-	adaptor := &vertexai.Adaptor{
-		AccountCredentials: credentials,
-	}
-
-	// 获取访问令牌
-	accessToken, err := vertexai.GetAccessToken(adaptor, meta)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_access_token_error", http.StatusInternalServerError)
-	}
-
 	// 创建HTTP请求
 	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 设置请求头
+	// 根据渠道类型设置不同的认证方式
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	if meta.ChannelType == common.ChannelTypeGemini {
+		// Gemini API 使用 API Key 认证
+		req.Header.Set("x-goog-api-key", meta.APIKey)
+		log.Printf("Using Gemini API authentication for Veo video generation")
+	} else {
+		// Vertex AI 使用 OAuth2 token 认证
+		var credentials vertexai.Credentials
+		if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err != nil {
+			return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
+		}
+
+		adaptor := &vertexai.Adaptor{
+			AccountCredentials: credentials,
+		}
+
+		// 获取访问令牌
+		accessToken, err := vertexai.GetAccessToken(adaptor, meta)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_access_token_error", http.StatusInternalServerError)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		log.Printf("Using Vertex AI authentication for Veo video generation")
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -508,8 +527,12 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 		// 计算配额 - 这里需要根据generateAudio和durationSeconds来计算
 		quota := calculateVeoQuota(meta, modelName, generateAudio, durationSeconds)
 
-		// 创建视频日志
-		err := CreateVideoLog("vertexai", taskId, meta, videoMode, strconv.Itoa(durationSeconds), "", "", quota)
+		// 创建视频日志 - 根据渠道类型选择provider名称
+		provider := "vertexai"
+		if meta.ChannelType == common.ChannelTypeGemini {
+			provider = "gemini"
+		}
+		err := CreateVideoLog(provider, taskId, meta, videoMode, strconv.Itoa(durationSeconds), "", "", quota)
 		if err != nil {
 			logger.Warnf(ctx, "Failed to create video log: %v", err)
 			return openai.ErrorWrapper(
@@ -2276,6 +2299,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		fullRequestUrl = fmt.Sprintf("%s/v1/projects/%s/locations/%s/publishers/google/models/%s:fetchPredictOperation",
 			baseURL, projectId, region, modelId)
+	case "gemini":
+		// 对于 Gemini API，使用相同的操作查询端点
+		fullRequestUrl = fmt.Sprintf("%s/v1beta/operations/%s", *channel.BaseURL, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -2285,21 +2311,25 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 	// 创建新的请求
 	var req *http.Request
-	var fullOperationName string // 声明变量
 
-	if videoTask.Provider == "vertexai" {
-		// 配置已在函数开始时读取，直接使用
-		projectId := cfg.VertexAIProjectID
-		region := cfg.Region
-		modelId := videoTask.Model
+	if videoTask.Provider == "vertexai" || videoTask.Provider == "gemini" {
+		var operationName string
+		if videoTask.Provider == "vertexai" {
+			// 配置已在函数开始时读取，直接使用
+			projectId := cfg.VertexAIProjectID
+			region := cfg.Region
+			modelId := videoTask.Model
+			// 重新构建完整的操作名称用于API请求
+			operationName = fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s/operations/%s",
+				projectId, region, modelId, taskId)
+		} else {
+			// Gemini API 中 taskId 就是操作名称
+			operationName = taskId
+		}
 
-		// 重新构建完整的操作名称用于API请求
-		fullOperationName = fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s/operations/%s",
-			projectId, region, modelId, taskId)
-
-		// VertexAI 需要 POST 请求，并在请求体中包含完整的操作名称
+		// 两者都需要 POST 请求，并在请求体中包含操作名称
 		requestBody := map[string]string{
-			"operationName": fullOperationName,
+			"operationName": operationName,
 		}
 		jsonBody, err := json.Marshal(requestBody)
 		if err != nil {
@@ -2371,6 +2401,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
+		log.Printf("Using Vertex AI authentication for video task query: %s", taskId)
+	} else if videoTask.Provider == "gemini" {
+		// Gemini API 使用 API Key 认证
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-goog-api-key", channel.Key)
+		log.Printf("Using Gemini API authentication for video task query: %s", taskId)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -2964,7 +3000,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 直接使用上游返回的状态码
 		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
-	} else if videoTask.Provider == "vertexai" {
+	} else if videoTask.Provider == "vertexai" || videoTask.Provider == "gemini" {
 		defer resp.Body.Close()
 
 		// 首先检查数据库中是否已有存储的URL
@@ -2992,13 +3028,20 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		}
 
 		var veoResp map[string]interface{}
+
+		// 确定API类型用于日志
+		apiType := "Vertex AI"
+		if videoTask.Provider == "gemini" {
+			apiType = "Gemini API"
+		}
+
 		if err := json.Unmarshal(body, &veoResp); err != nil {
-			log.Printf("Failed to parse Vertex AI response as JSON. Body: %s", string(body))
+			log.Printf("Failed to parse %s response as JSON. Body: %s", apiType, string(body))
 			return openai.ErrorWrapper(fmt.Errorf("failed to parse response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
 		}
 
 		// 打印原始响应体的JSON结构（不显示具体内容以避免base64数据过长）
-		log.Printf("=== Vertex AI Response Structure for task %s ===", taskId)
+		log.Printf("=== %s Response Structure for task %s ===", apiType, taskId)
 		printJSONStructure(veoResp, "", 4)
 		log.Printf("=== End of Response Structure ===")
 

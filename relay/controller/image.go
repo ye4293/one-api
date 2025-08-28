@@ -222,7 +222,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 						Role: "user",
 						Parts: []gemini.Part{
 							{
-								Text: imageRequest.Prompt,
+								Text: func() string {
+									if imageRequest.Size != "" {
+										return fmt.Sprintf("%s. Please generate the image with dimensions: %s", imageRequest.Prompt, imageRequest.Size)
+									}
+									return imageRequest.Prompt
+								}(),
 							},
 						},
 					},
@@ -1668,6 +1673,12 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
 	}
 
+	// 从 form 中获取 size 参数
+	size := ""
+	if sizes, ok := c.Request.MultipartForm.Value["size"]; ok && len(sizes) > 0 {
+		size = sizes[0]
+	}
+
 	// 从 form 中获取图片文件（支持多个图片）
 	var imageParts []gemini.Part
 
@@ -1730,8 +1741,12 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	parts = append(parts, imageParts...)
 
 	// 最后添加文本提示
+	textContent := prompt
+	if size != "" {
+		textContent = fmt.Sprintf("%s. Please generate the image with dimensions: %s", prompt, size)
+	}
 	textPart := gemini.Part{
-		Text: prompt,
+		Text: textContent,
 	}
 	parts = append(parts, textPart)
 
