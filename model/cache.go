@@ -265,7 +265,25 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	}
 
 	if len(priorities) == 0 {
-		return nil, errors.New("no priorities available")
+		// 提供更详细的错误信息用于调试
+		var totalChannels int64
+		var enabledChannels int64
+		var disabledChannels int64
+
+		DB.Model(&Channel{}).Count(&totalChannels)
+		DB.Model(&Channel{}).Where("status = ?", common.ChannelStatusEnabled).Count(&enabledChannels)
+		DB.Model(&Channel{}).Where("status = ?", common.ChannelStatusAutoDisabled).Count(&disabledChannels)
+
+		var totalAbilities int64
+		var enabledAbilities int64
+		DB.Model(&Ability{}).Where(groupCol+" = ? and model = ?", group, model).Count(&totalAbilities)
+		DB.Model(&Ability{}).Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model).Count(&enabledAbilities)
+
+		logger.SysError(fmt.Sprintf("No available channels for group=%s, model=%s. Stats: total_channels=%d, enabled_channels=%d, disabled_channels=%d, total_abilities=%d, enabled_abilities=%d",
+			group, model, totalChannels, enabledChannels, disabledChannels, totalAbilities, enabledAbilities))
+
+		return nil, fmt.Errorf("no available channels for group '%s' and model '%s'. Total channels: %d, Enabled: %d, Auto-disabled: %d",
+			group, model, totalChannels, enabledChannels, disabledChannels)
 	}
 
 	// 确定使用哪个优先级

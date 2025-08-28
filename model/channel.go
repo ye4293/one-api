@@ -283,14 +283,51 @@ func BatchDeleteChannel(ids []int) error {
 }
 
 func UpdateChannelStatusById(id int, status int) {
-	err := UpdateAbilityStatus(id, status == common.ChannelStatusEnabled)
+	tx := DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 更新Ability状态
+	err := tx.Model(&Ability{}).Where("channel_id = ?", id).
+		Update("enabled", status == common.ChannelStatusEnabled).Error
 	if err != nil {
+		tx.Rollback()
 		logger.SysError("failed to update ability status: " + err.Error())
+		return
 	}
-	err = DB.Model(&Channel{}).Where("id = ?", id).Update("status", status).Error
+
+	// 更新Channel状态
+	err = tx.Model(&Channel{}).Where("id = ?", id).
+		Update("status", status).Error
 	if err != nil {
+		tx.Rollback()
 		logger.SysError("failed to update channel status: " + err.Error())
+		return
 	}
+
+	err = tx.Commit().Error
+	if err != nil {
+		logger.SysError("failed to commit channel status update: " + err.Error())
+		return
+	}
+
+	// 记录状态变更类型
+	var statusText string
+	switch status {
+	case common.ChannelStatusEnabled:
+		statusText = "启用"
+	case common.ChannelStatusManuallyDisabled:
+		statusText = "手动禁用"
+	case common.ChannelStatusAutoDisabled:
+		statusText = "自动禁用"
+	default:
+		statusText = fmt.Sprintf("状态%d", status)
+	}
+
+	logger.SysLog(fmt.Sprintf("Channel #%d status updated to %s", id, statusText))
 }
 
 func UpdateChannelUsedQuota(id int, quota int64) {
