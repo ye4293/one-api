@@ -71,6 +71,10 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "This API method requires billing to be enabled.") {
 		return true
 	}
+	// 添加对 x.ai API key 错误的处理
+	if strings.Contains(err.Message, "Incorrect API key provided") && strings.Contains(err.Message, "console.x.ai") {
+		return true
+	}
 
 	return false
 }

@@ -124,6 +124,10 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 		return true
 	}
 	if statusCode == http.StatusBadRequest {
+		// 对于x.ai的API key错误，应该允许重试其他渠道
+		if strings.Contains(message, "Incorrect API key provided") && strings.Contains(message, "console.x.ai") {
+			return true
+		}
 		return false
 	}
 	if statusCode/100 == 2 {

@@ -382,9 +382,10 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	}
 	c.Set("generateAudio", generateAudio)
 
-	if _, ok := params["sampleCount"]; ok { //暂时处理只支持一个视频结果
-		delete(params, "sampleCount")
-	}
+	// sampleCount 参数已支持，不再删除
+	// if _, ok := params["sampleCount"]; ok { //暂时处理只支持一个视频结果
+	//	delete(params, "sampleCount")
+	// }
 
 	// 处理durationSeconds
 	duration := 8
@@ -3020,33 +3021,31 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					generalResponse.Message = "Operation failed with an unknown error."
 				}
 			} else if response, ok := veoResp["response"].(map[string]interface{}); ok {
-				// 操作成功，提取视频URI
-				videoURI := extractVeoVideoURI(response)
-				if videoURI != "" {
-					// 如果是 base64 数据且用户要求 URL 格式，则上传到 R2
-					if strings.HasPrefix(videoURI, "data:video/mp4;base64,") {
-						responseFormat := c.GetString("response_format")
-						if responseFormat == "url" {
-							base64Data := strings.TrimPrefix(videoURI, "data:video/mp4;base64,")
-							if url, err := UploadVideoBase64ToR2(base64Data, videoTask.UserId, "mp4"); err == nil {
-								videoURI = url
-								// 保存URL到数据库
-								if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, url); updateErr != nil {
-									log.Printf("Failed to save store URL for task %s: %v", taskId, updateErr)
-								} else {
-									log.Printf("Successfully saved store URL for task %s: %s", taskId, url)
-								}
-							} else {
-								log.Printf("Failed to upload video to R2 for task %s: %v", taskId, err)
-								// 如果上传失败，继续使用原始base64数据
-							}
-						}
+				// 操作成功，提取所有视频URI
+				videoURIs := extractVeoVideoURIs(response)
+				if len(videoURIs) > 0 {
+					var processedVideoURIs []string
+					responseFormat := c.GetString("response_format")
+
+					// 处理每个视频URI - 并发上传优化
+					if responseFormat == "url" {
+						// 使用并发上传
+						processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
+					} else {
+						// 如果不需要上传，直接使用原始URI
+						processedVideoURIs = videoURIs
 					}
 
+					// 构建响应结果
 					generalResponse.TaskStatus = "succeed"
 					generalResponse.Message = "Video generated successfully."
-					generalResponse.VideoResult = videoURI
-					generalResponse.VideoResults = []model.VideoResultItem{{Url: videoURI}}
+					generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
+
+					// 设置所有视频结果
+					generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
+					for i, uri := range processedVideoURIs {
+						generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
+					}
 				} else {
 					// 完成了，但未找到视频URI也未找到错误
 					generalResponse.TaskStatus = "failed"
@@ -3528,37 +3527,122 @@ func printJSONStructure(data interface{}, prefix string, maxDepth int) {
 	}
 }
 
-// extractVeoVideoURI 从 Vertex AI Veo 操作响应中提取视频URI或base64数据
+// extractVeoVideoURI 从 Vertex AI Veo 操作响应中提取视频URI或base64数据（保持兼容性，仅返回第一个视频）
 func extractVeoVideoURI(response map[string]interface{}) string {
+	videoURIs := extractVeoVideoURIs(response)
+	if len(videoURIs) > 0 {
+		return videoURIs[0]
+	}
+	return ""
+}
+
+// extractVeoVideoURIs 从 Vertex AI Veo 操作响应中提取所有视频URI或base64数据
+func extractVeoVideoURIs(response map[string]interface{}) []string {
+	var videoURIs []string
+
 	// 检查 fetchPredictOperation 格式 (`videos` 字段)
 	if videos, ok := response["videos"].([]interface{}); ok && len(videos) > 0 {
-		if video, ok := videos[0].(map[string]interface{}); ok {
-			// 优先检查是否有 GCS URI
-			if gcsUri, ok := video["gcsUri"].(string); ok && gcsUri != "" {
-				return gcsUri
-			}
-			// 检查是否有 base64 编码的视频数据
-			if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
-				return "data:video/mp4;base64," + bytesBase64
+		for _, videoInterface := range videos {
+			if video, ok := videoInterface.(map[string]interface{}); ok {
+				// 优先检查是否有 GCS URI
+				if gcsUri, ok := video["gcsUri"].(string); ok && gcsUri != "" {
+					videoURIs = append(videoURIs, gcsUri)
+					continue
+				}
+				// 检查是否有 base64 编码的视频数据
+				if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
+					videoURIs = append(videoURIs, "data:video/mp4;base64,"+bytesBase64)
+				}
 			}
 		}
 	}
 
 	// 检查标准长轮询操作格式 (`generatedSamples` 字段)
 	if generatedSamples, ok := response["generatedSamples"].([]interface{}); ok && len(generatedSamples) > 0 {
-		if sample, ok := generatedSamples[0].(map[string]interface{}); ok {
-			if video, ok := sample["video"].(map[string]interface{}); ok {
-				// 优先检查是否有 URI
-				if uri, ok := video["uri"].(string); ok && uri != "" {
-					return uri
-				}
-				// 检查是否有 base64 编码的视频数据
-				if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
-					return "data:video/mp4;base64," + bytesBase64
+		for _, sampleInterface := range generatedSamples {
+			if sample, ok := sampleInterface.(map[string]interface{}); ok {
+				if video, ok := sample["video"].(map[string]interface{}); ok {
+					// 优先检查是否有 URI
+					if uri, ok := video["uri"].(string); ok && uri != "" {
+						videoURIs = append(videoURIs, uri)
+						continue
+					}
+					// 检查是否有 base64 编码的视频数据
+					if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
+						videoURIs = append(videoURIs, "data:video/mp4;base64,"+bytesBase64)
+					}
 				}
 			}
 		}
 	}
 
-	return "" // 未找到URI或base64数据则返回空字符串
+	return videoURIs
+}
+
+// processVideosConcurrently 并发处理多个视频上传
+func processVideosConcurrently(videoURIs []string, userId int, taskId string) []string {
+	type uploadResult struct {
+		index int
+		url   string
+		err   error
+	}
+
+	results := make(chan uploadResult, len(videoURIs))
+	processedVideoURIs := make([]string, len(videoURIs))
+
+	// 启动并发上传协程
+	for i, videoURI := range videoURIs {
+		go func(index int, uri string) {
+			var finalURL string
+			var uploadErr error
+
+			// 如果是 base64 数据，则上传到 R2
+			if strings.HasPrefix(uri, "data:video/mp4;base64,") {
+				base64Data := strings.TrimPrefix(uri, "data:video/mp4;base64,")
+				finalURL, uploadErr = UploadVideoBase64ToR2(base64Data, userId, "mp4")
+				if uploadErr != nil {
+					log.Printf("Failed to upload video %d to R2 for task %s: %v", index, taskId, uploadErr)
+					// 上传失败时使用原始base64数据
+					finalURL = uri
+				} else {
+					log.Printf("Successfully uploaded video %d to R2 for task %s: %s", index, taskId, finalURL)
+				}
+			} else {
+				// 不是base64数据，直接使用原URI
+				finalURL = uri
+			}
+
+			results <- uploadResult{
+				index: index,
+				url:   finalURL,
+				err:   uploadErr,
+			}
+		}(i, videoURI)
+	}
+
+	// 收集所有结果
+	for i := 0; i < len(videoURIs); i++ {
+		result := <-results
+		processedVideoURIs[result.index] = result.url
+	}
+
+	// 保存所有URL到数据库（JSON化存储）
+	if len(processedVideoURIs) > 0 {
+		// 将URL数组JSON化为字符串
+		if urlsJson, err := json.Marshal(processedVideoURIs); err == nil {
+			if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, string(urlsJson)); updateErr != nil {
+				log.Printf("Failed to save store URLs for task %s: %v", taskId, updateErr)
+			} else {
+				log.Printf("Successfully saved all store URLs for task %s: %v", taskId, processedVideoURIs)
+			}
+		} else {
+			log.Printf("Failed to marshal URLs for task %s: %v", taskId, err)
+			// 如果JSON化失败，至少保存第一个URL
+			if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, processedVideoURIs[0]); updateErr != nil {
+				log.Printf("Failed to save fallback store URL for task %s: %v", taskId, updateErr)
+			}
+		}
+	}
+
+	return processedVideoURIs
 }

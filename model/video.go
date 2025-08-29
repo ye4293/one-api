@@ -22,7 +22,7 @@ type Video struct {
 	Status     string `json:"status"`
 	FailReason string `json:"fail_reason"`
 	VideoId    string `json:"video_id"`
-	StoreUrl   string `json:"store_url"`
+	StoreUrl   string `json:"store_url"` // 直接存储JSON化的URL数组字符串
 	Quota      int64  `json:"quota"`
 	N          int    `json:"n"`
 }
