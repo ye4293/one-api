@@ -124,16 +124,24 @@ var ChannelBaseURLs = []string{
 	"https://api.groq.com/openai",               // 29
 	"http://localhost:11434",                    // 30
 	"https://api.lingyiwanwu.com",               // 31
-	"",                                          //32
-	"",                                          //33
-	"https://api.coze.com",                      //34
-	"https://api.cohere.ai",                     //35
-	"https://api.together.xyz",                  //36
-	"https://api.deepseek.com",                  //37
-	"https://api.stability.ai",                  //38
+	"",                                          // 32
+	"",                                          // 33
+	"https://api.coze.com",                      // 34
+	"https://api.cohere.ai",                     // 35
+	"https://api.together.xyz",                  // 36
+	"https://api.deepseek.com",                  // 37
+	"https://api.stability.ai",                  // 38
 	"https://api.novita.ai/v3/openai",           // 39
-	"https://api.replicate.com",                 //40
-	"",
+	"https://api.replicate.com",                 // 40
+	"https://api-singapore.klingai.com",         // 41 ChannelTypeKeling
+	"https://api.dev.runwayml.com",              // 42 ChannelTypeRunway
+	"https://api.recraft.ai",                    // 43 ChannelTypeRecraft
+	"https://api.lumalabs.ai",                   // 44 ChannelTypeLuma
+	"https://app-api.pixverse.ai",               // 45 ChannelTypePixverse
+	"https://api.bfl.ai",                        // 46 ChannelTypeFlux
+	"https://api.x.ai",                          // 47 ChannelTypeXAI
+	"",                                          // 48 ChannelTypeVertexAI
+	"",                                          // 49 ChannelTypeDummy
 }
 
 const (

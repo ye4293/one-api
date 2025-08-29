@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
@@ -134,6 +135,67 @@ func (channel *Channel) UpdateAbilities() error {
 func UpdateAbilityStatus(channelId int, status bool) error {
 	logger.SysError("WARNING: UpdateAbilityStatus is deprecated and may cause data inconsistency. Use UpdateChannelStatusById instead.")
 	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
+}
+
+// CheckDataConsistency 检查并修复 channels 和 abilities 表的数据一致性
+func CheckDataConsistency() error {
+	// 先检查不一致的数量
+	var inconsistentCount int64
+	err := DB.Table("abilities a").
+		Joins("JOIN channels c ON a.channel_id = c.id").
+		Where("(c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)", common.ChannelStatusEnabled, common.ChannelStatusEnabled).
+		Count(&inconsistentCount).Error
+
+	if err != nil {
+		logger.SysError("Failed to check data consistency: " + err.Error())
+		return err
+	}
+
+	if inconsistentCount > 0 {
+		logger.SysLog(fmt.Sprintf("Found %d inconsistent ability records, fixing...", inconsistentCount))
+
+		// 修复不一致的数据
+		result := DB.Exec(`
+			UPDATE abilities a
+			JOIN channels c ON a.channel_id = c.id
+			SET a.enabled = CASE 
+				WHEN c.status = ? THEN 1
+				ELSE 0
+			END
+			WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
+		`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+
+		if result.Error != nil {
+			logger.SysError("Failed to fix data consistency: " + result.Error.Error())
+			return result.Error
+		}
+
+		logger.SysLog(fmt.Sprintf("Fixed %d ability records for data consistency", result.RowsAffected))
+	} else {
+		logger.SysLog("Data consistency check passed - no issues found")
+	}
+
+	return nil
+}
+
+// SyncChannelAbilities 同步指定渠道的 abilities 状态
+func SyncChannelAbilities(channelId int) error {
+	var channel Channel
+	err := DB.First(&channel, channelId).Error
+	if err != nil {
+		return fmt.Errorf("channel not found: %w", err)
+	}
+
+	enabled := channel.Status == common.ChannelStatusEnabled
+	result := DB.Model(&Ability{}).Where("channel_id = ?", channelId).Update("enabled", enabled)
+
+	if result.Error != nil {
+		logger.SysError(fmt.Sprintf("Failed to sync abilities for channel %d: %s", channelId, result.Error.Error()))
+		return result.Error
+	}
+
+	logger.SysLog(fmt.Sprintf("Synced %d abilities for channel %d (enabled=%v)", result.RowsAffected, channelId, enabled))
+	return nil
 }
 
 func FindEnabledModelsByGroup(group string) ([]string, error) {

@@ -75,6 +75,16 @@ func main() {
 		logger.SysError(fmt.Sprintf("sync frequency: %d seconds", config.SyncFrequency))
 		model.InitChannelCache()
 	}
+
+	// 系统启动时检查数据一致性
+	logger.SysLog("checking data consistency between channels and abilities...")
+	err = model.CheckDataConsistency()
+	if err != nil {
+		logger.SysError("data consistency check failed: " + err.Error())
+		// 数据一致性检查失败不应该阻止系统启动，但需要记录
+	} else {
+		logger.SysLog("data consistency check completed successfully")
+	}
 	if config.MemoryCacheEnabled {
 		go model.SyncOptions(config.SyncFrequency)
 		go model.SyncChannelCache(config.SyncFrequency)

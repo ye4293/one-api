@@ -282,36 +282,46 @@ func BatchDeleteChannel(ids []int) error {
 	return tx.Commit().Error
 }
 
-func UpdateChannelStatusById(id int, status int) {
+func UpdateChannelStatusById(id int, status int) error {
 	tx := DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {
 			tx.Rollback()
+			logger.SysError(fmt.Sprintf("panic during channel status update for channel %d: %v", id, r))
 		}
 	}()
 
-	// 更新Ability状态
-	err := tx.Model(&Ability{}).Where("channel_id = ?", id).
-		Update("enabled", status == common.ChannelStatusEnabled).Error
+	// 先检查渠道是否存在
+	var channelExists bool
+	err := tx.Model(&Channel{}).Select("1").Where("id = ?", id).Find(&channelExists).Error
 	if err != nil {
 		tx.Rollback()
-		logger.SysError("failed to update ability status: " + err.Error())
-		return
+		logger.SysError(fmt.Sprintf("failed to check channel existence for id %d: %s", id, err.Error()))
+		return fmt.Errorf("failed to check channel existence: %w", err)
+	}
+
+	// 更新Ability状态
+	enabled := status == common.ChannelStatusEnabled
+	abilityResult := tx.Model(&Ability{}).Where("channel_id = ?", id).Update("enabled", enabled)
+	if abilityResult.Error != nil {
+		tx.Rollback()
+		logger.SysError(fmt.Sprintf("failed to update ability status for channel %d: %s", id, abilityResult.Error.Error()))
+		return fmt.Errorf("failed to update ability status: %w", abilityResult.Error)
 	}
 
 	// 更新Channel状态
-	err = tx.Model(&Channel{}).Where("id = ?", id).
-		Update("status", status).Error
-	if err != nil {
+	channelResult := tx.Model(&Channel{}).Where("id = ?", id).Update("status", status)
+	if channelResult.Error != nil {
 		tx.Rollback()
-		logger.SysError("failed to update channel status: " + err.Error())
-		return
+		logger.SysError(fmt.Sprintf("failed to update channel status for channel %d: %s", id, channelResult.Error.Error()))
+		return fmt.Errorf("failed to update channel status: %w", channelResult.Error)
 	}
 
+	// 提交事务
 	err = tx.Commit().Error
 	if err != nil {
-		logger.SysError("failed to commit channel status update: " + err.Error())
-		return
+		logger.SysError(fmt.Sprintf("failed to commit channel status update for channel %d: %s", id, err.Error()))
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	// 记录状态变更类型
@@ -327,7 +337,8 @@ func UpdateChannelStatusById(id int, status int) {
 		statusText = fmt.Sprintf("状态%d", status)
 	}
 
-	logger.SysLog(fmt.Sprintf("Channel #%d status updated to %s", id, statusText))
+	logger.SysLog(fmt.Sprintf("Successfully updated channel %d status to %s, affected %d abilities", id, statusText, abilityResult.RowsAffected))
+	return nil
 }
 
 func UpdateChannelUsedQuota(id int, quota int64) {

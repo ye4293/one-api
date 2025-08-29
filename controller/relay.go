@@ -63,7 +63,7 @@ func Relay(c *gin.Context) {
 		monitor.Emit(channelId, true)
 		return
 	}
-	lastFailedChannelId := channelId
+
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
@@ -78,11 +78,8 @@ func Relay(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
-		}
-		if channel.Id == lastFailedChannelId {
-			continue
 		}
 		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
@@ -95,7 +92,7 @@ func Relay(c *gin.Context) {
 		}
 
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
+
 		channelName = c.GetString("channel_name")
 		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 	}
@@ -292,7 +289,6 @@ func RelaySd(c *gin.Context) {
 		return
 	}
 
-	lastFailedChannelId := channelId
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 	retryTimes := config.RetryTimes
@@ -304,12 +300,10 @@ func RelaySd(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %w", err)
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
 		}
-		if channel.Id == lastFailedChannelId {
-			continue
-		}
+
 		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
@@ -321,10 +315,9 @@ func RelaySd(c *gin.Context) {
 		}
 
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
+
 		channelName := c.GetString("channel_name")
 		go processChannelRelayError(ctx, userId, channelId, channelName, SdErr)
-
 	}
 	if SdErr != nil {
 
@@ -334,14 +327,6 @@ func RelaySd(c *gin.Context) {
 	}
 
 }
-
-// func SdShouldRetry(c *gin.Context, err *model.ErrorWithStatusCode) bool {
-
-// }
-
-// func ShouldDisabelSdChannel(channelId int, channelName string, MjErr *midjourney.MidjourneyResponseWithStatusCode) {
-
-// }
 
 func RelayNotFound(c *gin.Context) {
 	err := model.Error{
@@ -370,7 +355,6 @@ func RelayVideoGenerate(c *gin.Context) {
 		return
 	}
 
-	lastFailedChannelId := channelId
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 
@@ -383,14 +367,10 @@ func RelayVideoGenerate(c *gin.Context) {
 	}
 
 	for i := retryTimes; i > 0; i-- {
-		// 获取新的可用通道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
-		}
-		if channel.Id == lastFailedChannelId {
-			continue
 		}
 		logger.Infof(ctx, "Using channel #%d to retry video generation (remain times %d)", channel.Id, i)
 
@@ -404,9 +384,11 @@ func RelayVideoGenerate(c *gin.Context) {
 			return
 		}
 
+		// 记录失败渠道
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
+
 		channelName = c.GetString("channel_name")
+		logger.Infof(ctx, "Video Channel #%d failed", channelId)
 		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 	}
 
@@ -1039,19 +1021,17 @@ func RelayImageGenerateAsync(c *gin.Context) {
 		return
 	}
 	// 所有重试都失败后的处理
-	if bizErr != nil {
-		if bizErr.StatusCode == http.StatusTooManyRequests {
-			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
-		}
-		c.JSON(bizErr.StatusCode, gin.H{
-			"error": gin.H{
-				"message": util.ProcessString(bizErr.Error.Message),
-				"type":    bizErr.Error.Type,
-				"param":   bizErr.Error.Param,
-				"code":    bizErr.Error.Code,
-			},
-		})
+	if bizErr.StatusCode == http.StatusTooManyRequests {
+		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 	}
+	c.JSON(bizErr.StatusCode, gin.H{
+		"error": gin.H{
+			"message": util.ProcessString(bizErr.Error.Message),
+			"type":    bizErr.Error.Type,
+			"param":   bizErr.Error.Param,
+			"code":    bizErr.Error.Code,
+		},
+	})
 }
 
 func RelayImageResult(c *gin.Context) {
@@ -1093,7 +1073,7 @@ func RelayRunway(c *gin.Context) {
 	}
 
 	// 第一次失败，处理错误和重试
-	lastFailedChannelId := channelId
+
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 
@@ -1119,16 +1099,12 @@ func RelayRunway(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
-		// 获取新的可用通道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
 			break
 		}
-		if channel.Id == lastFailedChannelId {
-			logger.Warnf(ctx, "Got same failed channel #%d, continue to next retry", channel.Id)
-			continue
-		}
+
 		logger.Infof(ctx, "Using channel #%d (%s) to retry runway request (attempt %d/%d, remain times %d)",
 			channel.Id, channel.Name, retryTimes-i+1, retryTimes, i)
 
@@ -1149,7 +1125,7 @@ func RelayRunway(c *gin.Context) {
 		}
 
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
+
 		channelName = c.GetString("channel_name")
 		logger.Errorf(ctx, "RelayRunway retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
 			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)

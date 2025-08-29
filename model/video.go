@@ -24,6 +24,7 @@ type Video struct {
 	VideoId    string `json:"video_id"`
 	StoreUrl   string `json:"store_url"`
 	Quota      int64  `json:"quota"`
+	N          int    `json:"n"`
 }
 
 func (video *Video) Insert() error {

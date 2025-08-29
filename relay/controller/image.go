@@ -222,12 +222,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 						Role: "user",
 						Parts: []gemini.Part{
 							{
-								Text: func() string {
-									if imageRequest.Size != "" {
-										return fmt.Sprintf("%s. Please generate the image with dimensions: %s", imageRequest.Prompt, imageRequest.Size)
-									}
-									return imageRequest.Prompt
-								}(),
+								Text: imageRequest.Prompt,
 							},
 						},
 					},
@@ -296,7 +291,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
-			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+			fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", meta.OriginModelName)
 			logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
 		}
 
@@ -1673,12 +1668,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
 	}
 
-	// 从 form 中获取 size 参数
-	size := ""
-	if sizes, ok := c.Request.MultipartForm.Value["size"]; ok && len(sizes) > 0 {
-		size = sizes[0]
-	}
-
 	// 从 form 中获取图片文件（支持多个图片）
 	var imageParts []gemini.Part
 
@@ -1741,12 +1730,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	parts = append(parts, imageParts...)
 
 	// 最后添加文本提示
-	textContent := prompt
-	if size != "" {
-		textContent = fmt.Sprintf("%s. Please generate the image with dimensions: %s", prompt, size)
-	}
 	textPart := gemini.Part{
-		Text: textContent,
+		Text: prompt,
 	}
 	parts = append(parts, textPart)
 
@@ -1769,7 +1754,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
-	fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+	fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", meta.OriginModelName)
 
 	// 创建请求
 	req, err := http.NewRequest("POST", fullRequestURL, bytes.NewBuffer(jsonBytes))
