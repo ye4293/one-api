@@ -266,7 +266,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
 	}
 
-	logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v", group, model, priorities))
+	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v", group, model, priorities)) // 调试用，生产环境可注释
 
 	if len(priorities) == 0 {
 		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s", group, model))
@@ -290,7 +290,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	}
 
 	// 验证选择的优先级是否有可用渠道
-	logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, ignoreFirstPriority=%v", priorityToUse, group, model, ignoreFirstPriority))
+	// logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, ignoreFirstPriority=%v", priorityToUse, group, model, ignoreFirstPriority)) // 调试用，生产环境可注释
 
 	// 获取符合条件的所有渠道及其权重
 	var channels []Channel
@@ -345,12 +345,12 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return nil, errors.New("total weight of channels is zero")
 	}
 
-	logger.SysLog(fmt.Sprintf("Found %d channels for group=%s, model=%s, priority=%d, totalWeight=%d", len(channels), group, model, priorityToUse, totalWeight))
+	// logger.SysLog(fmt.Sprintf("Found %d channels for group=%s, model=%s, priority=%d, totalWeight=%d", len(channels), group, model, priorityToUse, totalWeight)) // 调试用，生产环境可注释
 
-	// 调试：输出找到的渠道详情
-	for i, ch := range channels {
-		logger.SysLog(fmt.Sprintf("  Channel[%d]: ID=%d, Name=%s, Status=%d, Weight=%d", i, ch.Id, ch.Name, ch.Status, *ch.Weight))
-	}
+	// 调试：输出找到的渠道详情（调试用，生产环境可注释）
+	// for i, ch := range channels {
+	//	logger.SysLog(fmt.Sprintf("  Channel[%d]: ID=%d, Name=%s, Status=%d, Weight=%d", i, ch.Id, ch.Name, ch.Status, *ch.Weight))
+	// }
 
 	// 使用更好的随机数生成算法
 	// 添加额外的随机性来避免高并发时的种子冲突
@@ -362,7 +362,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	for i, channel := range channels {
 		currentWeight += channelWeights[i]
 		if currentWeight >= weightThreshold {
-			logger.SysLog(fmt.Sprintf("Selected channel %d (name=%s) with weight %d, threshold=%d", channel.Id, channel.Name, channelWeights[i], weightThreshold))
+			// logger.SysLog(fmt.Sprintf("Selected channel %d (name=%s) with weight %d, threshold=%d", channel.Id, channel.Name, channelWeights[i], weightThreshold)) // 调试用，生产环境可注释
 			return &channel, nil
 		}
 	}
