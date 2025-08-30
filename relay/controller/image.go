@@ -524,7 +524,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent = fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
 		}
 
-		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer)
+		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
@@ -1338,7 +1338,7 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 		totalCost := float64(quota) / 500000
 		logContent := fmt.Sprintf("Mode: %s, Images: %d, Total cost: $%.3f",
 			mode, n, totalCost)
-		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+		dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		dbmodel.UpdateChannelUsedQuota(channelId, quota)
@@ -1804,7 +1804,8 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		}
 
 		if err := json.Unmarshal(responseBody, &geminiError); err == nil && geminiError.Error.Message != "" {
-			errorMsg := fmt.Errorf("Gemini API 错误: %s (状态: %s)", geminiError.Error.Message, geminiError.Error.Status)
+			// 包含原始响应体，这样重试逻辑可以正确识别 API key 错误
+			errorMsg := fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody))
 			errorCode := "gemini_" + strings.ToLower(geminiError.Error.Status)
 			statusCode := geminiError.Error.Code
 			if statusCode == 0 {
@@ -1813,8 +1814,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			return openai.ErrorWrapper(errorMsg, errorCode, statusCode)
 		}
 
+		// 直接使用原始响应体作为错误消息，这样重试逻辑可以正确识别 API key 错误
 		return openai.ErrorWrapper(
-			fmt.Errorf("Gemini API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
+			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
 			"gemini_api_error",
 			resp.StatusCode,
 		)
@@ -2013,7 +2015,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	logger.Infof(ctx, "Gemini Form Token Usage - Prompt: %d, Candidates: %d, Total: %d, Duration: %.3fs",
 		promptTokens, completionTokens, geminiResponse.UsageMetadata.TotalTokenCount, duration)
 
-	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer)
+	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0)
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 	channelId := c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, actualQuota)
@@ -2093,7 +2095,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
 
-	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer)
+	model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0)
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 	channelId := c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, actualQuota)

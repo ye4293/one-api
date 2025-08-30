@@ -2090,7 +2090,7 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 		if len(videoTaskId) > 0 && videoTaskId[0] != "" {
 			dbmodel.RecordVideoConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, videoTaskId[0])
 		} else {
-			dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+			dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0)
 		}
 
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)

@@ -108,6 +108,9 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 	}
 
+	// 记录响应开始时间（用于计算首字延迟）
+	responseStartTime := time.Now()
+	
 	// do response
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {
@@ -119,12 +122,27 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
 
+	// 获取首字延迟（如果是流式响应）
+	var firstWordLatency float64
+	if meta.IsStream {
+		// 首先尝试从 context 获取（OpenAI 渠道会设置这个值）
+		if latency, exists := c.Get("first_word_latency"); exists {
+			if latencyFloat, ok := latency.(float64); ok {
+				firstWordLatency = math.Round(latencyFloat*1000) / 1000 // 保留3位小数
+			}
+		} else {
+			// 对于其他渠道，使用响应开始到现在的时间作为近似值
+			// 这不是真正的首字延迟，但可以作为响应延迟的指标
+			firstWordLatency = math.Round(time.Since(responseStartTime).Seconds()*1000) / 1000
+		}
+	}
+
 	referer := c.Request.Header.Get("HTTP-Referer")
 
 	// 获取X-Title header
 	title := c.Request.Header.Get("X-Title")
 
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer)
+	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
 	return nil
 }

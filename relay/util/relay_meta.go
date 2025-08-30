@@ -34,6 +34,8 @@ type RelayMeta struct {
 	ChannelRatio            float64
 	UserChannelTypeRatio    float64
 	UserChannelTypeRatioMap string
+	// 用于计算首字延迟
+	FirstWordLatency        float64
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {

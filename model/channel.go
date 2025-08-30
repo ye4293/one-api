@@ -32,6 +32,7 @@ type Channel struct {
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
 	ChannelRatio       float64 `json:"channel_ratio" gorm:"default:1"`
+	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 }
 
 type ChannelConfig struct {

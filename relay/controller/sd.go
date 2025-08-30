@@ -111,7 +111,7 @@ func RelaySdGenerate(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 				duration := math.Round(finishTime.Sub(createTime).Seconds()*1000) / 1000
 				tokenName := c.GetString("token_name")
 				logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", modelPrice, groupRatio, modelName)
-				dbmodel.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, duration, title, referer)
+				dbmodel.RecordConsumeLog(ctx, userId, channelId, 0, 0, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0)
 				dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 				channelId := c.GetInt("channel_id")
 				dbmodel.UpdateChannelUsedQuota(channelId, quota)

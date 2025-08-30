@@ -129,8 +129,12 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 			return true
 		}
 		// 对于Gemini的API key错误，应该允许重试其他渠道
+		// 检查两种可能的错误格式：
+		// 1. 包含 "API key not valid" 和 "API_KEY_INVALID" 的标准 Gemini 错误
+		// 2. 包含 "generativelanguage.googleapis.com" 和 "API key not valid" 的服务错误
 		if (strings.Contains(message, "API key not valid") && strings.Contains(message, "API_KEY_INVALID")) ||
 			(strings.Contains(message, "generativelanguage.googleapis.com") && strings.Contains(message, "API key not valid")) {
+			logger.Warnf(c.Request.Context(), "Gemini API key invalid error detected, will retry with other channels")
 			return true
 		}
 		return false
@@ -147,7 +151,20 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		monitor.DisableChannel(channelId, channelName, err.Error.Message)
+		// 检查渠道是否允许自动禁用
+		channel, getErr := dbmodel.GetChannelById(channelId, true)
+		if getErr != nil {
+			logger.Errorf(ctx, "failed to get channel %d: %s", channelId, getErr.Error())
+			monitor.Emit(channelId, false)
+			return
+		}
+
+		if channel.AutoDisabled {
+			monitor.DisableChannel(channelId, channelName, err.Error.Message)
+		} else {
+			logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
+			monitor.Emit(channelId, false)
+		}
 	} else {
 		monitor.Emit(channelId, false)
 	}
@@ -757,7 +774,7 @@ func RelayOcr(c *gin.Context) {
 			title := ""
 			httpReferer := ""
 
-			dbmodel.RecordConsumeLog(ctx, userId, channelId, pagesProcessed, docSizeBytes, modelName, tokenName, int64(quota), logContent, duration, title, httpReferer)
+			dbmodel.RecordConsumeLog(ctx, userId, channelId, pagesProcessed, docSizeBytes, modelName, tokenName, int64(quota), logContent, duration, title, httpReferer, false, 0.0)
 
 			// Update user and channel quota
 			err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), int64(quota))
@@ -908,7 +925,7 @@ func RelayRecraft(c *gin.Context) {
 		outputTokens := 0
 
 		dbmodel.RecordConsumeLog(ctx, userId, channelId, inputTokens, outputTokens,
-			modelName, tokenName, quota, logContent, duration, title, httpReferer)
+			modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0)
 
 		// Update user and channel quota
 		err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)

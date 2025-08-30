@@ -101,6 +101,7 @@ func GetChannel(c *gin.Context) {
 		})
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -119,6 +120,7 @@ func AddChannel(c *gin.Context) {
 		})
 		return
 	}
+
 	channel.CreatedTime = helper.GetTimestamp()
 	keys := strings.Split(channel.Key, "\n")
 	channels := make([]model.Channel, 0, len(keys))
@@ -224,6 +226,7 @@ func UpdateChannel(c *gin.Context) {
 		})
 		return
 	}
+
 	err = channel.Update()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{

@@ -30,7 +30,19 @@ func notifyRootUser(subject string, content string) {
 
 // DisableChannel disable & notify
 func DisableChannel(channelId int, channelName string, reason string) {
-	err := model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
+	// 检查渠道是否允许自动禁用
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	if !channel.AutoDisabled {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) should be disabled but auto-disable is turned off, reason: %s", channelId, channelName, reason))
+		return
+	}
+
+	err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
 	}
@@ -41,7 +53,19 @@ func DisableChannel(channelId int, channelName string, reason string) {
 }
 
 func MetricDisableChannel(channelId int, successRate float64) {
-	err := model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
+	// 检查渠道是否允许自动禁用
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	if !channel.AutoDisabled {
+		logger.SysLog(fmt.Sprintf("channel #%d should be disabled due to low success rate %.2f%% but auto-disable is turned off", channelId, successRate*100))
+		return
+	}
+
+	err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
 	}

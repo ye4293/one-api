@@ -76,6 +76,9 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 		return true
 	}
 	// 添加对 Gemini API key 错误的处理
+	// 检查两种可能的错误格式：
+	// 1. 包含 "API key not valid" 和 "API_KEY_INVALID" 的标准 Gemini 错误
+	// 2. 包含 "generativelanguage.googleapis.com" 和 "API key not valid" 的服务错误
 	if (strings.Contains(err.Message, "API key not valid") && strings.Contains(err.Message, "API_KEY_INVALID")) ||
 		(strings.Contains(err.Message, "generativelanguage.googleapis.com") && strings.Contains(err.Message, "API key not valid")) {
 		logger.SysLog("Gemini API key invalid error detected, channel will be disabled")
@@ -225,7 +228,7 @@ func PostConsumeQuota(ctx context.Context, tokenId int, quotaDelta int64, totalQ
 	// totalQuota is total quota consumed
 	if totalQuota != 0 {
 		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
-		model.RecordConsumeLog(ctx, userId, channelId, int(totalQuota), 0, modelName, tokenName, totalQuota, logContent, duration, title, httpReferer)
+		model.RecordConsumeLog(ctx, userId, channelId, int(totalQuota), 0, modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0)
 		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
 		model.UpdateChannelUsedQuota(channelId, totalQuota)
 	}

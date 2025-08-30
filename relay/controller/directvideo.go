@@ -735,7 +735,7 @@ func handleRunwayImageBilling(c *gin.Context, meta *util.RelayMeta, modelName st
 		tokenName := c.GetString("token_name")
 		// 记录详细的扣费日志
 		logContent := fmt.Sprintf("Runway Image Generation  model: %s, mode: %s, image count: %d, total cost: $%.6f", modelName, mode, n, float64(quota)/5000000)
-		dbmodel.RecordConsumeLog(context.Background(), meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer)
+		dbmodel.RecordConsumeLog(context.Background(), meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		dbmodel.UpdateChannelUsedQuota(channelId, quota)
