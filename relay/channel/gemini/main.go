@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -213,6 +214,10 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse) *openai.ChatC
 func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, string) {
 	responseText := ""
 
+	// 记录开始时间用于计算首字延迟
+	startTime := time.Now()
+	var firstWordTime *time.Time
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -255,7 +260,13 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			if response == nil {
 				return true
 			}
-			responseText += response.Choices[0].Delta.StringContent()
+			content := response.Choices[0].Delta.StringContent()
+			if content != "" && firstWordTime == nil {
+				// 记录首字时间
+				now := time.Now()
+				firstWordTime = &now
+			}
+			responseText += content
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
 				logger.SysError("error marshalling stream response: " + err.Error())
@@ -272,6 +283,13 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
 	}
+	
+	// 计算首字延迟并存储到 context 中
+	if firstWordTime != nil {
+		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
+		c.Set("first_word_latency", firstWordLatency)
+	}
+	
 	return nil, responseText
 }
 

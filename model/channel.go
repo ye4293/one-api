@@ -219,7 +219,9 @@ func (channel *Channel) Insert() error {
 
 func (channel *Channel) Update() error {
 	var err error
-	err = DB.Model(channel).Updates(channel).Error
+
+	// 使用 Select 强制更新 auto_disabled 字段（包括 false 值）
+	err = DB.Model(channel).Select("*").Updates(channel).Error
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/songquanpeng/one-api/common/render"
 
@@ -256,6 +257,11 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 
 func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, *model.Usage) {
 	createdTime := helper.GetTimestamp()
+
+	// 记录开始时间用于计算首字延迟
+	startTime := time.Now()
+	var firstWordTime *time.Time
+
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		if atEOF && len(data) == 0 {
@@ -315,6 +321,21 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			continue
 		}
 
+		// 检查是否有内容并记录首字时间
+		for _, choice := range response.Choices {
+			content := ""
+			if choice.Delta.Content != nil {
+				if contentStr, ok := choice.Delta.Content.(string); ok {
+					content = contentStr
+				}
+			}
+			if content != "" && firstWordTime == nil {
+				// 记录首字时间
+				now := time.Now()
+				firstWordTime = &now
+			}
+		}
+
 		response.Id = id
 		response.Model = modelName
 		response.Created = createdTime
@@ -340,6 +361,13 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), nil
 	}
+
+	// 计算首字延迟并存储到 context 中
+	if firstWordTime != nil {
+		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
+		c.Set("first_word_latency", firstWordLatency)
+	}
+
 	return nil, &usage
 }
 
