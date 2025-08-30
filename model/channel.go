@@ -220,11 +220,22 @@ func (channel *Channel) Insert() error {
 func (channel *Channel) Update() error {
 	var err error
 
-	// 使用 Select 强制更新 auto_disabled 字段（包括 false 值）
-	err = DB.Model(channel).Select("*").Updates(channel).Error
+	// 使用常规的 Updates 方法更新非零值字段（GORM 默认行为）
+	// 这样可以避免零值覆盖数据库中的现有数据
+	err = DB.Model(channel).Updates(channel).Error
 	if err != nil {
 		return err
 	}
+
+	// 单独处理 auto_disabled 字段，因为 false 是零值会被 Updates 忽略
+	// 使用 map 可以强制更新，无论值是 true 还是false
+	err = DB.Model(channel).Select("auto_disabled").Updates(map[string]interface{}{
+		"auto_disabled": channel.AutoDisabled,
+	}).Error
+	if err != nil {
+		return err
+	}
+
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities()
 	return err
