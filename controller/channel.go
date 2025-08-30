@@ -1,12 +1,15 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -241,4 +244,63 @@ func UpdateChannel(c *gin.Context) {
 		"data":    channel,
 	})
 	return
+}
+
+// GetChannelModelsById 根据渠道ID获取该渠道配置的所有模型
+func GetChannelModelsById(c *gin.Context) {
+	idStr := c.Query("id")
+	if idStr == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Missing channel id parameter",
+		})
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Invalid channel id: " + err.Error(),
+		})
+		return
+	}
+
+	// 调用模型层函数获取渠道的模型列表
+	supportedModels, err := model.GetChannelModelsbyId(id)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Failed to get channel models: " + err.Error(),
+		})
+		return
+	}
+
+	if len(supportedModels) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "No models configured for this channel",
+		})
+		return
+	}
+
+	// 构造返回的模型数据
+	var modelData []gin.H
+	for _, modelName := range supportedModels {
+		modelData = append(modelData, gin.H{
+			"id":       modelName,
+			"object":   "model",
+			"created":  time.Now().Unix(),
+			"owned_by": fmt.Sprintf("channel-%d", id),
+		})
+	}
+
+	logger.SysLog(fmt.Sprintf("Channel #%d has %d configured models: %v",
+		id, len(supportedModels), supportedModels))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    modelData,
+	})
 }

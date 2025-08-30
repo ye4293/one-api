@@ -94,6 +94,10 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		requestBody = bytes.NewBuffer(jsonData)
 	}
 
+	// 记录请求开始时间用于首字延迟计算
+	requestStartTime := time.Now()
+	c.Set("request_start_time", requestStartTime)
+
 	// do request
 	resp, err := adaptor.DoRequest(c, meta, requestBody)
 	if err != nil {
@@ -110,7 +114,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 	// 记录响应开始时间（用于计算首字延迟）
 	responseStartTime := time.Now()
-	
+
 	// do response
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {
@@ -125,15 +129,17 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// 获取首字延迟（如果是流式响应）
 	var firstWordLatency float64
 	if meta.IsStream {
-		// 首先尝试从 context 获取（OpenAI 渠道会设置这个值）
+		// 首先尝试从 context 获取（OpenAI、Gemini 等渠道会设置这个值）
 		if latency, exists := c.Get("first_word_latency"); exists {
 			if latencyFloat, ok := latency.(float64); ok {
 				firstWordLatency = math.Round(latencyFloat*1000) / 1000 // 保留3位小数
+				logger.Debugf(ctx, "First word latency from context: %.3f seconds", firstWordLatency)
 			}
 		} else {
 			// 对于其他渠道，使用响应开始到现在的时间作为近似值
 			// 这不是真正的首字延迟，但可以作为响应延迟的指标
 			firstWordLatency = math.Round(time.Since(responseStartTime).Seconds()*1000) / 1000
+			logger.Debugf(ctx, "First word latency fallback: %.3f seconds", firstWordLatency)
 		}
 	}
 

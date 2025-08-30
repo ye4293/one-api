@@ -55,6 +55,35 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 			MaxOutputTokens: textRequest.MaxTokens,
 		},
 	}
+
+	// 检测是否有system或developer消息，如果有则转换为system_instruction
+	var systemMessages []model.Message
+	var nonSystemMessages []model.Message
+
+	for _, message := range textRequest.Messages {
+		if message.Role == "system" || message.Role == "developer" {
+			systemMessages = append(systemMessages, message)
+		} else {
+			nonSystemMessages = append(nonSystemMessages, message)
+		}
+	}
+
+	// 如果有system/developer消息，将其合并为system_instruction
+	if len(systemMessages) > 0 {
+		var systemParts []Part
+		for _, sysMsg := range systemMessages {
+			systemParts = append(systemParts, Part{
+				Text: sysMsg.StringContent(),
+			})
+		}
+		geminiRequest.SystemInstruction = &SystemInstruction{
+			Parts: systemParts,
+		}
+		logger.SysLog(fmt.Sprintf("Converted %d system/developer messages to system_instruction", len(systemMessages)))
+	}
+
+	// 使用非system消息构建contents
+	messages := nonSystemMessages
 	if textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
 		geminiRequest.GenerationConfig.ResponseModalities = []string{"TEXT", "IMAGE"}
 	}
@@ -65,12 +94,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 			},
 		}
 	}
-	shouldAddDummyModelMessage := false
-	for _, message := range textRequest.Messages {
-		// Skip system messages for image generation model
-		if message.Role == "system" && textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
-			continue
-		}
+	for _, message := range messages {
 
 		content := ChatContent{
 			Role: message.Role,
@@ -108,29 +132,8 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 		if content.Role == "assistant" {
 			content.Role = "model"
 		}
-		// Converting system prompt to prompt from user for the same reason
-		if content.Role == "system" {
-			content.Role = "user"
-			// Only add dummy message for non-image-generation models
-			if textRequest.Model != "gemini-2.0-flash-exp-image-generation" {
-				shouldAddDummyModelMessage = true
-			}
-		}
+		// system和developer消息已经在上面转换为system_instruction，这里不再处理
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
-
-		// If a system message is the last message, we need to add a dummy model message to make gemini happy
-		// Skip this for image generation model
-		if shouldAddDummyModelMessage && textRequest.Model != "gemini-2.0-flash-exp-image-generation" {
-			geminiRequest.Contents = append(geminiRequest.Contents, ChatContent{
-				Role: "model",
-				Parts: []Part{
-					{
-						Text: "Okay",
-					},
-				},
-			})
-			shouldAddDummyModelMessage = false
-		}
 	}
 
 	// 打印转换后的geminiRequest为JSON格式
@@ -147,6 +150,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 type ChatResponse struct {
 	Candidates     []ChatCandidate    `json:"candidates"`
 	PromptFeedback ChatPromptFeedback `json:"promptFeedback"`
+	UsageMetadata  *UsageMetadata     `json:"usageMetadata,omitempty"`
+	ModelVersion   string             `json:"modelVersion,omitempty"`
+}
+
+type UsageMetadata struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
+	ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
 }
 
 func (g *ChatResponse) GetResponseText() string {
@@ -199,24 +211,38 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 	return &fullTextResponse
 }
 
-func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse) *openai.ChatCompletionsStreamResponse {
+func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName string) *openai.ChatCompletionsStreamResponse {
 	var choice openai.ChatCompletionsStreamResponseChoice
 	choice.Delta.Content = geminiResponse.GetResponseText()
 	var response openai.ChatCompletionsStreamResponse
 	response.Id = fmt.Sprintf("chatcmpl-%s", helper.GetUUID())
 	response.Created = helper.GetTimestamp()
 	response.Object = "chat.completion.chunk"
-	response.Model = "gemini"
+	response.Model = modelName // 使用实际的模型名
 	response.Choices = []openai.ChatCompletionsStreamResponseChoice{choice}
 	return &response
 }
 
-func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, string) {
+func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*model.ErrorWithStatusCode, string) {
 	responseText := ""
 
-	// 记录开始时间用于计算首字延迟
-	startTime := time.Now()
+	// 获取请求开始时间用于计算首字延迟
+	var startTime time.Time
+	if requestStartTime, exists := c.Get("request_start_time"); exists {
+		if t, ok := requestStartTime.(time.Time); ok {
+			startTime = t
+			logger.SysLog(fmt.Sprintf("Gemini using request start time: %v", startTime))
+		} else {
+			startTime = time.Now() // fallback
+			logger.SysLog("Gemini using fallback start time (type error)")
+		}
+	} else {
+		startTime = time.Now() // fallback
+		logger.SysLog("Gemini using fallback start time (not found)")
+	}
+
 	var firstWordTime *time.Time
+	var lastUsageMetadata *UsageMetadata
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -256,7 +282,13 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 				logger.SysError("error unmarshalling stream response: " + err.Error())
 				return true
 			}
-			response := streamResponseGeminiChat2OpenAI(&geminiResponse)
+
+			// 保存最新的 usage metadata
+			if geminiResponse.UsageMetadata != nil {
+				lastUsageMetadata = geminiResponse.UsageMetadata
+			}
+
+			response := streamResponseGeminiChat2OpenAI(&geminiResponse, modelName)
 			if response == nil {
 				return true
 			}
@@ -265,8 +297,62 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 				// 记录首字时间
 				now := time.Now()
 				firstWordTime = &now
+				contentPreview := content
+				if len(content) > 50 {
+					contentPreview = content[:50] + "..."
+				}
+				logger.SysLog(fmt.Sprintf("Gemini first word detected at: %v, content: %s", now, contentPreview))
 			}
 			responseText += content
+
+			// 检查是否是最后一个 chunk（有 finishReason）
+			if len(geminiResponse.Candidates) > 0 && geminiResponse.Candidates[0].FinishReason != "" {
+				// 按照 OpenAI 格式：倒数第二条有 finish_reason，最后一条发送 usage
+				// 先发送带有 finish_reason 的 chunk
+				response.Choices[0].FinishReason = &geminiResponse.Candidates[0].FinishReason
+				jsonResponse, err := json.Marshal(response)
+				if err != nil {
+					logger.SysError("error marshalling stream response: " + err.Error())
+					return true
+				}
+				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+
+				// 然后发送带有 usage 信息的最后一个 chunk（choices 为空）
+				if lastUsageMetadata != nil {
+					// 构建符合 OpenAI 格式的 usage 信息
+					completionTokens := lastUsageMetadata.CandidatesTokenCount
+					// 如果有推理 token，添加到 completion_tokens 中
+					if lastUsageMetadata.ThoughtsTokenCount > 0 {
+						completionTokens += lastUsageMetadata.ThoughtsTokenCount
+					}
+
+					usage := &model.Usage{
+						PromptTokens:     lastUsageMetadata.PromptTokenCount,
+						CompletionTokens: completionTokens,
+						TotalTokens:      lastUsageMetadata.TotalTokenCount, // 保持原始 total 值不变
+					}
+
+					// 如果有推理 token，添加详细信息
+					if lastUsageMetadata.ThoughtsTokenCount > 0 {
+						usage.CompletionTokensDetails.ReasoningTokens = lastUsageMetadata.ThoughtsTokenCount
+					}
+
+					finalResponse := &openai.ChatCompletionsStreamResponse{
+						Id:      response.Id,
+						Object:  "chat.completion.chunk",
+						Created: response.Created,
+						Model:   modelName,
+						Choices: []openai.ChatCompletionsStreamResponseChoice{}, // 空的 choices 数组
+						Usage:   usage,
+					}
+					finalJson, _ := json.Marshal(finalResponse)
+					c.Render(-1, common.CustomEvent{Data: "data: " + string(finalJson)})
+					logger.SysLog(fmt.Sprintf("Gemini final chunk with usage: prompt=%d, completion=%d, total=%d, reasoning=%d",
+						lastUsageMetadata.PromptTokenCount, lastUsageMetadata.CandidatesTokenCount, lastUsageMetadata.TotalTokenCount, lastUsageMetadata.ThoughtsTokenCount))
+				}
+				return true
+			}
+
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
 				logger.SysError("error marshalling stream response: " + err.Error())
@@ -283,13 +369,16 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 	if err != nil {
 		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
 	}
-	
+
 	// 计算首字延迟并存储到 context 中
 	if firstWordTime != nil {
 		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
 		c.Set("first_word_latency", firstWordLatency)
+		logger.SysLog(fmt.Sprintf("Gemini first word latency calculated: %.3f seconds", firstWordLatency))
+	} else {
+		logger.SysLog("Gemini: No first word time recorded")
 	}
-	
+
 	return nil, responseText
 }
 
@@ -320,11 +409,30 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(&geminiResponse)
 	fullTextResponse.Model = modelName
-	completionTokens := openai.CountTokenText(geminiResponse.GetResponseText(), modelName)
+
+	// 计算 completion tokens
+	baseCompletionTokens := openai.CountTokenText(geminiResponse.GetResponseText(), modelName)
+	completionTokens := baseCompletionTokens
+
+	// 如果有 usage metadata，使用官方数据并处理推理 token
+	if geminiResponse.UsageMetadata != nil {
+		baseCompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount
+		completionTokens = baseCompletionTokens
+		// 如果有推理 token，添加到 completion_tokens 中
+		if geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
+			completionTokens += geminiResponse.UsageMetadata.ThoughtsTokenCount
+		}
+	}
+
 	usage := model.Usage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		TotalTokens:      promptTokens + completionTokens,
+		TotalTokens:      promptTokens + baseCompletionTokens, // 保持原始计算逻辑
+	}
+
+	// 如果有推理 token，添加详细信息
+	if geminiResponse.UsageMetadata != nil && geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
+		usage.CompletionTokensDetails.ReasoningTokens = geminiResponse.UsageMetadata.ThoughtsTokenCount
 	}
 	fullTextResponse.Usage = usage
 	jsonResponse, err := json.Marshal(fullTextResponse)

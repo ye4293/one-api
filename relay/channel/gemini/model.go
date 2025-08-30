@@ -1,10 +1,15 @@
 package gemini
 
 type ChatRequest struct {
-	Contents         []ChatContent        `json:"contents"`
-	SafetySettings   []ChatSafetySettings `json:"safety_settings,omitempty"`
-	GenerationConfig ChatGenerationConfig `json:"generation_config,omitempty"`
-	Tools            []ChatTools          `json:"tools,omitempty"`
+	Contents          []ChatContent        `json:"contents"`
+	SystemInstruction *SystemInstruction   `json:"system_instruction,omitempty"`
+	SafetySettings    []ChatSafetySettings `json:"safety_settings,omitempty"`
+	GenerationConfig  ChatGenerationConfig `json:"generation_config,omitempty"`
+	Tools             []ChatTools          `json:"tools,omitempty"`
+}
+
+type SystemInstruction struct {
+	Parts []Part `json:"parts"`
 }
 
 type InlineData struct {

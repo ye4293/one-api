@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -388,4 +389,26 @@ func CompensateChannelQuota(channelId int, quota int64) error {
 		return err
 	}
 	return nil
+}
+
+// GetChannelModelsbyId 根据渠道ID获取该渠道配置的模型列表
+func GetChannelModelsbyId(channelId int) ([]string, error) {
+	var channel Channel
+	err := DB.Select("models").Where("id = ?", channelId).First(&channel).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var models []string
+	if channel.Models != "" {
+		channelModels := strings.Split(channel.Models, ",")
+		for _, model := range channelModels {
+			modelName := strings.TrimSpace(model)
+			if modelName != "" {
+				models = append(models, modelName)
+			}
+		}
+	}
+
+	return models, nil
 }

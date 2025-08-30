@@ -258,8 +258,18 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, *model.Usage) {
 	createdTime := helper.GetTimestamp()
 
-	// 记录开始时间用于计算首字延迟
-	startTime := time.Now()
+	// 获取请求开始时间用于计算首字延迟
+	var startTime time.Time
+	if requestStartTime, exists := c.Get("request_start_time"); exists {
+		if t, ok := requestStartTime.(time.Time); ok {
+			startTime = t
+		} else {
+			startTime = time.Now() // fallback
+		}
+	} else {
+		startTime = time.Now() // fallback
+	}
+
 	var firstWordTime *time.Time
 
 	scanner := bufio.NewScanner(resp.Body)
