@@ -75,6 +75,12 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if strings.Contains(err.Message, "Incorrect API key provided") && strings.Contains(err.Message, "console.x.ai") {
 		return true
 	}
+	// 添加对 Gemini API key 错误的处理
+	if (strings.Contains(err.Message, "API key not valid") && strings.Contains(err.Message, "API_KEY_INVALID")) ||
+		(strings.Contains(err.Message, "generativelanguage.googleapis.com") && strings.Contains(err.Message, "API key not valid")) {
+		logger.SysLog("Gemini API key invalid error detected, channel will be disabled")
+		return true
+	}
 
 	return false
 }
