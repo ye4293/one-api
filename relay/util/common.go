@@ -85,6 +85,17 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 		return true
 	}
 
+	// 添加对资源耗尽错误的处理 (429状态码 + 特定错误代码)
+	if err.Code == "Some resource has been exhausted" {
+		return true
+	}
+
+	// 添加对额度用尽/月度支出限制的处理
+	if strings.Contains(err.Message, "used all available credits") ||
+		strings.Contains(err.Message, "reached its monthly spending limit") {
+		return true
+	}
+
 	return false
 }
 

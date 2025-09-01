@@ -3,6 +3,7 @@ package xai
 import "github.com/songquanpeng/one-api/relay/model"
 
 var modelList = []string{
+	"grok-code-fast-1",
 	// 原始模型
 	"grok-4-latest",
 	"grok-4-latest-low",
