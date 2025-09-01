@@ -529,6 +529,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
 
+		// 更新多Key使用统计
+		UpdateMultiKeyUsageFromContext(c, quota > 0)
+
 	}(c.Request.Context())
 
 	responseBody, err = io.ReadAll(resp.Body)

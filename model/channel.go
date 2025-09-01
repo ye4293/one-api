@@ -1,9 +1,14 @@
 package model
 
 import (
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -34,6 +39,65 @@ type Channel struct {
 	Config             string  `json:"config"`
 	ChannelRatio       float64 `json:"channel_ratio" gorm:"default:1"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
+	// 新增多Key聚合相关字段
+	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
+}
+
+// 多Key聚合信息结构
+type MultiKeyInfo struct {
+	IsMultiKey          bool                `json:"is_multi_key"`           // 是否启用多Key聚合模式
+	KeyCount            int                 `json:"key_count"`              // Key总数量
+	EnabledKeyCount     int                 `json:"enabled_key_count"`      // 可用Key数量
+	KeySelectionMode    KeySelectionMode    `json:"key_selection_mode"`     // Key选择模式：轮询或随机
+	PollingIndex        int                 `json:"polling_index"`          // 轮询模式的当前索引
+	KeyStatusList       map[int]int         `json:"key_status_list"`        // Key状态列表：索引 -> 状态
+	KeyMetadata         map[int]KeyMetadata `json:"key_metadata"`           // Key元数据：索引 -> 元数据
+	LastBatchImportTime int64               `json:"last_batch_import_time"` // 最后批量导入时间
+	BatchImportMode     BatchImportMode     `json:"batch_import_mode"`      // 批量导入模式
+}
+
+// Key选择模式
+type KeySelectionMode int
+
+const (
+	KeySelectionPolling KeySelectionMode = 0 // 轮询模式
+	KeySelectionRandom  KeySelectionMode = 1 // 随机模式
+)
+
+// 批量导入模式
+type BatchImportMode int
+
+const (
+	BatchImportOverride BatchImportMode = 0 // 覆盖模式
+	BatchImportAppend   BatchImportMode = 1 // 追加模式
+)
+
+// Key元数据
+type KeyMetadata struct {
+	Balance     float64 `json:"balance"`      // 该Key的余额
+	Usage       int64   `json:"usage"`        // 该Key的使用量
+	LastUsed    int64   `json:"last_used"`    // 最后使用时间
+	ImportBatch string  `json:"import_batch"` // 导入批次标识
+	Note        string  `json:"note"`         // 备注信息
+}
+
+// 实现 database/sql/driver.Valuer 接口，用于存储到数据库
+func (m MultiKeyInfo) Value() (driver.Value, error) {
+	return json.Marshal(m)
+}
+
+// 实现 sql.Scanner 接口，用于从数据库读取
+func (m *MultiKeyInfo) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+
+	bytes, ok := value.([]byte)
+	if !ok {
+		return fmt.Errorf("cannot scan %T into MultiKeyInfo", value)
+	}
+
+	return json.Unmarshal(bytes, m)
 }
 
 type ChannelConfig struct {
@@ -75,6 +139,78 @@ func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int
 	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("key").Find(&channels).Error
 	if err != nil {
 		return nil, total, err
+	}
+
+	// 为多Key渠道计算可用Key统计信息（优化：并行处理）
+	type channelStats struct {
+		index        int
+		keyCount     int
+		enabledCount int
+	}
+
+	statsChan := make(chan channelStats, len(channels))
+
+	// 并行计算每个多Key渠道的统计信息
+	for i, channel := range channels {
+		if channel.MultiKeyInfo.IsMultiKey {
+			go func(idx int, ch *Channel) {
+				// 重新获取完整的Key信息以计算统计
+				fullChannel, err := GetChannelById(ch.Id, true)
+				if err == nil {
+					// 自动修复Key状态（如果需要的话）
+					keys := fullChannel.ParseKeys()
+					needFix := len(fullChannel.MultiKeyInfo.KeyStatusList) == 0
+
+					// 检查是否有Key缺少状态
+					if !needFix {
+						for i := range keys {
+							if _, exists := fullChannel.MultiKeyInfo.KeyStatusList[i]; !exists {
+								needFix = true
+								break
+							}
+						}
+					}
+
+					if needFix {
+						logger.SysLog(fmt.Sprintf("Auto-fixing multi-key status for channel %d", ch.Id))
+						err := fullChannel.FixMultiKeyStatus()
+						if err == nil {
+							// 重新获取更新后的数据
+							fullChannel, _ = GetChannelById(ch.Id, true)
+							keys = fullChannel.ParseKeys() // 重新解析Key
+						}
+					}
+
+					enabledCount := 0
+					for j := range keys {
+						if fullChannel.GetKeyStatus(j) == common.ChannelStatusEnabled {
+							enabledCount++
+						}
+					}
+					statsChan <- channelStats{
+						index:        idx,
+						keyCount:     len(keys),
+						enabledCount: enabledCount,
+					}
+				} else {
+					statsChan <- channelStats{index: idx, keyCount: 0, enabledCount: 0}
+				}
+			}(i, channel)
+		}
+	}
+
+	// 收集统计结果
+	multiKeyCount := 0
+	for _, channel := range channels {
+		if channel.MultiKeyInfo.IsMultiKey {
+			multiKeyCount++
+		}
+	}
+
+	for i := 0; i < multiKeyCount; i++ {
+		stats := <-statsChan
+		channels[stats.index].MultiKeyInfo.KeyCount = stats.keyCount
+		channels[stats.index].MultiKeyInfo.EnabledKeyCount = stats.enabledCount
 	}
 
 	// 返回频道列表、总数以及可能的错误信息
@@ -123,6 +259,78 @@ func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int)
 	err = baseQuery.Omit("key").Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
 	if err != nil {
 		return nil, total, err
+	}
+
+	// 为多Key渠道计算可用Key统计信息
+	type channelStats struct {
+		index        int
+		keyCount     int
+		enabledCount int
+	}
+
+	statsChan := make(chan channelStats, len(channels))
+
+	// 并行计算每个多Key渠道的统计信息
+	for i, channel := range channels {
+		if channel.MultiKeyInfo.IsMultiKey {
+			go func(idx int, ch *Channel) {
+				// 重新获取完整的Key信息以计算统计
+				fullChannel, err := GetChannelById(ch.Id, true)
+				if err == nil {
+					// 自动修复Key状态（如果需要的话）
+					keys := fullChannel.ParseKeys()
+					needFix := len(fullChannel.MultiKeyInfo.KeyStatusList) == 0
+
+					// 检查是否有Key缺少状态
+					if !needFix {
+						for i := range keys {
+							if _, exists := fullChannel.MultiKeyInfo.KeyStatusList[i]; !exists {
+								needFix = true
+								break
+							}
+						}
+					}
+
+					if needFix {
+						logger.SysLog(fmt.Sprintf("Auto-fixing multi-key status for channel %d", ch.Id))
+						err := fullChannel.FixMultiKeyStatus()
+						if err == nil {
+							// 重新获取更新后的数据
+							fullChannel, _ = GetChannelById(ch.Id, true)
+							keys = fullChannel.ParseKeys() // 重新解析Key
+						}
+					}
+
+					enabledCount := 0
+					for j := range keys {
+						if fullChannel.GetKeyStatus(j) == common.ChannelStatusEnabled {
+							enabledCount++
+						}
+					}
+					statsChan <- channelStats{
+						index:        idx,
+						keyCount:     len(keys),
+						enabledCount: enabledCount,
+					}
+				} else {
+					statsChan <- channelStats{index: idx, keyCount: 0, enabledCount: 0}
+				}
+			}(i, channel)
+		}
+	}
+
+	// 收集统计结果
+	multiKeyCount := 0
+	for _, channel := range channels {
+		if channel.MultiKeyInfo.IsMultiKey {
+			multiKeyCount++
+		}
+	}
+
+	for i := 0; i < multiKeyCount; i++ {
+		stats := <-statsChan
+		channels[stats.index].MultiKeyInfo.KeyCount = stats.keyCount
+		channels[stats.index].MultiKeyInfo.EnabledKeyCount = stats.enabledCount
 	}
 
 	// 返回频道列表的子集、总数以及可能的错误信息
@@ -221,6 +429,9 @@ func (channel *Channel) Insert() error {
 func (channel *Channel) Update() error {
 	var err error
 
+	// 保存更新前的重要信息
+	savedMultiKeyInfo := channel.MultiKeyInfo
+
 	// 使用常规的 Updates 方法更新非零值字段（GORM 默认行为）
 	// 这样可以避免零值覆盖数据库中的现有数据
 	err = DB.Model(channel).Updates(channel).Error
@@ -237,7 +448,24 @@ func (channel *Channel) Update() error {
 		return err
 	}
 
+	// 重新查询渠道信息，但要保留MultiKeyInfo更新
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
+
+	// 如果MultiKeyInfo有更新，重新设置并保存
+	if savedMultiKeyInfo.IsMultiKey &&
+		(savedMultiKeyInfo.KeyCount != channel.MultiKeyInfo.KeyCount ||
+			savedMultiKeyInfo.KeySelectionMode != channel.MultiKeyInfo.KeySelectionMode ||
+			savedMultiKeyInfo.BatchImportMode != channel.MultiKeyInfo.BatchImportMode) {
+		channel.MultiKeyInfo = savedMultiKeyInfo
+		// 再次更新MultiKeyInfo字段
+		err = DB.Model(channel).Select("multi_key_info").Updates(map[string]interface{}{
+			"multi_key_info": savedMultiKeyInfo,
+		}).Error
+		if err != nil {
+			return err
+		}
+	}
+
 	err = channel.UpdateAbilities()
 	return err
 }
@@ -411,4 +639,524 @@ func GetChannelModelsbyId(channelId int) ([]string, error) {
 	}
 
 	return models, nil
+}
+
+// ==================== 多Key聚合管理方法 ====================
+
+// 线程安全的轮询索引锁
+var channelPollingLocks sync.Map
+
+// 获取渠道轮询锁
+func getChannelPollingLock(channelId int) *sync.Mutex {
+	if lock, exists := channelPollingLocks.Load(channelId); exists {
+		return lock.(*sync.Mutex)
+	}
+	newLock := &sync.Mutex{}
+	actual, _ := channelPollingLocks.LoadOrStore(channelId, newLock)
+	return actual.(*sync.Mutex)
+}
+
+// ParseKeys 解析Key字符串为Key列表
+func (channel *Channel) ParseKeys() []string {
+	if channel.Key == "" {
+		return []string{}
+	}
+
+	trimmed := strings.TrimSpace(channel.Key)
+
+	// 支持JSON数组格式: ["key1", "key2", "key3"]
+	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		var keys []string
+		if err := json.Unmarshal([]byte(trimmed), &keys); err == nil {
+			return keys
+		}
+	}
+
+	// 回退到换行符分隔: "key1\nkey2\nkey3"
+	keys := strings.Split(strings.Trim(trimmed, "\n"), "\n")
+	// 过滤空字符串
+	var validKeys []string
+	for _, key := range keys {
+		if trimmedKey := strings.TrimSpace(key); trimmedKey != "" {
+			validKeys = append(validKeys, trimmedKey)
+		}
+	}
+
+	return validKeys
+}
+
+// GetKeyStatus 获取Key状态，默认为启用状态
+func (channel *Channel) GetKeyStatus(index int) int {
+	if channel.MultiKeyInfo.KeyStatusList == nil {
+		return common.ChannelStatusEnabled
+	}
+	if status, exists := channel.MultiKeyInfo.KeyStatusList[index]; exists {
+		return status
+	}
+	return common.ChannelStatusEnabled
+}
+
+// 获取下一个可用的Key
+func (channel *Channel) GetNextAvailableKey() (string, int, error) {
+	// 如果不是多Key模式，直接返回原始Key
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return channel.Key, 0, nil
+	}
+
+	keys := channel.ParseKeys()
+	if len(keys) == 0 {
+		return "", 0, errors.New("no keys available")
+	}
+
+	// 收集所有启用的Key索引
+	enabledIndices := make([]int, 0, len(keys))
+	for i := range keys {
+		if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
+			enabledIndices = append(enabledIndices, i)
+		}
+	}
+
+	if len(enabledIndices) == 0 {
+		return "", 0, errors.New("no enabled keys available")
+	}
+
+	switch channel.MultiKeyInfo.KeySelectionMode {
+	case KeySelectionRandom:
+		// 随机选择
+		rand.Seed(time.Now().UnixNano())
+		selectedIdx := enabledIndices[rand.Intn(len(enabledIndices))]
+		return keys[selectedIdx], selectedIdx, nil
+
+	case KeySelectionPolling:
+		// 轮询选择（线程安全）
+		lock := getChannelPollingLock(channel.Id)
+		lock.Lock()
+		defer lock.Unlock()
+
+		start := channel.MultiKeyInfo.PollingIndex
+		if start < 0 || start >= len(keys) {
+			start = 0
+		}
+
+		// 从当前索引开始查找下一个启用的Key
+		for i := 0; i < len(keys); i++ {
+			idx := (start + i) % len(keys)
+			if channel.GetKeyStatus(idx) == common.ChannelStatusEnabled {
+				// 更新轮询索引到下一个位置
+				channel.MultiKeyInfo.PollingIndex = (idx + 1) % len(keys)
+				// 异步保存轮询索引
+				go channel.saveMultiKeyInfo()
+				return keys[idx], idx, nil
+			}
+		}
+
+		// 理论上不应该到达这里，因为前面已经检查了启用的Key数量
+		return keys[enabledIndices[0]], enabledIndices[0], nil
+
+	default:
+		// 未知模式，回退到第一个启用的Key
+		return keys[enabledIndices[0]], enabledIndices[0], nil
+	}
+}
+
+// 批量导入Keys
+func (channel *Channel) BatchImportKeys(newKeys []string, mode BatchImportMode) error {
+	if len(newKeys) == 0 {
+		return errors.New("no keys provided")
+	}
+
+	var finalKeys []string
+
+	switch mode {
+	case BatchImportOverride:
+		// 覆盖模式：清空现有Key和状态
+		finalKeys = newKeys
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+		channel.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
+
+	case BatchImportAppend:
+		// 追加模式：保持现有Key和状态
+		existingKeys := channel.ParseKeys()
+		finalKeys = append(existingKeys, newKeys...)
+
+	default:
+		return errors.New("invalid batch import mode")
+	}
+
+	// 更新Key字符串（使用换行符分隔）
+	channel.Key = strings.Join(finalKeys, "\n")
+
+	// 更新多Key信息
+	channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
+	channel.MultiKeyInfo.KeyCount = len(finalKeys)
+	channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
+	channel.MultiKeyInfo.BatchImportMode = mode
+
+	// 初始化新Key的元数据
+	if channel.MultiKeyInfo.KeyMetadata == nil {
+		channel.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
+	}
+
+	batchId := fmt.Sprintf("batch_%d", time.Now().Unix())
+	startIndex := len(finalKeys) - len(newKeys) // 新Key的起始索引
+
+	for i, _ := range newKeys {
+		keyIndex := startIndex + i
+		if _, exists := channel.MultiKeyInfo.KeyMetadata[keyIndex]; !exists {
+			channel.MultiKeyInfo.KeyMetadata[keyIndex] = KeyMetadata{
+				Balance:     0,
+				Usage:       0,
+				LastUsed:    0,
+				ImportBatch: batchId,
+				Note:        "",
+			}
+		}
+	}
+
+	return channel.Update()
+}
+
+// 切换单个Key的状态
+func (channel *Channel) ToggleKeyStatus(keyIndex int, enabled bool) error {
+	keys := channel.ParseKeys()
+	if keyIndex < 0 || keyIndex >= len(keys) {
+		return errors.New("invalid key index")
+	}
+
+	if channel.MultiKeyInfo.KeyStatusList == nil {
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+	}
+
+	if enabled {
+		// 启用Key：删除状态记录（默认为启用）
+		delete(channel.MultiKeyInfo.KeyStatusList, keyIndex)
+	} else {
+		// 禁用Key：记录禁用状态
+		channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusManuallyDisabled
+	}
+
+	// 检查是否所有Key都被禁用
+	channel.checkAndUpdateChannelStatus()
+
+	return channel.saveMultiKeyInfo()
+}
+
+// 批量切换Key状态
+func (channel *Channel) BatchToggleKeyStatus(keyIndices []int, enabled bool) error {
+	keys := channel.ParseKeys()
+	if channel.MultiKeyInfo.KeyStatusList == nil {
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+	}
+
+	for _, keyIndex := range keyIndices {
+		if keyIndex < 0 || keyIndex >= len(keys) {
+			continue // 跳过无效索引
+		}
+
+		if enabled {
+			delete(channel.MultiKeyInfo.KeyStatusList, keyIndex)
+		} else {
+			channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusManuallyDisabled
+		}
+	}
+
+	// 检查是否所有Key都被禁用
+	channel.checkAndUpdateChannelStatus()
+
+	return channel.saveMultiKeyInfo()
+}
+
+// 根据导入批次切换Key状态
+func (channel *Channel) ToggleKeysByBatch(batchId string, enabled bool) error {
+	var targetIndices []int
+
+	for index, metadata := range channel.MultiKeyInfo.KeyMetadata {
+		if metadata.ImportBatch == batchId {
+			targetIndices = append(targetIndices, index)
+		}
+	}
+
+	if len(targetIndices) == 0 {
+		return errors.New("no keys found for the specified batch")
+	}
+
+	return channel.BatchToggleKeyStatus(targetIndices, enabled)
+}
+
+// 获取Key统计信息
+func (channel *Channel) GetKeyStats() map[string]interface{} {
+	keys := channel.ParseKeys()
+
+	stats := map[string]interface{}{
+		"total":             len(keys),
+		"enabled":           0,
+		"manually_disabled": 0,
+		"auto_disabled":     0,
+		"is_multi_key":      channel.MultiKeyInfo.IsMultiKey,
+		"selection_mode":    channel.MultiKeyInfo.KeySelectionMode,
+	}
+
+	for i := range keys {
+		status := channel.GetKeyStatus(i)
+		if status == common.ChannelStatusEnabled {
+			stats["enabled"] = stats["enabled"].(int) + 1
+		} else if status == common.ChannelStatusManuallyDisabled {
+			stats["manually_disabled"] = stats["manually_disabled"].(int) + 1
+		} else if status == common.ChannelStatusAutoDisabled {
+			stats["auto_disabled"] = stats["auto_disabled"].(int) + 1
+		}
+	}
+
+	return stats
+}
+
+// 修复聚合渠道的Key状态初始化问题
+func (channel *Channel) FixMultiKeyStatus() error {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return errors.New("not a multi-key channel")
+	}
+
+	keys := channel.ParseKeys()
+	if channel.MultiKeyInfo.KeyStatusList == nil {
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+	}
+
+	// 为没有状态的Key设置默认状态为启用
+	for i := range keys {
+		if _, exists := channel.MultiKeyInfo.KeyStatusList[i]; !exists {
+			channel.MultiKeyInfo.KeyStatusList[i] = common.ChannelStatusEnabled
+		}
+	}
+
+	// 更新数据库
+	return channel.Update()
+}
+
+// 删除所有禁用的Key
+func (channel *Channel) DeleteDisabledKeys() error {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return errors.New("not a multi-key channel")
+	}
+
+	keys := channel.ParseKeys()
+	if len(keys) == 0 {
+		return nil // 没有key，无需操作
+	}
+
+	var keptKeys []string
+	keptKeyMetadata := make(map[int]KeyMetadata)
+	keptKeyStatusList := make(map[int]int)
+
+	newIndex := 0
+	for i, key := range keys {
+		status := channel.GetKeyStatus(i)
+		if status == common.ChannelStatusEnabled {
+			keptKeys = append(keptKeys, key)
+			if metadata, ok := channel.MultiKeyInfo.KeyMetadata[i]; ok {
+				keptKeyMetadata[newIndex] = metadata
+			}
+			// 启用的状态我们不需要显式存储，因为默认就是启用
+			// 但如果未来有其他启用状态，可以在这里设置
+			// keptKeyStatusList[newIndex] = common.ChannelStatusEnabled
+			newIndex++
+		}
+	}
+
+	// 更新渠道信息
+	channel.Key = strings.Join(keptKeys, "\n")
+	channel.MultiKeyInfo.KeyCount = len(keptKeys)
+	channel.MultiKeyInfo.KeyMetadata = keptKeyMetadata
+	channel.MultiKeyInfo.KeyStatusList = keptKeyStatusList // 几乎总是空的
+	channel.MultiKeyInfo.PollingIndex = 0
+
+	// 检查并更新渠道聚合状态和整体状态
+	channel.checkAndUpdateChannelStatus()
+
+	return channel.Update()
+}
+
+// 检查并更新渠道状态
+func (channel *Channel) checkAndUpdateChannelStatus() {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return
+	}
+
+	keys := channel.ParseKeys()
+	if len(keys) == 0 {
+		channel.Status = common.ChannelStatusAutoDisabled
+		return
+	}
+
+	// 检查是否所有Key都被禁用
+	allDisabled := true
+	for i := range keys {
+		if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
+			allDisabled = false
+			break
+		}
+	}
+
+	if allDisabled {
+		channel.Status = common.ChannelStatusAutoDisabled
+		logger.SysLog(fmt.Sprintf("Channel %d auto-disabled: all keys are disabled", channel.Id))
+	} else if channel.Status == common.ChannelStatusAutoDisabled {
+		// 如果有Key重新启用，且渠道是自动禁用状态，可以考虑重新启用
+		// 这里可以根据业务需求决定是否自动重新启用
+		// channel.Status = common.ChannelStatusEnabled
+	}
+}
+
+// 保存多Key信息到数据库
+func (channel *Channel) saveMultiKeyInfo() error {
+	return DB.Model(channel).Update("multi_key_info", channel.MultiKeyInfo).Error
+}
+
+// 处理Key使用后的状态更新
+func (channel *Channel) HandleKeyUsed(keyIndex int, success bool) error {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return nil
+	}
+
+	// 更新使用统计
+	if channel.MultiKeyInfo.KeyMetadata == nil {
+		channel.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
+	}
+
+	metadata := channel.MultiKeyInfo.KeyMetadata[keyIndex]
+	metadata.Usage++
+	metadata.LastUsed = helper.GetTimestamp()
+	channel.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
+
+	return channel.saveMultiKeyInfo()
+}
+
+// HandleKeyError 处理特定Key的错误，决定是否需要自动禁用
+func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, statusCode int) error {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return nil
+	}
+
+	// 检查是否应该禁用这个Key
+	shouldDisable := channel.shouldDisableKey(errorMessage, statusCode)
+	if shouldDisable && channel.AutoDisabled {
+		err := channel.ToggleKeyStatus(keyIndex, false)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to disable key %d in channel %d: %s",
+				keyIndex, channel.Id, err.Error()))
+			return err
+		}
+
+		keys := channel.ParseKeys()
+		maskedKey := "unknown"
+		if keyIndex < len(keys) {
+			key := keys[keyIndex]
+			if len(key) > 8 {
+				maskedKey = key[:4] + "***" + key[len(key)-4:]
+			} else {
+				maskedKey = key
+			}
+		}
+
+		logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s",
+			keyIndex, maskedKey, channel.Id, errorMessage))
+	}
+
+	return nil
+}
+
+// shouldDisableKey 判断是否应该禁用Key（复用现有的禁用逻辑）
+func (channel *Channel) shouldDisableKey(errorMessage string, statusCode int) bool {
+	// 复用relay/util包中的禁用逻辑
+	if statusCode == 401 { // Unauthorized
+		return true
+	}
+
+	// API Key相关错误
+	if strings.Contains(errorMessage, "invalid_api_key") ||
+		strings.Contains(errorMessage, "account_deactivated") ||
+		strings.Contains(errorMessage, "authentication_error") ||
+		strings.Contains(errorMessage, "permission_error") ||
+		strings.Contains(errorMessage, "API key not valid") {
+		return true
+	}
+
+	// 余额相关错误
+	if strings.Contains(errorMessage, "insufficient_quota") ||
+		strings.Contains(errorMessage, "credit balance is too low") ||
+		strings.Contains(errorMessage, "not_enough_credits") ||
+		strings.Contains(errorMessage, "resource pack exhausted") ||
+		strings.Contains(errorMessage, "billing to be enabled") {
+		return true
+	}
+
+	// 组织被禁用
+	if strings.Contains(errorMessage, "organization has been disabled") ||
+		strings.Contains(errorMessage, "Operation not allowed") {
+		return true
+	}
+
+	return false
+}
+
+// GetNextAvailableKeyWithRetry 获取下一个可用Key，支持重试和自动跳过禁用Key
+func (channel *Channel) GetNextAvailableKeyWithRetry(excludeIndices []int) (string, int, error) {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		return channel.Key, 0, nil
+	}
+
+	keys := channel.ParseKeys()
+	if len(keys) == 0 {
+		return "", 0, errors.New("no keys available")
+	}
+
+	// 收集所有启用且不在排除列表中的Key索引
+	availableIndices := make([]int, 0, len(keys))
+	for i := range keys {
+		if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
+			excluded := false
+			for _, excludeIdx := range excludeIndices {
+				if i == excludeIdx {
+					excluded = true
+					break
+				}
+			}
+			if !excluded {
+				availableIndices = append(availableIndices, i)
+			}
+		}
+	}
+
+	if len(availableIndices) == 0 {
+		return "", 0, errors.New("no available keys after excluding failed ones")
+	}
+
+	// 根据选择模式选择Key
+	switch channel.MultiKeyInfo.KeySelectionMode {
+	case KeySelectionRandom:
+		rand.Seed(time.Now().UnixNano())
+		selectedIdx := availableIndices[rand.Intn(len(availableIndices))]
+		return keys[selectedIdx], selectedIdx, nil
+
+	case KeySelectionPolling:
+		// 从当前轮询索引开始，找到下一个可用的Key
+		start := channel.MultiKeyInfo.PollingIndex
+		for i := 0; i < len(keys); i++ {
+			idx := (start + i) % len(keys)
+			for _, availableIdx := range availableIndices {
+				if idx == availableIdx {
+					channel.MultiKeyInfo.PollingIndex = (idx + 1) % len(keys)
+					go channel.saveMultiKeyInfo()
+					return keys[idx], idx, nil
+				}
+			}
+		}
+
+		// 如果没有找到，使用第一个可用的
+		selectedIdx := availableIndices[0]
+		return keys[selectedIdx], selectedIdx, nil
+
+	default:
+		selectedIdx := availableIndices[0]
+		return keys[selectedIdx], selectedIdx, nil
+	}
 }

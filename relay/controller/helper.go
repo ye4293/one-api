@@ -183,6 +183,9 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 }
 
 func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
+	// 更新多Key使用统计
+	updateMultiKeyUsage(meta, usage != nil)
+
 	if usage == nil {
 		// 打印用户和请求体信息
 		logger.Error(ctx, fmt.Sprintf("usage is nil, which is unexpected. UserId: %d, RequestBody: %+v",
@@ -218,4 +221,55 @@ func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.R
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
+}
+
+// updateMultiKeyUsage 更新多Key使用统计
+func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
+	// 只有多Key模式才需要更新统计
+	if !meta.IsMultiKey {
+		return
+	}
+
+	// 异步更新Key使用统计，避免影响主流程性能
+	go func() {
+		channel, err := model.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to get channel %d for multi-key usage update: %s",
+				meta.ChannelId, err.Error()))
+			return
+		}
+
+		err = channel.HandleKeyUsed(meta.KeyIndex, success)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to update multi-key usage for channel %d, key %d: %s",
+				meta.ChannelId, meta.KeyIndex, err.Error()))
+		}
+	}()
+}
+
+// UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计
+func UpdateMultiKeyUsageFromContext(c *gin.Context, success bool) {
+	isMultiKey := c.GetBool("is_multi_key")
+	if !isMultiKey {
+		return
+	}
+
+	channelId := c.GetInt("channel_id")
+	keyIndex := c.GetInt("key_index")
+
+	// 异步更新Key使用统计
+	go func() {
+		channel, err := model.GetChannelById(channelId, true)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to get channel %d for context multi-key usage update: %s",
+				channelId, err.Error()))
+			return
+		}
+
+		err = channel.HandleKeyUsed(keyIndex, success)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to update context multi-key usage for channel %d, key %d: %s",
+				channelId, keyIndex, err.Error()))
+		}
+	}()
 }

@@ -157,8 +157,43 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("channel_name", channel.Name)
 	c.Set("model_mapping", channel.GetModelMapping())
 	c.Set("original_model", modelName) // for retry
-	logger.SysLog(fmt.Sprintf("channel:%d;requestModel:%s\n", channel.Id, modelName))
-	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
+
+	// 获取实际使用的Key（支持多Key聚合）
+	var actualKey string
+	var keyIndex int
+	var err error
+
+	// 检查是否有排除的Key索引（用于重试时跳过失败的Key）
+	excludeIndices := getExcludedKeyIndices(c)
+
+	if channel.MultiKeyInfo.IsMultiKey && len(excludeIndices) > 0 {
+		// 多Key模式且有排除列表，使用带重试的方法
+		actualKey, keyIndex, err = channel.GetNextAvailableKeyWithRetry(excludeIndices)
+	} else {
+		// 正常获取Key
+		actualKey, keyIndex, err = channel.GetNextAvailableKey()
+	}
+
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
+		actualKey = channel.Key // 回退到原始Key
+		keyIndex = 0
+	}
+
+	// 存储Key信息供后续使用
+	c.Set("actual_key", actualKey)
+	c.Set("key_index", keyIndex)
+	c.Set("is_multi_key", channel.MultiKeyInfo.IsMultiKey)
+
+	// 记录使用的Key（脱敏）
+	maskedKey := actualKey
+	if len(actualKey) > 8 {
+		maskedKey = actualKey[:4] + "***" + actualKey[len(actualKey)-4:]
+	}
+	logger.SysLog(fmt.Sprintf("channel:%d;requestModel:%s;keyIndex:%d;maskedKey:%s",
+		channel.Id, modelName, keyIndex, maskedKey))
+
+	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
 	c.Set("base_url", channel.GetBaseURL())
 	cfg, _ := channel.LoadConfig()
 	// this is for backward compatibility
@@ -177,4 +212,30 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set(common.ConfigKeyPlugin, channel.Other)
 	}
 	c.Set("Config", cfg)
+}
+
+// getExcludedKeyIndices 获取需要排除的Key索引列表（用于重试时跳过失败的Key）
+func getExcludedKeyIndices(c *gin.Context) []int {
+	if excludedKeysInterface, exists := c.Get("excluded_key_indices"); exists {
+		if excludedKeys, ok := excludedKeysInterface.([]int); ok {
+			return excludedKeys
+		}
+	}
+	return []int{}
+}
+
+// addExcludedKeyIndex 添加一个需要排除的Key索引
+func addExcludedKeyIndex(c *gin.Context, keyIndex int) {
+	excludedKeys := getExcludedKeyIndices(c)
+
+	// 检查是否已经存在
+	for _, existingIndex := range excludedKeys {
+		if existingIndex == keyIndex {
+			return
+		}
+	}
+
+	// 添加新的索引
+	excludedKeys = append(excludedKeys, keyIndex)
+	c.Set("excluded_key_indices", excludedKeys)
 }

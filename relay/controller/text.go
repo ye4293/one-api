@@ -23,6 +23,10 @@ import (
 func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now()
+
+	// 记录请求开始时间用于首字延迟计算（应该在最开始记录）
+	c.Set("request_start_time", startTime)
+
 	meta := util.GetRelayMeta(c)
 	// get & validate textRequest
 	textRequest, err := getAndValidateTextRequest(c, meta.Mode)
@@ -93,10 +97,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		logger.Debugf(ctx, "converted request: \n%s", string(jsonData))
 		requestBody = bytes.NewBuffer(jsonData)
 	}
-
-	// 记录请求开始时间用于首字延迟计算
-	requestStartTime := time.Now()
-	c.Set("request_start_time", requestStartTime)
 
 	// do request
 	resp, err := adaptor.DoRequest(c, meta, requestBody)

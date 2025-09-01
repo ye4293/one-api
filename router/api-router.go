@@ -88,6 +88,19 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/batchdelete", controller.BatchDelteChannel)
 			channelRoute.DELETE("/disabled", controller.DeleteDisabledChannel)
 			channelRoute.DELETE("/:id", controller.DeleteChannel)
+
+			// 多Key管理相关路由
+			channelRoute.GET("/:id/keys/stats", controller.GetChannelKeyStats)
+			channelRoute.GET("/:id/keys/details", controller.GetChannelKeyDetails)
+			channelRoute.GET("/:id/keys/health", controller.GetChannelKeyHealthStatus)
+			channelRoute.POST("/keys/import", controller.BatchImportChannelKeys)
+			channelRoute.POST("/keys/toggle", controller.ToggleChannelKey)
+			channelRoute.POST("/keys/batch-toggle", controller.BatchToggleChannelKeys)
+			channelRoute.POST("/keys/batch-toggle-by-batch", controller.ToggleChannelKeysByBatch)
+			channelRoute.POST("/keys/retry", controller.RetryChannelKey)
+			channelRoute.POST("/keys/delete-disabled", controller.DeleteDisabledKeys)
+			channelRoute.POST("/keys/fix-status", controller.FixMultiKeyChannelStatus)
+			channelRoute.PUT("/multi-key/settings", controller.UpdateChannelMultiKeySettings)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

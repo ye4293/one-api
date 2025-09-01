@@ -35,7 +35,11 @@ type RelayMeta struct {
 	UserChannelTypeRatio    float64
 	UserChannelTypeRatioMap string
 	// 用于计算首字延迟
-	FirstWordLatency        float64
+	FirstWordLatency float64
+	// 多Key相关信息
+	ActualAPIKey string
+	KeyIndex     int
+	IsMultiKey   bool
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -59,6 +63,9 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		ChannelRatio:            c.GetFloat64("channel_ratio"),
 		UserChannelTypeRatioMap: c.GetString("user_channel_type_ratio_map"),
 		UserChannelTypeRatio:    GetChannelTypeRatio(c.GetString("user_channel_type_ratio_map"), c.GetInt("channel")),
+		ActualAPIKey:            c.GetString("actual_key"),
+		KeyIndex:                c.GetInt("key_index"),
+		IsMultiKey:              c.GetBool("is_multi_key"),
 	}
 	cfg, ok := c.Get("Config")
 	if ok {

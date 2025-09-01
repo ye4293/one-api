@@ -75,25 +75,60 @@ func Relay(c *gin.Context) {
 		retryTimes = 0
 	}
 
+	var currentChannel *dbmodel.Channel
+	var retryInSameChannel bool = false
+
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		// 如果当前渠道是多Key渠道且还有可用Key，优先在同一渠道内重试
+		if retryInSameChannel && currentChannel != nil && currentChannel.MultiKeyInfo.IsMultiKey {
+			// 检查当前渠道是否还有可用Key（排除已失败的）
+			excludedKeys := getExcludedKeyIndicesFromContext(c)
+			_, _, err := currentChannel.GetNextAvailableKeyWithRetry(excludedKeys)
+			if err != nil {
+				// 当前渠道没有更多可用Key，切换到其他渠道
+				retryInSameChannel = false
+				logger.Infof(ctx, "No more available keys in current multi-key channel #%d, switching to other channels", currentChannel.Id)
+			} else {
+				// 当前渠道还有可用Key，继续在同一渠道内重试
+				logger.Infof(ctx, "Retrying with another key in multi-key channel #%d (remain times %d)", currentChannel.Id, i)
+			}
+		}
+
+		if !retryInSameChannel {
+			// 选择新渠道
+			var err error
+			currentChannel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+			if err != nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+				break
+			}
+			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", currentChannel.Id, i)
+
+			// 清除之前的排除Key列表，因为这是新渠道
+			c.Set("excluded_key_indices", []int{})
+		}
+
+		middleware.SetupContextForSelectedChannel(c, currentChannel, originalModel)
+		_, err := common.GetRequestBody(c)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			logger.Errorf(ctx, "GetRequestBody failed: %v", err)
 			break
 		}
-		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
-		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
-		requestBody, err := common.GetRequestBody(c)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
+			monitor.Emit(currentChannel.Id, true)
 			return
 		}
 
 		channelId = c.GetInt("channel_id")
-
 		channelName = c.GetString("channel_name")
+
+		// 处理错误并设置重试标志
+		if currentChannel.MultiKeyInfo.IsMultiKey {
+			retryInSameChannel = true
+		}
+
 		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 	}
 
@@ -150,24 +185,94 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
-	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		// 检查渠道是否允许自动禁用
-		channel, getErr := dbmodel.GetChannelById(channelId, true)
-		if getErr != nil {
-			logger.Errorf(ctx, "failed to get channel %d: %s", channelId, getErr.Error())
+
+	// 获取渠道信息
+	channel, getErr := dbmodel.GetChannelById(channelId, true)
+	if getErr != nil {
+		logger.Errorf(ctx, "failed to get channel %d: %s", channelId, getErr.Error())
+		monitor.Emit(channelId, false)
+		return
+	}
+
+	// 处理多Key渠道的错误
+	if channel.MultiKeyInfo.IsMultiKey {
+		processMultiKeyChannelError(ctx, channel, err)
+	} else {
+		// 单Key渠道的原有逻辑
+		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
+			if channel.AutoDisabled {
+				monitor.DisableChannel(channelId, channelName, err.Error.Message)
+			} else {
+				logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
+				monitor.Emit(channelId, false)
+			}
+		} else {
 			monitor.Emit(channelId, false)
-			return
+		}
+	}
+}
+
+// processMultiKeyChannelError 处理多Key渠道的错误
+func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, err *model.ErrorWithStatusCode) {
+	// 从上下文中获取使用的Key索引
+	keyIndex := 0 // 默认值，如果无法获取
+	var ginCtx *gin.Context
+
+	// 尝试从context中获取gin.Context
+	if ginCtxValue := ctx.Value(gin.ContextKey); ginCtxValue != nil {
+		if gc, ok := ginCtxValue.(*gin.Context); ok {
+			ginCtx = gc
+			keyIndex = gc.GetInt("key_index")
+		}
+	}
+
+	// 处理特定Key的错误
+	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
+		keyErr := channel.HandleKeyError(keyIndex, err.Error.Message, err.StatusCode)
+		if keyErr != nil {
+			logger.Errorf(ctx, "failed to handle key error for channel %d, key %d: %s",
+				channel.Id, keyIndex, keyErr.Error())
 		}
 
-		if channel.AutoDisabled {
-			monitor.DisableChannel(channelId, channelName, err.Error.Message)
-		} else {
-			logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
-			monitor.Emit(channelId, false)
+		// 如果有gin.Context，将失败的Key索引添加到排除列表中，以便重试时跳过
+		if ginCtx != nil {
+			addExcludedKeyIndexToContext(ginCtx, keyIndex)
 		}
-	} else {
-		monitor.Emit(channelId, false)
 	}
+
+	// 发送监控事件
+	monitor.Emit(channel.Id, false)
+}
+
+// addExcludedKeyIndexToContext 添加一个需要排除的Key索引到gin.Context中
+func addExcludedKeyIndexToContext(c *gin.Context, keyIndex int) {
+	var excludedKeys []int
+	if excludedKeysInterface, exists := c.Get("excluded_key_indices"); exists {
+		if excludedKeysSlice, ok := excludedKeysInterface.([]int); ok {
+			excludedKeys = excludedKeysSlice
+		}
+	}
+
+	// 检查是否已经存在
+	for _, existingIndex := range excludedKeys {
+		if existingIndex == keyIndex {
+			return
+		}
+	}
+
+	// 添加新的索引
+	excludedKeys = append(excludedKeys, keyIndex)
+	c.Set("excluded_key_indices", excludedKeys)
+}
+
+// getExcludedKeyIndicesFromContext 获取排除的Key索引列表
+func getExcludedKeyIndicesFromContext(c *gin.Context) []int {
+	if excludedKeysInterface, exists := c.Get("excluded_key_indices"); exists {
+		if excludedKeys, ok := excludedKeysInterface.([]int); ok {
+			return excludedKeys
+		}
+	}
+	return []int{}
 }
 
 func relayMidjourney(c *gin.Context, relayMode int) *midjourney.MidjourneyResponseWithStatusCode {
