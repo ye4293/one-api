@@ -291,7 +291,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
-			fullRequestURL = fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", meta.OriginModelName)
+			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
 			logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
 		}
 
@@ -1674,7 +1674,15 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 从 form 中获取图片文件（支持多个图片）
 	var imageParts []gemini.Part
 
-	if fileHeaders, ok := c.Request.MultipartForm.File["image"]; ok && len(fileHeaders) > 0 {
+	// 支持两种字段名格式：image 和 image[]
+	var fileHeaders []*multipart.FileHeader
+	if headers, ok := c.Request.MultipartForm.File["image"]; ok && len(headers) > 0 {
+		fileHeaders = headers
+	} else if headers, ok := c.Request.MultipartForm.File["image[]"]; ok && len(headers) > 0 {
+		fileHeaders = headers
+	}
+
+	if len(fileHeaders) > 0 {
 		// 遍历所有图片文件
 		for i, fileHeader := range fileHeaders {
 			file, err := fileHeader.Open()
@@ -1722,7 +1730,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 			imageParts = append(imageParts, imagePart)
 		}
 	} else {
-		return openai.ErrorWrapper(fmt.Errorf("image 文件不能为空"), "missing_image_file", http.StatusBadRequest)
+		return openai.ErrorWrapper(fmt.Errorf("image 或 image[] 文件不能为空"), "missing_image_file", http.StatusBadRequest)
 	}
 
 	// 构建 Gemini API 请求格式
