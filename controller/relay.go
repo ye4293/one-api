@@ -67,7 +67,8 @@ func Relay(c *gin.Context) {
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
-	go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+	keyIndex := c.GetInt("key_index") // 在异步调用前获取keyIndex
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -99,8 +100,9 @@ func Relay(c *gin.Context) {
 
 		channelId = c.GetInt("channel_id")
 		channelName = c.GetString("channel_name")
+		keyIndex = c.GetInt("key_index") // 在异步调用前获取keyIndex
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 	}
 
 	// 如果所有尝试都失败，不处理耗时记录
@@ -134,13 +136,18 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 		if strings.Contains(message, "Incorrect API key provided") && strings.Contains(message, "console.x.ai") {
 			return true
 		}
-		// 对于Gemini的API key错误，应该允许重试其他渠道
-		// 检查两种可能的错误格式：
-		// 1. 包含 "API key not valid" 和 "API_KEY_INVALID" 的标准 Gemini 错误
-		// 2. 包含 "generativelanguage.googleapis.com" 和 "API key not valid" 的服务错误
-		if (strings.Contains(message, "API key not valid") && strings.Contains(message, "API_KEY_INVALID")) ||
-			(strings.Contains(message, "generativelanguage.googleapis.com") && strings.Contains(message, "API key not valid")) {
-			logger.Warnf(c.Request.Context(), "Gemini API key invalid error detected, will retry with other channels")
+		// 对于所有 "API key not valid" 错误，都应该允许重试其他渠道
+		if strings.Contains(message, "API key not valid") {
+			logger.Warnf(c.Request.Context(), "API key invalid error detected, will retry with other channels")
+			return true
+		}
+		// 对于其他API key相关错误，也应该重试
+		if strings.Contains(message, "invalid_api_key") || strings.Contains(message, "authentication_error") {
+			logger.Warnf(c.Request.Context(), "API key authentication error detected, will retry with other channels")
+			return true
+		}
+		//对于aws的封号的特殊处理
+		if strings.Contains(message, "Operation not allowed") {
 			return true
 		}
 		return false
@@ -148,13 +155,10 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 	if statusCode/100 == 2 {
 		return false
 	}
-	if strings.Contains(message, "Operation not allowed") {
-		return true
-	}
 	return true
 }
 
-func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, err *model.ErrorWithStatusCode) {
+func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
 
 	// 获取渠道信息
@@ -167,9 +171,9 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 
 	// 处理多Key渠道的错误
 	if channel.MultiKeyInfo.IsMultiKey {
-		processMultiKeyChannelError(ctx, channel, err)
+		processMultiKeyChannelError(ctx, channel, keyIndex, err)
 	} else {
-		// 单Key渠道的原有逻辑
+		// 单Key渠道的原有逻辑（不使用keyIndex参数）
 		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 			if channel.AutoDisabled {
 				monitor.DisableChannel(channelId, channelName, err.Error.Message)
@@ -184,16 +188,14 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 }
 
 // processMultiKeyChannelError 处理多Key渠道的错误
-func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, err *model.ErrorWithStatusCode) {
-	// 从上下文中获取使用的Key索引
-	keyIndex := 0 // 默认值，如果无法获取
-	var ginCtx *gin.Context
+func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, keyIndex int, err *model.ErrorWithStatusCode) {
+	// 直接使用传入的keyIndex，不再从context中获取
 
-	// 尝试从context中获取gin.Context
+	var ginCtx *gin.Context
+	// 尝试从context中获取gin.Context（用于添加排除列表）
 	if ginCtxValue := ctx.Value(gin.ContextKey); ginCtxValue != nil {
 		if gc, ok := ginCtxValue.(*gin.Context); ok {
 			ginCtx = gc
-			keyIndex = gc.GetInt("key_index")
 		}
 	}
 
@@ -417,9 +419,10 @@ func RelaySd(c *gin.Context) {
 		}
 
 		channelId = c.GetInt("channel_id")
+		keyIndex := c.GetInt("key_index")
 
 		channelName := c.GetString("channel_name")
-		go processChannelRelayError(ctx, userId, channelId, channelName, SdErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, SdErr)
 	}
 	if SdErr != nil {
 
@@ -459,8 +462,9 @@ func RelayVideoGenerate(c *gin.Context) {
 
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
+	keyIndex := c.GetInt("key_index")
 
-	go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -490,8 +494,9 @@ func RelayVideoGenerate(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 
 		channelName = c.GetString("channel_name")
+		keyIndex := c.GetInt("key_index")
 		logger.Infof(ctx, "Video Channel #%d failed", channelId)
-		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 	}
 
 	// 所有重试都失败后的处理
@@ -1183,7 +1188,8 @@ func RelayRunway(c *gin.Context) {
 		userId, channelId, channelName, statusCode)
 
 	// 使用空的错误对象调用 processChannelRelayError，让它自己处理
-	go processChannelRelayError(ctx, userId, channelId, channelName, &model.ErrorWithStatusCode{
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: "Request failed"},
 	})
@@ -1232,7 +1238,8 @@ func RelayRunway(c *gin.Context) {
 		logger.Errorf(ctx, "RelayRunway retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
 			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, &model.ErrorWithStatusCode{
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: "Retry failed"},
 		})
