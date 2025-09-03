@@ -75,41 +75,17 @@ func Relay(c *gin.Context) {
 		retryTimes = 0
 	}
 
-	var currentChannel *dbmodel.Channel
-	var retryInSameChannel bool = false
-
 	for i := retryTimes; i > 0; i-- {
-		// 如果当前渠道是多Key渠道且还有可用Key，优先在同一渠道内重试
-		if retryInSameChannel && currentChannel != nil && currentChannel.MultiKeyInfo.IsMultiKey {
-			// 检查当前渠道是否还有可用Key（排除已失败的）
-			excludedKeys := getExcludedKeyIndicesFromContext(c)
-			_, _, err := currentChannel.GetNextAvailableKeyWithRetry(excludedKeys)
-			if err != nil {
-				// 当前渠道没有更多可用Key，切换到其他渠道
-				retryInSameChannel = false
-				logger.Infof(ctx, "No more available keys in current multi-key channel #%d, switching to other channels", currentChannel.Id)
-			} else {
-				// 当前渠道还有可用Key，继续在同一渠道内重试
-				logger.Infof(ctx, "Retrying with another key in multi-key channel #%d (remain times %d)", currentChannel.Id, i)
-			}
+		// 每次重试都选择新渠道（多Key和单Key渠道统一处理）
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
 		}
+		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
-		if !retryInSameChannel {
-			// 选择新渠道
-			var err error
-			currentChannel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
-			if err != nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
-				break
-			}
-			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", currentChannel.Id, i)
-
-			// 清除之前的排除Key列表，因为这是新渠道
-			c.Set("excluded_key_indices", []int{})
-		}
-
-		middleware.SetupContextForSelectedChannel(c, currentChannel, originalModel)
-		_, err := common.GetRequestBody(c)
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		_, err = common.GetRequestBody(c)
 		if err != nil {
 			logger.Errorf(ctx, "GetRequestBody failed: %v", err)
 			break
@@ -117,17 +93,12 @@ func Relay(c *gin.Context) {
 
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
-			monitor.Emit(currentChannel.Id, true)
+			monitor.Emit(channel.Id, true)
 			return
 		}
 
 		channelId = c.GetInt("channel_id")
 		channelName = c.GetString("channel_name")
-
-		// 处理错误并设置重试标志
-		if currentChannel.MultiKeyInfo.IsMultiKey {
-			retryInSameChannel = true
-		}
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, bizErr)
 	}

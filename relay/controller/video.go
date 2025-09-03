@@ -348,10 +348,27 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	var fullRequestUrl string
 	region := meta.Config.Region
 
+	// 获取正确的项目ID - 支持多密钥模式
+	// 创建VertexAI适配器实例获取项目ID
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	credentials, err := vertexai.GetCredentialsFromConfig(meta.Config, channel)
+	if err != nil {
+		return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
+	}
+
+	projectID := credentials.ProjectID
+	if projectID == "" {
+		return openai.ErrorWrapper(fmt.Errorf("无法获取Vertex AI项目ID，请检查Key字段中的JSON凭证"), "invalid_project_id", http.StatusBadRequest)
+	}
+
 	if region == "global" {
-		fullRequestUrl = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning", meta.Config.VertexAIProjectID, meta.OriginModelName)
+		fullRequestUrl = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predictLongRunning", projectID, meta.OriginModelName)
 	} else {
-		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, meta.Config.VertexAIProjectID, region, meta.OriginModelName)
+		fullRequestUrl = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predictLongRunning", region, projectID, region, meta.OriginModelName)
 	}
 
 	log.Printf("veo-full-request-url: %s", fullRequestUrl)
@@ -359,7 +376,35 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	// 读取原始请求体
 	var reqBody map[string]interface{}
 	if err := common.UnmarshalBodyReusable(c, &reqBody); err != nil {
+		// 提供更详细的JSON格式错误信息
+		log.Printf("[VEO] JSON解析失败: %v", err)
+		if strings.Contains(err.Error(), "invalid character") {
+			return openai.ErrorWrapper(
+				fmt.Errorf("JSON格式错误: %v。请检查请求体中是否有多余的逗号或其他语法错误", err),
+				"invalid_json_format",
+				http.StatusBadRequest,
+			)
+		}
 		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+	}
+
+	// 验证instances数组存在（符合Google Vertex AI VEO格式）
+	instances, ok := reqBody["instances"]
+	if !ok {
+		return openai.ErrorWrapper(
+			fmt.Errorf("缺少instances数组。VEO模型需要使用Google Vertex AI标准格式：{\"instances\": [...], \"parameters\": {...}}"),
+			"missing_instances",
+			http.StatusBadRequest,
+		)
+	}
+
+	// 验证instances是数组
+	if _, ok := instances.([]interface{}); !ok {
+		return openai.ErrorWrapper(
+			fmt.Errorf("instances必须是数组格式"),
+			"invalid_instances_format",
+			http.StatusBadRequest,
+		)
 	}
 
 	// 删除model参数（如果存在）
@@ -414,6 +459,10 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
+
+	// 添加请求详细日志
+	log.Printf("[VEO] Request URL: %s", fullRequestUrl)
+	log.Printf("[VEO] Request Body: %s", string(jsonData))
 
 	// 发送请求并处理响应
 	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName)
@@ -475,10 +524,16 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
 
+	// 添加详细的响应日志
+	log.Printf("[VEO] Response Status: %d", resp.StatusCode)
+	log.Printf("[VEO] Response Headers: %+v", resp.Header)
+	log.Printf("[VEO] Response Body: %s", string(body))
+
 	// 解析响应
 	var veoResponse map[string]interface{}
 	err = json.Unmarshal(body, &veoResponse)
 	if err != nil {
+		log.Printf("[VEO] Failed to parse response JSON: %v", err)
 		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
 	}
 
@@ -549,17 +604,42 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
 	} else {
-		// 处理错误响应
+		// 处理错误响应 - 添加详细的错误信息解析
 		errorMsg := "Unknown error"
+		errorCode := "api_error"
+		var errorDetails map[string]interface{}
+
+		// 解析错误信息
 		if msg, ok := veoResponse["error"].(map[string]interface{}); ok {
+			errorDetails = msg
 			if message, ok := msg["message"].(string); ok {
 				errorMsg = message
 			}
+			if code, ok := msg["code"].(string); ok {
+				errorCode = code
+			}
+		}
+
+		// 打印详细的错误信息
+		log.Printf("[VEO] Error Response - Status: %d", statusCode)
+		log.Printf("[VEO] Error Details: %+v", errorDetails)
+		log.Printf("[VEO] Full Response Body: %s", string(body))
+
+		// 根据错误类型提供更具体的错误信息
+		var detailedErrorMsg string
+		if strings.Contains(strings.ToLower(errorMsg), "invalid resource field") {
+			detailedErrorMsg = fmt.Sprintf("请求参数格式错误: %s。请检查请求体中的字段格式是否符合VEO API规范", errorMsg)
+		} else if strings.Contains(strings.ToLower(errorMsg), "permission") {
+			detailedErrorMsg = fmt.Sprintf("权限错误: %s。请检查Vertex AI项目权限和API启用状态", errorMsg)
+		} else if strings.Contains(strings.ToLower(errorMsg), "quota") {
+			detailedErrorMsg = fmt.Sprintf("配额错误: %s。请检查Vertex AI项目配额限制", errorMsg)
+		} else {
+			detailedErrorMsg = fmt.Sprintf("VEO API错误: %s", errorMsg)
 		}
 
 		return openai.ErrorWrapper(
-			fmt.Errorf("API error: %s", errorMsg),
-			"api_error",
+			fmt.Errorf(detailedErrorMsg),
+			errorCode,
 			statusCode,
 		)
 	}
@@ -2116,21 +2196,50 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 }
 
 func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64) error {
+	// 对于VertexAI，保存完整的JSON凭证
+	var credentialsJSON string
+	if provider == "vertexai" {
+		// 获取当前使用的凭证
+		channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			log.Printf("[VEO任务创建] 获取渠道失败 - 任务:%s, 渠道ID:%d, 错误:%v", taskId, meta.ChannelId, err)
+		} else {
+			credentials, err := vertexai.GetCredentialsFromConfig(meta.Config, channel)
+			if err != nil {
+				log.Printf("[VEO任务创建] 获取凭证失败 - 任务:%s, 错误:%v", taskId, err)
+			} else {
+				if credentialsBytes, err := json.Marshal(credentials); err == nil {
+					credentialsJSON = string(credentialsBytes)
+					log.Printf("[VEO任务创建] ✅ 成功保存凭证 - 任务:%s, 项目ID:%s, 服务账号:%s",
+						taskId, credentials.ProjectID, credentials.ClientEmail)
+				} else {
+					log.Printf("[VEO任务创建] JSON序列化失败 - 任务:%s, 错误:%v", taskId, err)
+				}
+			}
+		}
+
+		// 如果没有获取到凭证，记录警告
+		if credentialsJSON == "" {
+			log.Printf("[VEO任务创建] ⚠️  未能保存凭证，查询时将使用当前渠道配置 - 任务:%s", taskId)
+		}
+	}
+
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
-		Prompt:    "prompt",
-		CreatedAt: time.Now().Unix(), // 使用当前时间戳
-		TaskId:    taskId,
-		Provider:  provider,
-		Username:  dbmodel.GetUsernameById(meta.UserId),
-		ChannelId: meta.ChannelId,
-		UserId:    meta.UserId,
-		Mode:      mode, //keling
-		Type:      videoType,
-		Model:     meta.OriginModelName,
-		Duration:  duration,
-		VideoId:   videoId,
-		Quota:     quota,
+		Prompt:      "prompt",
+		CreatedAt:   time.Now().Unix(), // 使用当前时间戳
+		TaskId:      taskId,
+		Provider:    provider,
+		Username:    dbmodel.GetUsernameById(meta.UserId),
+		ChannelId:   meta.ChannelId,
+		UserId:      meta.UserId,
+		Mode:        mode, //keling
+		Type:        videoType,
+		Model:       meta.OriginModelName,
+		Duration:    duration,
+		VideoId:     videoId,
+		Quota:       quota,
+		Credentials: credentialsJSON, // 保存完整的JSON凭证
 	}
 
 	// 调用 Insert 方法插入记录
@@ -2274,12 +2383,58 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		fullRequestUrl = fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", *channel.BaseURL, taskId)
 	case "vertexai":
 		// 对于 VertexAI Veo，taskId 现在只是操作ID部分
-		// 需要从渠道配置重新构建完整的操作名称
-		// 配置已在函数开始时读取，直接使用
+		// 需要从渠道配置重新构建完整的操作名称，并使用与发送任务时相同的密钥
 
-		projectId := cfg.VertexAIProjectID
+		// 使用保存的JSON凭证
+		var credentials *vertexai.Credentials
+		if videoTask.Credentials != "" {
+			// 使用保存的凭证
+			credentials = &vertexai.Credentials{}
+			if err := json.Unmarshal([]byte(videoTask.Credentials), credentials); err != nil {
+				log.Printf("[VEO查询] ❌ 解析保存的凭证失败 - 任务:%s, 凭证长度:%d, 错误:%v",
+					taskId, len(videoTask.Credentials), err)
+				return openai.ErrorWrapper(
+					fmt.Errorf("解析保存的Vertex AI凭证失败: %v", err),
+					"invalid_saved_credentials",
+					http.StatusInternalServerError,
+				)
+			}
+			log.Printf("[VEO查询] ✅ 使用保存的凭证 - 任务:%s, 项目ID:%s, 服务账号:%s",
+				taskId, credentials.ProjectID, credentials.ClientEmail)
+		} else {
+			// 回退到当前渠道配置（向后兼容）
+			log.Printf("[VEO查询] ⚠️  任务未保存凭证，回退到当前渠道配置 - 任务:%s", taskId)
+			var err error
+			credentials, err = vertexai.GetCredentialsFromConfig(cfg, channel)
+			if err != nil {
+				log.Printf("[VEO查询] ❌ 获取当前渠道凭证失败 - 任务:%s, 渠道ID:%d, 错误:%v",
+					taskId, videoTask.ChannelId, err)
+				return openai.ErrorWrapper(
+					fmt.Errorf("获取Vertex AI凭证失败: %v", err),
+					"invalid_credentials",
+					http.StatusInternalServerError,
+				)
+			}
+			log.Printf("[VEO查询] ✅ 使用当前渠道凭证 - 任务:%s, 项目ID:%s, 服务账号:%s",
+				taskId, credentials.ProjectID, credentials.ClientEmail)
+		}
+
+		projectId := credentials.ProjectID
+		if projectId == "" {
+			return openai.ErrorWrapper(
+				fmt.Errorf("无法获取Vertex AI项目ID，请检查凭证配置"),
+				"invalid_project_id",
+				http.StatusInternalServerError,
+			)
+		}
+
 		region := cfg.Region
+		if region == "" {
+			region = "global"
+		}
 		modelId := videoTask.Model // 从数据库中的视频任务记录获取模型名
+
+		log.Printf("[VEO查询] 使用项目ID:%s, 区域:%s, 模型:%s", projectId, region, modelId)
 
 		// 构建 fetchPredictOperation URL
 		var baseURL string
@@ -2291,6 +2446,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		fullRequestUrl = fmt.Sprintf("%s/v1/projects/%s/locations/%s/publishers/google/models/%s:fetchPredictOperation",
 			baseURL, projectId, region, modelId)
+
+		// 保存凭证到context中，供后续请求使用
+		c.Set("query_credentials", credentials)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -2303,9 +2461,20 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	var fullOperationName string // 声明变量
 
 	if videoTask.Provider == "vertexai" {
-		// 配置已在函数开始时读取，直接使用
-		projectId := cfg.VertexAIProjectID
+		// 从context中获取保存的凭证来构建操作名称
+		var projectId string
+		if queryCredentials, exists := c.Get("query_credentials"); exists {
+			credentials := queryCredentials.(*vertexai.Credentials)
+			projectId = credentials.ProjectID
+		} else {
+			// 回退到配置中的项目ID（向后兼容）
+			projectId = cfg.VertexAIProjectID
+		}
+
 		region := cfg.Region
+		if region == "" {
+			region = "global"
+		}
 		modelId := videoTask.Model
 
 		// 重新构建完整的操作名称用于API请求
@@ -2362,36 +2531,49 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("API-KEY", channel.Key)
 		req.Header.Set("Ai-trace-id", "aaaaa")
 	} else if videoTask.Provider == "vertexai" {
-		// VertexAI 需要使用 OAuth2 token 进行认证 - 支持新的Key字段存储方式
-		credentials, err := vertexai.GetCredentialsFromConfig(cfg, channel)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to get VertexAI credentials: %v", err),
-				"credential_error",
-				http.StatusInternalServerError,
-			)
+		// VertexAI 需要使用 OAuth2 token 进行认证 - 使用保存的凭证
+		var credentials *vertexai.Credentials
+
+		// 从context中获取保存的凭证
+		if queryCredentials, exists := c.Get("query_credentials"); exists {
+			credentials = queryCredentials.(*vertexai.Credentials)
+			log.Printf("[VEO查询认证] ✅ 使用保存的凭证进行认证 - 项目ID:%s, 服务账号:%s",
+				credentials.ProjectID, credentials.ClientEmail)
+		} else {
+			// 回退逻辑（向后兼容）
+			log.Printf("[VEO查询认证] ⚠️  未找到保存的凭证，使用当前渠道配置")
+			var err error
+			credentials, err = vertexai.GetCredentialsFromConfig(cfg, channel)
+			if err != nil {
+				log.Printf("[VEO查询认证] ❌ 获取渠道凭证失败 - 错误:%v", err)
+				return openai.ErrorWrapper(
+					fmt.Errorf("failed to get VertexAI credentials: %v", err),
+					"credential_error",
+					http.StatusInternalServerError,
+				)
+			}
+			log.Printf("[VEO查询认证] ✅ 使用当前渠道凭证进行认证 - 项目ID:%s, 服务账号:%s",
+				credentials.ProjectID, credentials.ClientEmail)
 		}
 
 		adaptor := &vertexai.Adaptor{
 			AccountCredentials: *credentials,
 		}
 
-		// 创建临时的 RelayMeta 来获取访问令牌 - 使用新的凭证
+		// 创建临时的 RelayMeta 来获取访问令牌 - 使用保存的凭证
 		tempMeta := &util.RelayMeta{
 			ChannelId: channel.Id,
 			Config: dbmodel.ChannelConfig{
 				Region:            cfg.Region,
-				VertexAIProjectID: credentials.ProjectID, // 使用从凭证提取的项目ID
+				VertexAIProjectID: credentials.ProjectID, // 使用保存的凭证中的项目ID
 			},
-			ActualAPIKey: channel.Key, // 使用实际的Key字段
-			IsMultiKey:   channel.MultiKeyInfo.IsMultiKey,
-		}
-
-		// 如果是多密钥模式，设置Keys列表
-		if channel.MultiKeyInfo.IsMultiKey {
-			tempMeta.Keys = channel.ParseKeys()
-			keyIndex := 0
-			tempMeta.KeyIndex = &keyIndex // 使用第一个密钥
+			ActualAPIKey: func() string {
+				if credBytes, err := json.Marshal(credentials); err == nil {
+					return string(credBytes)
+				}
+				return ""
+			}(), // 使用保存的凭证
+			IsMultiKey: false, // 单个凭证，不是多密钥模式
 		}
 
 		accessToken, err := vertexai.GetAccessToken(adaptor, tempMeta)
@@ -3031,10 +3213,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			return openai.ErrorWrapper(fmt.Errorf("failed to parse response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
 		}
 
-		// 打印原始响应体的JSON结构（不显示具体内容以避免base64数据过长）
-		log.Printf("=== Vertex AI Response Structure for task %s ===", taskId)
+		// 打印完整的原始响应体（用于调试）
+		log.Printf("=== [VEO查询] 完整响应体 for task %s ===", taskId)
+		log.Printf("原始响应体: %s", string(body))
+		log.Printf("=== [VEO查询] 响应体结构分析 ===")
 		printJSONStructure(veoResp, "", 4)
-		log.Printf("=== End of Response Structure ===")
+		log.Printf("=== [VEO查询] 响应体分析结束 ===")
 
 		generalResponse := model.GeneralFinalVideoResponse{
 			TaskId:     taskId,
@@ -3054,35 +3238,111 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					generalResponse.Message = "Operation failed with an unknown error."
 				}
 			} else if response, ok := veoResp["response"].(map[string]interface{}); ok {
-				// 操作成功，提取所有视频URI
-				videoURIs := extractVeoVideoURIs(response)
-				if len(videoURIs) > 0 {
-					var processedVideoURIs []string
-					responseFormat := c.GetString("response_format")
+				// 检查是否被AI安全过滤器拦截
+				if raiFilteredCount, hasFiltered := response["raiMediaFilteredCount"]; hasFiltered {
+					if filteredCount, ok := raiFilteredCount.(float64); ok && filteredCount > 0 {
+						// 内容被过滤了
+						generalResponse.TaskStatus = "failed"
 
-					// 处理每个视频URI - 并发上传优化
-					if responseFormat == "url" {
-						// 使用并发上传
-						processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
+						// 获取过滤原因
+						var filterReasons []string
+						if reasons, hasReasons := response["raiMediaFilteredReasons"].([]interface{}); hasReasons {
+							for _, reason := range reasons {
+								if reasonStr, ok := reason.(string); ok {
+									filterReasons = append(filterReasons, reasonStr)
+								}
+							}
+						}
+
+						if len(filterReasons) > 0 {
+							generalResponse.Message = strings.Join(filterReasons, "; ")
+							log.Printf("[VEO查询] ❌ 内容被过滤 - 任务:%s, 过滤数量:%v, 原因:%v", taskId, filteredCount, filterReasons)
+						} else {
+							generalResponse.Message = fmt.Sprintf("Content filtered (count: %.0f)", filteredCount)
+							log.Printf("[VEO查询] ❌ 内容被过滤 - 任务:%s, 过滤数量:%v", taskId, filteredCount)
+						}
 					} else {
-						// 如果不需要上传，直接使用原始URI
-						processedVideoURIs = videoURIs
-					}
+						// 没有被过滤，尝试提取视频URI
+						videoURIs := extractVeoVideoURIs(response)
+						if len(videoURIs) > 0 {
+							var processedVideoURIs []string
+							responseFormat := c.GetString("response_format")
 
-					// 构建响应结果
-					generalResponse.TaskStatus = "succeed"
-					generalResponse.Message = "Video generated successfully."
-					generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
+							// 处理每个视频URI - 并发上传优化
+							if responseFormat == "url" {
+								// 使用并发上传
+								processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
+							} else {
+								// 如果不需要上传，直接使用原始URI
+								processedVideoURIs = videoURIs
+							}
 
-					// 设置所有视频结果
-					generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
-					for i, uri := range processedVideoURIs {
-						generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
+							// 构建响应结果
+							generalResponse.TaskStatus = "succeed"
+							generalResponse.Message = "Video generated successfully."
+							generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
+
+							// 设置所有视频结果
+							generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
+							for i, uri := range processedVideoURIs {
+								generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
+							}
+						} else {
+							// 没有被过滤但也没有找到视频
+							log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
+							log.Printf("[VEO查询] Response字段内容: %+v", response)
+
+							generalResponse.TaskStatus = "failed"
+							generalResponse.Message = "Operation completed, but no video result was found."
+						}
 					}
 				} else {
-					// 完成了，但未找到视频URI也未找到错误
-					generalResponse.TaskStatus = "failed"
-					generalResponse.Message = "Operation completed, but no video result was found."
+					// 没有过滤信息，直接尝试提取视频URI
+					videoURIs := extractVeoVideoURIs(response)
+					if len(videoURIs) > 0 {
+						var processedVideoURIs []string
+						responseFormat := c.GetString("response_format")
+
+						// 处理每个视频URI - 并发上传优化
+						if responseFormat == "url" {
+							// 使用并发上传
+							processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
+						} else {
+							// 如果不需要上传，直接使用原始URI
+							processedVideoURIs = videoURIs
+						}
+
+						// 构建响应结果
+						generalResponse.TaskStatus = "succeed"
+						generalResponse.Message = "Video generated successfully."
+						generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
+
+						// 设置所有视频结果
+						generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
+						for i, uri := range processedVideoURIs {
+							generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
+						}
+					} else {
+						// 完成了，但未找到视频URI也未找到错误
+						log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
+						log.Printf("[VEO查询] Response字段内容: %+v", response)
+
+						// 检查response中的具体字段
+						if videos, hasVideos := response["videos"]; hasVideos {
+							log.Printf("[VEO查询] Response.videos字段: %+v", videos)
+						} else {
+							log.Printf("[VEO查询] Response中缺少videos字段")
+						}
+
+						if generatedSamples, hasSamples := response["generatedSamples"]; hasSamples {
+							log.Printf("[VEO查询] Response.generatedSamples字段: %+v", generatedSamples)
+						} else {
+							log.Printf("[VEO查询] Response中缺少generatedSamples字段")
+						}
+
+						generalResponse.TaskStatus = "failed"
+						generalResponse.Message = "Operation completed, but no video result was found."
+					}
 				}
 			} else {
 				// 完成了，但没有response和error字段
@@ -3573,42 +3833,84 @@ func extractVeoVideoURI(response map[string]interface{}) string {
 func extractVeoVideoURIs(response map[string]interface{}) []string {
 	var videoURIs []string
 
+	log.Printf("[VEO视频提取] 开始解析响应中的视频URI")
+	log.Printf("[VEO视频提取] 响应中的顶级字段: %+v", func() []string {
+		keys := make([]string, 0, len(response))
+		for k := range response {
+			keys = append(keys, k)
+		}
+		return keys
+	}())
+
 	// 检查 fetchPredictOperation 格式 (`videos` 字段)
 	if videos, ok := response["videos"].([]interface{}); ok && len(videos) > 0 {
-		for _, videoInterface := range videos {
+		log.Printf("[VEO视频提取] 找到videos字段，包含 %d 个视频", len(videos))
+		for i, videoInterface := range videos {
 			if video, ok := videoInterface.(map[string]interface{}); ok {
+				log.Printf("[VEO视频提取] 视频 %d 的字段: %+v", i, func() []string {
+					keys := make([]string, 0, len(video))
+					for k := range video {
+						keys = append(keys, k)
+					}
+					return keys
+				}())
+
 				// 优先检查是否有 GCS URI
 				if gcsUri, ok := video["gcsUri"].(string); ok && gcsUri != "" {
+					log.Printf("[VEO视频提取] ✅ 找到GCS URI: %s", gcsUri)
 					videoURIs = append(videoURIs, gcsUri)
 					continue
 				}
 				// 检查是否有 base64 编码的视频数据
 				if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
+					log.Printf("[VEO视频提取] ✅ 找到base64数据，长度: %d", len(bytesBase64))
 					videoURIs = append(videoURIs, "data:video/mp4;base64,"+bytesBase64)
 				}
+			} else {
+				log.Printf("[VEO视频提取] ⚠️  视频 %d 不是map格式: %T", i, videoInterface)
 			}
 		}
+	} else {
+		log.Printf("[VEO视频提取] ❌ 未找到videos字段或为空")
 	}
 
 	// 检查标准长轮询操作格式 (`generatedSamples` 字段)
 	if generatedSamples, ok := response["generatedSamples"].([]interface{}); ok && len(generatedSamples) > 0 {
-		for _, sampleInterface := range generatedSamples {
+		log.Printf("[VEO视频提取] 找到generatedSamples字段，包含 %d 个样本", len(generatedSamples))
+		for i, sampleInterface := range generatedSamples {
 			if sample, ok := sampleInterface.(map[string]interface{}); ok {
 				if video, ok := sample["video"].(map[string]interface{}); ok {
+					log.Printf("[VEO视频提取] 样本 %d 的video字段: %+v", i, func() []string {
+						keys := make([]string, 0, len(video))
+						for k := range video {
+							keys = append(keys, k)
+						}
+						return keys
+					}())
+
 					// 优先检查是否有 URI
 					if uri, ok := video["uri"].(string); ok && uri != "" {
+						log.Printf("[VEO视频提取] ✅ 找到URI: %s", uri)
 						videoURIs = append(videoURIs, uri)
 						continue
 					}
 					// 检查是否有 base64 编码的视频数据
 					if bytesBase64, ok := video["bytesBase64Encoded"].(string); ok && bytesBase64 != "" {
+						log.Printf("[VEO视频提取] ✅ 找到base64数据，长度: %d", len(bytesBase64))
 						videoURIs = append(videoURIs, "data:video/mp4;base64,"+bytesBase64)
 					}
+				} else {
+					log.Printf("[VEO视频提取] ⚠️  样本 %d 中未找到video字段", i)
 				}
+			} else {
+				log.Printf("[VEO视频提取] ⚠️  样本 %d 不是map格式: %T", i, sampleInterface)
 			}
 		}
+	} else {
+		log.Printf("[VEO视频提取] ❌ 未找到generatedSamples字段或为空")
 	}
 
+	log.Printf("[VEO视频提取] 最终提取到 %d 个视频URI", len(videoURIs))
 	return videoURIs
 }
 

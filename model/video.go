@@ -8,23 +8,24 @@ import (
 )
 
 type Video struct {
-	Prompt     string `json:"prompt"`
-	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:40"`
-	Type       string `json:"type"`
-	Provider   string `json:"provider"`
-	Mode       string `json:"mode"`
-	Duration   string `json:"duration"`
-	Username   string `json:"username"`
-	ChannelId  int    `json:"channel_id"`
-	UserId     int    `json:"user_id"`
-	Model      string `json:"model"`
-	Status     string `json:"status"`
-	FailReason string `json:"fail_reason"`
-	VideoId    string `json:"video_id"`
-	StoreUrl   string `json:"store_url"` // 直接存储JSON化的URL数组字符串
-	Quota      int64  `json:"quota"`
-	N          int    `json:"n"`
+	Prompt      string `json:"prompt"`
+	CreatedAt   int64  `json:"created_at"`
+	TaskId      string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:40"`
+	Type        string `json:"type"`
+	Provider    string `json:"provider"`
+	Mode        string `json:"mode"`
+	Duration    string `json:"duration"`
+	Username    string `json:"username"`
+	ChannelId   int    `json:"channel_id"`
+	UserId      int    `json:"user_id"`
+	Model       string `json:"model"`
+	Status      string `json:"status"`
+	FailReason  string `json:"fail_reason"`
+	VideoId     string `json:"video_id"`
+	StoreUrl    string `json:"store_url"` // 直接存储JSON化的URL数组字符串
+	Quota       int64  `json:"quota"`
+	N           int    `json:"n"`
+	Credentials string `json:"credentials"` // 保存任务创建时使用的完整JSON凭证
 }
 
 func (video *Video) Insert() error {
