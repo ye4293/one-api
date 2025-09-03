@@ -21,94 +21,101 @@ import (
 )
 
 func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
+	logger.SysLog(fmt.Sprintf("DEBUG: ShouldDisableChannel called - statusCode: %d, err.Message: %s", statusCode, err.Message))
+
 	if !config.AutomaticDisableChannelEnabled {
+		logger.SysLog(fmt.Sprintf("DEBUG: AutomaticDisableChannelEnabled is false, not disabling"))
 		return false
 	}
 	if err == nil {
+		logger.SysLog(fmt.Sprintf("DEBUG: err is nil, not disabling"))
 		return false
 	}
-	if statusCode == http.StatusUnauthorized {
+
+	// 直接检查HTTP状态码
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
 		return true
 	}
+
+	// 检查错误类型
 	switch err.Type {
-	case "insufficient_quota":
-		return true
-	case "authentication_error":
-		return true
-	case "permission_error":
-		return true
-	case "forbidden":
-		return true
-	}
-	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" {
-		return true
-	}
-	if strings.HasPrefix(err.Message, "Your credit balance is too low") {
-		return true
-	} else if strings.HasPrefix(err.Message, "This organization has been disabled.") {
-		return true
-	}
-	if strings.Contains(err.Message, "credit") {
-		return true
-	}
-	if strings.Contains(err.Message, "not_enough_credits") { //recraft
-		return true
-	}
-	if strings.Contains(err.Message, "balance") {
-		return true
-	}
-	// 添加对 "Operation not allowed" 错误的处理
-	if strings.Contains(err.Message, "Operation not allowed") {
-		return true
-	}
-	// 添加对 "resource pack exhausted" 错误的处理
-	if strings.Contains(err.Message, "resource pack exhausted") {
-		return true
-	}
-	if strings.Contains(err.Message, "Imagen API") {
-		return true
-	}
-	if strings.Contains(err.Message, "This API method requires billing to be enabled.") {
-		return true
-	}
-	// 添加对 x.ai API key 错误的处理
-	if strings.Contains(err.Message, "Incorrect API key provided") && strings.Contains(err.Message, "console.x.ai") {
-		return true
-	}
-	// 添加对通用 "API key not valid" 错误的处理
-	if strings.Contains(err.Message, "API key not valid") || strings.Contains(err.Message, "Permission denied") {
+	case "insufficient_quota", "authentication_error", "permission_error", "forbidden":
 		return true
 	}
 
-	// 添加对 Gemini API key 错误的处理
-	// 检查两种可能的错误格式：
-	// 1. 包含 "API key not valid" 和 "API_KEY_INVALID" 的标准 Gemini 错误
-	// 2. 包含 "generativelanguage.googleapis.com" 和 "API key not valid" 的服务错误
-	if (strings.Contains(err.Message, "API key not valid") && strings.Contains(err.Message, "API_KEY_INVALID")) ||
-		(strings.Contains(err.Message, "generativelanguage.googleapis.com") && strings.Contains(err.Message, "API key not valid")) {
-		logger.SysLog("Gemini API key invalid error detected, channel will be disabled")
+	// 检查错误代码
+	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" || err.Code == "Some resource has been exhausted" {
 		return true
 	}
 
-	// 添加对资源耗尽错误的处理 (429状态码 + 特定错误代码)
-	if err.Code == "Some resource has been exhausted" {
-		return true
+	// 转换为小写进行大小写不敏感的检查
+	message := strings.ToLower(err.Message)
+
+	// API Key相关错误（忽略大小写）
+	apiKeyErrors := []string{
+		"api key not valid",
+		"invalid_api_key",
+		"incorrect api key provided",
+		"authentication_error",
+		"permission denied",
+		"account_deactivated",
 	}
 
-	// 添加对额度用尽/月度支出限制的处理
-	if strings.Contains(err.Message, "used all available credits") ||
-		strings.Contains(err.Message, "reached its monthly spending limit") {
-		return true
+	for _, keyword := range apiKeyErrors {
+		if strings.Contains(message, keyword) {
+			return true
+		}
 	}
 
-	// 添加对Vertex AI特定错误的处理
-	if strings.Contains(err.Message, "PERMISSION_DENIED") ||
-		strings.Contains(err.Message, "UNAUTHENTICATED") ||
-		strings.Contains(err.Message, "INVALID_ARGUMENT") && strings.Contains(err.Message, "credentials") ||
-		strings.Contains(err.Message, "service account") && strings.Contains(err.Message, "invalid") ||
-		strings.Contains(err.Message, "project not found") ||
-		strings.Contains(err.Message, "billing account") {
-		return true
+	// 余额/配额相关错误（忽略大小写）
+	quotaErrors := []string{
+		"insufficient_quota",
+		"credit balance is too low",
+		"not_enough_credits",
+		"credit",
+		"balance",
+		"used all available credits",
+		"reached its monthly spending limit",
+		"resource pack exhausted",
+		"billing to be enabled",
+	}
+
+	for _, keyword := range quotaErrors {
+		if strings.Contains(message, keyword) {
+			return true
+		}
+	}
+
+	// 权限/组织相关错误（忽略大小写）
+	permissionErrors := []string{
+		"permission_denied",
+		"unauthenticated",
+		"operation not allowed",
+		"organization has been disabled",
+		"consumer", // 包含consumer的错误通常是账户问题
+		"has been suspended",
+		"service account",
+		"project not found",
+		"billing account",
+	}
+
+	for _, keyword := range permissionErrors {
+		if strings.Contains(message, keyword) {
+			return true
+		}
+	}
+
+	// 服务特定错误（忽略大小写）
+	serviceErrors := []string{
+		"imagen api",
+		"generativelanguage.googleapis.com",
+		"console.x.ai",
+	}
+
+	for _, keyword := range serviceErrors {
+		if strings.Contains(message, keyword) {
+			return true
+		}
 	}
 
 	return false

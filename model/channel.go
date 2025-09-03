@@ -1064,9 +1064,8 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 		return nil
 	}
 
-	// 检查是否应该禁用这个Key
-	shouldDisable := channel.shouldDisableKey(errorMessage, statusCode)
-	if shouldDisable && channel.AutoDisabled {
+	// 直接检查渠道级别的自动禁用设置（已经在上层做过shouldDisable检查）
+	if channel.AutoDisabled {
 		// 禁用特定的Key（设置为自动禁用状态）
 		if channel.MultiKeyInfo.KeyStatusList == nil {
 			channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
@@ -1110,40 +1109,6 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	}
 
 	return nil
-}
-
-// shouldDisableKey 判断是否应该禁用Key（复用现有的禁用逻辑）
-func (channel *Channel) shouldDisableKey(errorMessage string, statusCode int) bool {
-	// 复用relay/util包中的禁用逻辑
-	if statusCode == 401 { // Unauthorized
-		return true
-	}
-
-	// API Key相关错误
-	if strings.Contains(errorMessage, "invalid_api_key") ||
-		strings.Contains(errorMessage, "account_deactivated") ||
-		strings.Contains(errorMessage, "authentication_error") ||
-		strings.Contains(errorMessage, "permission_error") ||
-		strings.Contains(errorMessage, "API key not valid") {
-		return true
-	}
-
-	// 余额相关错误
-	if strings.Contains(errorMessage, "insufficient_quota") ||
-		strings.Contains(errorMessage, "credit balance is too low") ||
-		strings.Contains(errorMessage, "not_enough_credits") ||
-		strings.Contains(errorMessage, "resource pack exhausted") ||
-		strings.Contains(errorMessage, "billing to be enabled") {
-		return true
-	}
-
-	// 组织被禁用
-	if strings.Contains(errorMessage, "organization has been disabled") ||
-		strings.Contains(errorMessage, "Operation not allowed") {
-		return true
-	}
-
-	return false
 }
 
 // GetNextAvailableKeyWithRetry 获取下一个可用Key，支持重试和自动跳过禁用Key
