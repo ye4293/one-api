@@ -989,31 +989,54 @@ func (channel *Channel) checkAndUpdateChannelStatus() {
 	keys := channel.ParseKeys()
 	if len(keys) == 0 {
 		channel.Status = common.ChannelStatusAutoDisabled
+		logger.SysLog(fmt.Sprintf("Channel %d auto-disabled: no keys available", channel.Id))
 		return
 	}
 
-	// 检查是否所有Key都被禁用
-	allDisabled := true
+	// 检查是否所有Key都被禁用（包括手动禁用和自动禁用）
+	enabledCount := 0
+	autoDisabledCount := 0
+	manualDisabledCount := 0
+
 	for i := range keys {
-		if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
-			allDisabled = false
-			break
+		status := channel.GetKeyStatus(i)
+		if status == common.ChannelStatusEnabled {
+			enabledCount++
+		} else if status == common.ChannelStatusAutoDisabled {
+			autoDisabledCount++
+		} else if status == common.ChannelStatusManuallyDisabled {
+			manualDisabledCount++
 		}
 	}
 
+	totalKeys := len(keys)
+	allDisabled := enabledCount == 0
+
 	if allDisabled {
+		// 所有Key都被禁用，禁用整个渠道
+		oldStatus := channel.Status
 		channel.Status = common.ChannelStatusAutoDisabled
-		logger.SysLog(fmt.Sprintf("Channel %d auto-disabled: all keys are disabled", channel.Id))
-	} else if channel.Status == common.ChannelStatusAutoDisabled {
+
+		if oldStatus != common.ChannelStatusAutoDisabled {
+			logger.SysLog(fmt.Sprintf("Channel %d auto-disabled: all %d keys are disabled (auto: %d, manual: %d)",
+				channel.Id, totalKeys, autoDisabledCount, manualDisabledCount))
+		}
+	} else if channel.Status == common.ChannelStatusAutoDisabled && enabledCount > 0 {
 		// 如果有Key重新启用，且渠道是自动禁用状态，可以考虑重新启用
-		// 这里可以根据业务需求决定是否自动重新启用
-		// channel.Status = common.ChannelStatusEnabled
+		// 这里暂时不自动重新启用渠道，需要管理员手动启用
+		logger.SysLog(fmt.Sprintf("Channel %d has %d enabled keys but remains auto-disabled, manual intervention required",
+			channel.Id, enabledCount))
 	}
 }
 
 // 保存多Key信息到数据库
 func (channel *Channel) saveMultiKeyInfo() error {
 	return DB.Model(channel).Update("multi_key_info", channel.MultiKeyInfo).Error
+}
+
+// 更新渠道状态到数据库
+func (channel *Channel) updateChannelStatus() error {
+	return DB.Model(channel).Update("status", channel.Status).Error
 }
 
 // 处理Key使用后的状态更新
@@ -1044,12 +1067,11 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	// 检查是否应该禁用这个Key
 	shouldDisable := channel.shouldDisableKey(errorMessage, statusCode)
 	if shouldDisable && channel.AutoDisabled {
-		err := channel.ToggleKeyStatus(keyIndex, false)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to disable key %d in channel %d: %s",
-				keyIndex, channel.Id, err.Error()))
-			return err
+		// 禁用特定的Key（设置为自动禁用状态）
+		if channel.MultiKeyInfo.KeyStatusList == nil {
+			channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
 		}
+		channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
 
 		keys := channel.ParseKeys()
 		maskedKey := "unknown"
@@ -1064,6 +1086,27 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 
 		logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s",
 			keyIndex, maskedKey, channel.Id, errorMessage))
+
+		// 检查是否所有Key都被禁用，如果是则禁用整个渠道
+		channel.checkAndUpdateChannelStatus()
+
+		// 保存Key状态和渠道状态到数据库
+		err := channel.saveMultiKeyInfo()
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to save multi-key info for channel %d: %s",
+				channel.Id, err.Error()))
+			return err
+		}
+
+		// 如果渠道被自动禁用，需要单独更新渠道状态
+		if channel.Status == common.ChannelStatusAutoDisabled {
+			err = channel.updateChannelStatus()
+			if err != nil {
+				logger.SysError(fmt.Sprintf("Failed to update channel status for channel %d: %s",
+					channel.Id, err.Error()))
+				return err
+			}
+		}
 	}
 
 	return nil
