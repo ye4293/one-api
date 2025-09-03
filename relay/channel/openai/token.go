@@ -133,7 +133,15 @@ func CountTokenMessages(messages []model.Message, model string) int {
 
 						imageTokens, err := countImageTokens(url, detail)
 						if err != nil {
-							logger.SysError("error counting image tokens: " + err.Error())
+							// 避免在日志中输出可能包含base64码的完整错误信息，但包含关键诊断信息
+							var urlForLog string
+							if len(url) > 100 {
+								urlForLog = url[:100] + "...[truncated]"
+							} else {
+								urlForLog = url
+							}
+							logger.SysError(fmt.Sprintf("error counting image tokens - model: %s, detail: %s, url_length: %d, url_prefix: %s",
+								model, detail, len(url), urlForLog))
 							continue
 						}
 						tokenNum += imageTokens

@@ -135,8 +135,19 @@ func AddChannel(c *gin.Context) {
 
 	channel.CreatedTime = helper.GetTimestamp()
 
+	logger.SysLog(fmt.Sprintf("AddChannel: Received request for channel type %d", channel.Type))
+	logger.SysLog(fmt.Sprintf("AddChannel: Comparing with VertexAI type %d. Is VertexAI? %v", common.ChannelTypeVertexAI, channel.Type == common.ChannelTypeVertexAI))
+
 	// 检查是否为多Key聚合模式
-	keys := strings.Split(channel.Key, "\n")
+	var keys []string
+	if channel.Type == common.ChannelTypeVertexAI {
+		keys = common.ExtractJSONObjects(channel.Key)
+		logger.SysLog(fmt.Sprintf("AddChannel: Parsed %d JSON objects for VertexAI", len(keys)))
+	} else {
+		keys = strings.Split(channel.Key, "\n")
+		logger.SysLog(fmt.Sprintf("AddChannel: Split keys by newline, found %d parts for channel type %d", len(keys), channel.Type))
+	}
+
 	validKeys := []string{}
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
@@ -293,6 +304,7 @@ func UpdateChannel(c *gin.Context) {
 	channel := requestData.Channel
 
 	logger.SysLog(fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
+	logger.SysLog(fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
 
 	// 如果是多密钥渠道，处理密钥更新和配置
 	if channel.MultiKeyInfo.IsMultiKey {
@@ -321,7 +333,13 @@ func UpdateChannel(c *gin.Context) {
 			logger.SysLog(fmt.Sprintf("Updating keys for multi-key channel %d with mode %d", channel.Id, batchImportMode))
 
 			// 解析新的密钥
-			newKeys := strings.Split(channel.Key, "\n")
+			var newKeys []string
+			if channel.Type == common.ChannelTypeVertexAI {
+				newKeys = common.ExtractJSONObjects(channel.Key)
+			} else {
+				newKeys = strings.Split(channel.Key, "\n")
+			}
+
 			validNewKeys := []string{}
 			for _, key := range newKeys {
 				key = strings.TrimSpace(key)

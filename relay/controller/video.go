@@ -430,14 +430,19 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 		return openai.ErrorWrapper(fmt.Errorf("余额不足：Veo3模型价格较高，需要预扣费约$6.0，请充值后重试"), "Insufficient balance: Veo3 model requires approximately $6.0 pre-payment, please recharge and try again", http.StatusBadRequest)
 	}
 
-	// 创建VertexAI适配器实例
-	var credentials vertexai.Credentials
-	if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err != nil {
+	// 创建VertexAI适配器实例 - 支持新的Key字段存储方式
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	credentials, err := vertexai.GetCredentialsFromConfig(meta.Config, channel)
+	if err != nil {
 		return openai.ErrorWrapper(err, "invalid_credentials", http.StatusInternalServerError)
 	}
 
 	adaptor := &vertexai.Adaptor{
-		AccountCredentials: credentials,
+		AccountCredentials: *credentials,
 	}
 
 	// 获取访问令牌
@@ -1509,11 +1514,20 @@ func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, ful
 	}
 
 	if meta.ChannelType == 41 {
-		ak := meta.Config.AK
-		sk := meta.Config.SK
+		// 获取渠道信息以支持Key字段解析
+		channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+		}
+
+		// 智能获取可灵凭证 - 支持Key字段和Config
+		credentials, err := keling.GetKelingCredentialsFromConfig(meta.Config, channel, 0)
+		if err != nil {
+			return openai.ErrorWrapper(err, "get_keling_credentials_error", http.StatusInternalServerError)
+		}
 
 		// Generate JWT token
-		token = EncodeJWTToken(ak, sk)
+		token = EncodeJWTToken(credentials.AK, credentials.SK)
 	} else {
 		token = meta.APIKey
 	}
@@ -2323,7 +2337,17 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 
 	if videoTask.Provider == "kling" && channel.Type == 41 {
-		token := EncodeJWTToken(cfg.AK, cfg.SK)
+		// 智能获取可灵凭证 - 支持Key字段和Config
+		credentials, err := keling.GetKelingCredentialsFromConfig(cfg, channel, 0)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to get Keling credentials: %v", err),
+				"credential_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		token := EncodeJWTToken(credentials.AK, credentials.SK)
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -2338,27 +2362,36 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("API-KEY", channel.Key)
 		req.Header.Set("Ai-trace-id", "aaaaa")
 	} else if videoTask.Provider == "vertexai" {
-		// VertexAI 需要使用 OAuth2 token 进行认证
-		var credentials vertexai.Credentials
-		if err := json.Unmarshal([]byte(cfg.VertexAIADC), &credentials); err != nil {
+		// VertexAI 需要使用 OAuth2 token 进行认证 - 支持新的Key字段存储方式
+		credentials, err := vertexai.GetCredentialsFromConfig(cfg, channel)
+		if err != nil {
 			return openai.ErrorWrapper(
-				fmt.Errorf("failed to parse VertexAI credentials: %v", err),
+				fmt.Errorf("failed to get VertexAI credentials: %v", err),
 				"credential_error",
 				http.StatusInternalServerError,
 			)
 		}
 
 		adaptor := &vertexai.Adaptor{
-			AccountCredentials: credentials,
+			AccountCredentials: *credentials,
 		}
 
-		// 创建临时的 RelayMeta 来获取访问令牌
+		// 创建临时的 RelayMeta 来获取访问令牌 - 使用新的凭证
 		tempMeta := &util.RelayMeta{
+			ChannelId: channel.Id,
 			Config: dbmodel.ChannelConfig{
 				Region:            cfg.Region,
-				VertexAIProjectID: cfg.VertexAIProjectID,
-				VertexAIADC:       cfg.VertexAIADC,
+				VertexAIProjectID: credentials.ProjectID, // 使用从凭证提取的项目ID
 			},
+			ActualAPIKey: channel.Key, // 使用实际的Key字段
+			IsMultiKey:   channel.MultiKeyInfo.IsMultiKey,
+		}
+
+		// 如果是多密钥模式，设置Keys列表
+		if channel.MultiKeyInfo.IsMultiKey {
+			tempMeta.Keys = channel.ParseKeys()
+			keyIndex := 0
+			tempMeta.KeyIndex = &keyIndex // 使用第一个密钥
 		}
 
 		accessToken, err := vertexai.GetAccessToken(adaptor, tempMeta)

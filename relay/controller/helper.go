@@ -239,10 +239,14 @@ func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
 			return
 		}
 
-		err = channel.HandleKeyUsed(meta.KeyIndex, success)
+		keyIndex := 0
+		if meta.KeyIndex != nil {
+			keyIndex = *meta.KeyIndex
+		}
+		err = channel.HandleKeyUsed(keyIndex, success)
 		if err != nil {
 			logger.SysError(fmt.Sprintf("Failed to update multi-key usage for channel %d, key %d: %s",
-				meta.ChannelId, meta.KeyIndex, err.Error()))
+				meta.ChannelId, keyIndex, err.Error()))
 		}
 	}()
 }

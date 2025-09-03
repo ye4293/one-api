@@ -664,6 +664,11 @@ func (channel *Channel) ParseKeys() []string {
 
 	trimmed := strings.TrimSpace(channel.Key)
 
+	// 首先检查是否是VertexAI渠道，如果是，则使用专用的JSON解析逻辑
+	if channel.Type == common.ChannelTypeVertexAI {
+		return common.ExtractJSONObjects(trimmed)
+	}
+
 	// 支持JSON数组格式: ["key1", "key2", "key3"]
 	if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 		var keys []string

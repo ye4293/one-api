@@ -96,6 +96,16 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 		return true
 	}
 
+	// 添加对Vertex AI特定错误的处理
+	if strings.Contains(err.Message, "PERMISSION_DENIED") ||
+		strings.Contains(err.Message, "UNAUTHENTICATED") ||
+		strings.Contains(err.Message, "INVALID_ARGUMENT") && strings.Contains(err.Message, "credentials") ||
+		strings.Contains(err.Message, "service account") && strings.Contains(err.Message, "invalid") ||
+		strings.Contains(err.Message, "project not found") ||
+		strings.Contains(err.Message, "billing account") {
+		return true
+	}
+
 	return false
 }
 

@@ -38,8 +38,9 @@ type RelayMeta struct {
 	FirstWordLatency float64
 	// 多Key相关信息
 	ActualAPIKey string
-	KeyIndex     int
+	KeyIndex     *int // 使用指针以支持nil值
 	IsMultiKey   bool
+	Keys         []string // 存储所有解析的密钥
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -64,8 +65,23 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		UserChannelTypeRatioMap: c.GetString("user_channel_type_ratio_map"),
 		UserChannelTypeRatio:    GetChannelTypeRatio(c.GetString("user_channel_type_ratio_map"), c.GetInt("channel")),
 		ActualAPIKey:            c.GetString("actual_key"),
-		KeyIndex:                c.GetInt("key_index"),
 		IsMultiKey:              c.GetBool("is_multi_key"),
+	}
+
+	// 处理多密钥索引
+	if keyIndexValue, exists := c.Get("key_index"); exists {
+		if keyIndex, ok := keyIndexValue.(int); ok {
+			meta.KeyIndex = &keyIndex
+		}
+	}
+
+	// 处理多密钥列表（如果是多密钥渠道）
+	if meta.IsMultiKey {
+		if channelId := c.GetInt("channel_id"); channelId > 0 {
+			if channel, err := model.GetChannelById(channelId, true); err == nil {
+				meta.Keys = channel.ParseKeys()
+			}
+		}
 	}
 	cfg, ok := c.Get("Config")
 	if ok {
