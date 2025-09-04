@@ -21,14 +21,10 @@ import (
 )
 
 func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
-	logger.SysLog(fmt.Sprintf("DEBUG: ShouldDisableChannel called - statusCode: %d, err.Message: %s", statusCode, err.Message))
-
 	if !config.AutomaticDisableChannelEnabled {
-		logger.SysLog(fmt.Sprintf("DEBUG: AutomaticDisableChannelEnabled is false, not disabling"))
 		return false
 	}
 	if err == nil {
-		logger.SysLog(fmt.Sprintf("DEBUG: err is nil, not disabling"))
 		return false
 	}
 
@@ -48,73 +44,20 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 		return true
 	}
 
-	// 转换为小写进行大小写不敏感的检查
-	message := strings.ToLower(err.Message)
+	// 使用可配置的关键词进行检查（按行分割，忽略大小写）
+	config.OptionMapRWMutex.RLock()
+	autoDisableKeywords := config.AutoDisableKeywords
+	config.OptionMapRWMutex.RUnlock()
 
-	// API Key相关错误（忽略大小写）
-	apiKeyErrors := []string{
-		"api key not valid",
-		"invalid_api_key",
-		"incorrect api key provided",
-		"authentication_error",
-		"permission denied",
-		"account_deactivated",
-	}
+	if autoDisableKeywords != "" {
+		message := strings.ToLower(err.Message)
+		keywords := strings.Split(autoDisableKeywords, "\n")
 
-	for _, keyword := range apiKeyErrors {
-		if strings.Contains(message, keyword) {
-			return true
-		}
-	}
-
-	// 余额/配额相关错误（忽略大小写）
-	quotaErrors := []string{
-		"insufficient_quota",
-		"credit balance is too low",
-		"not_enough_credits",
-		"credit",
-		"balance",
-		"used all available credits",
-		"reached its monthly spending limit",
-		"resource pack exhausted",
-		"billing to be enabled",
-	}
-
-	for _, keyword := range quotaErrors {
-		if strings.Contains(message, keyword) {
-			return true
-		}
-	}
-
-	// 权限/组织相关错误（忽略大小写）
-	permissionErrors := []string{
-		"permission_denied",
-		"unauthenticated",
-		"operation not allowed",
-		"organization has been disabled",
-		"consumer", // 包含consumer的错误通常是账户问题
-		"has been suspended",
-		"service account",
-		"project not found",
-		"billing account",
-	}
-
-	for _, keyword := range permissionErrors {
-		if strings.Contains(message, keyword) {
-			return true
-		}
-	}
-
-	// 服务特定错误（忽略大小写）
-	serviceErrors := []string{
-		"imagen api",
-		"generativelanguage.googleapis.com",
-		"console.x.ai",
-	}
-
-	for _, keyword := range serviceErrors {
-		if strings.Contains(message, keyword) {
-			return true
+		for _, keyword := range keywords {
+			keyword = strings.TrimSpace(strings.ToLower(keyword))
+			if keyword != "" && strings.Contains(message, keyword) {
+				return true
+			}
 		}
 	}
 
@@ -209,7 +152,25 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 		ErrorWithStatusCode.Error.Message = errResponse.ToMessage()
 	}
 	if ErrorWithStatusCode.Error.Message == "" {
-		ErrorWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
+		// 提供更详细的错误信息
+		switch resp.StatusCode {
+		case 504:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("网关超时 (504): 上游服务器响应超时，请稍后重试或检查API服务状态")
+		case 502:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("网关错误 (502): 上游服务器返回无效响应")
+		case 503:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("服务不可用 (503): 上游服务器暂时无法处理请求")
+		case 429:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("请求过于频繁 (429): 已达到API调用限制，请稍后重试")
+		case 401:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("认证失败 (401): API密钥无效或已过期")
+		case 403:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("权限不足 (403): 无权访问此资源或模型")
+		case 404:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("资源未找到 (404): 请求的端点或模型不存在")
+		default:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("上游服务错误 (状态码: %d)", resp.StatusCode)
+		}
 	}
 	return
 }

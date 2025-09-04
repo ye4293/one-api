@@ -462,7 +462,18 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 
 	// 添加请求详细日志
 	log.Printf("[VEO] Request URL: %s", fullRequestUrl)
-	log.Printf("[VEO] Request Body: %s", string(jsonData))
+
+	// 处理请求体日志，避免过长的base64内容
+	requestBodyStr := string(jsonData)
+	if len(requestBodyStr) > 2000 {
+		// 如果请求体过长，截取前后部分
+		log.Printf("[VEO] Request Body (truncated - too long): %s...%s",
+			requestBodyStr[:1000],
+			requestBodyStr[len(requestBodyStr)-1000:])
+		log.Printf("[VEO] Request Body Length: %d characters", len(requestBodyStr))
+	} else {
+		log.Printf("[VEO] Request Body: %s", requestBodyStr)
+	}
 
 	// 发送请求并处理响应
 	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName)
@@ -527,7 +538,18 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 	// 添加详细的响应日志
 	log.Printf("[VEO] Response Status: %d", resp.StatusCode)
 	log.Printf("[VEO] Response Headers: %+v", resp.Header)
-	log.Printf("[VEO] Response Body: %s", string(body))
+
+	// 处理响应体日志，避免过长的base64内容
+	responseBodyStr := string(body)
+	if len(responseBodyStr) > 1000 {
+		// 如果响应体过长，截取前后部分
+		log.Printf("[VEO] Response Body (truncated - too long): %s...%s",
+			responseBodyStr[:500],
+			responseBodyStr[len(responseBodyStr)-500:])
+		log.Printf("[VEO] Response Body Length: %d characters", len(responseBodyStr))
+	} else {
+		log.Printf("[VEO] Response Body: %s", responseBodyStr)
+	}
 
 	// 解析响应
 	var veoResponse map[string]interface{}
@@ -609,33 +631,71 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 		errorCode := "api_error"
 		var errorDetails map[string]interface{}
 
-		// 解析错误信息
+		// 解析错误信息 - 改进的错误提取逻辑
 		if msg, ok := veoResponse["error"].(map[string]interface{}); ok {
 			errorDetails = msg
+
+			// 提取错误消息
 			if message, ok := msg["message"].(string); ok {
 				errorMsg = message
 			}
-			if code, ok := msg["code"].(string); ok {
+
+			// 提取错误代码 - 支持数字和字符串类型
+			if code, ok := msg["code"].(float64); ok {
+				errorCode = fmt.Sprintf("%.0f", code) // 转换为字符串
+			} else if code, ok := msg["code"].(string); ok {
 				errorCode = code
+			} else if code, ok := msg["code"].(int); ok {
+				errorCode = strconv.Itoa(code)
 			}
+
+			// 提取错误状态
+			var errorStatus string
+			if status, ok := msg["status"].(string); ok {
+				errorStatus = status
+			}
+
+			// 提取详细错误信息
+			var errorReason, errorDomain string
+			if details, ok := msg["details"].([]interface{}); ok && len(details) > 0 {
+				if detail, ok := details[0].(map[string]interface{}); ok {
+					if reason, ok := detail["reason"].(string); ok {
+						errorReason = reason
+					}
+					if domain, ok := detail["domain"].(string); ok {
+						errorDomain = domain
+					}
+				}
+			}
+
+			// 记录详细的错误信息
+			log.Printf("[VEO] Error Status: %s", errorStatus)
+			log.Printf("[VEO] Error Reason: %s", errorReason)
+			log.Printf("[VEO] Error Domain: %s", errorDomain)
 		}
 
 		// 打印详细的错误信息
-		log.Printf("[VEO] Error Response - Status: %d", statusCode)
+		log.Printf("[VEO] ===== 非200错误响应详情 =====")
+		log.Printf("[VEO] HTTP Status Code: %d", statusCode)
 		log.Printf("[VEO] Error Details: %+v", errorDetails)
-		log.Printf("[VEO] Full Response Body: %s", string(body))
+		log.Printf("[VEO] Raw Error Message: %s", errorMsg)
+		log.Printf("[VEO] Raw Error Code: %s", errorCode)
 
-		// 根据错误类型提供更具体的错误信息
-		var detailedErrorMsg string
-		if strings.Contains(strings.ToLower(errorMsg), "invalid resource field") {
-			detailedErrorMsg = fmt.Sprintf("请求参数格式错误: %s。请检查请求体中的字段格式是否符合VEO API规范", errorMsg)
-		} else if strings.Contains(strings.ToLower(errorMsg), "permission") {
-			detailedErrorMsg = fmt.Sprintf("权限错误: %s。请检查Vertex AI项目权限和API启用状态", errorMsg)
-		} else if strings.Contains(strings.ToLower(errorMsg), "quota") {
-			detailedErrorMsg = fmt.Sprintf("配额错误: %s。请检查Vertex AI项目配额限制", errorMsg)
+		// 处理响应体日志，避免过长的base64内容
+		responseBodyStr := string(body)
+		if len(responseBodyStr) > 1000 {
+			// 如果响应体过长，截取前后部分
+			log.Printf("[VEO] Full Response Body (truncated - too long): %s...%s",
+				responseBodyStr[:500],
+				responseBodyStr[len(responseBodyStr)-500:])
+			log.Printf("[VEO] Response Body Length: %d characters", len(responseBodyStr))
 		} else {
-			detailedErrorMsg = fmt.Sprintf("VEO API错误: %s", errorMsg)
+			log.Printf("[VEO] Full Response Body: %s", responseBodyStr)
 		}
+		log.Printf("[VEO] ===== 错误响应详情结束 =====")
+
+				// 简化错误消息处理
+		detailedErrorMsg := fmt.Sprintf("VEO API错误: %s", errorMsg)
 
 		return openai.ErrorWrapper(
 			fmt.Errorf(detailedErrorMsg),
@@ -3215,7 +3275,19 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		// 打印完整的原始响应体（用于调试）
 		log.Printf("=== [VEO查询] 完整响应体 for task %s ===", taskId)
-		log.Printf("原始响应体: %s", string(body))
+
+		// 处理响应体日志，避免过长的base64内容
+		responseBodyStr := string(body)
+		if len(responseBodyStr) > 2000 {
+			// 如果响应体过长，截取前后部分
+			log.Printf("原始响应体 (truncated - too long): %s...%s",
+				responseBodyStr[:1000],
+				responseBodyStr[len(responseBodyStr)-1000:])
+			log.Printf("响应体长度: %d characters", len(responseBodyStr))
+		} else {
+			log.Printf("原始响应体: %s", responseBodyStr)
+		}
+
 		log.Printf("=== [VEO查询] 响应体结构分析 ===")
 		printJSONStructure(veoResp, "", 4)
 		log.Printf("=== [VEO查询] 响应体分析结束 ===")

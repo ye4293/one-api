@@ -112,6 +112,46 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 	}
 	defer resp.Body.Close()
 
+	// 针对特定状态码提供更详细的错误信息
+	switch resp.StatusCode {
+	case 504:
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "xAI服务器响应超时：Grok模型处理请求时间过长，这可能是由于模型负载较高或网络延迟。建议稍后重试或尝试使用其他Grok模型变体（如grok-3-mini）。",
+				Type:    "timeout_error",
+				Code:    "gateway_timeout",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	case 502:
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "xAI网关错误：上游服务器返回无效响应，可能是xAI服务临时故障。",
+				Type:    "upstream_error",
+				Code:    "bad_gateway",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	case 503:
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "xAI服务暂时不可用：可能正在维护或负载过高，请稍后重试。",
+				Type:    "service_unavailable",
+				Code:    "service_unavailable",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	case 429:
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: "xAI API调用频率限制：已达到请求速率限制，请稍后重试。建议增加请求间隔或升级API套餐。",
+				Type:    "rate_limit_error",
+				Code:    "rate_limit_exceeded",
+			},
+			StatusCode: resp.StatusCode,
+		}
+	}
+
 	// 尝试解析XAI错误格式
 	var xaiError map[string]interface{}
 	if unmarshalErr := json.Unmarshal(responseBody, &xaiError); unmarshalErr == nil {
@@ -121,7 +161,7 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 				// 转换为OpenAI错误格式
 				return &model.ErrorWithStatusCode{
 					Error: model.Error{
-						Message: fmt.Sprintf("%v", errorMsg),
+						Message: fmt.Sprintf("xAI错误: %v", errorMsg),
 						Type:    "api_error",
 						Param:   "",
 						Code:    fmt.Sprintf("%v", code),

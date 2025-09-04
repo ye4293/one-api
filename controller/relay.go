@@ -200,11 +200,7 @@ func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, 
 	}
 
 	// 处理特定Key的错误
-	shouldDisable := util.ShouldDisableChannel(&err.Error, err.StatusCode)
-	logger.SysLog(fmt.Sprintf("DEBUG: processMultiKeyChannelError - channel: %d, keyIndex: %d, shouldDisable: %v",
-		channel.Id, keyIndex, shouldDisable))
-
-	if shouldDisable {
+	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 		keyErr := channel.HandleKeyError(keyIndex, err.Error.Message, err.StatusCode)
 		if keyErr != nil {
 			logger.Errorf(ctx, "failed to handle key error for channel %d, key %d: %s",

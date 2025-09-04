@@ -111,6 +111,35 @@ var QuotaForInvitee int64 = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
+
+// 自动禁用关键词配置（一行一个关键词）
+var AutoDisableKeywords = `api key not valid
+invalid_api_key
+incorrect api key provided
+authentication_error
+permission denied
+account_deactivated
+insufficient_quota
+credit balance is too low
+not_enough_credits
+credit
+balance
+used all available credits
+reached its monthly spending limit
+resource pack exhausted
+billing to be enabled
+permission_denied
+unauthenticated
+operation not allowed
+organization has been disabled
+consumer
+has been suspended
+service account
+project not found
+billing account
+imagen api
+generativelanguage.googleapis.com
+console.x.ai`
 var QuotaRemindThreshold int64 = 1000
 var PreConsumedQuota int64 = 500
 var ApproximateTokenEnabled = false
