@@ -694,7 +694,7 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 		}
 		log.Printf("[VEO] ===== 错误响应详情结束 =====")
 
-				// 简化错误消息处理
+		// 简化错误消息处理
 		detailedErrorMsg := fmt.Sprintf("VEO API错误: %s", errorMsg)
 
 		return openai.ErrorWrapper(
