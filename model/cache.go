@@ -248,7 +248,7 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPriority bool) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -281,13 +281,11 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	})
 
 	// 智能选择有可用渠道的优先级
-	if ignoreFirstPriority && len(priorities) > 1 {
-		// 重试时，尝试选择次高优先级
-		priorityToUse = priorities[1]
-	} else {
-		// 初始请求或只有一个优先级时，选择最高优先级
-		priorityToUse = priorities[0]
+	selectedPriorityIndex := skipPriorityLevels
+	if selectedPriorityIndex >= len(priorities) {
+		selectedPriorityIndex = len(priorities) - 1
 	}
+	priorityToUse = priorities[selectedPriorityIndex]
 
 	// 验证选择的优先级是否有可用渠道
 	// logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, ignoreFirstPriority=%v", priorityToUse, group, model, ignoreFirstPriority)) // 调试用，生产环境可注释
@@ -303,10 +301,11 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 	}
 
 	if len(channels) == 0 {
-		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, ignoreFirstPriority=%v", group, model, priorityToUse, ignoreFirstPriority))
+		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d", group, model, priorityToUse, skipPriorityLevels))
 
 		// 回退机制：如果当前优先级没有可用渠道，尝试使用其他优先级
-		if ignoreFirstPriority && len(priorities) > 1 {
+		if skipPriorityLevels > 0 && len(priorities) > 1 {
+			// 尝试使用最高优先级作为回退
 			logger.SysLog(fmt.Sprintf("Fallback: trying highest priority %d instead", priorities[0]))
 			priorityToUse = priorities[0]
 
@@ -345,15 +344,6 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return nil, errors.New("total weight of channels is zero")
 	}
 
-	// logger.SysLog(fmt.Sprintf("Found %d channels for group=%s, model=%s, priority=%d, totalWeight=%d", len(channels), group, model, priorityToUse, totalWeight)) // 调试用，生产环境可注释
-
-	// 调试：输出找到的渠道详情（调试用，生产环境可注释）
-	// for i, ch := range channels {
-	//	logger.SysLog(fmt.Sprintf("  Channel[%d]: ID=%d, Name=%s, Status=%d, Weight=%d", i, ch.Id, ch.Name, ch.Status, *ch.Weight))
-	// }
-
-	// 使用更好的随机数生成算法
-	// 添加额外的随机性来避免高并发时的种子冲突
 	randSource := rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(10000)))
 	randGen := rand.New(randSource)
 	weightThreshold := randGen.Intn(totalWeight) + 1
@@ -379,7 +369,7 @@ func CacheGetChannel(id int) (*Channel, error) {
 
 	c, ok := channelsIDM[id]
 	if !ok {
-		return nil, errors.New(fmt.Sprintf("当前渠道# %d，已不存在", id))
+		return nil, fmt.Errorf("当前渠道# %d，已不存在", id)
 	}
 	return c, nil
 }

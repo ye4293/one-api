@@ -78,7 +78,9 @@ func Relay(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		// 每次重试都选择新渠道（多Key和单Key渠道统一处理）
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		// 计算应该跳过的优先级数量
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
@@ -335,7 +337,9 @@ func RelayMidjourney(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
-			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+			// 计算应该跳过的优先级数量
+			skipPriorityLevels := retryTimes - i
+			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 			if err != nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v", err)
 				break
@@ -454,7 +458,9 @@ func RelaySd(c *gin.Context) {
 	requestID := c.GetHeader("X-Request-ID")
 
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
+		// 计算应该跳过的优先级数量
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
@@ -547,7 +553,9 @@ func RelayVideoGenerate(c *gin.Context) {
 	originalKeyIndex := keyIndex
 
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
+		// 计算应该跳过的优先级数量
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
@@ -685,7 +693,7 @@ func RelayDirectFlux(c *gin.Context) {
 	var fullRequestUrl string
 
 	logger.Debugf(ctx, "[%s] Looking for channel with model: %s, group: %s", requestID, modelName, userGroup)
-	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(userGroup, modelName, false)
+	channel, err := dbmodel.CacheGetRandomSatisfiedChannel(userGroup, modelName, 0)
 	if err != nil {
 		message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelName, userGroup)
 		if channel != nil {
@@ -1303,7 +1311,9 @@ func RelayRunway(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
+		// 计算应该跳过的优先级数量
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
 			break

@@ -134,7 +134,7 @@ func Distribute() func(c *gin.Context) {
 			c.Set("model", requestModel)
 
 			if shouldSelectChannel {
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)
+				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, 0)
 				if err != nil {
 					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", requestModel, userGroup)
 					if channel != nil {
