@@ -102,13 +102,15 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 // ConvertRequest implements channel.Adaptor.
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
 	// 将OpenAI格式的请求转换为VertexAI格式
-	panic("unimplemented")
+	// 对于不支持的模型，返回错误而不是panic
+	return nil, fmt.Errorf("model %s is not supported by VertexAI adapter", request.Model)
 }
 
 // ConvertImageRequest implements channel.Adaptor.
 func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) {
 	// 将图像请求转换为VertexAI格式
-	panic("unimplemented")
+	// 对于不支持的图像模型，返回错误而不是panic
+	return nil, fmt.Errorf("image model %s is not supported by VertexAI adapter", request.Model)
 }
 
 // DoRequest implements channel.Adaptor.

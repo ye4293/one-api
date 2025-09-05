@@ -143,7 +143,7 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 				log.Printf("[xAI] 成功解析xAI错误格式，返回转换后的错误")
 				return &model.ErrorWithStatusCode{
 					Error: model.Error{
-						Message: fmt.Sprintf("xAI错误: %v", errorMsg),
+						Message: fmt.Sprintf("%v", errorMsg),
 						Type:    "api_error",
 						Param:   "",
 						Code:    fmt.Sprintf("%v", code),
@@ -159,7 +159,7 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 			log.Printf("[xAI] 使用message字段构造错误响应")
 			return &model.ErrorWithStatusCode{
 				Error: model.Error{
-					Message: fmt.Sprintf("xAI错误: %v", message),
+					Message: fmt.Sprintf("%v", message),
 					Type:    "api_error",
 					Param:   "",
 					Code:    "unknown_error",
@@ -175,7 +175,7 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 	log.Printf("[xAI] 未识别为特定错误格式，使用原始响应作为错误消息")
 	return &model.ErrorWithStatusCode{
 		Error: model.Error{
-			Message: fmt.Sprintf("xAI错误: %s", responseBodyStr),
+			Message: fmt.Sprintf("%s", responseBodyStr),
 			Type:    "api_error",
 			Param:   "",
 			Code:    "unknown_error",

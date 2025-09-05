@@ -83,7 +83,25 @@ func Relay(c *gin.Context) {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
 		}
-		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := bizErr.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, channelId, channelName, keyIndex,
+			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
 
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		_, err = common.GetRequestBody(c)
@@ -119,6 +137,34 @@ func Relay(c *gin.Context) {
 			},
 		})
 	}
+}
+
+// formatRetryLog 格式化重试日志信息
+func formatRetryLog(ctx context.Context, originalChannelId int, originalChannelName string, originalKeyIndex int,
+	newChannelId int, newChannelName string, newKeyIndex int, model string, retryReason string,
+	retryAttempt int, totalRetries int, isMultiKey bool, userId int, requestID string) string {
+
+	// 构建基础重试信息
+	retryInfo := fmt.Sprintf("Retry: 模型=%s, 原因=%s, 尝试=%d/%d",
+		model, retryReason, retryAttempt, totalRetries)
+
+	// 添加用户和请求信息
+	userInfo := fmt.Sprintf(", 用户ID=%d", userId)
+	if requestID != "" {
+		userInfo += fmt.Sprintf(", 请求ID=%s", requestID)
+	}
+
+	// 添加渠道切换信息
+	channelSwitch := fmt.Sprintf(", 渠道切换: #%d(%s) -> #%d(%s)",
+		originalChannelId, originalChannelName, newChannelId, newChannelName)
+
+	// 如果是多key渠道，添加key信息
+	keyInfo := ""
+	if isMultiKey {
+		keyInfo = fmt.Sprintf(", Key切换: index %d -> %d", originalKeyIndex, newKeyIndex)
+	}
+
+	return retryInfo + userInfo + channelSwitch + keyInfo
 }
 
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
@@ -401,6 +447,12 @@ func RelaySd(c *gin.Context) {
 		retryTimes = 0
 	}
 
+	// 获取初始渠道信息用于重试日志
+	originalChannelId := channelId
+	originalChannelName := c.GetString("channel_name")
+	originalKeyIndex := c.GetInt("key_index")
+	requestID := c.GetHeader("X-Request-ID")
+
 	for i := retryTimes; i > 0; i-- {
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, i != retryTimes)
 		if err != nil {
@@ -408,7 +460,24 @@ func RelaySd(c *gin.Context) {
 			break
 		}
 
-		logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := SdErr.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
 
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
@@ -472,13 +541,36 @@ func RelayVideoGenerate(c *gin.Context) {
 		retryTimes = 0
 	}
 
+	// 获取初始渠道信息用于重试日志
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+
 	for i := retryTimes; i > 0; i-- {
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, i != retryTimes)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
 		}
-		logger.Infof(ctx, "Using channel #%d to retry video generation (remain times %d)", channel.Id, i)
+
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := bizErr.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
 
 		// 使用新通道的配置更新上下文
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
@@ -495,7 +587,6 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		channelName = c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
-		logger.Infof(ctx, "Video Channel #%d failed", channelId)
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 	}
 
@@ -1204,6 +1295,11 @@ func RelayRunway(c *gin.Context) {
 
 	logger.Infof(ctx, "RelayRunway will retry %d times - status code: %d", retryTimes, statusCode)
 
+	// 获取初始渠道信息用于重试日志
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
@@ -1213,8 +1309,24 @@ func RelayRunway(c *gin.Context) {
 			break
 		}
 
-		logger.Infof(ctx, "Using channel #%d (%s) to retry runway request (attempt %d/%d, remain times %d)",
-			channel.Id, channel.Name, retryTimes-i+1, retryTimes, i)
+		// 获取重试原因 - 直接使用状态码
+		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
 
 		// 使用新通道的配置更新上下文
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)

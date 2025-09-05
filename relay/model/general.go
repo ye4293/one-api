@@ -63,6 +63,8 @@ type GeneralOpenAIRequest struct {
 	Audio               *AudioConfig      `json:"audio,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
 	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+	ThinkingTokens      int               `json:"thinking_token,omitempty"`
+	ReasoningContent    string            `json:"reasoning_content,omitempty"`
 }
 
 // 新增音频配置结构体

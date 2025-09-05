@@ -28,7 +28,7 @@ const (
 )
 
 // Setting safety to the lowest possible values since Gemini is already powerless enough
-func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
+func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error) {
 	geminiRequest := ChatRequest{
 		Contents: make([]ChatContent, 0, len(textRequest.Messages)),
 		SafetySettings: []ChatSafetySettings{
@@ -55,7 +55,67 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 			MaxOutputTokens: textRequest.MaxTokens,
 		},
 	}
+	// Handle thinking models
+	baseModel := textRequest.Model
+	if strings.HasSuffix(baseModel, "-thinking") {
+		baseModel = strings.TrimSuffix(baseModel, "-thinking")
+	} else if strings.HasSuffix(baseModel, "-nothinking") {
+		baseModel = strings.TrimSuffix(baseModel, "-nothinking")
+	}
 
+	if strings.HasSuffix(textRequest.Model, "-thinking") {
+		var budget int
+		if textRequest.ThinkingTokens > 0 {
+			budget = textRequest.ThinkingTokens
+		} else if textRequest.MaxTokens > 0 {
+			budget = int(float64(textRequest.MaxTokens) * 0.6)
+		} else {
+			budget = -1 // Enable dynamic thinking
+		}
+
+		// Clamp the budget based on the model's supported range
+		switch baseModel {
+		case "gemini-2.5-pro":
+			if budget != -1 {
+				if budget < 128 {
+					budget = 128
+				}
+				if budget > 32768 {
+					budget = 32768
+				}
+			}
+		case "gemini-2.5-flash":
+			if budget != -1 {
+				if budget < 0 {
+					budget = 0
+				}
+				if budget > 24576 {
+					budget = 24576
+				}
+			}
+		case "gemini-2.5-flash-lite":
+			if budget != -1 {
+				if budget < 512 {
+					budget = 512
+				}
+				if budget > 24576 {
+					budget = 24576
+				}
+			}
+		}
+		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
+			ThinkingBudget:  budget,
+			IncludeThoughts: true,
+		}
+	} else if strings.HasSuffix(textRequest.Model, "-nothinking") {
+		budget := 0
+		if baseModel == "gemini-2.5-pro" {
+			budget = -1
+		}
+		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
+			ThinkingBudget: budget,
+		}
+	}
 	// 检测是否有system或developer消息，如果有则转换为system_instruction
 	var systemMessages []model.Message
 	var nonSystemMessages []model.Message
@@ -144,7 +204,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *ChatRequest {
 		logger.SysLog("Converted Gemini Request: " + string(requestJSON))
 	}
 
-	return &geminiRequest
+	return &geminiRequest, nil
 }
 
 type ChatResponse struct {
@@ -167,6 +227,36 @@ func (g *ChatResponse) GetResponseText() string {
 	}
 	if len(g.Candidates) > 0 && len(g.Candidates[0].Content.Parts) > 0 {
 		return g.Candidates[0].Content.Parts[0].Text
+	}
+	return ""
+}
+
+// GetReasoningContent 提取思考内容
+func (g *ChatResponse) GetReasoningContent() string {
+	if g == nil {
+		return ""
+	}
+	if len(g.Candidates) > 0 && len(g.Candidates[0].Content.Parts) == 2 {
+		// 当parts长度为2时，第一个通常是思考内容，第二个是实际回答
+		return g.Candidates[0].Content.Parts[0].Text
+	}
+	return ""
+}
+
+// GetActualContent 提取实际回答内容（非思考内容）
+func (g *ChatResponse) GetActualContent() string {
+	if g == nil {
+		return ""
+	}
+	if len(g.Candidates) > 0 {
+		parts := g.Candidates[0].Content.Parts
+		if len(parts) == 2 {
+			// 当parts长度为2时，第二个是实际回答内容
+			return parts[1].Text
+		} else if len(parts) > 0 {
+			// 当parts长度为1时，直接返回第一个内容
+			return parts[0].Text
+		}
 	}
 	return ""
 }
@@ -203,9 +293,24 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 			},
 			FinishReason: constant.StopFinishReason,
 		}
-		if len(candidate.Content.Parts) > 0 {
-			choice.Message.Content = candidate.Content.Parts[0].Text
+
+		// 处理Parts，分离思考内容和实际回答内容
+		var reasoningContent string
+		var actualContent string
+
+		parts := candidate.Content.Parts
+		if len(parts) == 2 {
+			// 当parts长度为2时，第一个是思考内容，第二个是实际回答
+			reasoningContent = parts[0].Text
+			actualContent = parts[1].Text
+		} else if len(parts) > 0 {
+			// 当parts长度为1时，直接使用第一个内容作为实际回答
+			actualContent = parts[0].Text
 		}
+
+		choice.Message.Content = actualContent
+		choice.Message.ReasoningContent = reasoningContent
+
 		fullTextResponse.Choices = append(fullTextResponse.Choices, choice)
 	}
 	return &fullTextResponse
@@ -213,7 +318,8 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 
 func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName string) *openai.ChatCompletionsStreamResponse {
 	var choice openai.ChatCompletionsStreamResponseChoice
-	choice.Delta.Content = geminiResponse.GetResponseText()
+	choice.Delta.Content = geminiResponse.GetActualContent()
+	choice.Delta.ReasoningContent = geminiResponse.GetReasoningContent()
 	var response openai.ChatCompletionsStreamResponse
 	response.Id = fmt.Sprintf("chatcmpl-%s", helper.GetUUID())
 	response.Created = helper.GetTimestamp()
@@ -293,6 +399,13 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 				return true
 			}
 			content := response.Choices[0].Delta.StringContent()
+			reasoningContent := response.Choices[0].Delta.ReasoningContent
+
+			// 记录思考内容（如果有的话）
+			if reasoningContent != "" {
+				logger.SysLog(fmt.Sprintf("Gemini reasoning content: %s", reasoningContent))
+			}
+
 			if content != "" && firstWordTime == nil {
 				// 记录首字时间
 				now := time.Now()
@@ -411,7 +524,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	fullTextResponse.Model = modelName
 
 	// 计算 completion tokens
-	baseCompletionTokens := openai.CountTokenText(geminiResponse.GetResponseText(), modelName)
+	baseCompletionTokens := openai.CountTokenText(geminiResponse.GetActualContent(), modelName)
 	completionTokens := baseCompletionTokens
 
 	// 如果有 usage metadata，使用官方数据并处理推理 token
@@ -427,7 +540,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	usage := model.Usage{
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
-		TotalTokens:      promptTokens + baseCompletionTokens, // 保持原始计算逻辑
+		TotalTokens:      promptTokens + completionTokens, // 使用包含推理token的completionTokens
 	}
 
 	// 如果有推理 token，添加详细信息

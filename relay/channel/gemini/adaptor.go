@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	channelhelper "github.com/songquanpeng/one-api/relay/channel"
@@ -31,8 +32,14 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	if meta.IsStream {
 		action = "streamGenerateContent?alt=sse"
 	}
+	modelName := meta.ActualModelName
+	if strings.HasSuffix(modelName, "-thinking") {
+		modelName = strings.TrimSuffix(modelName, "-thinking")
+	} else if strings.HasSuffix(modelName, "-nothinking") {
+		modelName = strings.TrimSuffix(modelName, "-nothinking")
+	}
 	// logger.SysLog(fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action))
-	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", meta.ActualModelName, action), nil
+	return fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, "v1beta", modelName, action), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
@@ -45,7 +52,7 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	return ConvertRequest(*request), nil
+	return ConvertRequest(*request)
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
