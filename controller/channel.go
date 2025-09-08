@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -39,7 +40,6 @@ func GetAllChannels(c *gin.Context) {
 			"total":       total,
 		},
 	})
-	return
 }
 
 func SearchChannels(c *gin.Context) {
@@ -85,7 +85,6 @@ func SearchChannels(c *gin.Context) {
 			"total":       total,
 		},
 	})
-	return
 }
 
 func GetChannel(c *gin.Context) {
@@ -111,7 +110,6 @@ func GetChannel(c *gin.Context) {
 		"message": "",
 		"data":    channel,
 	})
-	return
 }
 
 func AddChannel(c *gin.Context) {
@@ -212,7 +210,6 @@ func AddChannel(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func DeleteChannel(c *gin.Context) {
@@ -230,7 +227,6 @@ func DeleteChannel(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func BatchDelteChannel(c *gin.Context) {
@@ -281,7 +277,181 @@ func DeleteDisabledChannel(c *gin.Context) {
 		"message": "",
 		"data":    rows,
 	})
-	return
+}
+
+// 工具函数：智能更新渠道字段
+func updateChannelFields(target *model.Channel, source *model.Channel, rawBody map[string]interface{}) {
+	// 字符串字段
+	if source.Name != "" {
+		target.Name = source.Name
+	}
+
+	// 数值字段
+	if source.Type != 0 {
+		target.Type = source.Type
+	}
+	if source.Status != 0 {
+		target.Status = source.Status
+	}
+	if source.ChannelRatio != 0 {
+		target.ChannelRatio = source.ChannelRatio
+	}
+
+	// 允许空值的字符串字段
+	stringFields := []struct {
+		sourceVal *string
+		targetVal **string
+		jsonKey   string
+	}{
+		{source.BaseURL, &target.BaseURL, "base_url"},
+		{source.ModelMapping, &target.ModelMapping, "model_mapping"},
+	}
+
+	for _, field := range stringFields {
+		if field.sourceVal != nil {
+			*field.targetVal = field.sourceVal
+		}
+	}
+
+	// 直接赋值的字段（允许空值）
+	if _, exists := rawBody["key"]; exists {
+		target.Key = source.Key
+	}
+	if _, exists := rawBody["group"]; exists {
+		target.Group = source.Group
+	}
+	if _, exists := rawBody["models"]; exists {
+		target.Models = source.Models
+	}
+	if _, exists := rawBody["other"]; exists {
+		target.Other = source.Other
+	}
+	if _, exists := rawBody["config"]; exists {
+		target.Config = source.Config
+	}
+
+	// 指针数值字段
+	if source.Priority != nil {
+		target.Priority = source.Priority
+	}
+	if source.Weight != nil {
+		target.Weight = source.Weight
+	}
+
+	// 特殊处理布尔字段
+	if autoDisabledValue, exists := rawBody["auto_disabled"]; exists {
+		if autoBool, ok := autoDisabledValue.(bool); ok {
+			target.AutoDisabled = autoBool
+		}
+	}
+}
+
+// 工具函数：处理多密钥渠道更新
+func updateMultiKeyChannel(channel *model.Channel, existingChannel *model.Channel, requestData *struct {
+	model.Channel
+	KeySelectionMode int `json:"key_selection_mode"`
+	BatchImportMode  int `json:"batch_import_mode"`
+}) {
+	// 验证并设置模式
+	keySelectionMode := model.KeySelectionMode(requestData.KeySelectionMode)
+	if keySelectionMode != 0 && keySelectionMode != 1 {
+		keySelectionMode = channel.MultiKeyInfo.KeySelectionMode
+	}
+
+	batchImportMode := model.BatchImportMode(requestData.BatchImportMode)
+	if batchImportMode != 0 && batchImportMode != 1 {
+		batchImportMode = channel.MultiKeyInfo.BatchImportMode
+	}
+
+	// 更新配置
+	channel.MultiKeyInfo.KeySelectionMode = keySelectionMode
+	channel.MultiKeyInfo.BatchImportMode = batchImportMode
+
+	// 处理密钥更新
+	newKeyData := strings.TrimSpace(requestData.Channel.Key)
+	if newKeyData == "" {
+		return
+	}
+
+	logger.SysLog(fmt.Sprintf("Updating keys for multi-key channel %d with mode %d", channel.Id, batchImportMode))
+
+	// 解析新密钥
+	validNewKeys := parseKeys(newKeyData, channel.Type)
+	if len(validNewKeys) == 0 {
+		return
+	}
+
+	// 根据模式合并密钥
+	var finalKeys []string
+	if batchImportMode == 0 { // 覆盖模式
+		finalKeys = validNewKeys
+		logger.SysLog(fmt.Sprintf("Channel %d: Overwriting with %d new keys", channel.Id, len(validNewKeys)))
+	} else { // 追加模式
+		existingKeys := existingChannel.ParseKeys()
+		finalKeys = append(existingKeys, validNewKeys...)
+		logger.SysLog(fmt.Sprintf("Channel %d: Appending %d keys to existing %d keys", channel.Id, len(validNewKeys), len(existingKeys)))
+	}
+
+	// 更新密钥信息
+	channel.Key = strings.Join(finalKeys, "\n")
+	channel.MultiKeyInfo.KeyCount = len(finalKeys)
+
+	// 初始化或更新密钥状态
+	initializeKeyStatus(channel, existingChannel, validNewKeys, batchImportMode)
+
+	channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
+}
+
+// 工具函数：解析密钥
+func parseKeys(keyData string, channelType int) []string {
+	var newKeys []string
+	if channelType == common.ChannelTypeVertexAI {
+		newKeys = common.ExtractJSONObjects(keyData)
+	} else {
+		newKeys = strings.Split(keyData, "\n")
+	}
+
+	validKeys := make([]string, 0, len(newKeys))
+	for _, key := range newKeys {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			validKeys = append(validKeys, trimmed)
+		}
+	}
+	return validKeys
+}
+
+// 工具函数：初始化密钥状态
+func initializeKeyStatus(channel *model.Channel, existingChannel *model.Channel, newKeys []string, batchImportMode model.BatchImportMode) {
+	// 确保map已初始化
+	if channel.MultiKeyInfo.KeyStatusList == nil {
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+	}
+	if channel.MultiKeyInfo.KeyMetadata == nil {
+		channel.MultiKeyInfo.KeyMetadata = make(map[int]model.KeyMetadata)
+	}
+
+	batchId := fmt.Sprintf("batch_%d", time.Now().Unix())
+
+	if batchImportMode == 0 { // 覆盖模式
+		channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
+		channel.MultiKeyInfo.KeyMetadata = make(map[int]model.KeyMetadata)
+
+		for i := range newKeys {
+			channel.MultiKeyInfo.KeyStatusList[i] = common.ChannelStatusEnabled
+			channel.MultiKeyInfo.KeyMetadata[i] = model.KeyMetadata{
+				Balance: 0, Usage: 0, LastUsed: 0, ImportBatch: batchId, Note: "",
+			}
+		}
+	} else { // 追加模式
+		startIndex := len(existingChannel.ParseKeys())
+		for i := range newKeys {
+			keyIndex := startIndex + i
+			channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusEnabled
+			channel.MultiKeyInfo.KeyMetadata[keyIndex] = model.KeyMetadata{
+				Balance: 0, Usage: 0, LastUsed: 0, ImportBatch: batchId, Note: "",
+			}
+		}
+	}
 }
 
 func UpdateChannel(c *gin.Context) {
@@ -292,8 +462,15 @@ func UpdateChannel(c *gin.Context) {
 		BatchImportMode  int `json:"batch_import_mode"`
 	}
 
-	err := c.ShouldBindJSON(&requestData)
-	if err != nil {
+	// 获取原始请求体用于字段检查
+	rawBodyBytes, _ := c.GetRawData()
+	rawBody := make(map[string]interface{})
+	if len(rawBodyBytes) > 0 {
+		json.Unmarshal(rawBodyBytes, &rawBody)
+	}
+
+	// 重新绑定JSON数据
+	if err := json.Unmarshal(rawBodyBytes, &requestData); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": err.Error(),
@@ -301,113 +478,28 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 
-	channel := requestData.Channel
+	// 获取现有渠道信息
+	existingChannel, err := model.GetChannelById(requestData.Channel.Id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "获取现有渠道信息失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 基于现有渠道信息创建更新对象
+	channel := *existingChannel
+
+	// 智能更新字段
+	updateChannelFields(&channel, &requestData.Channel, rawBody)
 
 	logger.SysLog(fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
 	logger.SysLog(fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
 
-	// 如果是多密钥渠道，处理密钥更新和配置
+	// 处理多密钥渠道
 	if channel.MultiKeyInfo.IsMultiKey {
-		// 先获取现有渠道数据
-		existingChannel, err := model.GetChannelById(channel.Id, true)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "获取现有渠道信息失败: " + err.Error(),
-			})
-			return
-		}
-
-		// 先更新配置（确保使用正确的模式）
-		keySelectionMode := model.KeySelectionMode(requestData.KeySelectionMode)
-		if keySelectionMode != 0 && keySelectionMode != 1 {
-			keySelectionMode = existingChannel.MultiKeyInfo.KeySelectionMode // 保持原值
-		}
-		batchImportMode := model.BatchImportMode(requestData.BatchImportMode)
-		if batchImportMode != 0 && batchImportMode != 1 {
-			batchImportMode = existingChannel.MultiKeyInfo.BatchImportMode // 保持原值
-		}
-
-		// 处理密钥更新
-		if strings.TrimSpace(channel.Key) != "" {
-			logger.SysLog(fmt.Sprintf("Updating keys for multi-key channel %d with mode %d", channel.Id, batchImportMode))
-
-			// 解析新的密钥
-			var newKeys []string
-			if channel.Type == common.ChannelTypeVertexAI {
-				newKeys = common.ExtractJSONObjects(channel.Key)
-			} else {
-				newKeys = strings.Split(channel.Key, "\n")
-			}
-
-			validNewKeys := []string{}
-			for _, key := range newKeys {
-				key = strings.TrimSpace(key)
-				if key != "" {
-					validNewKeys = append(validNewKeys, key)
-				}
-			}
-
-			if len(validNewKeys) > 0 {
-				// 根据编辑模式处理密钥（现在使用正确的模式）
-
-				var finalKeys []string
-				if batchImportMode == 0 { // 覆盖模式
-					finalKeys = validNewKeys
-					logger.SysLog(fmt.Sprintf("Channel %d: Overwriting with %d new keys", channel.Id, len(validNewKeys)))
-				} else { // 追加模式
-					existingKeys := existingChannel.ParseKeys()
-					finalKeys = append(existingKeys, validNewKeys...)
-					logger.SysLog(fmt.Sprintf("Channel %d: Appending %d keys to existing %d keys", channel.Id, len(validNewKeys), len(existingKeys)))
-				}
-
-				// 更新密钥字符串
-				channel.Key = strings.Join(finalKeys, "\n")
-
-				// 更新多密钥信息（保留现有配置）
-				channel.MultiKeyInfo = existingChannel.MultiKeyInfo
-				channel.MultiKeyInfo.KeyCount = len(finalKeys)
-				channel.MultiKeyInfo.KeySelectionMode = keySelectionMode
-				channel.MultiKeyInfo.BatchImportMode = batchImportMode
-
-				// 初始化新密钥的状态和元数据
-				if channel.MultiKeyInfo.KeyStatusList == nil {
-					channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
-				}
-				if channel.MultiKeyInfo.KeyMetadata == nil {
-					channel.MultiKeyInfo.KeyMetadata = make(map[int]model.KeyMetadata)
-				}
-
-				batchId := fmt.Sprintf("batch_%d", time.Now().Unix())
-
-				if batchImportMode == 0 { // 覆盖模式，重置所有状态
-					channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
-					channel.MultiKeyInfo.KeyMetadata = make(map[int]model.KeyMetadata)
-					for i := range finalKeys {
-						channel.MultiKeyInfo.KeyStatusList[i] = common.ChannelStatusEnabled
-						channel.MultiKeyInfo.KeyMetadata[i] = model.KeyMetadata{
-							Balance: 0, Usage: 0, LastUsed: 0, ImportBatch: batchId, Note: "",
-						}
-					}
-				} else { // 追加模式，只为新密钥设置状态
-					startIndex := len(existingChannel.ParseKeys())
-					for i, _ := range validNewKeys {
-						keyIndex := startIndex + i
-						channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusEnabled
-						channel.MultiKeyInfo.KeyMetadata[keyIndex] = model.KeyMetadata{
-							Balance: 0, Usage: 0, LastUsed: 0, ImportBatch: batchId, Note: "",
-						}
-					}
-				}
-
-				channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
-			}
-		} else {
-			// 即使没有新密钥，也要更新配置
-			channel.MultiKeyInfo = existingChannel.MultiKeyInfo
-			channel.MultiKeyInfo.KeySelectionMode = keySelectionMode
-			channel.MultiKeyInfo.BatchImportMode = batchImportMode
-		}
+		updateMultiKeyChannel(&channel, existingChannel, &requestData)
 	}
 
 	err = channel.Update()
@@ -423,7 +515,6 @@ func UpdateChannel(c *gin.Context) {
 		"message": "",
 		"data":    channel,
 	})
-	return
 }
 
 // GetChannelModelsById 根据渠道ID获取该渠道配置的所有模型
