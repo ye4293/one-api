@@ -609,15 +609,18 @@ func GetChannelKeyDetails(c *gin.Context) {
 		}
 
 		keyDetails = append(keyDetails, gin.H{
-			"index":        i,
-			"key":          maskedKey, // 脱敏后的Key
-			"status":       status,
-			"status_text":  statusText,
-			"balance":      metadata.Balance,
-			"usage":        metadata.Usage,
-			"last_used":    metadata.LastUsed,
-			"import_batch": metadata.ImportBatch,
-			"note":         metadata.Note,
+			"index":          i,
+			"key":            maskedKey, // 脱敏后的Key
+			"status":         status,
+			"status_text":    statusText,
+			"balance":        metadata.Balance,
+			"usage":          metadata.Usage,
+			"last_used":      metadata.LastUsed,
+			"import_batch":   metadata.ImportBatch,
+			"note":           metadata.Note,
+			"disable_reason": metadata.DisabledReason,
+			"disable_time":   metadata.DisabledTime,
+			"disabled_model": metadata.DisabledModel,
 		})
 	}
 

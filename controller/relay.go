@@ -73,7 +73,7 @@ func Relay(c *gin.Context) {
 	group := c.GetString("group")
 	originalModel := c.GetString("original_model")
 	keyIndex := c.GetInt("key_index") // 在异步调用前获取keyIndex
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -137,7 +137,7 @@ func Relay(c *gin.Context) {
 		channelName = c.GetString("channel_name")
 		keyIndex = c.GetInt("key_index") // 在异步调用前获取keyIndex
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
 
 	// 如果所有尝试都失败，记录渠道历史到上下文中
@@ -224,7 +224,7 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 	return true
 }
 
-func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode) {
+func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode, modelName string) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
 
 	// 获取渠道信息
@@ -237,12 +237,12 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 
 	// 处理多Key渠道的错误
 	if channel.MultiKeyInfo.IsMultiKey {
-		processMultiKeyChannelError(ctx, channel, keyIndex, err)
+		processMultiKeyChannelError(ctx, channel, keyIndex, err, modelName)
 	} else {
 		// 单Key渠道的原有逻辑（不使用keyIndex参数）
 		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 			if channel.AutoDisabled {
-				monitor.DisableChannel(channelId, channelName, err.Error.Message)
+				monitor.DisableChannel(channelId, channelName, err.Error.Message, modelName)
 			} else {
 				logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
 				monitor.Emit(channelId, false)
@@ -254,7 +254,7 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 }
 
 // processMultiKeyChannelError 处理多Key渠道的错误
-func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, keyIndex int, err *model.ErrorWithStatusCode) {
+func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, keyIndex int, err *model.ErrorWithStatusCode, modelName string) {
 	// 直接使用传入的keyIndex，不再从context中获取
 
 	var ginCtx *gin.Context
@@ -267,7 +267,7 @@ func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, 
 
 	// 处理特定Key的错误
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		keyErr := channel.HandleKeyError(keyIndex, err.Error.Message, err.StatusCode)
+		keyErr := channel.HandleKeyError(keyIndex, err.Error.Message, err.StatusCode, modelName)
 		if keyErr != nil {
 			logger.Errorf(ctx, "failed to handle key error for channel %d, key %d: %s",
 				channel.Id, keyIndex, keyErr.Error())
@@ -554,7 +554,7 @@ func RelaySd(c *gin.Context) {
 		keyIndex := c.GetInt("key_index")
 
 		channelName := c.GetString("channel_name")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, SdErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, SdErr, originalModel)
 	}
 	if SdErr != nil {
 		// 失败时记录渠道历史到上下文中
@@ -602,7 +602,7 @@ func RelayVideoGenerate(c *gin.Context) {
 	group := c.GetString("group")
 	keyIndex := c.GetInt("key_index")
 
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -668,7 +668,7 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		channelName = c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
 
 	// 所有重试都失败后的处理
@@ -1244,7 +1244,7 @@ func RelayRecraft(c *gin.Context) {
 
 		// Check if we should disable the channel
 		if response.StatusCode == 401 || response.StatusCode == 403 {
-			monitor.DisableChannel(channelId, channel.Name, "Authentication error with Recraft API")
+			monitor.DisableChannel(channelId, channel.Name, "Authentication error with Recraft API", "N/A (Recraft Auth)")
 		}
 
 		// Handle error format normalization if requested
@@ -1372,7 +1372,7 @@ func RelayRunway(c *gin.Context) {
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: "Request failed"},
-	})
+	}, modelName)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, statusCode, "") {
@@ -1455,7 +1455,7 @@ func RelayRunway(c *gin.Context) {
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: "Retry failed"},
-		})
+		}, modelName)
 
 		// 检查这次失败是否还应该继续重试
 		if !shouldRetry(c, statusCode, "") {

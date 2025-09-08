@@ -31,6 +31,17 @@ type KeyDisableNotification struct {
 // KeyDisableNotificationChan Key禁用通知通道
 var KeyDisableNotificationChan = make(chan KeyDisableNotification, 100)
 
+// ChannelDisableNotification 渠道禁用通知结构
+type ChannelDisableNotification struct {
+	ChannelId    int       `json:"channel_id"`
+	ChannelName  string    `json:"channel_name"`
+	Reason       string    `json:"reason"`
+	DisabledTime time.Time `json:"disabled_time"`
+}
+
+// ChannelDisableNotificationChan 渠道禁用通知通道
+var ChannelDisableNotificationChan = make(chan ChannelDisableNotification, 100)
+
 type Channel struct {
 	Id                 int     `json:"id"`
 	Type               int     `json:"type" gorm:"default:0"`
@@ -58,6 +69,7 @@ type Channel struct {
 	// 新增自动禁用原因字段
 	AutoDisabledReason *string `json:"auto_disabled_reason" gorm:"type:text"`
 	AutoDisabledTime   *int64  `json:"auto_disabled_time" gorm:"bigint"`
+	AutoDisabledModel  *string `json:"auto_disabled_model" gorm:"type:varchar(255)"`
 }
 
 // 多Key聚合信息结构
@@ -100,6 +112,7 @@ type KeyMetadata struct {
 	DisabledReason *string `json:"disabled_reason"` // 禁用原因
 	DisabledTime   *int64  `json:"disabled_time"`   // 禁用时间戳
 	StatusCode     *int    `json:"status_code"`     // HTTP状态码
+	DisabledModel  *string `json:"disabled_model"`  // 导致禁用的模型
 }
 
 // 实现 database/sql/driver.Valuer 接口，用于存储到数据库
@@ -156,8 +169,16 @@ func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int
 
 	offset := (page - 1) * pageSize
 
-	// 获取当前页面的频道列表，忽略key字段
-	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Omit("key").Find(&channels).Error
+	// 定义需要选择的字段列表，确保所有必要信息都被包含
+	selectFields := []string{
+		"id", "type", "status", "name", "weight", "created_time", "test_time",
+		"response_time", "base_url", "other", "balance", "balance_updated_time",
+		"models", "`group`", "used_quota", "model_mapping", "priority", "config",
+		"channel_ratio", "auto_disabled", "multi_key_info", "auto_disabled_reason", "auto_disabled_time", "auto_disabled_model",
+	}
+
+	// 使用明确的 Select 来获取当前页面的频道列表，替代 Omit("key")
+	err = DB.Select(selectFields).Order("id desc").Limit(pageSize).Offset(offset).Find(&channels).Error
 	if err != nil {
 		return nil, total, err
 	}
@@ -275,9 +296,17 @@ func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int)
 	// 计算分页的偏移量
 	offset := (page - 1) * pageSize
 
-	// 获取满足条件的频道列表的子集，忽略key字段，并应用分页参数
-	// 添加Order方法以按照id字段进行降序排列
-	err = baseQuery.Omit("key").Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
+	// 定义需要选择的字段列表
+	selectFields := []string{
+		"id", "type", "status", "name", "weight", "created_time", "test_time",
+		"response_time", "base_url", "other", "balance", "balance_updated_time",
+		"models", "`group`", "used_quota", "model_mapping", "priority", "config",
+		"channel_ratio", "auto_disabled", "multi_key_info", "auto_disabled_reason", "auto_disabled_time", "auto_disabled_model",
+	}
+
+	// 获取满足条件的频道列表的子集，并应用分页参数
+	// 明确选择所有需要的字段，除了`key`
+	err = baseQuery.Select(selectFields).Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
 	if err != nil {
 		return nil, total, err
 	}
@@ -1038,9 +1067,18 @@ func (channel *Channel) checkAndUpdateChannelStatus() {
 		oldStatus := channel.Status
 		channel.Status = common.ChannelStatusAutoDisabled
 
+		// 设置渠道级别的自动禁用原因
+		currentTime := time.Now().Unix()
+		reasonText := "all keys disabled"
+		channel.AutoDisabledReason = &reasonText
+		channel.AutoDisabledTime = &currentTime
+
 		if oldStatus != common.ChannelStatusAutoDisabled {
 			logger.SysLog(fmt.Sprintf("Channel %d auto-disabled: all %d keys are disabled (auto: %d, manual: %d)",
 				channel.Id, totalKeys, autoDisabledCount, manualDisabledCount))
+
+			// 发送渠道级别的禁用通知
+			channel.notifyChannelDisabled(reasonText)
 		}
 	} else if channel.Status == common.ChannelStatusAutoDisabled && enabledCount > 0 {
 		// 如果有Key重新启用，且渠道是自动禁用状态，可以考虑重新启用
@@ -1080,7 +1118,7 @@ func (channel *Channel) HandleKeyUsed(keyIndex int, success bool) error {
 }
 
 // HandleKeyError 处理特定Key的错误，决定是否需要自动禁用
-func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, statusCode int) error {
+func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, statusCode int, modelName string) error {
 	if !channel.MultiKeyInfo.IsMultiKey {
 		return nil
 	}
@@ -1102,6 +1140,7 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 		metadata.DisabledReason = &errorMessage
 		metadata.DisabledTime = &currentTime
 		metadata.StatusCode = &statusCode
+		metadata.DisabledModel = &modelName
 		channel.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
 
 		keys := channel.ParseKeys()
@@ -1164,6 +1203,23 @@ func (channel *Channel) notifyKeyDisabled(keyIndex int, maskedKey string, errorM
 			MaskedKey:    maskedKey,
 			ErrorMessage: errorMessage,
 			StatusCode:   statusCode,
+			DisabledTime: time.Now(),
+		}
+	}()
+}
+
+// notifyChannelDisabled 发送多Key渠道完全禁用的邮件通知
+func (channel *Channel) notifyChannelDisabled(reason string) {
+	go func() {
+		// 记录日志
+		logger.SysLog(fmt.Sprintf("Multi-key channel #%d (%s) has been auto-disabled: %s",
+			channel.Id, channel.Name, reason))
+
+		// 发送渠道级别的禁用通知
+		ChannelDisableNotificationChan <- ChannelDisableNotification{
+			ChannelId:    channel.Id,
+			ChannelName:  channel.Name,
+			Reason:       reason,
 			DisabledTime: time.Now(),
 		}
 	}()

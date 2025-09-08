@@ -1357,7 +1357,22 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 		totalCost := float64(quota) / 500000
 		logContent := fmt.Sprintf("Mode: %s, Images: %d, Total cost: $%.3f",
 			mode, n, totalCost)
-		dbmodel.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
+
+		// 获取渠道历史信息并记录日志
+		var otherInfo string
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+				}
+			}
+		}
+
+		if otherInfo != "" {
+			dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID)
+		} else {
+			dbmodel.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
+		}
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		dbmodel.UpdateChannelUsedQuota(channelId, quota)
@@ -2043,7 +2058,21 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	logger.Infof(ctx, "Gemini Form Token Usage - Prompt: %d, Candidates: %d, Total: %d, Duration: %.3fs",
 		promptTokens, completionTokens, geminiResponse.UsageMetadata.TotalTokenCount, duration)
 
-	model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	// 获取渠道历史信息并记录日志
+	var otherInfo string
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+
+	if otherInfo != "" {
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+	} else {
+		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	}
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 	channelId := c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, actualQuota)
@@ -2124,7 +2153,21 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
 
-	model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	// 获取渠道历史信息并记录日志
+	var otherInfo string
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+
+	if otherInfo != "" {
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+	} else {
+		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	}
 	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 	channelId := c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, actualQuota)

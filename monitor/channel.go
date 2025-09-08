@@ -30,7 +30,7 @@ func notifyRootUser(subject string, content string) {
 }
 
 // DisableChannel disable & notify
-func DisableChannel(channelId int, channelName string, reason string) {
+func DisableChannel(channelId int, channelName string, reason string, modelName string) {
 	// 检查渠道是否允许自动禁用
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
@@ -47,6 +47,7 @@ func DisableChannel(channelId int, channelName string, reason string) {
 	currentTime := time.Now().Unix()
 	channel.AutoDisabledReason = &reason
 	channel.AutoDisabledTime = &currentTime
+	channel.AutoDisabledModel = &modelName
 	channel.Status = common.ChannelStatusAutoDisabled
 
 	// 保存到数据库
@@ -87,11 +88,27 @@ func MetricDisableChannel(channelId int, successRate float64) {
 		return
 	}
 
-	err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
+	// 设置禁用原因和时间
+	reason := fmt.Sprintf("success rate %.2f%% below threshold %.2f%%", successRate*100, config.MetricSuccessRateThreshold*100)
+	currentTime := time.Now().Unix()
+	modelName := "N/A (Metric)" // 成功率禁用没有特定的模型名称
+	channel.AutoDisabledReason = &reason
+	channel.AutoDisabledTime = &currentTime
+	channel.AutoDisabledModel = &modelName
+	channel.Status = common.ChannelStatusAutoDisabled
+
+	// 保存到数据库
+	err = channel.Update()
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
+		logger.SysError(fmt.Sprintf("Failed to update channel %d with disable reason: %s", channelId, err.Error()))
+		// 如果更新失败，至少要更新状态
+		err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
+		}
 	}
-	logger.SysLog(fmt.Sprintf("channel #%d has been disabled due to low success rate: %.2f", channelId, successRate*100))
+
+	logger.SysLog(fmt.Sprintf("channel #%d has been disabled due to low success rate: %.2f%%", channelId, successRate*100))
 	subject := fmt.Sprintf("渠道 #%d 已被禁用", channelId)
 	content := fmt.Sprintf("该渠道（#%d）在最近 %d 次调用中成功率为 %.2f%%，低于阈值 %.2f%%，因此被系统自动禁用。",
 		channelId, config.MetricQueueSize, successRate*100, config.MetricSuccessRateThreshold*100)
@@ -112,6 +129,7 @@ func EnableChannel(channelId int, channelName string) {
 
 // StartKeyNotificationListener 启动Key禁用通知监听器
 func StartKeyNotificationListener() {
+	// 启动Key级别的禁用通知监听器
 	go func() {
 		for notification := range model.KeyDisableNotificationChan {
 			// 构建邮件主题和内容
@@ -128,6 +146,26 @@ func StartKeyNotificationListener() {
 <p>该Key因出现错误已被系统自动禁用，请检查Key的有效性。如果所有Key都被禁用，整个渠道也将被禁用。</p>
 `, notification.ChannelName, notification.ChannelId, notification.KeyIndex, notification.MaskedKey,
 				notification.ErrorMessage, notification.StatusCode, notification.DisabledTime.Format("2006-01-02 15:04:05"))
+
+			// 发送邮件通知
+			notifyRootUser(subject, content)
+		}
+	}()
+
+	// 启动渠道级别的禁用通知监听器
+	go func() {
+		for notification := range model.ChannelDisableNotificationChan {
+			// 构建邮件主题和内容
+			subject := fmt.Sprintf("多Key渠道「%s」（#%d）已被完全禁用", notification.ChannelName, notification.ChannelId)
+			content := fmt.Sprintf(`
+<h3>多Key渠道完全禁用通知</h3>
+<p><strong>渠道名称：</strong>%s</p>
+<p><strong>渠道ID：</strong>#%d</p>
+<p><strong>禁用原因：</strong>%s</p>
+<p><strong>禁用时间：</strong>%s</p>
+<hr>
+<p>该渠道的所有Key都已被禁用，因此整个渠道已被系统自动禁用。请检查并修复所有Key的问题后重新启用。</p>
+`, notification.ChannelName, notification.ChannelId, notification.Reason, notification.DisabledTime.Format("2006-01-02 15:04:05"))
 
 			// 发送邮件通知
 			notifyRootUser(subject, content)

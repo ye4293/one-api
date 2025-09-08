@@ -4,16 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/monitor"
-	"github.com/songquanpeng/one-api/relay/util"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/monitor"
+	"github.com/songquanpeng/one-api/relay/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -310,12 +312,17 @@ func updateAllChannelsBalance() error {
 		}
 		balance, err := updateChannelBalance(channel)
 		if err != nil {
-			continue
+			// logger.SysLog(fmt.Sprintf("渠道 %s 更新余额失败，错误信息：%s", channel.Name, err.Error()))
+			// disable channel
+			logger.SysLog(fmt.Sprintf("更新渠道 #%d (%s) 余额失败，禁用渠道", channel.Id, channel.Name))
+			monitor.DisableChannel(channel.Id, channel.Name, err.Error(), "N/A (Billing Check)")
 		} else {
 			// err is nil & balance <= 0 means quota is used up
 			if balance <= 0 {
-				monitor.DisableChannel(channel.Id, channel.Name, "余额不足")
+				monitor.DisableChannel(channel.Id, channel.Name, "余额不足", "N/A (Billing Check)")
 			}
+			channel.Balance = balance
+			channel.BalanceUpdatedTime = helper.GetTimestamp()
 		}
 		time.Sleep(config.RequestInterval)
 	}
