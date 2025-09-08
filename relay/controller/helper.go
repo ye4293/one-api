@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -182,7 +183,7 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	return preConsumedQuota, nil
 }
 
-func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
+func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
 	// 更新多Key使用统计
 	updateMultiKeyUsage(meta, usage != nil)
 
@@ -217,7 +218,15 @@ func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.R
 	}
 	if quota != 0 {
 		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
-		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency)
+
+		// 获取渠道历史信息
+		otherInfo := getChannelHistoryInfo(c)
+
+		if otherInfo != "" {
+			model.RecordConsumeLogWithOther(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo)
+		} else {
+			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency)
+		}
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
@@ -249,6 +258,19 @@ func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
 				meta.ChannelId, keyIndex, err.Error()))
 		}
 	}()
+}
+
+// getChannelHistoryInfo 从gin.Context中获取渠道历史信息并格式化为JSON字符串
+func getChannelHistoryInfo(c *gin.Context) string {
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			// 使用JSON格式存储，确保用逗号分隔
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+	return ""
 }
 
 // UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计

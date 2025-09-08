@@ -149,6 +149,6 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	title := c.Request.Header.Get("X-Title")
 
 	// post-consume quota
-	go postConsumeQuota(ctx, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
+	go postConsumeQuota(ctx, c, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
 	return nil
 }

@@ -60,6 +60,11 @@ func Relay(c *gin.Context) {
 	bizErr := relayHelper(c, relayMode)
 
 	if bizErr == nil {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
+
 		monitor.Emit(channelId, true)
 		return
 	}
@@ -76,9 +81,14 @@ func Relay(c *gin.Context) {
 		retryTimes = 0
 	}
 
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, channelId)
+
 	for i := retryTimes; i > 0; i-- {
 		// 每次重试都选择新渠道（多Key和单Key渠道统一处理）
-		// 计算应该跳过的优先级数量
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级，第2次重试使用第2个优先级，以此类推
 		skipPriorityLevels := retryTimes - i
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 		if err != nil {
@@ -105,6 +115,9 @@ func Relay(c *gin.Context) {
 
 		logger.Infof(ctx, retryLog)
 
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		_, err = common.GetRequestBody(c)
 		if err != nil {
@@ -115,6 +128,8 @@ func Relay(c *gin.Context) {
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			monitor.Emit(channel.Id, true)
+			// 成功时也记录渠道历史到上下文中，供后续日志记录使用
+			c.Set("admin_channel_history", channelHistory)
 			return
 		}
 
@@ -125,8 +140,11 @@ func Relay(c *gin.Context) {
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr)
 	}
 
-	// 如果所有尝试都失败，不处理耗时记录
+	// 如果所有尝试都失败，记录渠道历史到上下文中
 	if bizErr != nil {
+		// 记录渠道历史到上下文中，供后续日志记录使用
+		c.Set("admin_channel_history", channelHistory)
+
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
@@ -321,6 +339,13 @@ func RelayMidjourney(c *gin.Context) {
 	MjErr = relayMidjourney(c, relayMode)
 	retryTimes := config.RetryTimes
 	if MjErr == nil {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelId := c.GetInt("channel_id")
+		if channelId > 0 {
+			channelHistory = append(channelHistory, channelId)
+			c.Set("admin_channel_history", channelHistory)
+		}
 		return
 	}
 	// channelId := c.GetInt("channel_id")
@@ -335,9 +360,18 @@ func RelayMidjourney(c *gin.Context) {
 		retryTimes = 0
 		logger.SysLog("no retry!!!")
 	}
+
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelId := c.GetInt("channel_id")
+	if channelId > 0 {
+		channelHistory = append(channelHistory, channelId)
+	}
+
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
-			// 计算应该跳过的优先级数量
+			// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
 			skipPriorityLevels := retryTimes - i
 			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 			if err != nil {
@@ -345,6 +379,10 @@ func RelayMidjourney(c *gin.Context) {
 				break
 			}
 			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+
+			// 记录重试使用的渠道
+			channelHistory = append(channelHistory, channel.Id)
+
 			middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 			requestBody, err := common.GetRequestBody(c)
 			if err != nil {
@@ -353,6 +391,8 @@ func RelayMidjourney(c *gin.Context) {
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 			MjErr := relayMidjourney(c, relayMode)
 			if MjErr == nil {
+				// 成功时记录渠道历史到上下文中
+				c.Set("admin_channel_history", channelHistory)
 				return
 			}
 			// ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
@@ -370,6 +410,9 @@ func RelayMidjourney(c *gin.Context) {
 		}
 	}
 	if MjErr != nil {
+		// 失败时记录渠道历史到上下文中
+		c.Set("admin_channel_history", channelHistory)
+
 		statusCode := http.StatusBadRequest
 		if MjErr.Response.Code == 30 {
 			MjErr.Response.Result = "The current group load is saturated, please try again later, or upgrade your account to improve service quality."
@@ -440,6 +483,10 @@ func RelaySd(c *gin.Context) {
 
 	SdErr := relaySd(c, relayMode)
 	if SdErr == nil {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
 		return
 	}
 
@@ -457,8 +504,13 @@ func RelaySd(c *gin.Context) {
 	originalKeyIndex := c.GetInt("key_index")
 	requestID := c.GetHeader("X-Request-ID")
 
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, originalChannelId)
+
 	for i := retryTimes; i > 0; i-- {
-		// 计算应该跳过的优先级数量
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
 		skipPriorityLevels := retryTimes - i
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 		if err != nil {
@@ -485,11 +537,16 @@ func RelaySd(c *gin.Context) {
 
 		logger.Infof(ctx, retryLog)
 
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, err := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		SdErr = relaySd(c, relayMode)
 		if SdErr == nil {
+			// 成功时记录渠道历史到上下文中
+			c.Set("admin_channel_history", channelHistory)
 			return
 		}
 
@@ -500,6 +557,8 @@ func RelaySd(c *gin.Context) {
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, SdErr)
 	}
 	if SdErr != nil {
+		// 失败时记录渠道历史到上下文中
+		c.Set("admin_channel_history", channelHistory)
 
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": SdErr.Code,
@@ -532,6 +591,10 @@ func RelayVideoGenerate(c *gin.Context) {
 	bizErr := controller.DoVideoRequest(c, modelName)
 
 	if bizErr == nil {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
 		return
 	}
 
@@ -552,8 +615,13 @@ func RelayVideoGenerate(c *gin.Context) {
 	originalChannelName := channelName
 	originalKeyIndex := keyIndex
 
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, originalChannelId)
+
 	for i := retryTimes; i > 0; i-- {
-		// 计算应该跳过的优先级数量
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
 		skipPriorityLevels := retryTimes - i
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
 		if err != nil {
@@ -580,6 +648,9 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		logger.Infof(ctx, retryLog)
 
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
 		// 使用新通道的配置更新上下文
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		requestBody, err := common.GetRequestBody(c)
@@ -587,6 +658,8 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		bizErr = controller.DoVideoRequest(c, modelName)
 		if bizErr == nil {
+			// 成功时记录渠道历史到上下文中
+			c.Set("admin_channel_history", channelHistory)
 			return
 		}
 
@@ -600,6 +673,9 @@ func RelayVideoGenerate(c *gin.Context) {
 
 	// 所有重试都失败后的处理
 	if bizErr != nil {
+		// 失败时记录渠道历史到上下文中
+		c.Set("admin_channel_history", channelHistory)
+
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
@@ -1274,6 +1350,11 @@ func RelayRunway(c *gin.Context) {
 	// 尝试第一次请求
 	success, statusCode := tryRunwayRequest(c)
 	if success {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
+
 		logger.Infof(ctx, "RelayRunway success on first try - userId: %d, channelId: %d", userId, channelId)
 		return
 	}
@@ -1308,10 +1389,15 @@ func RelayRunway(c *gin.Context) {
 	originalChannelName := channelName
 	originalKeyIndex := keyIndex
 
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, originalChannelId)
+
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
-		// 计算应该跳过的优先级数量
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
 		skipPriorityLevels := retryTimes - i
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
 		if err != nil {
@@ -1338,6 +1424,9 @@ func RelayRunway(c *gin.Context) {
 
 		logger.Infof(ctx, retryLog)
 
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
 		// 使用新通道的配置更新上下文
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		requestBody, err := common.GetRequestBody(c)
@@ -1351,6 +1440,8 @@ func RelayRunway(c *gin.Context) {
 		success, statusCode = tryRunwayRequest(c)
 		if success {
 			logger.Infof(ctx, "RelayRunway retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			// 成功时记录渠道历史到上下文中
+			c.Set("admin_channel_history", channelHistory)
 			return
 		}
 
@@ -1376,6 +1467,8 @@ func RelayRunway(c *gin.Context) {
 
 	// 所有重试都失败后，写入最后一次失败的响应
 	logger.Errorf(ctx, "RelayRunway ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
+	// 失败时记录渠道历史到上下文中
+	c.Set("admin_channel_history", channelHistory)
 	writeLastFailureResponse(c, statusCode)
 }
 

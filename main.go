@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/router"
 )
@@ -108,6 +109,10 @@ func main() {
 		controller.UpdateMidjourneyTaskBulk()
 	})
 	openai.InitTokenEncoders()
+
+	// 启动Key禁用通知监听器
+	monitor.StartKeyNotificationListener()
+	logger.SysLog("key disable notification listener started")
 
 	// Initialize HTTP server
 	server := gin.New()

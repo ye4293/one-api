@@ -17,6 +17,20 @@ import (
 	"gorm.io/gorm"
 )
 
+// KeyDisableNotification Key禁用通知结构
+type KeyDisableNotification struct {
+	ChannelId    int       `json:"channel_id"`
+	ChannelName  string    `json:"channel_name"`
+	KeyIndex     int       `json:"key_index"`
+	MaskedKey    string    `json:"masked_key"`
+	ErrorMessage string    `json:"error_message"`
+	StatusCode   int       `json:"status_code"`
+	DisabledTime time.Time `json:"disabled_time"`
+}
+
+// KeyDisableNotificationChan Key禁用通知通道
+var KeyDisableNotificationChan = make(chan KeyDisableNotification, 100)
+
 type Channel struct {
 	Id                 int     `json:"id"`
 	Type               int     `json:"type" gorm:"default:0"`
@@ -41,6 +55,9 @@ type Channel struct {
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
+	// 新增自动禁用原因字段
+	AutoDisabledReason *string `json:"auto_disabled_reason" gorm:"type:text"`
+	AutoDisabledTime   *int64  `json:"auto_disabled_time" gorm:"bigint"`
 }
 
 // 多Key聚合信息结构
@@ -79,6 +96,10 @@ type KeyMetadata struct {
 	LastUsed    int64   `json:"last_used"`    // 最后使用时间
 	ImportBatch string  `json:"import_batch"` // 导入批次标识
 	Note        string  `json:"note"`         // 备注信息
+	// 新增自动禁用相关字段
+	DisabledReason *string `json:"disabled_reason"` // 禁用原因
+	DisabledTime   *int64  `json:"disabled_time"`   // 禁用时间戳
+	StatusCode     *int    `json:"status_code"`     // HTTP状态码
 }
 
 // 实现 database/sql/driver.Valuer 接口，用于存储到数据库
@@ -1072,6 +1093,17 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 		}
 		channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
 
+		// 记录禁用原因和时间
+		if channel.MultiKeyInfo.KeyMetadata == nil {
+			channel.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
+		}
+		metadata := channel.MultiKeyInfo.KeyMetadata[keyIndex]
+		currentTime := time.Now().Unix()
+		metadata.DisabledReason = &errorMessage
+		metadata.DisabledTime = &currentTime
+		metadata.StatusCode = &statusCode
+		channel.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
+
 		keys := channel.ParseKeys()
 		maskedKey := "unknown"
 		if keyIndex < len(keys) {
@@ -1083,8 +1115,11 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 			}
 		}
 
-		logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s",
-			keyIndex, maskedKey, channel.Id, errorMessage))
+		logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s (status: %d)",
+			keyIndex, maskedKey, channel.Id, errorMessage, statusCode))
+
+		// 发送邮件通知
+		channel.notifyKeyDisabled(keyIndex, maskedKey, errorMessage, statusCode)
 
 		// 检查是否所有Key都被禁用，如果是则禁用整个渠道
 		channel.checkAndUpdateChannelStatus()
@@ -1109,6 +1144,29 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	}
 
 	return nil
+}
+
+// notifyKeyDisabled 发送Key禁用邮件通知
+func (channel *Channel) notifyKeyDisabled(keyIndex int, maskedKey string, errorMessage string, statusCode int) {
+	// 使用monitor包的通知函数来避免循环导入
+	// 我们将在monitor包中添加一个专门的函数来处理这个通知
+	go func() {
+		// 先记录日志
+		logger.SysLog(fmt.Sprintf("Key #%d (%s) in multi-key channel #%d has been auto-disabled due to error: %s (status: %d)",
+			keyIndex, maskedKey, channel.Id, errorMessage, statusCode))
+
+		// 通过一个回调机制来发送邮件，避免循环导入
+		// 这里先记录，后续可以通过事件机制来处理
+		KeyDisableNotificationChan <- KeyDisableNotification{
+			ChannelId:    channel.Id,
+			ChannelName:  channel.Name,
+			KeyIndex:     keyIndex,
+			MaskedKey:    maskedKey,
+			ErrorMessage: errorMessage,
+			StatusCode:   statusCode,
+			DisabledTime: time.Now(),
+		}
+	}()
 }
 
 // GetNextAvailableKeyWithRetry 获取下一个可用Key，支持重试和自动跳过禁用Key
