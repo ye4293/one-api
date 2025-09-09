@@ -21,7 +21,6 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
-	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -36,6 +35,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	startTime := time.Now()
 	ctx := c.Request.Context()
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+
+	logger.Infof(ctx, "RelayImageHelper START: relayMode=%d, channelId=%d, userId=%d, path=%s",
+		relayMode, channelId, userId, c.Request.URL.Path)
+
+	// 检查函数开始时的上下文状态
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		logger.Debugf(ctx, "RelayImageHelper: ENTRY - admin_channel_history exists: %v", channelHistoryInterface)
+	}
 	meta := util.GetRelayMeta(c)
 	// 检查内容类型
 	contentType := c.GetHeader("Content-Type")
@@ -525,21 +535,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent = fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
 		}
 
-		// 获取渠道历史信息并记录日志
-		var otherInfo string
-		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-				}
-			}
-		}
-
-		if otherInfo != "" {
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
-		} else {
-			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
-		}
+		// 记录消费日志 - 在RelayImageHelper中不需要处理other字段，这由具体的处理函数负责
+		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
@@ -562,6 +559,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		logger.Errorf(ctx, "API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
+
+		// 检查错误返回时的上下文状态
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			logger.Infof(ctx, "RelayImageHelper: EXIT ERROR - admin_channel_history exists: %v", channelHistoryInterface)
+		} else {
+			logger.Warnf(ctx, "RelayImageHelper: EXIT ERROR - admin_channel_history NOT found")
+		}
+
+		logger.Errorf(ctx, "RelayImageHelper EXIT ERROR: returning error for status %d", resp.StatusCode)
 		return openai.ErrorWrapper(
 			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
 			"api_error",
@@ -869,6 +875,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
 	}
 
+	// 检查函数结束时的上下文状态
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		logger.Infof(ctx, "RelayImageHelper: EXIT SUCCESS - admin_channel_history exists: %v", channelHistoryInterface)
+	} else {
+		logger.Warnf(ctx, "RelayImageHelper: EXIT SUCCESS - admin_channel_history NOT found (this is the problem!)")
+	}
+
+	logger.Infof(ctx, "RelayImageHelper EXIT SUCCESS: returning nil")
 	return nil
 }
 
@@ -1248,8 +1262,8 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 // 更新 CreateImageLog 函数以接受 mode 参数
 func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string, n int, quota int64) error {
 	// 创建新的 Image 实例
-	image := &dbmodel.Image{
-		Username:   dbmodel.GetUsernameById(meta.UserId),
+	image := &model.Image{
+		Username:   model.GetUsernameById(meta.UserId),
 		ChannelId:  meta.ChannelId,
 		UserId:     meta.UserId,
 		Model:      meta.OriginModelName,
@@ -1338,13 +1352,13 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
-	err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
+	err := model.PostConsumeTokenQuota(meta.TokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
 		return err
 	}
 
-	err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
 	if err != nil {
 		logger.SysError("error update user quota cache: " + err.Error())
 		return err
@@ -1369,24 +1383,24 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 		}
 
 		if otherInfo != "" {
-			dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID)
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID)
 		} else {
-			dbmodel.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
+			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
 		}
-		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
+		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
-		dbmodel.UpdateChannelUsedQuota(channelId, quota)
+		model.UpdateChannelUsedQuota(channelId, quota)
 	}
 
 	return nil
 }
 
 func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCode {
-	image, err := dbmodel.GetImageByTaskId(taskId)
+	image, err := model.GetImageByTaskId(taskId)
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get image", http.StatusInternalServerError)
 	}
-	channel, err := dbmodel.GetChannelById(image.ChannelId, true)
+	channel, err := model.GetChannelById(image.ChannelId, true)
 	cfg, _ := channel.LoadConfig()
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed to get channel", http.StatusInternalServerError)
@@ -2154,14 +2168,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
 
 	// 获取渠道历史信息并记录日志
-	var otherInfo string
-	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-			}
-		}
-	}
+	otherInfo := extractChannelHistoryInfo(ctx, c)
 
 	if otherInfo != "" {
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
@@ -2194,4 +2201,26 @@ func calculateGeminiQuota(promptTokens, completionTokens int, groupRatio float64
 	quota := int64(totalCost * quotaPerDollar * groupRatio)
 
 	return quota
+}
+
+// extractChannelHistoryInfo 从gin上下文中提取渠道历史信息
+func extractChannelHistoryInfo(ctx context.Context, c *gin.Context) string {
+	channelHistoryInterface, exists := c.Get("admin_channel_history")
+	if !exists {
+		return ""
+	}
+
+	channelHistory, ok := channelHistoryInterface.([]int)
+	if !ok || len(channelHistory) == 0 {
+		logger.Debugf(ctx, "Invalid channel history type or empty: %T", channelHistoryInterface)
+		return ""
+	}
+
+	channelHistoryBytes, err := json.Marshal(channelHistory)
+	if err != nil {
+		logger.Warnf(ctx, "Failed to marshal channel history %v: %v", channelHistory, err)
+		return ""
+	}
+
+	return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
 }

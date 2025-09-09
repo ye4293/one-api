@@ -30,10 +30,33 @@ import (
 // https://platform.openai.com/docs/api-reference/chat
 
 func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
+	ctx := c.Request.Context()
 	var err *model.ErrorWithStatusCode
+
+	logger.Infof(ctx, "relayHelper: relayMode=%d, path=%s", relayMode, c.Request.URL.Path)
+
 	switch relayMode {
 	case constant.RelayModeImagesGenerations:
+		logger.Infof(ctx, "relayHelper: calling RelayImageHelper for images/generations")
+
+		// 检查调用前的上下文状态
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			logger.Infof(ctx, "relayHelper: BEFORE RelayImageHelper - admin_channel_history exists: %v", channelHistoryInterface)
+		} else {
+			logger.Warnf(ctx, "relayHelper: BEFORE RelayImageHelper - admin_channel_history NOT found")
+		}
+
 		err = controller.RelayImageHelper(c, relayMode)
+
+		// 检查调用后的上下文状态
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			logger.Infof(ctx, "relayHelper: AFTER RelayImageHelper - admin_channel_history exists: %v", channelHistoryInterface)
+		} else {
+			logger.Warnf(ctx, "relayHelper: AFTER RelayImageHelper - admin_channel_history NOT found")
+		}
+
+		logger.Infof(ctx, "relayHelper: RelayImageHelper returned error: %v", err)
+
 	case constant.RelayModeAudioSpeech:
 		fallthrough
 	case constant.RelayModeAudioTranslation:
@@ -51,19 +74,37 @@ func Relay(c *gin.Context) {
 	relayMode := constant.Path2RelayMode(c.Request.URL.Path)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+
+	logger.Infof(ctx, "Relay START: path=%s, relayMode=%d, channelId=%d, userId=%d",
+		c.Request.URL.Path, relayMode, channelId, userId)
+
 	if config.DebugEnabled {
 		requestBody, _ := common.GetRequestBody(c)
 		logger.Debugf(ctx, "request body: %s", string(requestBody))
 	}
-	channelId := c.GetInt("channel_id")
-	userId := c.GetInt("id")
+
+	// 为第一次调用设置渠道历史
+	var firstChannelHistory []int
+	firstChannelHistory = append(firstChannelHistory, channelId)
+	c.Set("admin_channel_history", firstChannelHistory)
+
 	bizErr := relayHelper(c, relayMode)
 
 	if bizErr == nil {
-		// 第一次成功，记录使用的渠道到上下文中
-		var channelHistory []int
-		channelHistory = append(channelHistory, channelId)
-		c.Set("admin_channel_history", channelHistory)
+		// 第一次成功，需要补充设置渠道历史（如果还没有的话）
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); !exists {
+			var channelHistory []int
+			channelHistory = append(channelHistory, channelId)
+			c.Set("admin_channel_history", channelHistory)
+			logger.Infof(ctx, "Relay SUCCESS - setting admin_channel_history for first success: %v, path: %s, channelId: %d",
+				channelHistory, c.Request.URL.Path, channelId)
+		} else {
+			logger.Infof(ctx, "Relay SUCCESS - admin_channel_history already exists: %v, path: %s",
+				channelHistoryInterface, c.Request.URL.Path)
+		}
 
 		monitor.Emit(channelId, true)
 		return
@@ -125,11 +166,12 @@ func Relay(c *gin.Context) {
 			break
 		}
 
+		// 在调用relayHelper之前设置渠道历史，这样RelayImageHelper就能获取到了
+		c.Set("admin_channel_history", channelHistory)
+
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			monitor.Emit(channel.Id, true)
-			// 成功时也记录渠道历史到上下文中，供后续日志记录使用
-			c.Set("admin_channel_history", channelHistory)
 			return
 		}
 
@@ -1062,14 +1104,111 @@ func RelayRecraft(c *gin.Context) {
 
 	channelId := c.GetInt("channel_id")
 	userId := c.GetInt("id")
+	modelName := c.GetString("model")
+
+	logger.Infof(ctx, "RelayRecraft START: channelId=%d, userId=%d, modelName=%s",
+		channelId, userId, modelName)
+
+	// 为第一次调用设置渠道历史
+	var firstChannelHistory []int
+	firstChannelHistory = append(firstChannelHistory, channelId)
+	c.Set("admin_channel_history", firstChannelHistory)
+	logger.Infof(ctx, "RelayRecraft: Setting admin_channel_history for FIRST call: %v", firstChannelHistory)
+
+	// 尝试第一次请求
+	bizErr := relayRecraftHelper(c)
+	if bizErr == nil {
+		logger.Infof(ctx, "RelayRecraft: First call SUCCESS with channelHistory: %v", firstChannelHistory)
+		return
+	}
+
+	// 第一次失败，开始重试逻辑
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+		logger.Errorf(ctx, "Recraft relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
+		retryTimes = 0
+	}
+
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, channelId)
+
+	for i := retryTimes; i > 0; i-- {
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+		if channel.Id == channelId {
+			continue
+		}
+		logger.Infof(ctx, "Recraft retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
+			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
+
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		channelHistory = append(channelHistory, channel.Id)
+
+		// 重新构建请求体
+		requestBody, err := common.GetRequestBody(c)
+		if err == nil {
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		}
+
+		// 在调用relayRecraftHelper之前设置渠道历史
+		c.Set("admin_channel_history", channelHistory)
+		logger.Infof(ctx, "RelayRecraft: Setting admin_channel_history before retry: %v", channelHistory)
+
+		bizErr = relayRecraftHelper(c)
+		if bizErr == nil {
+			logger.Infof(ctx, "RelayRecraft: Retry SUCCESS with channelHistory: %v", channelHistory)
+			return
+		}
+
+		channelId = channel.Id
+		channelName = channel.Name
+		keyIndex = c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+	}
+
+	// 所有重试都失败后的处理
+	c.Set("admin_channel_history", channelHistory)
+	if bizErr.StatusCode == http.StatusTooManyRequests {
+		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
+	}
+	c.JSON(bizErr.StatusCode, gin.H{
+		"error": gin.H{
+			"message": util.ProcessString(bizErr.Error.Message),
+			"type":    bizErr.Error.Type,
+			"param":   bizErr.Error.Param,
+			"code":    bizErr.Error.Code,
+		},
+	})
+}
+
+func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
 	startTime := time.Now()
 	modelName := c.GetString("model")
 
 	channel, err := dbmodel.GetChannelById(channelId, true)
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to get channel: %v", requestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel"})
-		return
+		return &model.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      model.Error{Message: "Failed to get channel"},
+		}
 	}
 
 	fullPath := c.Request.URL.Path
@@ -1085,8 +1224,10 @@ func RelayRecraft(c *gin.Context) {
 	requestBodyBytes, err := common.GetRequestBody(c)
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to read request body: %v", requestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read request body"})
-		return
+		return &model.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      model.Error{Message: "Failed to read request body"},
+		}
 	}
 
 	// Parse request to check for normalizeResponseFormat parameter
@@ -1119,8 +1260,10 @@ func RelayRecraft(c *gin.Context) {
 	request, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(requestBodyBytes))
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to create request: %v", requestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
-		return
+		return &model.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      model.Error{Message: "Failed to create request"},
+		}
 	}
 
 	// Get Content-Type from original request or use default
@@ -1140,8 +1283,10 @@ func RelayRecraft(c *gin.Context) {
 	response, err := client.Do(request)
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to send request: %v", requestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send request to provider"})
-		return
+		return &model.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      model.Error{Message: "Failed to send request to provider"},
+		}
 	}
 	defer response.Body.Close()
 
@@ -1149,8 +1294,10 @@ func RelayRecraft(c *gin.Context) {
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		logger.Errorf(ctx, "[%s] Failed to read provider response: %v", requestID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read provider response"})
-		return
+		return &model.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      model.Error{Message: "Failed to read provider response"},
+		}
 	}
 
 	// Calculate duration
@@ -1172,6 +1319,7 @@ func RelayRecraft(c *gin.Context) {
 
 		// Record consumption log
 		tokenName := c.GetString("token_name")
+		xRequestID := c.GetString("X-Request-ID")
 		logContent := fmt.Sprintf("Recraft API call: %s", modelName)
 		title := ""
 		httpReferer := ""
@@ -1180,8 +1328,23 @@ func RelayRecraft(c *gin.Context) {
 		inputTokens := 0
 		outputTokens := 0
 
-		dbmodel.RecordConsumeLog(ctx, userId, channelId, inputTokens, outputTokens,
-			modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0)
+		// 获取渠道历史信息并记录日志
+		var otherInfo string
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+				}
+			}
+		}
+
+		if otherInfo != "" {
+			dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, inputTokens, outputTokens,
+				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, otherInfo, xRequestID)
+		} else {
+			dbmodel.RecordConsumeLogWithRequestID(ctx, userId, channelId, inputTokens, outputTokens,
+				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, xRequestID)
+		}
 
 		// Update user and channel quota
 		err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)
@@ -1288,21 +1451,87 @@ func RelayRecraft(c *gin.Context) {
 
 	// Pass through the response regardless of status code
 	c.Data(response.StatusCode, response.Header.Get("Content-Type"), responseBody)
+	return nil
 }
 
 func RelayImageGenerateAsync(c *gin.Context) {
-	// ctx := c.Request.Context()
+	ctx := c.Request.Context()
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
-	// channelId := c.GetInt("channel_id")
-	// userId := c.GetInt("id")
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
 	modelName := c.GetString("original_model")
+
+	// 为第一次调用设置渠道历史
+	var firstChannelHistory []int
+	firstChannelHistory = append(firstChannelHistory, channelId)
+	c.Set("admin_channel_history", firstChannelHistory)
+
+	// 尝试第一次请求
 	bizErr := controller.DoImageRequest(c, modelName)
 	if bizErr == nil {
 		return
 	}
+
+	// 第一次失败，开始重试逻辑
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+		logger.Errorf(ctx, "Image relay error happen, status code is %d, won't retry in this case", bizErr.StatusCode)
+		retryTimes = 0
+	}
+
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, channelId)
+
+	for i := retryTimes; i > 0; i-- {
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+		if channel.Id == channelId {
+			continue
+		}
+		logger.Infof(ctx, "Image retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
+			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
+
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		channelHistory = append(channelHistory, channel.Id)
+
+		// 重新构建请求体
+		requestBody, err := common.GetRequestBody(c)
+		if err == nil {
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		}
+
+		// 在调用DoImageRequest之前设置渠道历史
+		c.Set("admin_channel_history", channelHistory)
+		logger.Infof(ctx, "RelayImageGenerateAsync: Setting admin_channel_history before retry: %v", channelHistory)
+
+		bizErr = controller.DoImageRequest(c, modelName)
+		if bizErr == nil {
+			logger.Infof(ctx, "RelayImageGenerateAsync: Retry SUCCESS with channelHistory: %v", channelHistory)
+			return
+		}
+
+		channelId = channel.Id
+		channelName = channel.Name
+		keyIndex = c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+	}
+
 	// 所有重试都失败后的处理
+	c.Set("admin_channel_history", channelHistory)
 	if bizErr.StatusCode == http.StatusTooManyRequests {
 		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 	}
