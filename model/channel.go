@@ -1287,3 +1287,20 @@ func (channel *Channel) GetNextAvailableKeyWithRetry(excludeIndices []int) (stri
 		return keys[selectedIdx], selectedIdx, nil
 	}
 }
+
+// ClearUsedQuota 清空渠道的使用配额
+func (channel *Channel) ClearUsedQuota() error {
+	// 使用事务确保数据一致性
+	return DB.Transaction(func(tx *gorm.DB) error {
+		// 更新渠道的 used_quota 字段为 0
+		err := tx.Model(channel).Update("used_quota", 0).Error
+		if err != nil {
+			return fmt.Errorf("failed to clear used quota: %w", err)
+		}
+
+		// 更新当前实例的字段
+		channel.UsedQuota = 0
+
+		return nil
+	})
+}

@@ -1330,3 +1330,47 @@ func DeleteDisabledKeys(c *gin.Context) {
 		"message": "成功删除所有禁用密钥",
 	})
 }
+
+// ClearChannelQuota 清空渠道使用配额
+func ClearChannelQuota(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Invalid channel id",
+		})
+		return
+	}
+
+	channel, err := model.GetChannelById(id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Channel not found: " + err.Error(),
+		})
+		return
+	}
+
+	// 清空使用配额
+	err = channel.ClearUsedQuota()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Failed to clear used quota: " + err.Error(),
+		})
+		return
+	}
+
+	logger.SysLog(fmt.Sprintf("Cleared used quota for channel %d (%s)", channel.Id, channel.Name))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Successfully cleared used quota for channel %s", channel.Name),
+		"data": gin.H{
+			"channel_id":   channel.Id,
+			"channel_name": channel.Name,
+			"used_quota":   0,
+		},
+	})
+}

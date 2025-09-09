@@ -83,6 +83,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/test/:id", controller.TestChannel)
 			channelRoute.GET("/update_balance", controller.UpdateAllChannelsBalance)
 			channelRoute.GET("/update_balance/:id", controller.UpdateChannelBalance)
+			channelRoute.GET("/clear_quota/:id", controller.ClearChannelQuota)
 			channelRoute.POST("/", controller.AddChannel)
 			channelRoute.PUT("/", controller.UpdateChannel)
 			channelRoute.POST("/batchdelete", controller.BatchDelteChannel)

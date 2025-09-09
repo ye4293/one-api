@@ -139,7 +139,7 @@ func GetTokenStatus(c *gin.Context) {
 }
 
 func AddToken(c *gin.Context) {
-	
+
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
 	if err != nil {
@@ -291,15 +291,57 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
+	// 智能启用逻辑变量（提升到函数级作用域）
+	shouldAutoEnable := false
+	autoEnableReason := ""
+
 	if tokenupdate.StatusOnly != nil && *tokenupdate.StatusOnly {
 		cleanToken.Status = tokenupdate.Status
 	} else {
+		// 记录更新前的状态，用于智能启用判断
+		originalStatus := cleanToken.Status
+
 		// If you add more fields, please also update token.Update()
 		cleanToken.Name = tokenupdate.Name
 		cleanToken.ExpiredTime = tokenupdate.ExpiredTime
 		cleanToken.RemainQuota = tokenupdate.RemainQuota
 		cleanToken.TokenRemindThreshold = tokenupdate.TokenRemindThreshold
 		cleanToken.UnlimitedQuota = tokenupdate.UnlimitedQuota
+
+		// 智能启用逻辑：自动重新启用符合条件的禁用令牌
+
+		// 只对被系统自动禁用的令牌进行智能启用（排除手动禁用的令牌）
+		if originalStatus == common.TokenStatusExhausted || originalStatus == common.TokenStatusExpired {
+
+			// 如果原来是已耗尽状态，现在有足够的额度或设置了无限额度
+			if originalStatus == common.TokenStatusExhausted {
+				if cleanToken.UnlimitedQuota {
+					shouldAutoEnable = true
+					autoEnableReason = "unlimited quota enabled"
+				} else if cleanToken.RemainQuota > 0 {
+					shouldAutoEnable = true
+					autoEnableReason = "quota replenished to " + strconv.FormatInt(cleanToken.RemainQuota, 10)
+				}
+			}
+
+			// 如果原来是过期状态，现在有有效的过期时间或设置为永不过期
+			if originalStatus == common.TokenStatusExpired {
+				currentTime := helper.GetTimestamp()
+				if cleanToken.ExpiredTime == -1 {
+					shouldAutoEnable = true
+					autoEnableReason = "set to never expire"
+				} else if cleanToken.ExpiredTime > currentTime {
+					shouldAutoEnable = true
+					autoEnableReason = "expiration time updated to future"
+				}
+			}
+
+			// 执行自动启用并记录日志
+			if shouldAutoEnable {
+				cleanToken.Status = common.TokenStatusEnabled
+				logger.SysLog("Auto-enabling token " + strconv.Itoa(cleanToken.Id) + " (user " + strconv.Itoa(userId) + ") - " + autoEnableReason)
+			}
+		}
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -309,9 +351,18 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
+
+	// 构建响应消息
+	responseMessage := ""
+	if tokenupdate.StatusOnly == nil || !*tokenupdate.StatusOnly {
+		if shouldAutoEnable {
+			responseMessage = "Token updated and automatically enabled: " + autoEnableReason
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": "",
+		"message": responseMessage,
 		"data":    cleanToken,
 	})
 	return

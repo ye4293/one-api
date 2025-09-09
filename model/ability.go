@@ -80,7 +80,15 @@ func (channel *Channel) AddAbilities() error {
 	groups_ := strings.Split(channel.Group, ",")
 	abilities := make([]Ability, 0, len(models_)*len(groups_))
 	for _, model := range models_ {
+		model = strings.TrimSpace(model) // 去除空格
+		if model == "" {
+			continue // 跳过空模型
+		}
 		for _, group := range groups_ {
+			group = strings.TrimSpace(group) // 去除空格
+			if group == "" {
+				continue // 跳过空组
+			}
 			ability := Ability{
 				Group:     group,
 				Model:     model,
