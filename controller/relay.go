@@ -282,6 +282,14 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 		processMultiKeyChannelError(ctx, channel, keyIndex, err, modelName)
 	} else {
 		// 单Key渠道的原有逻辑（不使用keyIndex参数）
+		// 添加保护检查：如果KeyCount > 1但IsMultiKey=false，可能存在逻辑错误
+		if channel.MultiKeyInfo.KeyCount > 1 {
+			logger.SysLog(fmt.Sprintf("WARNING: Channel %d has KeyCount=%d but IsMultiKey=false, this may indicate a logic error. Using multi-key logic instead.",
+				channelId, channel.MultiKeyInfo.KeyCount))
+			processMultiKeyChannelError(ctx, channel, keyIndex, err, modelName)
+			return
+		}
+
 		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 			if channel.AutoDisabled {
 				monitor.DisableChannel(channelId, channelName, err.Error.Message, modelName)
@@ -1407,7 +1415,7 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 		// Check if we should disable the channel
 		if response.StatusCode == 401 || response.StatusCode == 403 {
-			monitor.DisableChannel(channelId, channel.Name, "Authentication error with Recraft API", "N/A (Recraft Auth)")
+			monitor.DisableChannelSafely(channelId, channel.Name, "Authentication error with Recraft API", "N/A (Recraft Auth)")
 		}
 
 		// Handle error format normalization if requested

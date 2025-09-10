@@ -31,9 +31,8 @@ import (
 
 func buildTestRequest() *relaymodel.GeneralOpenAIRequest {
 	testRequest := &relaymodel.GeneralOpenAIRequest{
-		MaxTokens: 2,
-		Stream:    false,
-		Model:     "gpt-3.5-turbo",
+		Stream: false,
+		Model:  "gpt-3.5-turbo",
 	}
 	testMessage := relaymodel.Message{
 		Role:    "user",
@@ -151,7 +150,7 @@ func TestChannel(c *gin.Context) {
 	c.ShouldBindJSON(&requestBody)
 	specifiedModel := strings.TrimSpace(requestBody.Model)
 
-	channel, err := model.GetChannelById(id, false)
+	channel, err := model.GetChannelById(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -251,7 +250,7 @@ func testChannels(notify bool, scope string) error {
 	}
 	testAllChannelsRunning = true
 	testAllChannelsLock.Unlock()
-	channels, err := model.GetAllChannels(0, 0, scope)
+	channels, err := model.GetAllChannelsForTest(0, 0, scope)
 	if err != nil {
 		return err
 	}
@@ -267,15 +266,15 @@ func testChannels(notify bool, scope string) error {
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 			if isChannelEnabled && milliseconds > disableThreshold {
-				err = errors.New(fmt.Sprintf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0))
+				err = fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
 				if config.AutomaticDisableChannelEnabled {
-					monitor.DisableChannel(channel.Id, channel.Name, err.Error(), "N/A (Test)")
+					monitor.DisableChannelSafely(channel.Id, channel.Name, err.Error(), "N/A (Test)")
 				} else {
 					_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
 				}
 			}
 			if isChannelEnabled && util.ShouldDisableChannel(openaiErr, -1) {
-				monitor.DisableChannel(channel.Id, channel.Name, err.Error(), "N/A (Test)")
+				monitor.DisableChannelSafely(channel.Id, channel.Name, err.Error(), "N/A (Test)")
 			}
 			if !isChannelEnabled && util.ShouldEnableChannel(err, openaiErr) {
 				monitor.EnableChannel(channel.Id, channel.Name)

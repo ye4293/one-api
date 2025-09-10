@@ -273,6 +273,21 @@ func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {
 	return channels, err
 }
 
+func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, error) {
+	var channels []*Channel
+	var err error
+	switch scope {
+	case "all":
+		err = DB.Order("id desc").Find(&channels).Error
+	case "disabled":
+		err = DB.Order("id desc").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&channels).Error
+	default:
+		// 对于测试，我们总是需要包含key字段
+		err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&channels).Error
+	}
+	return channels, err
+}
+
 func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int) (channels []*Channel, total int64, err error) {
 	keyCol := "`key`"
 
@@ -842,7 +857,17 @@ func (channel *Channel) BatchImportKeys(newKeys []string, mode BatchImportMode) 
 	channel.Key = strings.Join(finalKeys, "\n")
 
 	// 更新多Key信息
-	channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
+	// 保护原有多key渠道：只在追加模式下保护，覆盖模式允许改变
+	wasMultiKey := channel.MultiKeyInfo.IsMultiKey
+	originalKeyCount := channel.MultiKeyInfo.KeyCount
+	
+	if mode == BatchImportOverride {
+		// 覆盖模式：严格按照当前key数量设置
+		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
+	} else {
+		// 追加模式：保护原有多key渠道状态
+		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1 || (wasMultiKey && originalKeyCount > 1)
+	}
 	channel.MultiKeyInfo.KeyCount = len(finalKeys)
 	channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
 	channel.MultiKeyInfo.BatchImportMode = mode

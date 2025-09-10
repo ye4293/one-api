@@ -29,15 +29,29 @@ func notifyRootUser(subject string, content string) {
 	}
 }
 
-// DisableChannel disable & notify
-func DisableChannel(channelId int, channelName string, reason string, modelName string) {
-	// 检查渠道是否允许自动禁用
+// DisableChannelSafely disable & notify with multi-key channel protection
+func DisableChannelSafely(channelId int, channelName string, reason string, modelName string) {
+	// 检查渠道信息
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
 		return
 	}
 
+	if channel.MultiKeyInfo.IsMultiKey {
+		// 对于多key渠道，不应该直接禁用整个渠道
+		// 记录警告信息，需要管理员手动处理
+		logger.SysLog(fmt.Sprintf("Multi-key channel #%d (%s) has external issues: %s. Not auto-disabling the entire channel as it may have working keys. Manual intervention may be required.",
+			channelId, channelName, reason))
+		return
+	}
+
+	// 单key渠道使用内联逻辑，避免重复获取渠道信息
+	disableChannelInternal(channel, channelId, channelName, reason, modelName)
+}
+
+// disableChannelInternal 内部禁用函数，接受已获取的channel对象
+func disableChannelInternal(channel *model.Channel, channelId int, channelName string, reason string, modelName string) {
 	if !channel.AutoDisabled {
 		logger.SysLog(fmt.Sprintf("channel #%d (%s) should be disabled but auto-disable is turned off, reason: %s", channelId, channelName, reason))
 		return
@@ -51,7 +65,7 @@ func DisableChannel(channelId int, channelName string, reason string, modelName 
 	channel.Status = common.ChannelStatusAutoDisabled
 
 	// 保存到数据库
-	err = channel.Update()
+	err := channel.Update()
 	if err != nil {
 		logger.SysError(fmt.Sprintf("Failed to update channel %d with disable reason: %s", channelId, err.Error()))
 		// 如果更新失败，至少要更新状态
@@ -75,6 +89,18 @@ func DisableChannel(channelId int, channelName string, reason string, modelName 
 	notifyRootUser(subject, content)
 }
 
+// DisableChannel disable & notify
+func DisableChannel(channelId int, channelName string, reason string, modelName string) {
+	// 检查渠道是否允许自动禁用
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	disableChannelInternal(channel, channelId, channelName, reason, modelName)
+}
+
 func MetricDisableChannel(channelId int, successRate float64) {
 	// 检查渠道是否允许自动禁用
 	channel, err := model.GetChannelById(channelId, true)
@@ -88,31 +114,24 @@ func MetricDisableChannel(channelId int, successRate float64) {
 		return
 	}
 
-	// 设置禁用原因和时间
-	reason := fmt.Sprintf("success rate %.2f%% below threshold %.2f%%", successRate*100, config.MetricSuccessRateThreshold*100)
-	currentTime := time.Now().Unix()
-	modelName := "N/A (Metric)" // 成功率禁用没有特定的模型名称
-	channel.AutoDisabledReason = &reason
-	channel.AutoDisabledTime = &currentTime
-	channel.AutoDisabledModel = &modelName
-	channel.Status = common.ChannelStatusAutoDisabled
+	// 对于多key渠道，不应该基于整体成功率直接禁用整个渠道
+	// 因为可能只是部分key有问题，应该让单个key的错误处理来决定
+	if channel.MultiKeyInfo.IsMultiKey {
+		logger.SysLog(fmt.Sprintf("Multi-key channel #%d has low success rate %.2f%%, but not auto-disabling the entire channel. Individual key errors will be handled separately. Manual review recommended.",
+			channelId, successRate*100))
 
-	// 保存到数据库
-	err = channel.Update()
-	if err != nil {
-		logger.SysError(fmt.Sprintf("Failed to update channel %d with disable reason: %s", channelId, err.Error()))
-		// 如果更新失败，至少要更新状态
-		err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
-		}
+		// 发送通知但不禁用
+		subject := fmt.Sprintf("多Key渠道 #%d 成功率过低", channelId)
+		content := fmt.Sprintf("多Key渠道（#%d）在最近 %d 次调用中成功率为 %.2f%%，低于阈值 %.2f%%。由于这是多Key渠道，系统未自动禁用，请手动检查各个Key的状态。",
+			channelId, config.MetricQueueSize, successRate*100, config.MetricSuccessRateThreshold*100)
+		notifyRootUser(subject, content)
+		return
 	}
 
-	logger.SysLog(fmt.Sprintf("channel #%d has been disabled due to low success rate: %.2f%%", channelId, successRate*100))
-	subject := fmt.Sprintf("渠道 #%d 已被禁用", channelId)
-	content := fmt.Sprintf("该渠道（#%d）在最近 %d 次调用中成功率为 %.2f%%，低于阈值 %.2f%%，因此被系统自动禁用。",
-		channelId, config.MetricQueueSize, successRate*100, config.MetricSuccessRateThreshold*100)
-	notifyRootUser(subject, content)
+	// 单key渠道使用禁用逻辑
+	reason := fmt.Sprintf("success rate %.2f%% below threshold %.2f%%", successRate*100, config.MetricSuccessRateThreshold*100)
+	modelName := "N/A (Metric)" // 成功率禁用没有特定的模型名称
+	disableChannelInternal(channel, channelId, channel.Name, reason, modelName)
 }
 
 // EnableChannel enable & notify
