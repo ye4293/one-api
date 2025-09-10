@@ -18,18 +18,18 @@ func init() {
 	transport := &http.Transport{
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
+		IdleConnTimeout:       30 * 60 * time.Second, // 30 minutes
 		DisableKeepAlives:     false,
 		MaxConnsPerHost:       0, // No limit
 		WriteBufferSize:       32 * 1024,
 		ReadBufferSize:        32 * 1024,
 		DialContext:           nil,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		TLSHandshakeTimeout:   30 * 60 * time.Second, // 30 minutes
+		ResponseHeaderTimeout: 30 * 60 * time.Second, // 30 minutes
+		ExpectContinueTimeout: 30 * 60 * time.Second, // 30 minutes
 	}
 
-	defaultTimeout := 60 * time.Second
+	defaultTimeout := 30 * 60 * time.Second // 30 minutes
 	if config.RelayTimeout > 0 {
 		defaultTimeout = time.Duration(config.RelayTimeout) * time.Second
 	}
@@ -47,15 +47,15 @@ func init() {
 	impatientTransport := &http.Transport{
 		MaxIdleConns:          10,
 		MaxIdleConnsPerHost:   5,
-		IdleConnTimeout:       30 * time.Second,
+		IdleConnTimeout:       30 * 60 * time.Second, // 30 minutes
 		DisableKeepAlives:     false,
 		DialContext:           nil,
-		TLSHandshakeTimeout:   3 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
+		TLSHandshakeTimeout:   30 * 60 * time.Second, // 30 minutes
+		ResponseHeaderTimeout: 30 * 60 * time.Second, // 30 minutes
 	}
 
 	ImpatientHTTPClient = &http.Client{
-		Timeout:   5 * time.Second,
+		Timeout:   30 * 60 * time.Second, // 30 minutes
 		Transport: impatientTransport,
 	}
 }
