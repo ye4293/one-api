@@ -187,6 +187,9 @@ func Relay(c *gin.Context) {
 		// 记录渠道历史到上下文中，供后续日志记录使用
 		c.Set("admin_channel_history", channelHistory)
 
+		// 记录失败请求的日志
+		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 		}
@@ -199,6 +202,161 @@ func Relay(c *gin.Context) {
 			},
 		})
 	}
+}
+
+// recordFailedRequestLog 记录失败请求的日志
+func recordFailedRequestLog(ctx context.Context, c *gin.Context, bizErr *model.ErrorWithStatusCode, channelHistory []int) {
+	userId := c.GetInt("id")
+	originalModel := c.GetString("original_model")
+	tokenName := c.GetString("token_name")
+	requestID := c.GetHeader("X-Request-ID")
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if len(channelHistory) > 0 {
+		if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+			otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+		}
+	}
+
+	// 构建失败日志内容
+	logContent := fmt.Sprintf("请求失败: %s", bizErr.Error.Message)
+	if requestID != "" {
+		logContent = fmt.Sprintf("请求失败 [%s]: %s", requestID, bizErr.Error.Message)
+	}
+
+	// 获取最后使用的渠道ID
+	channelId := 0
+	if len(channelHistory) > 0 {
+		channelId = channelHistory[len(channelHistory)-1]
+	}
+
+	// 记录失败日志，quota为0
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(
+		ctx,
+		userId,
+		channelId,
+		0, // promptTokens
+		0, // completionTokens
+		originalModel,
+		tokenName,
+		0, // quota - 失败请求不消费
+		logContent,
+		0.0,   // duration
+		"",    // title
+		"",    // httpReferer
+		false, // isStream
+		0.0,   // firstWordLatency
+		otherInfo,
+		requestID,
+	)
+
+	logger.Infof(ctx, "Recorded failed request log: userId=%d, model=%s, error=%s, channels=%v",
+		userId, originalModel, bizErr.Error.Message, channelHistory)
+}
+
+// recordMidjourneyFailedLog 记录Midjourney失败请求的日志
+func recordMidjourneyFailedLog(ctx context.Context, c *gin.Context, mjErr *midjourney.MidjourneyResponseWithStatusCode, channelHistory []int) {
+	userId := c.GetInt("id")
+	originalModel := c.GetString("original_model")
+	tokenName := c.GetString("token_name")
+	requestID := c.GetHeader("X-Request-ID")
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if len(channelHistory) > 0 {
+		if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+			otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+		}
+	}
+
+	// 构建失败日志内容
+	errorMsg := fmt.Sprintf("%s %s", mjErr.Response.Description, mjErr.Response.Result)
+	logContent := fmt.Sprintf("Midjourney请求失败: %s", errorMsg)
+	if requestID != "" {
+		logContent = fmt.Sprintf("Midjourney请求失败 [%s]: %s", requestID, errorMsg)
+	}
+
+	// 获取最后使用的渠道ID
+	channelId := 0
+	if len(channelHistory) > 0 {
+		channelId = channelHistory[len(channelHistory)-1]
+	}
+
+	// 记录失败日志，quota为0
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(
+		ctx,
+		userId,
+		channelId,
+		0, // promptTokens
+		0, // completionTokens
+		originalModel,
+		tokenName,
+		0, // quota - 失败请求不消费
+		logContent,
+		0.0,   // duration
+		"",    // title
+		"",    // httpReferer
+		false, // isStream
+		0.0,   // firstWordLatency
+		otherInfo,
+		requestID,
+	)
+
+	logger.Infof(ctx, "Recorded Midjourney failed request log: userId=%d, model=%s, error=%s, channels=%v",
+		userId, originalModel, errorMsg, channelHistory)
+}
+
+// recordRunwayFailedLog 记录Runway失败请求的日志
+func recordRunwayFailedLog(ctx context.Context, c *gin.Context, statusCode int, channelHistory []int) {
+	userId := c.GetInt("id")
+	originalModel := c.GetString("original_model")
+	tokenName := c.GetString("token_name")
+	requestID := c.GetHeader("X-Request-ID")
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if len(channelHistory) > 0 {
+		if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+			otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+		}
+	}
+
+	// 构建失败日志内容
+	errorMsg := fmt.Sprintf("HTTP状态码: %d", statusCode)
+	logContent := fmt.Sprintf("Runway请求失败: %s", errorMsg)
+	if requestID != "" {
+		logContent = fmt.Sprintf("Runway请求失败 [%s]: %s", requestID, errorMsg)
+	}
+
+	// 获取最后使用的渠道ID
+	channelId := 0
+	if len(channelHistory) > 0 {
+		channelId = channelHistory[len(channelHistory)-1]
+	}
+
+	// 记录失败日志，quota为0
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(
+		ctx,
+		userId,
+		channelId,
+		0, // promptTokens
+		0, // completionTokens
+		originalModel,
+		tokenName,
+		0, // quota - 失败请求不消费
+		logContent,
+		0.0,   // duration
+		"",    // title
+		"",    // httpReferer
+		false, // isStream
+		0.0,   // firstWordLatency
+		otherInfo,
+		requestID,
+	)
+
+	logger.Infof(ctx, "Recorded Runway failed request log: userId=%d, model=%s, error=%s, channels=%v",
+		userId, originalModel, errorMsg, channelHistory)
 }
 
 // formatRetryLog 格式化重试日志信息
@@ -463,6 +621,9 @@ func RelayMidjourney(c *gin.Context) {
 		// 失败时记录渠道历史到上下文中
 		c.Set("admin_channel_history", channelHistory)
 
+		// 记录Midjourney失败请求的日志
+		recordMidjourneyFailedLog(ctx, c, MjErr, channelHistory)
+
 		statusCode := http.StatusBadRequest
 		if MjErr.Response.Code == 30 {
 			MjErr.Response.Result = "The current group load is saturated, please try again later, or upgrade your account to improve service quality."
@@ -610,6 +771,9 @@ func RelaySd(c *gin.Context) {
 		// 失败时记录渠道历史到上下文中
 		c.Set("admin_channel_history", channelHistory)
 
+		// 记录SD失败请求的日志
+		recordFailedRequestLog(ctx, c, SdErr, channelHistory)
+
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": SdErr.Code,
 		})
@@ -725,6 +889,9 @@ func RelayVideoGenerate(c *gin.Context) {
 	if bizErr != nil {
 		// 失败时记录渠道历史到上下文中
 		c.Set("admin_channel_history", channelHistory)
+
+		// 记录视频生成失败请求的日志
+		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
 
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
@@ -1188,6 +1355,10 @@ func RelayRecraft(c *gin.Context) {
 
 	// 所有重试都失败后的处理
 	c.Set("admin_channel_history", channelHistory)
+
+	// 记录Recraft失败请求的日志
+	recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+
 	if bizErr.StatusCode == http.StatusTooManyRequests {
 		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 	}
@@ -1540,6 +1711,10 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 	// 所有重试都失败后的处理
 	c.Set("admin_channel_history", channelHistory)
+
+	// 记录图片生成失败请求的日志
+	recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+
 	if bizErr.StatusCode == http.StatusTooManyRequests {
 		bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
 	}
@@ -1614,7 +1789,11 @@ func RelayRunway(c *gin.Context) {
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, statusCode, "") {
 		logger.Errorf(ctx, "Runway request error happen, status code is %d, won't retry in this case", statusCode)
-		// 不重试时，需要写入第一次失败的响应
+		// 不重试时，记录失败日志并写入响应
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
+		recordRunwayFailedLog(ctx, c, statusCode, channelHistory)
 		writeLastFailureResponse(c, statusCode)
 		return
 	}
@@ -1706,6 +1885,10 @@ func RelayRunway(c *gin.Context) {
 	logger.Errorf(ctx, "RelayRunway ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
 	// 失败时记录渠道历史到上下文中
 	c.Set("admin_channel_history", channelHistory)
+
+	// 记录Runway失败请求的日志
+	recordRunwayFailedLog(ctx, c, statusCode, channelHistory)
+
 	writeLastFailureResponse(c, statusCode)
 }
 
