@@ -1995,6 +1995,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	geminiRequest := gemini.ChatRequest{
 		Contents: []gemini.ChatContent{
 			{
+				Role:  "user",
 				Parts: parts,
 			},
 		},
