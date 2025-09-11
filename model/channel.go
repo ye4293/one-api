@@ -45,7 +45,7 @@ var ChannelDisableNotificationChan = make(chan ChannelDisableNotification, 100)
 type Channel struct {
 	Id                 int     `json:"id"`
 	Type               int     `json:"type" gorm:"default:0"`
-	Key                string  `json:"key" gorm:"type:text"`
+	Key                string  `json:"key" gorm:"type:mediumtext"`
 	Status             int     `json:"status" gorm:"default:1"`
 	Name               string  `json:"name" gorm:"index"`
 	Weight             *uint   `json:"weight" gorm:"default:0"`
@@ -860,7 +860,7 @@ func (channel *Channel) BatchImportKeys(newKeys []string, mode BatchImportMode) 
 	// 保护原有多key渠道：只在追加模式下保护，覆盖模式允许改变
 	wasMultiKey := channel.MultiKeyInfo.IsMultiKey
 	originalKeyCount := channel.MultiKeyInfo.KeyCount
-	
+
 	if mode == BatchImportOverride {
 		// 覆盖模式：严格按照当前key数量设置
 		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
