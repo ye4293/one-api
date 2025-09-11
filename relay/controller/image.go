@@ -24,6 +24,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	"github.com/songquanpeng/one-api/relay/channel/vertexai"
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -42,11 +43,25 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	logger.Infof(ctx, "RelayImageHelper START: relayMode=%d, channelId=%d, userId=%d, path=%s",
 		relayMode, channelId, userId, c.Request.URL.Path)
 
+	// 获取 meta 信息用于调试
+	meta := util.GetRelayMeta(c)
+
+	// VertexAI 配置调试信息
+	if meta.ChannelType == common.ChannelTypeVertexAI {
+		logger.Infof(ctx, "🔍 [VertexAI Debug] =====【VertexAI渠道配置信息】=====")
+		logger.Infof(ctx, "🔍 [VertexAI Debug] ChannelId: %d, ChannelType: %d", meta.ChannelId, meta.ChannelType)
+		logger.Infof(ctx, "🔍 [VertexAI Debug] IsMultiKey: %v, KeyIndex: %v", meta.IsMultiKey, meta.KeyIndex)
+		logger.Infof(ctx, "🔍 [VertexAI Debug] Keys数量: %d, ActualAPIKey长度: %d", len(meta.Keys), len(meta.ActualAPIKey))
+		logger.Infof(ctx, "🔍 [VertexAI Debug] Config.Region: '%s', Config.VertexAIProjectID: '%s'", meta.Config.Region, meta.Config.VertexAIProjectID)
+		logger.Infof(ctx, "🔍 [VertexAI Debug] Config.VertexAIADC是否为空: %v", meta.Config.VertexAIADC == "")
+		logger.Infof(ctx, "🔍 [VertexAI Debug] BaseURL: '%s'", meta.BaseURL)
+		logger.Infof(ctx, "🔍 [VertexAI Debug] =============================")
+	}
+
 	// 检查函数开始时的上下文状态
 	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
 		logger.Debugf(ctx, "RelayImageHelper: ENTRY - admin_channel_history exists: %v", channelHistoryInterface)
 	}
-	meta := util.GetRelayMeta(c)
 	// 检查内容类型
 	contentType := c.GetHeader("Content-Type")
 	isFormRequest := strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded")
@@ -301,8 +316,82 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
-			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
-			logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
+			if meta.ChannelType == common.ChannelTypeVertexAI {
+				logger.Infof(ctx, "🔧 [VertexAI Debug] 开始处理VertexAI图像请求")
+				logger.Infof(ctx, "🔧 [VertexAI Debug] ChannelId: %d, ChannelType: %d", meta.ChannelId, meta.ChannelType)
+				logger.Infof(ctx, "🔧 [VertexAI Debug] IsMultiKey: %v, KeyIndex: %v", meta.IsMultiKey, meta.KeyIndex)
+
+				// 为VertexAI构建URL
+				keyIndex := 0
+				if meta.KeyIndex != nil {
+					keyIndex = *meta.KeyIndex
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 使用KeyIndex: %d", keyIndex)
+				}
+
+				// 安全检查：确保keyIndex不为负数
+				if keyIndex < 0 {
+					logger.Errorf(ctx, "🔧 [VertexAI Debug] keyIndex为负数: %d，重置为0", keyIndex)
+					keyIndex = 0
+				}
+
+				projectID := ""
+
+				// 尝试从Key字段解析项目ID（支持多密钥）
+				if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 多密钥模式，Keys总数: %d, 当前索引: %d", len(meta.Keys), keyIndex)
+					// 多密钥模式：从指定索引的密钥解析
+					var credentials vertexai.Credentials
+					if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+						projectID = credentials.ProjectID
+						logger.Infof(ctx, "🔧 [VertexAI Debug] 从多密钥解析ProjectID成功: %s", projectID)
+					} else {
+						logger.Errorf(ctx, "🔧 [VertexAI Debug] 从多密钥解析ProjectID失败: %v", err)
+					}
+				} else if meta.ActualAPIKey != "" {
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 单密钥模式，ActualAPIKey长度: %d", len(meta.ActualAPIKey))
+					// 单密钥模式：从ActualAPIKey解析
+					var credentials vertexai.Credentials
+					if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+						projectID = credentials.ProjectID
+						logger.Infof(ctx, "🔧 [VertexAI Debug] 从ActualAPIKey解析ProjectID成功: %s", projectID)
+					} else {
+						logger.Errorf(ctx, "🔧 [VertexAI Debug] 从ActualAPIKey解析ProjectID失败: %v", err)
+					}
+				} else {
+					logger.Warnf(ctx, "🔧 [VertexAI Debug] 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d, ActualAPIKey是否为空: %v",
+						meta.IsMultiKey, len(meta.Keys), meta.ActualAPIKey == "")
+				}
+
+				// 回退：尝试从Config获取项目ID
+				if projectID == "" && meta.Config.VertexAIProjectID != "" {
+					projectID = meta.Config.VertexAIProjectID
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 从Config获取ProjectID: %s", projectID)
+				}
+
+				if projectID == "" {
+					logger.Errorf(ctx, "🔧 [VertexAI Debug] 无法获取ProjectID，所有方式都失败了")
+					return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+				}
+
+				region := meta.Config.Region
+				if region == "" {
+					region = "global"
+				}
+				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Region: %s", region)
+				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Model: %s", meta.OriginModelName)
+
+				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+				if region == "global" {
+					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+				} else {
+					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+				}
+				logger.Infof(ctx, "🔧 [VertexAI Debug] 构建的完整URL: %s", fullRequestURL)
+			} else {
+				// 原有的Gemini官方API URL
+				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+				logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
+			}
 		}
 
 		if meta.ChannelType == 27 {
@@ -392,6 +481,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	logger.Infof(ctx, "Sending request to %s", fullRequestURL)
 	logger.Infof(ctx, "Request Content-Type: %s", req.Header.Get("Content-Type"))
 
+	// VertexAI调试信息
+	if meta.ChannelType == common.ChannelTypeVertexAI && strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Infof(ctx, "📤 [VertexAI Debug] 即将发送请求到VertexAI")
+		logger.Infof(ctx, "📤 [VertexAI Debug] Request Headers: Content-Type=%s, Authorization=%s",
+			req.Header.Get("Content-Type"),
+			func() string {
+				auth := req.Header.Get("Authorization")
+				if len(auth) > 20 {
+					return auth[:20] + "..."
+				}
+				return auth
+			}())
+	}
+
 	// 如果是表单请求，记录表单内容
 	if isFormRequest && strings.Contains(contentType, "multipart/form-data") {
 		for key, values := range c.Request.MultipartForm.Value {
@@ -438,9 +541,42 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		token = strings.TrimPrefix(token, "Bearer ")
 		req.Header.Set("api-key", token)
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
-		// For Gemini, set the API key in the x-goog-api-key header
-		req.Header.Set("x-goog-api-key", meta.APIKey)
-		logger.Infof(ctx, "Setting x-goog-api-key header for Gemini API request")
+		if meta.ChannelType == common.ChannelTypeVertexAI {
+			logger.Infof(ctx, "🔐 [VertexAI Debug] 开始VertexAI认证流程")
+			// 为VertexAI使用Bearer token认证 - 复用已有的adaptor实例
+			var vertexAIAdaptor *vertexai.Adaptor
+			if va, ok := adaptor.(*vertexai.Adaptor); ok {
+				vertexAIAdaptor = va
+			} else {
+				// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
+				vertexAIAdaptor = &vertexai.Adaptor{}
+				vertexAIAdaptor.Init(meta)
+				logger.Warnf(ctx, "🔐 [VertexAI Debug] 警告：adaptor类型不匹配，创建新的VertexAI适配器实例")
+			}
+
+			logger.Infof(ctx, "🔐 [VertexAI Debug] 调用GetAccessToken获取访问令牌")
+			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+			if err != nil {
+				logger.Errorf(ctx, "🔐 [VertexAI Debug] 获取访问令牌失败: %v", err)
+				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+			}
+
+			// 只显示令牌的前10个字符用于调试，避免完整令牌泄露
+			tokenPreview := ""
+			if len(accessToken) > 10 {
+				tokenPreview = accessToken[:10] + "..."
+			} else {
+				tokenPreview = accessToken
+			}
+			logger.Infof(ctx, "🔐 [VertexAI Debug] 成功获取访问令牌，长度: %d, 前缀: %s", len(accessToken), tokenPreview)
+
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			logger.Infof(ctx, "🔐 [VertexAI Debug] 已设置Authorization header为Bearer token")
+		} else {
+			// For Gemini, set the API key in the x-goog-api-key header
+			req.Header.Set("x-goog-api-key", meta.APIKey)
+			logger.Infof(ctx, "Setting x-goog-api-key header for Gemini API request")
+		}
 	} else {
 		req.Header.Set("Authorization", token)
 	}
@@ -452,13 +588,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 
-	err = req.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_request_body_failed", http.StatusInternalServerError)
+	// 关闭请求体，但不让关闭错误覆盖有用的响应数据
+	if err := req.Body.Close(); err != nil {
+		logger.Warnf(ctx, "关闭请求体失败: %v", err)
 	}
-	err = c.Request.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_request_body_failed", http.StatusInternalServerError)
+	if err := c.Request.Body.Close(); err != nil {
+		logger.Warnf(ctx, "关闭原始请求体失败: %v", err)
 	}
 	var imageResponse openai.ImageResponse
 	var responseBody []byte
@@ -580,6 +715,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		logger.Infof(ctx, "进入 Gemini 响应处理逻辑，原始模型: %s, 映射后模型: %s", meta.OriginModelName, imageRequest.Model)
 		// Add debug logging for the original response body（省略具体内容，避免 base64 数据占用日志）
 		logger.Infof(ctx, "Gemini 原始响应已接收，状态码: %d", resp.StatusCode)
+
+		// VertexAI特定的调试信息
+		if meta.ChannelType == common.ChannelTypeVertexAI {
+			logger.Infof(ctx, "📥 [VertexAI Debug] 收到VertexAI响应，状态码: %d", resp.StatusCode)
+			logger.Infof(ctx, "📥 [VertexAI Debug] 响应体长度: %d bytes", len(responseBody))
+
+			// 检查响应头
+			if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+				logger.Infof(ctx, "📥 [VertexAI Debug] 响应Content-Type: %s", contentType)
+			}
+		}
+
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
 
 		// Check if response is an error
@@ -594,23 +741,48 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		if err := json.Unmarshal(responseBody, &geminiError); err != nil {
 			logger.Errorf(ctx, "解析 Gemini 错误响应失败: %s", err.Error())
+			// VertexAI特定的错误解析调试
+			if meta.ChannelType == common.ChannelTypeVertexAI {
+				logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI错误响应解析失败，原始响应: %s", string(responseBody))
+			}
 		} else if geminiError.Error.Message != "" {
-			logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
-				geminiError.Error.Code,
-				geminiError.Error.Message,
-				geminiError.Error.Status)
+			if meta.ChannelType == common.ChannelTypeVertexAI {
+				logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI API 返回错误: 代码=%d, 消息=%s, 状态=%s",
+					geminiError.Error.Code,
+					geminiError.Error.Message,
+					geminiError.Error.Status)
+			} else {
+				logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
+					geminiError.Error.Code,
+					geminiError.Error.Message,
+					geminiError.Error.Status)
+			}
 
 			if len(geminiError.Error.Details) > 0 {
 				detailsJson, _ := json.Marshal(geminiError.Error.Details)
-				logger.Errorf(ctx, "错误详情: %s", string(detailsJson))
+				if meta.ChannelType == common.ChannelTypeVertexAI {
+					logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI错误详情: %s", string(detailsJson))
+				} else {
+					logger.Errorf(ctx, "错误详情: %s", string(detailsJson))
+				}
 			}
 
 			// Use the existing ErrorWrapper function to handle the error
-			errorMsg := fmt.Errorf("Gemini API 错误: %s (状态: %s)",
-				geminiError.Error.Message,
-				geminiError.Error.Status)
+			var errorMsg error
+			if meta.ChannelType == common.ChannelTypeVertexAI {
+				errorMsg = fmt.Errorf("VertexAI API 错误: %s (状态: %s)",
+					geminiError.Error.Message,
+					geminiError.Error.Status)
+			} else {
+				errorMsg = fmt.Errorf("Gemini API 错误: %s (状态: %s)",
+					geminiError.Error.Message,
+					geminiError.Error.Status)
+			}
 
 			errorCode := "gemini_" + strings.ToLower(geminiError.Error.Status)
+			if meta.ChannelType == common.ChannelTypeVertexAI {
+				errorCode = "vertex_ai_" + strings.ToLower(geminiError.Error.Status)
+			}
 			statusCode := geminiError.Error.Code
 			if statusCode == 0 {
 				statusCode = http.StatusBadRequest
@@ -646,19 +818,34 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 保存 Gemini token 信息到全局变量，供 defer 函数使用
-		logger.Infof(ctx, "准备保存 Gemini token 信息")
-		logger.Infof(ctx, "原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
-			geminiResponse.UsageMetadata.PromptTokenCount,
-			geminiResponse.UsageMetadata.CandidatesTokenCount,
-			geminiResponse.UsageMetadata.TotalTokenCount)
+		if meta.ChannelType == common.ChannelTypeVertexAI {
+			logger.Infof(ctx, "📊 [VertexAI Debug] 准备保存 VertexAI token 信息")
+			logger.Infof(ctx, "📊 [VertexAI Debug] 原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
+				geminiResponse.UsageMetadata.PromptTokenCount,
+				geminiResponse.UsageMetadata.CandidatesTokenCount,
+				geminiResponse.UsageMetadata.TotalTokenCount)
+		} else {
+			logger.Infof(ctx, "准备保存 Gemini token 信息")
+			logger.Infof(ctx, "原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
+				geminiResponse.UsageMetadata.PromptTokenCount,
+				geminiResponse.UsageMetadata.CandidatesTokenCount,
+				geminiResponse.UsageMetadata.TotalTokenCount)
+		}
 
 		geminiPromptTokens = geminiResponse.UsageMetadata.PromptTokenCount
 		geminiCompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount
 
-		logger.Infof(ctx, "已保存 Gemini token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
-			geminiPromptTokens, geminiCompletionTokens)
-		logger.Infof(ctx, "Gemini JSON token usage: prompt=%d, completion=%d, total=%d",
-			geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
+		if meta.ChannelType == common.ChannelTypeVertexAI {
+			logger.Infof(ctx, "📊 [VertexAI Debug] 已保存 VertexAI token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
+				geminiPromptTokens, geminiCompletionTokens)
+			logger.Infof(ctx, "📊 [VertexAI Debug] VertexAI JSON token usage: prompt=%d, completion=%d, total=%d",
+				geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
+		} else {
+			logger.Infof(ctx, "已保存 Gemini token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
+				geminiPromptTokens, geminiCompletionTokens)
+			logger.Infof(ctx, "Gemini JSON token usage: prompt=%d, completion=%d, total=%d",
+				geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
+		}
 
 		// Check if any candidate has a finish reason that isn't STOP
 		for _, candidate := range geminiResponse.Candidates {
@@ -1735,44 +1922,58 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 				return openai.ErrorWrapper(fmt.Errorf("open_image_file_%d_failed: %v", i+1, err), "open_image_file_failed", http.StatusBadRequest)
 			}
 
-			// 读取文件内容
-			fileBytes, err := io.ReadAll(file)
-			file.Close() // 立即关闭文件
-			if err != nil {
-				return openai.ErrorWrapper(fmt.Errorf("read_image_file_%d_failed: %v", i+1, err), "read_image_file_failed", http.StatusBadRequest)
-			}
+			// 使用匿名函数和defer确保文件正确关闭
+			fileErr := func() error {
+				defer func() {
+					if closeErr := file.Close(); closeErr != nil {
+						logger.Warnf(ctx, "关闭文件 %s 失败: %v", fileHeader.Filename, closeErr)
+					}
+				}()
 
-			// 将文件内容转换为 base64
-			imageBase64 := base64.StdEncoding.EncodeToString(fileBytes)
-
-			// 获取 MIME 类型
-			mimeType := fileHeader.Header.Get("Content-Type")
-			if mimeType == "" || mimeType == "application/octet-stream" {
-				// 根据文件扩展名推断 MIME 类型
-				ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
-				switch ext {
-				case ".png":
-					mimeType = "image/png"
-				case ".jpg", ".jpeg":
-					mimeType = "image/jpeg"
-				case ".webp":
-					mimeType = "image/webp"
-				case ".gif":
-					mimeType = "image/gif"
-				default:
-					// 默认为 jpeg
-					mimeType = "image/jpeg"
+				// 读取文件内容
+				fileBytes, err := io.ReadAll(file)
+				if err != nil {
+					return fmt.Errorf("read_image_file_%d_failed: %v", i+1, err)
 				}
-			}
 
-			// 创建图片部分
-			imagePart := gemini.Part{
-				InlineData: &gemini.InlineData{
-					MimeType: mimeType,
-					Data:     imageBase64,
-				},
+				// 将文件内容转换为 base64
+				imageBase64 := base64.StdEncoding.EncodeToString(fileBytes)
+
+				// 获取 MIME 类型
+				mimeType := fileHeader.Header.Get("Content-Type")
+				if mimeType == "" || mimeType == "application/octet-stream" {
+					// 根据文件扩展名推断 MIME 类型
+					ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+					switch ext {
+					case ".png":
+						mimeType = "image/png"
+					case ".jpg", ".jpeg":
+						mimeType = "image/jpeg"
+					case ".webp":
+						mimeType = "image/webp"
+					case ".gif":
+						mimeType = "image/gif"
+					default:
+						// 默认为 jpeg
+						mimeType = "image/jpeg"
+					}
+				}
+
+				// 创建图片部分
+				imagePart := gemini.Part{
+					InlineData: &gemini.InlineData{
+						MimeType: mimeType,
+						Data:     imageBase64,
+					},
+				}
+				imageParts = append(imageParts, imagePart)
+				return nil
+			}()
+
+			// 检查是否有处理错误
+			if fileErr != nil {
+				return openai.ErrorWrapper(fileErr, "read_image_file_failed", http.StatusBadRequest)
 			}
-			imageParts = append(imageParts, imagePart)
 		}
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("image 或 image[] 文件不能为空"), "missing_image_file", http.StatusBadRequest)
@@ -1810,7 +2011,76 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
-	fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+	if meta.ChannelType == common.ChannelTypeVertexAI {
+		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求处理 - 开始构建VertexAI URL")
+		// 为VertexAI构建URL
+		keyIndex := 0
+		if meta.KeyIndex != nil {
+			keyIndex = *meta.KeyIndex
+			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 使用KeyIndex: %d", keyIndex)
+		}
+
+		// 安全检查：确保keyIndex不为负数
+		if keyIndex < 0 {
+			logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - keyIndex为负数: %d，重置为0", keyIndex)
+			keyIndex = 0
+		}
+
+		projectID := ""
+
+		// 尝试从Key字段解析项目ID（支持多密钥）
+		if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 多密钥模式，Keys总数: %d", len(meta.Keys))
+			// 多密钥模式：从指定索引的密钥解析
+			var credentials vertexai.Credentials
+			if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+				projectID = credentials.ProjectID
+				logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从多密钥解析ProjectID成功: %s", projectID)
+			} else {
+				logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 从多密钥解析ProjectID失败: %v", err)
+			}
+		} else if meta.ActualAPIKey != "" {
+			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 单密钥模式，ActualAPIKey长度: %d", len(meta.ActualAPIKey))
+			// 单密钥模式：从ActualAPIKey解析
+			var credentials vertexai.Credentials
+			if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+				projectID = credentials.ProjectID
+				logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从ActualAPIKey解析ProjectID成功: %s", projectID)
+			} else {
+				logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 从ActualAPIKey解析ProjectID失败: %v", err)
+			}
+		} else {
+			logger.Warnf(ctx, "🔧 [VertexAI Debug] Form请求 - 无法获取密钥信息")
+		}
+
+		// 回退：尝试从Config获取项目ID
+		if projectID == "" && meta.Config.VertexAIProjectID != "" {
+			projectID = meta.Config.VertexAIProjectID
+			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从Config获取ProjectID: %s", projectID)
+		}
+
+		if projectID == "" {
+			logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 无法获取ProjectID")
+			return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+		}
+
+		region := meta.Config.Region
+		if region == "" {
+			region = "global"
+		}
+		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 使用Region: %s, Model: %s", region, meta.OriginModelName)
+
+		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+		if region == "global" {
+			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+		} else {
+			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+		}
+		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 构建的完整URL: %s", fullRequestURL)
+	} else {
+		// 原有的Gemini官方API URL
+		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+	}
 
 	// 创建请求
 	req, err := http.NewRequest("POST", fullRequestURL, bytes.NewBuffer(jsonBytes))
@@ -1821,7 +2091,35 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-goog-api-key", meta.APIKey) // Gemini API 正确的 header 格式
+
+	if meta.ChannelType == common.ChannelTypeVertexAI {
+		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 开始VertexAI认证流程")
+		// 为VertexAI使用Bearer token认证 - 创建新的adaptor实例（Form请求处理时没有预先创建的adaptor）
+		vertexAIAdaptor := &vertexai.Adaptor{}
+		vertexAIAdaptor.Init(meta)
+
+		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 调用GetAccessToken获取访问令牌")
+		accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+		if err != nil {
+			logger.Errorf(ctx, "🔐 [VertexAI Debug] Form请求 - 获取访问令牌失败: %v", err)
+			return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+		}
+
+		// 只显示令牌的前10个字符用于调试，避免完整令牌泄露
+		tokenPreview := ""
+		if len(accessToken) > 10 {
+			tokenPreview = accessToken[:10] + "..."
+		} else {
+			tokenPreview = accessToken
+		}
+		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 成功获取访问令牌，长度: %d, 前缀: %s", len(accessToken), tokenPreview)
+
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 已设置Authorization header为Bearer token")
+	} else {
+		// Gemini API 正确的 header 格式
+		req.Header.Set("x-goog-api-key", meta.APIKey)
+	}
 
 	// 发送请求
 	resp, err := util.HTTPClient.Do(req)
