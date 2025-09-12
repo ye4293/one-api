@@ -21,8 +21,10 @@ func GetAllLogs(c *gin.Context) {
 	username := c.Query("username")
 	tokenName := c.Query("token_name")
 	modelName := c.Query("model_name")
+	xRequestId := c.Query("x_request_id")
+	xResponseId := c.Query("x_response_id")
 	channel, _ := strconv.Atoi(c.Query("channel"))
-	logs, total, err := model.GetCurrentAllLogsAndCount(logType, startTimestamp, endTimestamp, modelName, username, tokenName, page, pagesize, channel)
+	logs, total, err := model.GetCurrentAllLogsAndCount(logType, startTimestamp, endTimestamp, modelName, username, tokenName, xRequestId, xResponseId, page, pagesize, channel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -64,7 +66,9 @@ func GetUserLogs(c *gin.Context) {
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
 	tokenName := c.Query("token_name")
 	modelName := c.Query("model_name")
-	logs, total, err := model.GetCurrentUserLogsAndCount(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, page, pagesize)
+	xRequestId := c.Query("x_request_id")
+	xResponseId := c.Query("x_response_id")
+	logs, total, err := model.GetCurrentUserLogsAndCount(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, xRequestId, xResponseId, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
