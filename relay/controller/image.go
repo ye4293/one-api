@@ -94,6 +94,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if meta.ChannelType == 27 { //minimax
 		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
 	}
+	if meta.ChannelType == 40 { //doubao (字节跳动豆包)
+		fullRequestURL = fmt.Sprintf("%s/api/v3/images/generations", meta.BaseURL)
+	}
 
 	var requestBody io.Reader
 	var req *http.Request
@@ -1045,12 +1048,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 	}
 
-	// 设置响应头
+	// 设置响应头，排除Content-Length（我们稍后会设置正确的值）
 	for k, v := range resp.Header {
-		c.Writer.Header().Set(k, v[0])
+		// 跳过Content-Length，避免与我们重新计算的值冲突
+		if strings.ToLower(k) != "content-length" {
+			c.Writer.Header().Set(k, v[0])
+		}
 	}
 
-	// 设置新的 Content-Length
+	// 设置正确的 Content-Length（基于可能已转换的responseBody）
 	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
 
 	// 设置状态码 - 使用原始响应的状态码
