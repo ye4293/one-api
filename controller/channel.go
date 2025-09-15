@@ -263,6 +263,78 @@ func BatchDelteChannel(c *gin.Context) {
 	})
 }
 
+// BatchDisableChannel 批量禁用渠道
+func BatchDisableChannel(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for disable",
+		})
+		return
+	}
+
+	err := model.BatchUpdateChannelStatus(request.Ids, common.ChannelStatusManuallyDisabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Successfully disabled %d channels", len(request.Ids)),
+	})
+}
+
+// BatchEnableChannel 批量启用渠道
+func BatchEnableChannel(c *gin.Context) {
+	var request struct {
+		Ids []int `json:"ids"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+		})
+		return
+	}
+	if len(request.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "No IDs provided for enable",
+		})
+		return
+	}
+
+	err := model.BatchUpdateChannelStatus(request.Ids, common.ChannelStatusEnabled)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Successfully enabled %d channels", len(request.Ids)),
+	})
+}
+
 func DeleteDisabledChannel(c *gin.Context) {
 	rows, err := model.DeleteDisabledChannel()
 	if err != nil {

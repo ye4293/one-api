@@ -674,6 +674,62 @@ func DeleteDisabledChannel() (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// BatchUpdateChannelStatus 批量更新渠道状态
+func BatchUpdateChannelStatus(ids []int, status int) error {
+	if len(ids) == 0 {
+		return fmt.Errorf("no channel IDs provided")
+	}
+
+	tx := DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			logger.SysError(fmt.Sprintf("panic during batch channel status update: %v", r))
+		}
+	}()
+
+	// 批量更新Ability状态
+	enabled := status == common.ChannelStatusEnabled
+	abilityResult := tx.Model(&Ability{}).Where("channel_id IN (?)", ids).Update("enabled", enabled)
+	if abilityResult.Error != nil {
+		tx.Rollback()
+		logger.SysError(fmt.Sprintf("failed to batch update ability status: %s", abilityResult.Error.Error()))
+		return fmt.Errorf("failed to batch update ability status: %w", abilityResult.Error)
+	}
+
+	// 批量更新Channel状态
+	channelResult := tx.Model(&Channel{}).Where("id IN (?)", ids).Update("status", status)
+	if channelResult.Error != nil {
+		tx.Rollback()
+		logger.SysError(fmt.Sprintf("failed to batch update channel status: %s", channelResult.Error.Error()))
+		return fmt.Errorf("failed to batch update channel status: %w", channelResult.Error)
+	}
+
+	// 提交事务
+	err := tx.Commit().Error
+	if err != nil {
+		logger.SysError(fmt.Sprintf("failed to commit batch channel status update: %s", err.Error()))
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// 记录状态变更类型
+	var statusText string
+	switch status {
+	case common.ChannelStatusEnabled:
+		statusText = "启用"
+	case common.ChannelStatusManuallyDisabled:
+		statusText = "手动禁用"
+	case common.ChannelStatusAutoDisabled:
+		statusText = "自动禁用"
+	default:
+		statusText = fmt.Sprintf("状态%d", status)
+	}
+
+	logger.SysLog(fmt.Sprintf("Successfully batch updated %d channels to %s, affected %d abilities",
+		channelResult.RowsAffected, statusText, abilityResult.RowsAffected))
+	return nil
+}
+
 // CompensateChannelQuota 补偿渠道配额，用于任务失败时减少渠道的已使用配额
 func CompensateChannelQuota(channelId int, quota int64) error {
 	err := DB.Model(&Channel{}).Where("id = ?", channelId).Update("used_quota", gorm.Expr("used_quota - ?", quota)).Error

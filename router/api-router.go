@@ -87,7 +87,8 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/", controller.AddChannel)
 			channelRoute.PUT("/", controller.UpdateChannel)
 			channelRoute.POST("/batchdelete", controller.BatchDelteChannel)
-			channelRoute.DELETE("/disabled", controller.DeleteDisabledChannel)
+			channelRoute.POST("/disabled", controller.BatchDisableChannel)
+			channelRoute.DELETE("/disabled", controller.BatchEnableChannel)
 			channelRoute.DELETE("/:id", controller.DeleteChannel)
 
 			// 多Key管理相关路由
