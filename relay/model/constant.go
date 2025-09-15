@@ -1,8 +1,12 @@
 package model
 
 const (
-	ContentTypeText     = "text"
-	ContentTypeImageURL = "image_url"
+	ContentTypeText       = "text"
+	ContentTypeImageURL   = "image_url"
+	ContentTypeAudioURL   = "audio_url"   // 音频URL类型
+	ContentTypeVideoURL   = "video_url"   // 视频URL类型
+	ContentTypeInputAudio = "input_audio" // 输入音频类型（OpenAI格式）
+	ContentTypeFileURL    = "file_url"    // 文档URL类型（PDF等）
 )
 
 type APIModel struct {

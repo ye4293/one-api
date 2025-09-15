@@ -114,37 +114,15 @@ func CountTokenMessages(messages []model.Message, model string) int {
 							}
 						}
 					case "image_url":
-						imageUrl, ok := m["image_url"].(map[string]any)
-						if !ok {
-							continue
-						}
-
-						url, ok := imageUrl["url"].(string)
-						if !ok {
-							continue
-						}
-
-						detail := ""
-						if detailValue := imageUrl["detail"]; detailValue != nil {
-							if detailString, ok := detailValue.(string); ok {
-								detail = detailString
-							}
-						}
-
-						imageTokens, err := countImageTokens(url, detail)
-						if err != nil {
-							// 避免在日志中输出可能包含base64码的完整错误信息，但包含关键诊断信息
-							var urlForLog string
-							if len(url) > 100 {
-								urlForLog = url[:100] + "...[truncated]"
-							} else {
-								urlForLog = url
-							}
-							logger.SysError(fmt.Sprintf("error counting image tokens - model: %s, detail: %s, url_length: %d, url_prefix: %s",
-								model, detail, len(url), urlForLog))
-							continue
-						}
-						tokenNum += imageTokens
+						// 默认跳过图片token计算以节省服务器资源
+						// 媒体token计算消耗性能，且响应中会包含准确的token信息
+						logger.SysLog(fmt.Sprintf("Skipping image token calculation for performance optimization - model: %s", model))
+						continue
+					case "audio_url", "video_url", "input_audio", "file_url":
+						// 默认跳过音频、视频、文档token计算以节省服务器资源
+						// 媒体token计算消耗性能，且响应中会包含准确的token信息
+						logger.SysLog(fmt.Sprintf("Skipping %s token calculation for performance optimization - model: %s", contentType, model))
+						continue
 					}
 				}
 			}

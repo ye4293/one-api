@@ -24,8 +24,18 @@ import (
 // https://ai.google.dev/docs/gemini_api_overview?hl=zh-cn
 
 const (
-	VisionMaxImageNum = 16
+	VisionMaxImageNum = 100
 )
+
+// addMediaPart 添加媒体部分到parts列表的辅助函数
+func addMediaPart(parts *[]Part, mimeType, data string) {
+	*parts = append(*parts, Part{
+		InlineData: &InlineData{
+			MimeType: mimeType,
+			Data:     data,
+		},
+	})
+}
 
 // Setting safety to the lowest possible values since Gemini is already powerless enough
 func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error) {
@@ -177,13 +187,81 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 				if imageNum > VisionMaxImageNum {
 					continue
 				}
-				mimeType, data, _ := image.GetImageFromUrl(part.ImageURL.Url)
-				parts = append(parts, Part{
-					InlineData: &InlineData{
-						MimeType: mimeType,
-						Data:     data,
-					},
-				})
+				// 使用智能媒体检测函数，支持图片、音频、视频
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.ImageURL.Url)
+				if err != nil {
+					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for image_url: %v", err))
+					continue
+				}
+
+				// 所有支持的媒体类型都使用相同的InlineData结构
+				if mediaType == "image" || mediaType == "audio" || mediaType == "video" || mediaType == "document" {
+					addMediaPart(&parts, mimeType, data)
+				} else {
+					logger.SysLog(fmt.Sprintf("Unsupported media type for image_url: %s", mediaType))
+				}
+			} else if part.Type == model.ContentTypeAudioURL {
+				// 处理audio_url类型
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.AudioURL.Url)
+				if err != nil {
+					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for audio_url: %v", err))
+					continue
+				}
+				if mediaType == "audio" {
+					addMediaPart(&parts, mimeType, data)
+				} else {
+					logger.SysLog(fmt.Sprintf("Expected audio type but got: %s", mediaType))
+				}
+			} else if part.Type == model.ContentTypeVideoURL {
+				// 处理video_url类型
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.VideoURL.Url)
+				if err != nil {
+					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for video_url: %v", err))
+					continue
+				}
+				if mediaType == "video" {
+					addMediaPart(&parts, mimeType, data)
+				} else {
+					logger.SysLog(fmt.Sprintf("Expected video type but got: %s", mediaType))
+				}
+			} else if part.Type == model.ContentTypeInputAudio {
+				// 处理input_audio类型（OpenAI格式）
+				if part.InputAudio != nil && part.InputAudio.Data != "" {
+					// 检测音频格式
+					detectedType, err := image.GetMediaTypeFromBase64(part.InputAudio.Data)
+					if err != nil {
+						logger.SysLog(fmt.Sprintf("Error detecting media type from base64: %v", err))
+						continue
+					}
+
+					// 验证是否为Gemini支持的音频格式
+					if !image.IsGeminiSupportedFormat(detectedType) {
+						logger.SysLog(fmt.Sprintf("Unsupported audio format for Gemini: %s", detectedType))
+						continue
+					}
+
+					// 验证是否为音频类型
+					if !image.IsAudioType(detectedType) {
+						logger.SysLog(fmt.Sprintf("Expected audio type but got: %s", detectedType))
+						continue
+					}
+
+					addMediaPart(&parts, detectedType, part.InputAudio.Data)
+				}
+			} else if part.Type == model.ContentTypeFileURL {
+				// 处理file_url类型（PDF文档等）
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.FileURL.Url)
+				if err != nil {
+					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for file_url: %v", err))
+					continue
+				}
+
+				// 根据Gemini文档处理规范，主要支持PDF
+				if mediaType == "document" {
+					addMediaPart(&parts, mimeType, data)
+				} else {
+					logger.SysLog(fmt.Sprintf("Expected document type but got: %s for file_url", mediaType))
+				}
 			}
 		}
 		content.Parts = parts
