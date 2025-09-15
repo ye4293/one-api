@@ -37,6 +37,44 @@ func addMediaPart(parts *[]Part, mimeType, data string) {
 	})
 }
 
+// createPrintableRequest 创建用于打印的请求副本，截断base64数据
+func createPrintableRequest(original ChatRequest) ChatRequest {
+	printableRequest := ChatRequest{
+		Contents:          make([]ChatContent, len(original.Contents)),
+		SafetySettings:    original.SafetySettings,
+		GenerationConfig:  original.GenerationConfig,
+		SystemInstruction: original.SystemInstruction,
+	}
+
+	// 深拷贝Contents并截断base64数据
+	for i, content := range original.Contents {
+		printableRequest.Contents[i] = ChatContent{
+			Role:  content.Role,
+			Parts: make([]Part, len(content.Parts)),
+		}
+
+		for j, part := range content.Parts {
+			printableRequest.Contents[i].Parts[j] = Part{
+				Text: part.Text,
+			}
+
+			// 如果有InlineData，截断Data字段
+			if part.InlineData != nil {
+				data := part.InlineData.Data
+				if len(data) > 100 {
+					data = data[:100] + "...[truncated " + fmt.Sprintf("%d", len(part.InlineData.Data)-100) + " chars]"
+				}
+				printableRequest.Contents[i].Parts[j].InlineData = &InlineData{
+					MimeType: part.InlineData.MimeType,
+					Data:     data,
+				}
+			}
+		}
+	}
+
+	return printableRequest
+}
+
 // Setting safety to the lowest possible values since Gemini is already powerless enough
 func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error) {
 	geminiRequest := ChatRequest{
@@ -234,12 +272,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 						continue
 					}
 
-					// 验证是否为Gemini支持的音频格式
-					if !image.IsGeminiSupportedFormat(detectedType) {
-						logger.SysLog(fmt.Sprintf("Unsupported audio format for Gemini: %s", detectedType))
-						continue
-					}
-
 					// 验证是否为音频类型
 					if !image.IsAudioType(detectedType) {
 						logger.SysLog(fmt.Sprintf("Expected audio type but got: %s", detectedType))
@@ -274,8 +306,9 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
 	}
 
-	// 打印转换后的geminiRequest为JSON格式
-	requestJSON, err := json.MarshalIndent(geminiRequest, "", "  ")
+	// 打印转换后的geminiRequest为JSON格式（截断base64数据）
+	printableRequest := createPrintableRequest(geminiRequest)
+	requestJSON, err := json.MarshalIndent(printableRequest, "", "  ")
 	if err != nil {
 		logger.SysError("error marshalling gemini request: " + err.Error())
 	} else {

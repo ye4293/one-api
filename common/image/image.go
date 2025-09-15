@@ -69,14 +69,25 @@ func isSupportedMediaType(contentType string) bool {
 		// 图片类型
 		"image/jpeg", "image/jpg", "image/png", "image/gif",
 		"image/webp", "image/bmp", "image/tiff", "image/svg+xml",
-		// 音频类型（Gemini支持的格式）
-		"audio/wav", "audio/mp3", "audio/aiff", "audio/aac",
-		"audio/ogg", "audio/flac", "audio/mpeg", "audio/mp4",
-		"audio/webm",
-		// 视频类型（Gemini支持的格式）
-		"video/mp4", "video/mpeg", "video/mov", "video/quicktime",
-		"video/avi", "video/x-msvideo", "video/x-flv", "video/mpg",
-		"video/webm", "video/wmv", "video/3gpp", "video/ogg",
+		// 音频类型（Gemini支持的格式，包括常见变体）
+		"audio/wav", "audio/x-wav", "audio/wave", // WAV格式变体
+		"audio/mp3", "audio/mpeg", "audio/x-mp3", // MP3格式变体
+		"audio/aiff", "audio/x-aiff", // AIFF格式变体
+		"audio/aac", "audio/x-aac", // AAC格式变体
+		"audio/ogg", "audio/x-ogg", // OGG格式变体
+		"audio/flac", "audio/x-flac", // FLAC格式变体
+		"audio/mp4", "audio/webm",
+		// 视频类型（Gemini支持的格式，包括常见变体）
+		"video/mp4", "video/x-mp4", // MP4格式变体
+		"video/mpeg", "video/x-mpeg", // MPEG格式变体
+		"video/mov", "video/quicktime", "video/x-quicktime", // MOV格式变体
+		"video/avi", "video/x-msvideo", "video/msvideo", // AVI格式变体
+		"video/x-flv", "video/flv", // FLV格式变体
+		"video/mpg", "video/x-mpg", // MPG格式变体
+		"video/webm", "video/x-webm", // WebM格式变体
+		"video/wmv", "video/x-wmv", // WMV格式变体
+		"video/3gpp", "video/x-3gpp", // 3GPP格式变体
+		"video/ogg", "video/x-ogg", // OGG视频格式变体
 		// 文档类型（Gemini支持的格式）
 		"application/pdf",
 	}
@@ -125,6 +136,57 @@ func IsDocumentType(mimeType string) bool {
 		strings.HasPrefix(mimeType, "application/vnd.openxmlformats")
 }
 
+// getMimeTypeFromURL 根据URL的文件扩展名推断MIME类型
+func getMimeTypeFromURL(url string) string {
+	url = strings.ToLower(url)
+
+	// 音频格式
+	if strings.HasSuffix(url, ".wav") {
+		return "audio/wav"
+	} else if strings.HasSuffix(url, ".mp3") {
+		return "audio/mp3"
+	} else if strings.HasSuffix(url, ".aac") {
+		return "audio/aac"
+	} else if strings.HasSuffix(url, ".ogg") {
+		return "audio/ogg"
+	} else if strings.HasSuffix(url, ".flac") {
+		return "audio/flac"
+	} else if strings.HasSuffix(url, ".aiff") || strings.HasSuffix(url, ".aif") {
+		return "audio/aiff"
+	}
+
+	// 视频格式
+	if strings.HasSuffix(url, ".mp4") {
+		return "video/mp4"
+	} else if strings.HasSuffix(url, ".webm") {
+		return "video/webm"
+	} else if strings.HasSuffix(url, ".mov") {
+		return "video/quicktime"
+	} else if strings.HasSuffix(url, ".avi") {
+		return "video/x-msvideo"
+	} else if strings.HasSuffix(url, ".wmv") {
+		return "video/wmv"
+	}
+
+	// 图片格式
+	if strings.HasSuffix(url, ".jpg") || strings.HasSuffix(url, ".jpeg") {
+		return "image/jpeg"
+	} else if strings.HasSuffix(url, ".png") {
+		return "image/png"
+	} else if strings.HasSuffix(url, ".gif") {
+		return "image/gif"
+	} else if strings.HasSuffix(url, ".webp") {
+		return "image/webp"
+	}
+
+	// 文档格式
+	if strings.HasSuffix(url, ".pdf") {
+		return "application/pdf"
+	}
+
+	return ""
+}
+
 // GetMediaFromUrl 通用媒体处理函数，支持图片、音频、视频（为Gemini设计）
 func GetMediaFromUrl(input string) (mimeType string, data string, mediaType string, err error) {
 	// 获取媒体信息
@@ -150,45 +212,9 @@ func GetMediaFromUrl(input string) (mimeType string, data string, mediaType stri
 	return mimeType, data, mediaType, nil
 }
 
-// IsGeminiSupportedFormat 检查是否为Gemini支持的格式
-func IsGeminiSupportedFormat(mimeType string) bool {
-	geminiSupportedTypes := []string{
-		// Gemini支持的图片格式
-		"image/jpeg", "image/jpg", "image/png", "image/gif",
-		"image/webp", "image/bmp", "image/tiff",
-		// Gemini支持的音频格式
-		"audio/wav", "audio/mp3", "audio/aiff", "audio/aac",
-		"audio/ogg", "audio/flac",
-		// Gemini支持的视频格式
-		"video/mp4", "video/mpeg", "video/mov", "video/quicktime",
-		"video/avi", "video/x-msvideo", "video/x-flv", "video/mpg",
-		"video/webm", "video/wmv", "video/3gpp",
-		// Gemini支持的文档格式
-		"application/pdf",
-	}
-
-	for _, supportedType := range geminiSupportedTypes {
-		if strings.HasPrefix(mimeType, supportedType) {
-			return true
-		}
-	}
-	return false
-}
-
-// GetGeminiMediaInfo 专为Gemini设计的媒体信息获取函数
+// GetGeminiMediaInfo 获取Gemini媒体信息
 func GetGeminiMediaInfo(input string) (mimeType string, data string, mediaType string, err error) {
-	// 获取媒体信息
-	mimeType, data, mediaType, err = GetMediaFromUrl(input)
-	if err != nil {
-		return "", "", "", err
-	}
-
-	// 验证是否为Gemini支持的格式
-	if !IsGeminiSupportedFormat(mimeType) {
-		return "", "", "", fmt.Errorf("unsupported media type for Gemini: %s", mimeType)
-	}
-
-	return mimeType, data, mediaType, nil
+	return GetMediaFromUrl(input)
 }
 
 func IsImageUrl(url string) (bool, error) {
@@ -266,30 +292,33 @@ func GetImageFromUrl(input string) (mimeType string, data string, err error) {
 		return detectedType, input, nil
 	}
 
-	// If not a data URL or base64, treat as a regular URL
-	isImage, err := IsImageUrl(input)
-	if err != nil {
-		return "", "", err
-	}
-	if !isImage {
-		return "", "", fmt.Errorf("URL does not point to an image")
-	}
-
+	// If not a data URL or base64, treat as a regular URL - download and detect media type
 	resp, err := http.Get(input)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to download from URL: %v", err)
 	}
 	defer resp.Body.Close()
 
 	buffer := new(bytes.Buffer)
 	_, err = buffer.ReadFrom(resp.Body)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to read response body: %v", err)
 	}
 
+	// 从响应头或内容检测媒体类型
 	mimeType = resp.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = http.DetectContentType(buffer.Bytes())
+	}
+
+	// 如果还是无法检测到正确的MIME类型，尝试根据URL扩展名推断
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		mimeType = getMimeTypeFromURL(input)
+	}
+
+	// 验证是否为支持的媒体类型
+	if !isSupportedMediaType(mimeType) {
+		return "", "", fmt.Errorf("unsupported media type: %s for URL: %s", mimeType, input)
 	}
 
 	data = base64.StdEncoding.EncodeToString(buffer.Bytes())
