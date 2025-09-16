@@ -450,7 +450,7 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 
 		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 			if channel.AutoDisabled {
-				monitor.DisableChannel(channelId, channelName, err.Error.Message, modelName)
+				monitor.DisableChannelWithStatusCode(channelId, channelName, err.Error.Message, modelName, err.StatusCode)
 			} else {
 				logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
 				monitor.Emit(channelId, false)
@@ -1586,7 +1586,7 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 		// Check if we should disable the channel
 		if response.StatusCode == 401 || response.StatusCode == 403 {
-			monitor.DisableChannelSafely(channelId, channel.Name, "Authentication error with Recraft API", "N/A (Recraft Auth)")
+			monitor.DisableChannelSafelyWithStatusCode(channelId, channel.Name, "Authentication error with Recraft API", "N/A (Recraft Auth)", response.StatusCode)
 		}
 
 		// Handle error format normalization if requested

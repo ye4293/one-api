@@ -268,13 +268,13 @@ func testChannels(notify bool, scope string) error {
 			if isChannelEnabled && milliseconds > disableThreshold {
 				err = fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
 				if config.AutomaticDisableChannelEnabled {
-					monitor.DisableChannelSafely(channel.Id, channel.Name, err.Error(), "N/A (Test)")
+					monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", 0)
 				} else {
 					_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
 				}
 			}
 			if isChannelEnabled && util.ShouldDisableChannel(openaiErr, -1) {
-				monitor.DisableChannelSafely(channel.Id, channel.Name, err.Error(), "N/A (Test)")
+				monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", -1)
 			}
 			if !isChannelEnabled && util.ShouldEnableChannel(err, openaiErr) {
 				monitor.EnableChannel(channel.Id, channel.Name)

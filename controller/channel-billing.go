@@ -315,11 +315,11 @@ func updateAllChannelsBalance() error {
 			// logger.SysLog(fmt.Sprintf("渠道 %s 更新余额失败，错误信息：%s", channel.Name, err.Error()))
 			// disable channel - use safe disable for multi-key channels
 			logger.SysLog(fmt.Sprintf("更新渠道 #%d (%s) 余额失败，尝试禁用渠道", channel.Id, channel.Name))
-			monitor.DisableChannelSafely(channel.Id, channel.Name, err.Error(), "N/A (Billing Check)")
+			monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Billing Check)", 0)
 		} else {
 			// err is nil & balance <= 0 means quota is used up
 			if balance <= 0 {
-				monitor.DisableChannelSafely(channel.Id, channel.Name, "余额不足", "N/A (Billing Check)")
+				monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, "余额不足", "N/A (Billing Check)", 0)
 			}
 			channel.Balance = balance
 			channel.BalanceUpdatedTime = helper.GetTimestamp()

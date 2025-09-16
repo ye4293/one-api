@@ -31,6 +31,11 @@ func notifyRootUser(subject string, content string) {
 
 // DisableChannelSafely disable & notify with multi-key channel protection
 func DisableChannelSafely(channelId int, channelName string, reason string, modelName string) {
+	DisableChannelSafelyWithStatusCode(channelId, channelName, reason, modelName, 0)
+}
+
+// DisableChannelSafelyWithStatusCode disable & notify with multi-key channel protection, including status code
+func DisableChannelSafelyWithStatusCode(channelId int, channelName string, reason string, modelName string, statusCode int) {
 	// 检查渠道信息
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
@@ -38,16 +43,22 @@ func DisableChannelSafely(channelId int, channelName string, reason string, mode
 		return
 	}
 
+	// 构建包含状态码的完整禁用原因
+	fullReason := reason
+	if statusCode > 0 {
+		fullReason = fmt.Sprintf("%s (状态码: %d)", reason, statusCode)
+	}
+
 	if channel.MultiKeyInfo.IsMultiKey {
 		// 对于多key渠道，不应该直接禁用整个渠道
 		// 记录警告信息，需要管理员手动处理
 		logger.SysLog(fmt.Sprintf("Multi-key channel #%d (%s) has external issues: %s. Not auto-disabling the entire channel as it may have working keys. Manual intervention may be required.",
-			channelId, channelName, reason))
+			channelId, channelName, fullReason))
 		return
 	}
 
 	// 单key渠道使用内联逻辑，避免重复获取渠道信息
-	disableChannelInternal(channel, channelId, channelName, reason, modelName)
+	disableChannelInternal(channel, channelId, channelName, fullReason, modelName)
 }
 
 // disableChannelInternal 内部禁用函数，接受已获取的channel对象
@@ -91,6 +102,11 @@ func disableChannelInternal(channel *model.Channel, channelId int, channelName s
 
 // DisableChannel disable & notify
 func DisableChannel(channelId int, channelName string, reason string, modelName string) {
+	DisableChannelWithStatusCode(channelId, channelName, reason, modelName, 0)
+}
+
+// DisableChannelWithStatusCode disable & notify, including status code
+func DisableChannelWithStatusCode(channelId int, channelName string, reason string, modelName string, statusCode int) {
 	// 检查渠道是否允许自动禁用
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
@@ -98,7 +114,13 @@ func DisableChannel(channelId int, channelName string, reason string, modelName 
 		return
 	}
 
-	disableChannelInternal(channel, channelId, channelName, reason, modelName)
+	// 构建包含状态码的完整禁用原因
+	fullReason := reason
+	if statusCode > 0 {
+		fullReason = fmt.Sprintf("%s (状态码: %d)", reason, statusCode)
+	}
+
+	disableChannelInternal(channel, channelId, channelName, fullReason, modelName)
 }
 
 func MetricDisableChannel(channelId int, successRate float64) {
