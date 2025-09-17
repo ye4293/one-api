@@ -350,6 +350,8 @@ var DefaultModelPrice = map[string]float64{
 	"video-01-live2d":         0.45,
 	"S2V-01":                  0.6,
 	"image-01":                0.025,
+	"grok-2-image-1212":       0.07,
+	"grok-2-image":            0.07,
 }
 
 //后续进行修正

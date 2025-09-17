@@ -28,10 +28,12 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 		return false
 	}
 
-	// 直接检查HTTP状态码
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+	// 检查401状态码 - 通常是认证问题，应该禁用
+	if statusCode == http.StatusUnauthorized {
 		return true
 	}
+
+	// 移除403状态码的直接检查，改为完全依靠关键字判断
 
 	// 检查错误类型
 	switch err.Type {

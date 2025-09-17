@@ -1468,6 +1468,7 @@ func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status
 		Mode:       mode, // 添加 mode 字段
 		N:          n,    // 添加 n 字段
 		Quota:      quota,
+		Detail:     "",
 	}
 
 	// 调用 Insert 方法插入记录

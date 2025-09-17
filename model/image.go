@@ -17,6 +17,7 @@ type Image struct {
 	Mode       string `json:"mode"`
 	N          int    `json:"n"`
 	Quota      int64  `json:"quota"`
+	Detail     string `json:"detail"`
 }
 
 func (image *Image) Insert() error {
