@@ -630,7 +630,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 				// 使用标准的计费公式：(输入tokens + 输出tokens * 完成比率) * 模型比率 * 分组比率
 				// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
-				calculatedQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio / 1000 * 500000))
+				calculatedQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
 				quota = calculatedQuota
 
 				// 记录日志
@@ -2440,10 +2440,13 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	modelRatio := common.GetModelRatio(meta.OriginModelName)
 	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+	// 按照标准公式计算：(inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio
+	inputTokensEquivalent := float64(promptTokens)
+	outputTokens := float64(completionTokens)
+	actualQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
 
-	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-		promptTokens, completionTokens, groupRatio, actualQuota, duration)
+	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 模型倍率=%.2f, 完成倍率=%.2f, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+		promptTokens, completionTokens, modelRatio, completionRatio, groupRatio, actualQuota, duration)
 
 	// 处理配额消费（使用重新计算的配额）
 	err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -2539,11 +2542,13 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	groupRatio := common.GetGroupRatio(meta.Group)
 	modelRatio := common.GetModelRatio(meta.OriginModelName)
 	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-	// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
-	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio / 1000 * 500000))
+	// 按照标准公式计算：(inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio
+	inputTokensEquivalent := float64(promptTokens)
+	outputTokens := float64(completionTokens)
+	actualQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
 
-	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-		promptTokens, completionTokens, groupRatio, actualQuota, duration)
+	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 模型倍率=%.2f, 完成倍率=%.2f, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+		promptTokens, completionTokens, modelRatio, completionRatio, groupRatio, actualQuota, duration)
 
 	// 处理配额消费（使用重新计算的配额）
 	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
