@@ -90,12 +90,7 @@ var ModelRatio = map[string]float64{
 	"bge-large-en":    0.002 * RMB,
 	"bge-large-8k":    0.002 * RMB,
 	// https://ai.google.dev/pricing
-	"PaLM-2":                    1,
-	"gemini-pro":                1, // $0.00025 / 1k characters -> $0.001 / 1k tokens
-	"gemini-pro-vision":         1, // $0.00025 / 1k characters -> $0.001 / 1k tokens
-	"gemini-1.0-pro-vision-001": 1,
-	"gemini-1.0-pro-001":        1,
-	"gemini-1.5-pro":            1,
+	"gemini-1.5-pro": 1,
 	// https://open.bigmodel.cn/pricing
 	"glm-4":                     0.1 * RMB,
 	"glm-4v":                    0.1 * RMB,
@@ -159,12 +154,38 @@ var ModelRatio = map[string]float64{
 	// https://platform.deepseek.com/api-docs/pricing/
 	"deepseek-chat":  1.0 / 1000 * RMB,
 	"deepseek-coder": 1.0 / 1000 * RMB,
+	// 图片模型的token计费 - 基于输入token价格设置基础比率
+	"gpt-image-1": 0.000005 * 1000, // 5/1M input tokens转换为配额比率
+	// Gemini 专用画图模型
+	"gemini-2.5-flash-image-preview": 0.0003 * 1000, // 0.3/1M input tokens转换为配额比率
 }
 
-var CompletionRatio = map[string]float64{}
+var CompletionRatio = map[string]float64{
+	// 图片模型的输出token比率：输出token价格 / 输入token价格
+	"gpt-image-1": 8, // 输出token价格是输入token的8倍 (40/5)
+	// Gemini 专用画图模型的输出token比率：30/0.3 = 100
+	"gemini-2.5-flash-image-preview": 100, // 输出token价格是输入token的100倍
+}
+
+// 音频输入token倍率：音频输入token相对于文本输入token的价格倍率
+var AudioInputRatio = map[string]float64{
+	// 支持音频输入的模型配置，先留空待填充
+	// "gpt-4o-audio-preview": 100,  // 示例：音频输入token是文本token的100倍
+	// "gpt-4o-realtime-preview": 100,
+}
+
+// 音频输出token倍率：音频输出token相对于文本输出token的价格倍率
+var AudioOutputRatio = map[string]float64{
+	// 支持音频输出的模型配置，先留空待填充
+	// "gpt-4o-audio-preview": 200,  // 示例：音频输出token是文本输出token的200倍
+	// "gpt-4o-realtime-preview": 200,
+}
 
 var DefaultModelRatio map[string]float64
 var DefaultCompletionRatio map[string]float64
+var DefaultAudioInputRatio map[string]float64
+var DefaultAudioOutputRatio map[string]float64
+var ModelPrice map[string]float64
 
 func init() {
 	DefaultModelRatio = make(map[string]float64)
@@ -174,6 +195,18 @@ func init() {
 	DefaultCompletionRatio = make(map[string]float64)
 	for k, v := range CompletionRatio {
 		DefaultCompletionRatio[k] = v
+	}
+	DefaultAudioInputRatio = make(map[string]float64)
+	for k, v := range AudioInputRatio {
+		DefaultAudioInputRatio[k] = v
+	}
+	DefaultAudioOutputRatio = make(map[string]float64)
+	for k, v := range AudioOutputRatio {
+		DefaultAudioOutputRatio[k] = v
+	}
+	ModelPrice = make(map[string]float64)
+	for k, v := range DefaultModelPrice {
+		ModelPrice[k] = v
 	}
 }
 
@@ -193,6 +226,26 @@ func AddNewMissingRatio(oldRatio string) string {
 	if err != nil {
 		logger.SysError("error marshalling new ratio: " + err.Error())
 		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+func AddNewMissingModelPrice(oldPrice string) string {
+	newPrice := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldPrice), &newPrice)
+	if err != nil {
+		logger.SysError("error unmarshalling old model price: " + err.Error())
+		return oldPrice
+	}
+	for k, v := range DefaultModelPrice {
+		if _, ok := newPrice[k]; !ok {
+			newPrice[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newPrice)
+	if err != nil {
+		logger.SysError("error marshalling new model price: " + err.Error())
+		return oldPrice
 	}
 	return string(jsonBytes)
 }
@@ -239,6 +292,32 @@ func CompletionRatio2JSONString() string {
 func UpdateCompletionRatioByJSONString(jsonStr string) error {
 	CompletionRatio = make(map[string]float64)
 	return json.Unmarshal([]byte(jsonStr), &CompletionRatio)
+}
+
+func AudioInputRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(AudioInputRatio)
+	if err != nil {
+		logger.SysError("error marshalling audio input ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateAudioInputRatioByJSONString(jsonStr string) error {
+	AudioInputRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &AudioInputRatio)
+}
+
+func AudioOutputRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(AudioOutputRatio)
+	if err != nil {
+		logger.SysError("error marshalling audio output ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateAudioOutputRatioByJSONString(jsonStr string) error {
+	AudioOutputRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &AudioOutputRatio)
 }
 
 func GetCompletionRatio(name string) float64 {
@@ -300,58 +379,59 @@ func GetCompletionRatio(name string) float64 {
 }
 
 var DefaultModelPrice = map[string]float64{
-	"gpt-4-gizmo-*":           0.1,
-	"mj_imagine":              0.036,
-	"mj_variation":            0.036,
-	"mj_reroll":               0.036,
-	"mj_blend":                0.036,
-	"mj_modal":                0.036,
-	"mj_zoom":                 0.018,
-	"mj_shorten":              0.018,
-	"mj_high_variation":       0.036,
-	"mj_low_variation":        0.036,
-	"mj_pan":                  0.036,
-	"mj_inpaint":              0.036,
-	"mj_custom_zoom":          0.036,
-	"mj_describe":             0.018,
-	"mj_upscale":              0.018,
-	"swap_face":               0.018,
-	"generate_core":           0.03,
-	"generate_sd3":            0.065,
-	"generate_ultra":          0.08,
-	"sd3-turbo":               0.04,
-	"upscale_conservative":    0.03,
-	"upscale_creative":        0.25,
-	"upscale_creative_result": 0.0,
-	"edit_erase":              0.03,
-	"edit_inpaint":            0.03,
-	"edit_outpaint":           0.04,
-	"edit_search_replace":     0.04,
-	"edit_remove_background":  0.02,
-	"control_sketch":          0.03,
-	"control_structure":       0.03,
-	"image_to_video":          0.2,
-	"flux-pro":                0.055,
-	"flux-schnell":            0.003,
-	"flux-dev":                0.030,
-	"sd3-large":               0.065,
-	"sd3-medium":              0.035,
-	"sd3-large-turbo":         0.04,
-	"cogvideox":               0.1,
-	"video-01":                0.45,
-	"kling-v1":                0.14,
-	"kling-v1-5":              0.28,
-	"gen3a_turbo":             0.25,
-	"luma":                    0.4,
-	"dall-e-3":                0.04,
-	"dall-e-2":                0.02,
-	"viggle":                  0.2,
-	"v3.5":                    0.45,
-	"video-01-live2d":         0.45,
-	"S2V-01":                  0.6,
-	"image-01":                0.025,
-	"grok-2-image-1212":       0.07,
-	"grok-2-image":            0.07,
+	"gpt-4-gizmo-*":              0.1,
+	"mj_imagine":                 0.036,
+	"mj_variation":               0.036,
+	"mj_reroll":                  0.036,
+	"mj_blend":                   0.036,
+	"mj_modal":                   0.036,
+	"mj_zoom":                    0.018,
+	"mj_shorten":                 0.018,
+	"mj_high_variation":          0.036,
+	"mj_low_variation":           0.036,
+	"mj_pan":                     0.036,
+	"mj_inpaint":                 0.036,
+	"mj_custom_zoom":             0.036,
+	"mj_describe":                0.018,
+	"mj_upscale":                 0.018,
+	"swap_face":                  0.018,
+	"generate_core":              0.03,
+	"generate_sd3":               0.065,
+	"generate_ultra":             0.08,
+	"sd3-turbo":                  0.04,
+	"upscale_conservative":       0.03,
+	"upscale_creative":           0.25,
+	"upscale_creative_result":    0.0,
+	"edit_erase":                 0.03,
+	"edit_inpaint":               0.03,
+	"edit_outpaint":              0.04,
+	"edit_search_replace":        0.04,
+	"edit_remove_background":     0.02,
+	"control_sketch":             0.03,
+	"control_structure":          0.03,
+	"image_to_video":             0.2,
+	"flux-pro":                   0.055,
+	"flux-schnell":               0.003,
+	"flux-dev":                   0.030,
+	"sd3-large":                  0.065,
+	"sd3-medium":                 0.035,
+	"sd3-large-turbo":            0.04,
+	"cogvideox":                  0.1,
+	"video-01":                   0.45,
+	"kling-v1":                   0.14,
+	"kling-v1-5":                 0.28,
+	"gen3a_turbo":                0.25,
+	"luma":                       0.4,
+	"dall-e-3":                   0.04,
+	"dall-e-2":                   0.02,
+	"viggle":                     0.2,
+	"v3.5":                       0.45,
+	"video-01-live2d":            0.45,
+	"S2V-01":                     0.6,
+	"image-01":                   0.025,
+	"grok-2-image-1212":          0.07,
+	"grok-2-image":               0.07,
+	"doubao-seedream-4-0-250828": 0.3, // 豆包图片模型按次计费
 }
 
 //后续进行修正
@@ -362,13 +442,8 @@ var DefaultModelTypeRatio = map[string]float64{
 	"relax": 1,
 }
 
-var modelPrice map[string]float64 = nil
-
 func ModelPrice2JSONString() string {
-	if modelPrice == nil {
-		modelPrice = DefaultModelPrice
-	}
-	jsonBytes, err := json.Marshal(modelPrice)
+	jsonBytes, err := json.Marshal(ModelPrice)
 	if err != nil {
 		logger.SysError("error marshalling model price: " + err.Error())
 	}
@@ -376,18 +451,15 @@ func ModelPrice2JSONString() string {
 }
 
 func UpdateModelPriceByJSONString(jsonStr string) error {
-	modelPrice = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &modelPrice)
+	ModelPrice = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &ModelPrice)
 }
 
 func GetModelPrice(name string, printErr bool) float64 {
-	if modelPrice == nil {
-		modelPrice = DefaultModelPrice
-	}
 	if strings.HasPrefix(name, "gpt-4-gizmo") {
 		name = "gpt-4-gizmo-*"
 	}
-	price, ok := modelPrice[name]
+	price, ok := ModelPrice[name]
 	if !ok {
 		if printErr {
 			logger.SysError("model price not found: " + name)
@@ -395,6 +467,22 @@ func GetModelPrice(name string, printErr bool) float64 {
 		return -1
 	}
 	return price
+}
+
+// GetAudioInputRatio 获取音频输入token倍率
+func GetAudioInputRatio(name string) float64 {
+	if ratio, ok := AudioInputRatio[name]; ok {
+		return ratio
+	}
+	return 1.0 // 默认倍率为1（与文本token价格相同）
+}
+
+// GetAudioOutputRatio 获取音频输出token倍率
+func GetAudioOutputRatio(name string) float64 {
+	if ratio, ok := AudioOutputRatio[name]; ok {
+		return ratio
+	}
+	return 1.0 // 默认倍率为1（与文本token价格相同）
 }
 
 // var levels = map[string]float64{

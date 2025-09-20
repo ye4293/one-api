@@ -208,6 +208,7 @@ var channelOptions = []ChannelOption{
 	{Key: 46, Text: "Flux", Value: 46, Color: "green"},
 	{Key: 47, Text: "XAI", Value: 47, Color: "orange"},
 	{Key: 48, Text: "Vertex AI", Value: 48, Color: "purple"},
+	{Key: 40, Text: "豆包", Value: 40, Color: "purple"},
 }
 
 // 定义返回的数据结构

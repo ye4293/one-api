@@ -525,12 +525,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "failed to get user quota", http.StatusInternalServerError)
 	}
 
-	var modelPrice float64
-	defaultPrice, ok := common.DefaultModelPrice[imageRequest.Model]
-	if !ok {
-		modelPrice = 0.1
-	} else {
-		modelPrice = defaultPrice
+	modelPrice := common.GetModelPrice(imageRequest.Model, false)
+	if modelPrice == -1 {
+		modelPrice = 0.1 // 默认价格
 	}
 	quota := int64(modelPrice*500000*imageCostRatio*ratio) * int64(imageRequest.N)
 
@@ -623,18 +620,117 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				// 保存旧的 quota 值用于日志
 				oldQuota := quota
 
-				// 修复：先乘后除，避免小数被截断为0
-				textCost := textTokens * 5 / 1000000
-				imageCost := imageTokens * 10 / 1000000
-				outputCost := outputTokens * 40 / 1000000
+				// 使用现有的ModelRatio和CompletionRatio机制进行计费
+				modelRatio := common.GetModelRatio("gpt-image-1")
+				completionRatio := common.GetCompletionRatio("gpt-image-1")
+				groupRatio := common.GetGroupRatio(meta.Group)
 
-				// 计算总成本并转换为quota单位
-				calculatedQuota := int64((textCost + imageCost + outputCost) * 500000)
-				quota = int64(float64(calculatedQuota) * ratio)
+				// 计算输入tokens：文本tokens + 图片tokens (图片tokens价格是文本的2倍)
+				inputTokensEquivalent := textTokens + imageTokens*2
+
+				// 使用标准的计费公式：(输入tokens + 输出tokens * 完成比率) * 模型比率 * 分组比率
+				// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
+				calculatedQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio / 1000 * 500000))
+				quota = calculatedQuota
 
 				// 记录日志
 				logger.Infof(ctx, "GPT-Image-1 token usage: text=%d, image=%d, output=%d, old quota=%d, new quota=%d",
 					int(textTokens), int(imageTokens), int(outputTokens), oldQuota, quota)
+			}
+		}
+
+		// 对于豆包图片模型，按次计费（不再使用token计费）
+		if meta.ChannelType == 40 {
+			// 只解析usage信息获取生成的图片数量
+			var usageInfo struct {
+				Model string `json:"model,omitempty"`
+				Usage struct {
+					GeneratedImages int `json:"generated_images,omitempty"`
+					OutputTokens    int `json:"output_tokens,omitempty"`
+					TotalTokens     int `json:"total_tokens,omitempty"`
+				} `json:"usage,omitempty"`
+			}
+
+			if err := json.Unmarshal(responseBody, &usageInfo); err != nil {
+				logger.SysError("error parsing doubao image usage: " + err.Error())
+			} else {
+				// 保存旧的 quota 值用于日志
+				oldQuota := quota
+
+				// 使用按次计费：从用户可配置的 ModelPrice 获取单价
+				modelPrice := common.GetModelPrice(meta.ActualModelName, false)
+				if modelPrice == -1 {
+					modelPrice = 0.3 // 默认价格 0.3 美金
+				}
+
+				groupRatio := common.GetGroupRatio(meta.Group)
+				generatedImages := usageInfo.Usage.GeneratedImages
+				if generatedImages <= 0 {
+					generatedImages = 1 // 至少生成1张图片
+				}
+
+				// 按次计费：单价 * 生成图片数 * 分组倍率 * 500000（转换为配额）
+				calculatedQuota := int64(modelPrice * float64(generatedImages) * groupRatio * 500000)
+				quota = calculatedQuota
+
+				// 记录日志
+				logger.Infof(ctx, "Doubao Image per-call pricing: generated_images=%d, price=$%.2f, old quota=%d, new quota=%d",
+					generatedImages, modelPrice, oldQuota, quota)
+
+				// 处理配额消费和日志记录
+				err := model.PostConsumeTokenQuota(meta.TokenId, quota)
+				if err != nil {
+					logger.SysError("error consuming token remain quota for doubao image: " + err.Error())
+				}
+
+				err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+				if err != nil {
+					logger.SysError("error update user quota cache for doubao image: " + err.Error())
+				}
+
+				referer := c.Request.Header.Get("HTTP-Referer")
+				title := c.Request.Header.Get("X-Title")
+				rowDuration := time.Since(startTime).Seconds()
+				duration := math.Round(rowDuration*1000) / 1000
+				tokenName := c.GetString("token_name")
+				xRequestID := c.GetString("X-Request-ID")
+
+				// 获取模型名，如果解析不到就使用meta中的
+				modelName := usageInfo.Model
+				if modelName == "" {
+					modelName = meta.ActualModelName
+				}
+
+				// 计算详细的成本信息
+				totalCost := float64(quota) / 500000
+				logContent := fmt.Sprintf("Doubao Image Request - Model: %s, Generated images: %d, Price per image: $%.2f, Total cost: $%.6f, Duration: %.3fs",
+					modelName, generatedImages, modelPrice, totalCost, duration)
+
+				// 获取渠道历史信息并记录日志
+				var otherInfo string
+				if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+					if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+						if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+							otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+						}
+					}
+				}
+
+				if otherInfo != "" {
+					model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+				} else {
+					model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
+				}
+				model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
+				channelId := c.GetInt("channel_id")
+				model.UpdateChannelUsedQuota(channelId, quota)
+
+				// 更新多Key使用统计
+				UpdateMultiKeyUsageFromContext(c, quota > 0)
+
+				logger.Infof(ctx, "Doubao Image per-call consumption completed: generated_images=%d, quota=%d, duration=%.3fs",
+					generatedImages, quota, duration)
+				return // 跳过后续处理
 			}
 		}
 
@@ -1877,13 +1973,10 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 记录开始时间用于计算耗时
 	startTime := time.Now()
 
-	// 计算配额 - 对于 Gemini 模型需要根据实际 token 使用量计算，这里先用默认值
-	var modelPrice float64
-	defaultPrice, ok := common.DefaultModelPrice[imageRequest.Model]
-	if !ok {
-		modelPrice = 0.1
-	} else {
-		modelPrice = defaultPrice
+	// 计算配额 - 对于 Gemini 模型需要根据实际 token 使用量计算，这里先用用户配置的价格
+	modelPrice := common.GetModelPrice(imageRequest.Model, false)
+	if modelPrice == -1 {
+		modelPrice = 0.1 // 默认价格
 	}
 
 	groupRatio := common.GetGroupRatio(meta.Group)
@@ -2340,11 +2433,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	rowDuration := time.Since(startTime).Seconds()
 	duration := math.Round(rowDuration*1000) / 1000
 
-	// 使用 Gemini 实际定价重新计算配额
+	// 使用统一的ModelRatio和CompletionRatio机制进行计费
 	groupRatio := common.GetGroupRatio(meta.Group)
 	promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 	completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
-	actualQuota := calculateGeminiQuota(promptTokens, completionTokens, groupRatio)
+
+	modelRatio := common.GetModelRatio(meta.OriginModelName)
+	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
 
 	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 		promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -2439,9 +2535,12 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		return fmt.Errorf("failed to extract token info")
 	}
 
-	// 使用 Gemini 实际定价重新计算配额
+	// 使用统一的ModelRatio和CompletionRatio机制进行计费
 	groupRatio := common.GetGroupRatio(meta.Group)
-	actualQuota := calculateGeminiQuota(promptTokens, completionTokens, groupRatio)
+	modelRatio := common.GetModelRatio(meta.OriginModelName)
+	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+	// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
+	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio / 1000 * 500000))
 
 	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 		promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -2487,26 +2586,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 
 	logger.Infof(ctx, "Gemini JSON token consumption completed: prompt=%d, completion=%d, duration=%.3fs", promptTokens, completionTokens, duration)
 	return nil
-}
-
-// calculateGeminiQuota 根据 Gemini 的实际定价计算配额
-// 输入: 1M tokens = $0.3, 输出: 1M tokens = $30
-// 平台换算: $1 = 500,000 quota
-func calculateGeminiQuota(promptTokens, completionTokens int, groupRatio float64) int64 {
-	// Gemini 定价
-	const inputPricePerMillion = 0.3   // $0.3 per 1M input tokens
-	const outputPricePerMillion = 30.0 // $30 per 1M output tokens
-	const quotaPerDollar = 500000.0    // 500,000 quota per $1
-
-	// 计算成本
-	inputCost := float64(promptTokens) / 1000000.0 * inputPricePerMillion
-	outputCost := float64(completionTokens) / 1000000.0 * outputPricePerMillion
-	totalCost := inputCost + outputCost
-
-	// 转换为配额并应用分组倍率
-	quota := int64(totalCost * quotaPerDollar * groupRatio)
-
-	return quota
 }
 
 // extractChannelHistoryInfo 从gin上下文中提取渠道历史信息
