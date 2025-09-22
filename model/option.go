@@ -113,6 +113,15 @@ func loadOptionsFromDatabase() {
 		if option.Key == "PerCallPricing" {
 			option.Value = common.AddNewMissingModelPrice(option.Value)
 		}
+		if option.Key == "CompletionRatio" {
+			option.Value = common.AddNewMissingCompletionRatio(option.Value)
+		}
+		if option.Key == "AudioInputRatio" {
+			option.Value = common.AddNewMissingAudioInputRatio(option.Value)
+		}
+		if option.Key == "AudioOutputRatio" {
+			option.Value = common.AddNewMissingAudioOutputRatio(option.Value)
+		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
 			logger.SysError("failed to update option map: " + err.Error())

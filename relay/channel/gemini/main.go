@@ -386,6 +386,7 @@ type ChatSafetyRating struct {
 
 type ChatPromptFeedback struct {
 	SafetyRatings []ChatSafetyRating `json:"safetyRatings"`
+	BlockReason   string             `json:"blockReason,omitempty"`
 }
 
 func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
@@ -498,6 +499,33 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			if err != nil {
 				logger.SysError("error unmarshalling stream response: " + err.Error())
 				return true
+			}
+
+			// 检查是否有内容阻止原因
+			if geminiResponse.PromptFeedback.BlockReason != "" {
+				// 发送错误响应
+				finishReason := "content_filter"
+				errorResponse := &openai.ChatCompletionsStreamResponse{
+					Id:      fmt.Sprintf("chatcmpl-%s", helper.GetUUID()),
+					Object:  "chat.completion.chunk",
+					Created: helper.GetTimestamp(),
+					Model:   modelName,
+					Choices: []openai.ChatCompletionsStreamResponseChoice{
+						{
+							Index: 0,
+							Delta: model.Message{
+								Role:    "assistant",
+								Content: geminiResponse.PromptFeedback.BlockReason,
+							},
+							FinishReason: &finishReason,
+						},
+					},
+				}
+
+				jsonResponse, _ := json.Marshal(errorResponse)
+				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+				logger.SysLog(fmt.Sprintf("Gemini stream blocked: %s", geminiResponse.PromptFeedback.BlockReason))
+				return false
 			}
 
 			// 保存最新的 usage metadata
@@ -620,6 +648,20 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
 	}
+	// 检查是否有内容阻止原因
+	if geminiResponse.PromptFeedback.BlockReason != "" {
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: geminiResponse.PromptFeedback.BlockReason,
+				Type:    "content_policy_violation",
+				Param:   "",
+				Code:    400,
+			},
+			StatusCode: 400,
+		}, nil
+	}
+
+	// 然后检查是否没有候选项返回
 	if len(geminiResponse.Candidates) == 0 {
 		return &model.ErrorWithStatusCode{
 			Error: model.Error{
@@ -665,6 +707,8 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(resp.StatusCode)
-	_, err = c.Writer.Write(jsonResponse)
+	if _, err = c.Writer.Write(jsonResponse); err != nil {
+		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError), nil
+	}
 	return nil, &usage
 }

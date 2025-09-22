@@ -74,6 +74,7 @@ type TextToSpeechRequest struct {
 	Voice          string  `json:"voice" binding:"required"`
 	Speed          float64 `json:"speed"`
 	ResponseFormat string  `json:"response_format"`
+	StreamFormat   string  `json:"stream_format,omitempty"`
 }
 
 type UsageOrResponseText struct {

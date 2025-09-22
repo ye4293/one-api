@@ -233,11 +233,68 @@ func PostConsumeQuota(ctx context.Context, tokenId int, quotaDelta int64, totalQ
 	}
 }
 
+// PostConsumeQuotaWithTokens 处理包含分离的输入和输出token的配额消费
+func PostConsumeQuotaWithTokens(ctx context.Context, tokenId int, quotaDelta int64, totalQuota int64, userId int, channelId int, modelRatio float64, groupRatio float64, modelName string, tokenName string, duration float64, title string, httpReferer string, inputTokens int64, outputTokens int64) {
+	// quotaDelta is remaining quota to be consumed
+	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+	err = model.CacheUpdateUserQuota(ctx, userId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+	// totalQuota is total quota consumed
+	if totalQuota != 0 {
+		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+		// 正确记录inputTokens和outputTokens
+		model.RecordConsumeLog(ctx, userId, channelId, int(inputTokens), int(outputTokens), modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0)
+		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
+		model.UpdateChannelUsedQuota(channelId, totalQuota)
+	}
+	if totalQuota <= 0 {
+		logger.Error(ctx, fmt.Sprintf("totalQuota consumed is %d, something is wrong", totalQuota))
+	}
+}
+
+// PostConsumeQuotaWithDetailedTokens 处理包含详细token分类的配额消费（用于音频转录等）
+func PostConsumeQuotaWithDetailedTokens(ctx context.Context, tokenId int, quotaDelta int64, totalQuota int64, userId int, channelId int, modelRatio float64, groupRatio float64, modelName string, tokenName string, duration float64, title string, httpReferer string, inputTokens int64, outputTokens int64, textInput int64, textOutput int64, audioInput int64, audioOutput int64) {
+	// quotaDelta is remaining quota to be consumed
+	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+	err = model.CacheUpdateUserQuota(ctx, userId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+	// totalQuota is total quota consumed
+	if totalQuota != 0 {
+		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+
+		// 创建详细的token信息JSON
+		otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+			textInput, textOutput, audioInput, audioOutput)
+
+		// 正确记录inputTokens和outputTokens，并添加详细信息到other字段
+		model.RecordConsumeLogWithOther(ctx, userId, channelId, int(inputTokens), int(outputTokens), modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0, otherInfo)
+		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
+		model.UpdateChannelUsedQuota(channelId, totalQuota)
+	}
+	if totalQuota <= 0 {
+		logger.Error(ctx, fmt.Sprintf("totalQuota consumed is %d, something is wrong", totalQuota))
+	}
+}
+
 func GetAzureAPIVersion(c *gin.Context) string {
 	query := c.Request.URL.Query()
 	apiVersion := query.Get("api-version")
 	if apiVersion == "" {
 		apiVersion = c.GetString(common.ConfigKeyAPIVersion)
+	}
+	// 如果还是空，使用默认版本
+	if apiVersion == "" {
+		apiVersion = "2024-02-15-preview"
 	}
 	return apiVersion
 }

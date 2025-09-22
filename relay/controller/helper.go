@@ -52,18 +52,26 @@ func getImageRequest(c *gin.Context, relayMode int) (*relaymodel.ImageRequest, e
 			Model: "dall-e-2",
 		}
 
-		// 尝试获取model字段，但不解析整个表单
+		// 尝试获取表单字段，但不解析整个表单文件部分
 		if strings.Contains(contentType, "multipart/form-data") {
-			// 尝试只解析model字段，不读取文件
+			// 尝试只解析表单字段，不读取文件
 			c.Request.ParseMultipartForm(1 << 10) // 只解析1KB的数据
 			if model := c.Request.FormValue("model"); model != "" {
 				imageRequest.Model = model
+			}
+			// 解析stream参数
+			if stream := c.Request.FormValue("stream"); stream != "" {
+				imageRequest.Stream = stream == "true"
 			}
 		} else {
 			// 对于url编码的表单
 			c.Request.ParseForm()
 			if model := c.Request.FormValue("model"); model != "" {
 				imageRequest.Model = model
+			}
+			// 解析stream参数
+			if stream := c.Request.FormValue("stream"); stream != "" {
+				imageRequest.Stream = stream == "true"
 			}
 		}
 

@@ -50,8 +50,10 @@ var ModelRatio = map[string]float64{
 	"text-davinci-003":        10,
 	"text-davinci-edit-001":   10,
 	"code-davinci-edit-001":   10,
-	"whisper-1":               15,  // $0.006 / minute -> $0.006 / 150 words -> $0.006 / 200 tokens -> $0.03 / 1k tokens
-	"tts-1":                   7.5, // $0.015 / 1K characters
+	"whisper-1":               15,    // $0.006 / minute -> $0.006 / 150 words -> $0.006 / 200 tokens -> $0.03 / 1k tokens
+	"gpt-4o-mini-transcribe":  0.625, // $1.25 / 1M tokens (文字输入基础价格) -> 0.625 * $0.002 = $1.25/1M
+	"gpt-4o-mini-tts":         0.3,   // $0.6 / 1M tokens (文字输入价格) -> 0.3 * $0.002 = $0.6/1M tokens
+	"tts-1":                   7.5,   // $0.015 / 1K characters
 	"tts-1-1106":              7.5,
 	"tts-1-hd":                15, // $0.030 / 1K characters
 	"tts-1-hd-1106":           15,
@@ -157,7 +159,7 @@ var ModelRatio = map[string]float64{
 	// 图片模型的token计费 - 基于输入token价格设置基础比率
 	"gpt-image-1": 2.5, // 5/1M input tokens转换为配额比率
 	// Gemini 专用画图模型
-	"gemini-2.5-flash-image-preview": 1.5, // 0.3/1M input tokens转换为配额比率
+	"gemini-2.5-flash-image-preview": 0.15, // $0.3/1M ÷ $2/1M(基础价格) = 0.15
 }
 
 var CompletionRatio = map[string]float64{
@@ -165,12 +167,17 @@ var CompletionRatio = map[string]float64{
 	"gpt-image-1": 8, // 输出token价格是输入token的8倍 (40/5)
 	// Gemini 专用画图模型的输出token比率：30/0.3 = 100
 	"gemini-2.5-flash-image-preview": 100, // 输出token价格是输入token的100倍
+	// 音频转录模型的文字输出token比率：文字输出价格是文字输入的4倍
+	"gpt-4o-mini-transcribe": 4, // 文字输出$5/1M, 文字输入$1.25/1M -> 5/1.25 = 4
+	// TTS模型的语音输出token比率：语音输出价格相对于文字输入的倍率
+	"gpt-4o-mini-tts": 20, // 语音输出$12/1M, 文字输入$0.6/1M -> 12/0.6 = 20
 }
 
 // 音频输入token倍率：音频输入token相对于文本输入token的价格倍率
 var AudioInputRatio = map[string]float64{
 	// 支持音频输入的模型配置，先留空待填充
 	// "gpt-4o-audio-preview": 100,  // 示例：音频输入token是文本token的100倍
+	"gpt-4o-mini-transcribe": 2.4, // 音频输入$3/1M, 文字输入$1.25/1M -> 3/1.25 = 2.4
 	// "gpt-4o-realtime-preview": 100,
 }
 
@@ -246,6 +253,66 @@ func AddNewMissingModelPrice(oldPrice string) string {
 	if err != nil {
 		logger.SysError("error marshalling new model price: " + err.Error())
 		return oldPrice
+	}
+	return string(jsonBytes)
+}
+
+func AddNewMissingCompletionRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old completion ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultCompletionRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new completion ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+func AddNewMissingAudioInputRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old audio input ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultAudioInputRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new audio input ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+func AddNewMissingAudioOutputRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old audio output ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultAudioOutputRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new audio output ratio: " + err.Error())
+		return oldRatio
 	}
 	return string(jsonBytes)
 }

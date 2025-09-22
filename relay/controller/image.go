@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -66,11 +68,32 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	contentType := c.GetHeader("Content-Type")
 	isFormRequest := strings.Contains(contentType, "multipart/form-data") || strings.Contains(contentType, "application/x-www-form-urlencoded")
 
+	// 检查是否是流式请求（先检查URL参数和header）
+	isStreamRequest := false
+	if streamParam := c.Query("stream"); streamParam == "true" {
+		isStreamRequest = true
+	}
+	// 检查Accept header
+	acceptHeader := c.GetHeader("Accept")
+	if strings.Contains(acceptHeader, "text/event-stream") {
+		isStreamRequest = true
+	}
+
 	// 获取基本的请求信息，但不消费请求体
 	imageRequest, err := getImageRequest(c, meta.Mode)
 	if err != nil {
 		logger.Errorf(ctx, "getImageRequest failed: %s", err.Error())
 		return openai.ErrorWrapper(err, "invalid_image_request", http.StatusBadRequest)
+	}
+
+	// 检查请求体中的stream参数（JSON格式）
+	if imageRequest != nil && imageRequest.Stream {
+		isStreamRequest = true
+		logger.Infof(ctx, "检测到请求体中的stream参数，启用流式处理")
+	}
+
+	if isStreamRequest {
+		logger.Infof(ctx, "流式请求检测结果: 已启用流式处理")
 	}
 
 	// map model name
@@ -88,8 +111,36 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	requestURL := c.Request.URL.String()
 	fullRequestURL = util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType)
 	if meta.ChannelType == common.ChannelTypeAzure {
-		apiVersion := util.GetAzureAPIVersion(c)
-		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
+		// 优先从渠道配置获取API版本
+		apiVersion := meta.Config.APIVersion
+		if apiVersion == "" {
+			// 如果配置中没有API版本，则使用GetAzureAPIVersion获取
+			apiVersion = util.GetAzureAPIVersion(c)
+		}
+
+		// 根据原始请求路径确定Azure端点
+		var azureEndpoint string
+		if strings.Contains(c.Request.URL.Path, "/images/edits") {
+			azureEndpoint = "images/edits"
+			// gpt-image-1的edits接口需要使用较新的API版本（仅当没有明确配置时）
+			if imageRequest.Model == "gpt-image-1" && meta.Config.APIVersion == "" {
+				apiVersion = "2025-04-01-preview"
+				logger.Infof(ctx, "Azure图像编辑请求: gpt-image-1使用默认API版本 %s", apiVersion)
+			}
+			logger.Infof(ctx, "Azure图像编辑请求: 使用edits端点")
+		} else {
+			azureEndpoint = "images/generations"
+			logger.Infof(ctx, "Azure图像生成请求: 使用generations端点")
+		}
+		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/%s?api-version=%s", meta.BaseURL, imageRequest.Model, azureEndpoint, apiVersion)
+		logger.Infof(ctx, "Azure完整请求URL: %s (API版本来源: %s)", fullRequestURL,
+			func() string {
+				if meta.Config.APIVersion != "" {
+					return "渠道配置"
+				} else {
+					return "系统默认"
+				}
+			}())
 	}
 	if meta.ChannelType == 27 { //minimax
 		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
@@ -383,17 +434,32 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Region: %s", region)
 				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Model: %s", meta.OriginModelName)
 
-				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-				if region == "global" {
-					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+				// 构建VertexAI API URL - 根据是否流式请求选择不同的端点
+				var endpoint string
+				if isStreamRequest {
+					endpoint = "streamGenerateContent"
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 使用流式端点: %s", endpoint)
 				} else {
-					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+					endpoint = "generateContent"
+					logger.Infof(ctx, "🔧 [VertexAI Debug] 使用非流式端点: %s", endpoint)
+				}
+
+				if region == "global" {
+					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:%s", projectID, meta.OriginModelName, endpoint)
+				} else {
+					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s", region, projectID, region, meta.OriginModelName, endpoint)
 				}
 				logger.Infof(ctx, "🔧 [VertexAI Debug] 构建的完整URL: %s", fullRequestURL)
 			} else {
 				// 原有的Gemini官方API URL
-				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
-				logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
+				if isStreamRequest {
+					// 流式请求使用streamGenerateContent端点并添加alt=sse和key参数
+					fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s", meta.BaseURL, meta.OriginModelName, meta.APIKey)
+					logger.Infof(ctx, "Gemini流式API URL: %s", fullRequestURL)
+				} else {
+					fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+					logger.Infof(ctx, "Gemini非流式API URL: %s", fullRequestURL)
+				}
 			}
 		}
 
@@ -483,6 +549,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 在发送请求前记录详细信息
 	logger.Infof(ctx, "Sending request to %s", fullRequestURL)
 	logger.Infof(ctx, "Request Content-Type: %s", req.Header.Get("Content-Type"))
+	logger.Infof(ctx, "Request Method: %s, Headers: Authorization=%s, Accept=%s",
+		req.Method,
+		func() string {
+			auth := req.Header.Get("Authorization")
+			if len(auth) > 20 {
+				return auth[:20] + "..."
+			}
+			return auth
+		}(),
+		req.Header.Get("Accept"))
 
 	// VertexAI调试信息
 	if meta.ChannelType == common.ChannelTypeVertexAI && strings.HasPrefix(imageRequest.Model, "gemini") {
@@ -573,15 +649,28 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			req.Header.Set("Authorization", "Bearer "+accessToken)
 			logger.Infof(ctx, "🔐 [VertexAI Debug] 已设置Authorization header为Bearer token")
 		} else {
-			// For Gemini, set the API key in the x-goog-api-key header
-			req.Header.Set("x-goog-api-key", meta.APIKey)
-			logger.Infof(ctx, "Setting x-goog-api-key header for Gemini API request")
+			// For Gemini
+			if isStreamRequest {
+				// 流式请求的key已经在URL中，不需要设置header
+				logger.Infof(ctx, "Gemini流式请求: API key已在URL中，跳过header设置")
+			} else {
+				// 非流式请求使用header设置API key
+				req.Header.Set("x-goog-api-key", meta.APIKey)
+				logger.Infof(ctx, "设置Gemini非流式请求的x-goog-api-key header")
+			}
 		}
 	} else {
 		req.Header.Set("Authorization", token)
 	}
 
-	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
+	// 设置Accept header
+	if isStreamRequest && strings.HasPrefix(meta.OriginModelName, "gemini") {
+		// 对于Gemini流式请求，设置SSE accept header
+		req.Header.Set("Accept", "text/event-stream")
+		logger.Debugf(ctx, "设置Gemini流式请求Accept header: text/event-stream")
+	} else {
+		req.Header.Set("Accept", c.Request.Header.Get("Accept"))
+	}
 
 	resp, err := util.HTTPClient.Do(req)
 	if err != nil {
@@ -595,13 +684,39 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	if err := c.Request.Body.Close(); err != nil {
 		logger.Warnf(ctx, "关闭原始请求体失败: %v", err)
 	}
+
+	// 标记是否已使用流式处理（避免defer函数重复处理）
+	streamProcessed := false
+
+	// 如果是流式请求，处理流式响应
+	if isStreamRequest {
+		streamProcessed = true // 标记已使用流式处理
+
+		// 根据模型类型选择不同的流式处理函数
+		if strings.HasPrefix(meta.OriginModelName, "gemini") {
+			logger.Infof(ctx, "处理Gemini图像生成流式响应")
+			return handleGeminiStreamingImageResponse(c, ctx, resp, meta, imageRequest, quota, startTime)
+		} else {
+			logger.Infof(ctx, "处理OpenAI图像生成流式响应")
+			return handleStreamingImageResponse(c, ctx, resp, meta, imageRequest, quota, startTime)
+		}
+	}
+
 	var imageResponse openai.ImageResponse
 	var responseBody []byte
 
 	// 用于保存 Gemini token 信息
 	var geminiPromptTokens, geminiCompletionTokens int
 
+	// 用于保存所有模型的 token 信息（用于日志记录）
+	var promptTokens, completionTokens int
+
 	defer func(ctx context.Context) {
+		// 如果已经通过流式处理，跳过defer函数的处理
+		if streamProcessed {
+			logger.Debugf(ctx, "跳过defer函数处理，因为已通过流式处理完成")
+			return
+		}
 		if resp == nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
 			return
 		}
@@ -610,7 +725,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if meta.ActualModelName == "gpt-image-1" {
 			var parsedResponse openai.ImageResponse
 			if err := json.Unmarshal(responseBody, &parsedResponse); err != nil {
-				logger.SysError("error parsing gpt-image-1 response: " + err.Error())
+				// 记录详细的调试信息
+				responsePreview := string(responseBody)
+				if len(responsePreview) > 300 {
+					responsePreview = responsePreview[:300] + "..."
+				}
+				logger.SysError(fmt.Sprintf("error parsing gpt-image-1 response: %s, response preview: %s", err.Error(), responsePreview))
 			} else {
 				// 先将令牌数转换为浮点数
 				textTokens := float64(parsedResponse.Usage.InputTokensDetails.TextTokens)
@@ -629,13 +749,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				inputTokensEquivalent := textTokens + imageTokens*2
 
 				// 使用标准的计费公式：(输入tokens + 输出tokens * 完成比率) * 模型比率 * 分组比率
-				// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
 				calculatedQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
 				quota = calculatedQuota
 
+				// 正确设置token数量用于日志记录
+				promptTokens = parsedResponse.Usage.InputTokens
+				completionTokens = parsedResponse.Usage.OutputTokens
+
 				// 记录日志
-				logger.Infof(ctx, "GPT-Image-1 token usage: text=%d, image=%d, output=%d, old quota=%d, new quota=%d",
-					int(textTokens), int(imageTokens), int(outputTokens), oldQuota, quota)
+				logger.Infof(ctx, "GPT-Image-1 token usage: text=%d, image=%d, input=%d, output=%d, old quota=%d, new quota=%d",
+					int(textTokens), int(imageTokens), promptTokens, completionTokens, oldQuota, quota)
 			}
 		}
 
@@ -735,7 +858,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 对于 Gemini 模型，跳过处理（已在响应处理中直接处理）
-		var promptTokens, completionTokens int
 		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
 			logger.Infof(ctx, "Defer 函数跳过 Gemini 模型处理（已在响应处理中完成）: ActualModelName=%s, OriginModelName=%s", meta.ActualModelName, meta.OriginModelName)
 			return // 跳过 Gemini 的处理
@@ -759,18 +881,54 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		tokenName := c.GetString("token_name")
 		xRequestID := c.GetString("X-Request-ID")
 
-		// 对于 Gemini 模型，包含 token 使用信息
+		// 构建详细的日志内容，包含token使用信息
 		var logContent string
 		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
 			modelPriceFloat := float64(quota) / 500000
 			logContent = fmt.Sprintf("Gemini JSON Request - Model: %s, Price: $%.4f, Tokens: prompt=%d, completion=%d, total=%d",
 				meta.OriginModelName, modelPriceFloat, promptTokens, completionTokens, promptTokens+completionTokens)
+		} else if meta.ActualModelName == "gpt-image-1" {
+			// 为gpt-image-1模型提供详细的token使用信息
+			modelPriceFloat := float64(quota) / 500000
+			logContent = fmt.Sprintf("GPT-Image-1 Request - Model: %s, Price: $%.4f, Tokens: input=%d, output=%d, total=%d",
+				meta.ActualModelName, modelPriceFloat, promptTokens, completionTokens, promptTokens+completionTokens)
 		} else {
-			logContent = fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
+			logContent = fmt.Sprintf("Image Request - Model: %s, Price: $%.2f, Group Ratio: %.2f, Tokens: input=%d, output=%d",
+				meta.ActualModelName, modelPrice, groupRatio, promptTokens, completionTokens)
 		}
 
-		// 记录消费日志 - 在RelayImageHelper中不需要处理other字段，这由具体的处理函数负责
-		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
+		// 记录消费日志，包含详细的token信息
+		var otherInfo string
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+				}
+			}
+		}
+
+		// 为 gpt-image-1 模型添加详细的token信息到otherInfo
+		if meta.ActualModelName == "gpt-image-1" && len(responseBody) > 0 {
+			var parsedResponse openai.ImageResponse
+			if err := json.Unmarshal(responseBody, &parsedResponse); err == nil {
+				textTokens := parsedResponse.Usage.InputTokensDetails.TextTokens
+				imageTokens := parsedResponse.Usage.InputTokensDetails.ImageTokens
+				outputTokens := parsedResponse.Usage.OutputTokens
+
+				tokenInfo := fmt.Sprintf("text_input:%d,image_input:%d,image_output:%d", textTokens, imageTokens, outputTokens)
+				if otherInfo != "" {
+					otherInfo = otherInfo + "," + tokenInfo
+				} else {
+					otherInfo = tokenInfo
+				}
+			}
+		}
+
+		if otherInfo != "" {
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+		} else {
+			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
+		}
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
@@ -783,6 +941,35 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// 记录响应的基本信息
+	responseContentType := resp.Header.Get("Content-Type")
+	logger.Infof(ctx, "Response received - Status: %d, Content-Type: %s, Body length: %d",
+		resp.StatusCode, responseContentType, len(responseBody))
+
+	// 检查是否收到了意外的流式响应
+	if strings.Contains(strings.ToLower(responseContentType), "event-stream") && !isStreamRequest {
+		streamProcessed = true // 标记已使用流式处理，避免defer函数重复处理
+		logger.Infof(ctx, "检测到意外的流式响应，自动切换为流式处理模式")
+
+		// 重新构造响应，以便流式处理函数可以处理
+		fakeResp := &http.Response{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
+		}
+
+		return handleStreamingImageResponse(c, ctx, fakeResp, meta, imageRequest, quota, startTime)
+	}
+
+	// 如果响应体很小，记录完整内容；否则只记录前200字符
+	if len(responseBody) > 0 {
+		responsePreview := string(responseBody)
+		if len(responsePreview) > 200 {
+			responsePreview = responsePreview[:200] + "..."
+		}
+		logger.Debugf(ctx, "Response body preview: %s", responsePreview)
 	}
 
 	err = resp.Body.Close()
@@ -1140,7 +1327,41 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		// For other channel types, unmarshal as usual
 		err = json.Unmarshal(responseBody, &imageResponse)
 		if err != nil {
-			return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+			// 记录详细的调试信息以帮助诊断问题
+			responsePreview := string(responseBody)
+			if len(responsePreview) > 500 {
+				responsePreview = responsePreview[:500] + "..."
+			}
+
+			contentType := resp.Header.Get("Content-Type")
+			logger.Errorf(ctx, "JSON解析失败 - Content-Type: %s, 响应体长度: %d, 响应体预览: %s",
+				contentType, len(responseBody), responsePreview)
+
+			// 检查是否是HTML响应（通常表示错误页面）
+			if strings.Contains(strings.ToLower(contentType), "html") || strings.HasPrefix(strings.TrimSpace(responsePreview), "<") {
+				logger.Errorf(ctx, "收到HTML响应而不是JSON，可能是API错误页面")
+				return openai.ErrorWrapper(
+					fmt.Errorf("API返回HTML错误页面而非JSON: %s", responsePreview),
+					"html_response_error",
+					http.StatusBadGateway,
+				)
+			}
+
+			// 检查是否是空响应
+			if len(responseBody) == 0 {
+				logger.Errorf(ctx, "收到空响应体")
+				return openai.ErrorWrapper(
+					fmt.Errorf("API返回空响应"),
+					"empty_response_error",
+					http.StatusBadGateway,
+				)
+			}
+
+			return openai.ErrorWrapper(
+				fmt.Errorf("JSON解析失败: %s, 响应预览: %s", err.Error(), responsePreview),
+				"unmarshal_response_body_failed",
+				http.StatusInternalServerError,
+			)
 		}
 	}
 
@@ -2171,16 +2392,25 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		}
 		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 使用Region: %s, Model: %s", region, meta.OriginModelName)
 
-		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-		if region == "global" {
-			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
-		} else {
-			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+		// 构建VertexAI API URL - 根据是否流式请求选择不同的endpoint
+		endpoint := "generateContent"
+		if imageRequest.Stream {
+			endpoint = "streamGenerateContent"
 		}
-		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 构建的完整URL: %s", fullRequestURL)
+
+		if region == "global" {
+			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:%s", projectID, meta.OriginModelName, endpoint)
+		} else {
+			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s", region, projectID, region, meta.OriginModelName, endpoint)
+		}
+		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 构建的完整URL: %s (流式: %v)", fullRequestURL, imageRequest.Stream)
 	} else {
-		// 原有的Gemini官方API URL
-		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+		// Gemini官方API URL - 根据是否流式请求选择不同的endpoint和参数
+		if imageRequest.Stream {
+			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s", meta.BaseURL, meta.OriginModelName, meta.APIKey)
+		} else {
+			fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+		}
 	}
 
 	// 创建请求
@@ -2191,7 +2421,15 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+
+	// 根据是否流式请求设置不同的Accept header
+	if imageRequest.Stream && meta.ChannelType != common.ChannelTypeVertexAI {
+		// 对于Gemini流式请求，设置SSE accept header
+		req.Header.Set("Accept", "text/event-stream")
+		logger.Debugf(ctx, "设置Gemini Form流式请求Accept header: text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 开始VertexAI认证流程")
@@ -2218,8 +2456,21 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 已设置Authorization header为Bearer token")
 	} else {
-		// Gemini API 正确的 header 格式
-		req.Header.Set("x-goog-api-key", meta.APIKey)
+		// Gemini API认证处理
+		if imageRequest.Stream {
+			// 流式请求的API key已在URL中，不需要设置header
+			logger.Infof(ctx, "Gemini流式Form请求: API key已在URL中，跳过header设置")
+		} else {
+			// 非流式请求使用header设置API key
+			req.Header.Set("x-goog-api-key", meta.APIKey)
+		}
+	}
+
+	// 设置Accept header
+	if imageRequest.Stream && meta.ChannelType != common.ChannelTypeVertexAI {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
 	}
 
 	// 发送请求
@@ -2229,8 +2480,15 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	}
 	defer resp.Body.Close()
 
-	// 处理响应
-	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota, startTime)
+	// 根据是否流式请求选择不同的响应处理函数
+	if imageRequest.Stream {
+		// 流式响应处理
+		logger.Infof(ctx, "处理Gemini Form流式响应")
+		return handleGeminiStreamingImageResponse(c, ctx, resp, meta, imageRequest, quota, startTime)
+	} else {
+		// 非流式响应处理
+		return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota, startTime)
+	}
 }
 
 // handleGeminiResponse 处理 Gemini API 的响应
@@ -2613,4 +2871,874 @@ func extractChannelHistoryInfo(ctx context.Context, c *gin.Context) string {
 	}
 
 	return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+}
+
+// handleStreamingImageResponse 处理OpenAI图像生成的流式响应
+// 支持以下流式事件：
+// - image_generation.partial_image: 图像生成部分数据
+// - image_generation.completed: 图像生成完成（含usage）
+// - image_edit.partial_image: 图像编辑部分数据
+// - image_edit.completed: 图像编辑完成（含usage）
+func handleStreamingImageResponse(c *gin.Context, ctx context.Context, resp *http.Response, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, quota int64, startTime time.Time) *relaymodel.ErrorWithStatusCode {
+	logger.Infof(ctx, "开始处理OpenAI图像流式响应，状态码: %d", resp.StatusCode)
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(resp.Body)
+		logger.Errorf(ctx, "流式图像请求失败，状态码: %d, 响应: %s", resp.StatusCode, string(responseBody))
+		return openai.ErrorWrapper(
+			fmt.Errorf("流式图像请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
+			"streaming_image_error",
+			resp.StatusCode,
+		)
+	}
+
+	// 设置流式响应头
+	common.SetEventStreamHeaders(c)
+	c.Writer.WriteHeader(http.StatusOK)
+
+	// 确保支持 flushing
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		logger.Errorf(ctx, "响应写入器不支持flushing")
+		return openai.ErrorWrapper(fmt.Errorf("响应写入器不支持flushing"), "flusher_not_supported", http.StatusInternalServerError)
+	}
+
+	defer resp.Body.Close()
+
+	// 用于记录usage信息
+	var finalUsage *ImageStreamUsage
+	var promptTokens, completionTokens int
+
+	// 使用bufio.Scanner逐行读取流式响应
+	scanner := bufio.NewScanner(resp.Body)
+
+	// 设置合理缓冲区以处理大型base64图像数据
+	// 图像数据可能达到几十上百MB，设置为100MB缓冲区
+	// 可通过环境变量 IMAGE_STREAM_BUFFER_SIZE 自定义（单位：MB）
+	defaultBufferSizeMB := 100 // 默认100MB
+	if bufferSizeStr := os.Getenv("IMAGE_STREAM_BUFFER_SIZE"); bufferSizeStr != "" {
+		if bufferSizeMB, err := strconv.Atoi(bufferSizeStr); err == nil && bufferSizeMB > 0 {
+			defaultBufferSizeMB = bufferSizeMB
+		}
+	}
+
+	maxBufferSize := defaultBufferSizeMB * 1024 * 1024 // 转换为字节
+	buffer := make([]byte, 0, maxBufferSize)           // 使用0长度但预分配容量，节省内存
+	scanner.Buffer(buffer, maxBufferSize)
+
+	logger.Infof(ctx, "设置流式扫描器缓冲区大小: %d MB", defaultBufferSizeMB)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 记录数据转发详情（便于调试）
+		logger.Debugf(ctx, "转发流式数据行到客户端: 长度=%d", len(line))
+
+		// SSE格式需要空行作为事件分隔符，但只转发必要的空行
+		if line == "" {
+			// 转发空行（事件分隔符）
+			_, err := fmt.Fprintf(c.Writer, "\n")
+			if err != nil {
+				logger.Errorf(ctx, "写入空行分隔符失败: %v", err)
+				return openai.ErrorWrapper(err, "write_empty_line_failed", http.StatusInternalServerError)
+			}
+			flusher.Flush()
+			logger.Debugf(ctx, "✅ 已转发空行分隔符")
+			continue
+		}
+
+		line = strings.TrimSpace(line)
+
+		// 记录数据行长度，避免输出过长的base64数据
+		if len(line) > 200 {
+			logger.Debugf(ctx, "收到流式数据行: 长度=%d, 前缀=%s...", len(line), line[:200])
+		} else {
+			logger.Debugf(ctx, "收到流式数据行: %s", line)
+		}
+
+		// 解析SSE格式的数据
+		if strings.HasPrefix(line, "event: ") {
+			eventType := strings.TrimPrefix(line, "event: ")
+			logger.Debugf(ctx, "收到流式事件: %s", eventType)
+
+			// 记录具体的事件类型以便调试
+			switch eventType {
+			case "image_generation.partial_image":
+				logger.Debugf(ctx, "处理图像生成部分数据事件")
+			case "image_generation.completed":
+				logger.Infof(ctx, "收到图像生成完成事件")
+			case "image_edit.partial_image":
+				logger.Debugf(ctx, "处理图像编辑部分数据事件")
+			case "image_edit.completed":
+				logger.Infof(ctx, "收到图像编辑完成事件")
+			default:
+				logger.Debugf(ctx, "收到其他类型事件: %s", eventType)
+			}
+
+			// 转发事件行到客户端
+			_, err := fmt.Fprintf(c.Writer, "%s\n", line)
+			if err != nil {
+				logger.Errorf(ctx, "写入事件行失败: %v", err)
+				return openai.ErrorWrapper(err, "write_event_failed", http.StatusInternalServerError)
+			}
+			flusher.Flush()
+			logger.Debugf(ctx, "✅ 已转发事件行: %s", eventType)
+			continue
+		}
+
+		if strings.HasPrefix(line, "data: ") {
+			dataContent := strings.TrimPrefix(line, "data: ")
+
+			// 尝试解析JSON数据来提取usage信息
+			var eventData map[string]interface{}
+			if err := json.Unmarshal([]byte(dataContent), &eventData); err == nil {
+				// 检查是否是completed事件，包含usage信息
+				// 支持多种OpenAI流式事件格式：
+				// - image_edit.completed (编辑接口)
+				// - image_generation.completed (生成接口)
+				if eventType, ok := eventData["type"].(string); ok && (eventType == "image_edit.completed" || eventType == "image_generation.completed") {
+					logger.Infof(ctx, "收到completed事件 (%s)，提取usage信息", eventType)
+
+					// 提取usage信息
+					if usageData, exists := eventData["usage"]; exists {
+						usageBytes, _ := json.Marshal(usageData)
+						var usage ImageStreamUsage
+						if err := json.Unmarshal(usageBytes, &usage); err == nil {
+							finalUsage = &usage
+							promptTokens = usage.InputTokens
+							completionTokens = usage.OutputTokens
+							logger.Infof(ctx, "成功提取usage: input=%d, output=%d, total=%d", promptTokens, completionTokens, usage.TotalTokens)
+						} else {
+							logger.Warnf(ctx, "解析usage信息失败: %v", err)
+						}
+					} else {
+						logger.Infof(ctx, "收到completed事件但未找到usage信息，事件数据: %v", eventData)
+					}
+				}
+			}
+
+			// 转发数据行到客户端
+			_, err := fmt.Fprintf(c.Writer, "%s\n", line)
+			if err != nil {
+				logger.Errorf(ctx, "写入数据行失败: %v", err)
+				return openai.ErrorWrapper(err, "write_data_failed", http.StatusInternalServerError)
+			}
+			flusher.Flush()
+
+			// 记录转发的数据行（限制长度以避免日志过长）
+			dataPreview := dataContent
+			if len(dataPreview) > 100 {
+				dataPreview = dataPreview[:100] + "..."
+			}
+			logger.Debugf(ctx, "✅ 已转发数据行: %s", dataPreview)
+			continue
+		}
+
+		// 转发其他行到客户端
+		_, err := fmt.Fprintf(c.Writer, "%s\n", line)
+		if err != nil {
+			logger.Errorf(ctx, "写入其他行失败: %v", err)
+			return openai.ErrorWrapper(err, "write_line_failed", http.StatusInternalServerError)
+		}
+		flusher.Flush()
+		logger.Debugf(ctx, "✅ 已转发其他行: %s", line)
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(ctx, "读取流式响应出错: %v (缓冲区大小: %d MB)", err, defaultBufferSizeMB)
+
+		// 如果是缓冲区大小问题，提供更详细的错误信息
+		if strings.Contains(err.Error(), "token too long") {
+			logger.Errorf(ctx, "数据行超过缓冲区限制，当前限制: %d MB，可通过环境变量 IMAGE_STREAM_BUFFER_SIZE 增大", defaultBufferSizeMB)
+			return openai.ErrorWrapper(fmt.Errorf("数据行太长，超过%dMB缓冲区限制: %v，请设置 IMAGE_STREAM_BUFFER_SIZE 环境变量", defaultBufferSizeMB, err), "buffer_too_small", http.StatusInternalServerError)
+		}
+
+		return openai.ErrorWrapper(err, "read_stream_failed", http.StatusInternalServerError)
+	}
+
+	// 处理计费
+	if finalUsage != nil {
+		logger.Infof(ctx, "开始处理流式图像请求的计费")
+		err := handleStreamingImageBilling(c, ctx, meta, imageRequest, finalUsage, quota, startTime)
+		if err != nil {
+			logger.Warnf(ctx, "流式图像计费处理失败: %v", err)
+		}
+	} else {
+		logger.Warnf(ctx, "未收到usage信息，使用预估配额进行计费")
+		// 使用预估配额进行计费
+		err := handleEstimatedImageBilling(c, ctx, meta, imageRequest, promptTokens, completionTokens, quota, startTime)
+		if err != nil {
+			logger.Warnf(ctx, "预估图像计费处理失败: %v", err)
+		}
+	}
+
+	// 不需要额外的流结束标记，SSE流已经自然结束
+
+	logger.Infof(ctx, "流式图像响应处理完成")
+	return nil
+}
+
+// ImageStreamUsage 定义流式图像响应中的usage结构
+type ImageStreamUsage struct {
+	TotalTokens        int `json:"total_tokens"`
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	InputTokensDetails struct {
+		TextTokens  int `json:"text_tokens"`
+		ImageTokens int `json:"image_tokens"`
+	} `json:"input_tokens_details"`
+}
+
+// handleStreamingImageBilling 处理流式图像请求的计费
+func handleStreamingImageBilling(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, usage *ImageStreamUsage, originalQuota int64, startTime time.Time) error {
+	// 重新计算基于实际usage的配额
+	var actualQuota int64
+
+	if meta.ActualModelName == "gpt-image-1" {
+		// 使用现有的计费逻辑
+		textTokens := float64(usage.InputTokensDetails.TextTokens)
+		imageTokens := float64(usage.InputTokensDetails.ImageTokens)
+		outputTokens := float64(usage.OutputTokens)
+
+		modelRatio := common.GetModelRatio("gpt-image-1")
+		completionRatio := common.GetCompletionRatio("gpt-image-1")
+		groupRatio := common.GetGroupRatio(meta.Group)
+
+		inputTokensEquivalent := textTokens + imageTokens*2
+		actualQuota = int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
+
+		logger.Infof(ctx, "流式GPT-Image-1计费: text=%d, image=%d, output=%d, 配额=%d",
+			int(textTokens), int(imageTokens), int(outputTokens), actualQuota)
+	} else {
+		// 其他模型使用原始配额
+		actualQuota = originalQuota
+	}
+
+	// 处理配额消费
+	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+	if err != nil {
+		logger.SysError("流式图像请求配额消费失败: " + err.Error())
+		return err
+	}
+
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("流式图像请求用户配额缓存更新失败: " + err.Error())
+		return err
+	}
+
+	// 记录消费日志
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+	tokenName := c.GetString("token_name")
+	xRequestID := c.GetString("X-Request-ID")
+
+	rowDuration := time.Since(startTime).Seconds()
+	duration := math.Round(rowDuration*1000) / 1000
+
+	var logContent string
+	// 根据请求路径判断是生成还是编辑
+	var operationType string
+	if strings.Contains(c.Request.URL.Path, "/images/edits") {
+		operationType = "Edit"
+	} else {
+		operationType = "Generation"
+	}
+
+	if meta.ActualModelName == "gpt-image-1" {
+		modelPriceFloat := float64(actualQuota) / 500000
+		logContent = fmt.Sprintf("GPT-Image-1 Stream %s - Model: %s, Price: $%.4f, Tokens: input=%d, output=%d, total=%d",
+			operationType, meta.ActualModelName, modelPriceFloat, usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	} else {
+		modelPriceFloat := float64(actualQuota) / 500000
+		logContent = fmt.Sprintf("Image Stream %s - Model: %s, Price: $%.4f, Tokens: input=%d, output=%d, total=%d",
+			operationType, meta.ActualModelName, modelPriceFloat, usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	}
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+
+	// 为流式响应添加详细的token信息到otherInfo
+	if meta.ActualModelName == "gpt-image-1" {
+		textTokens := usage.InputTokensDetails.TextTokens
+		imageTokens := usage.InputTokensDetails.ImageTokens
+		outputTokens := usage.OutputTokens
+
+		tokenInfo := fmt.Sprintf("text_input:%d,image_input:%d,image_output:%d", textTokens, imageTokens, outputTokens)
+		if otherInfo != "" {
+			otherInfo = otherInfo + "," + tokenInfo
+		} else {
+			otherInfo = tokenInfo
+		}
+	}
+
+	if otherInfo != "" {
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, usage.InputTokens, usage.OutputTokens, meta.ActualModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+	} else {
+		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, usage.InputTokens, usage.OutputTokens, meta.ActualModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	}
+
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+	channelId := c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+	// 更新多Key使用统计
+	UpdateMultiKeyUsageFromContext(c, actualQuota > 0)
+
+	logger.Infof(ctx, "流式图像计费完成: 配额=%d, 耗时=%.3fs", actualQuota, duration)
+	return nil
+}
+
+// handleEstimatedImageBilling 处理预估的图像计费（当没有收到usage时）
+func handleEstimatedImageBilling(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, promptTokens, completionTokens int, quota int64, startTime time.Time) error {
+	// 使用统一的ModelRatio和CompletionRatio机制重新计算配额
+	groupRatio := common.GetGroupRatio(meta.Group)
+
+	// 如果有实际的token数据，使用实际数据计算；否则使用传入的quota作为基准
+	var actualQuota int64
+	if promptTokens > 0 || completionTokens > 0 {
+		// 使用实际tokens计算配额
+		modelRatio := common.GetModelRatio(meta.OriginModelName)
+		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+
+		inputTokensEquivalent := float64(promptTokens)
+		outputTokens := float64(completionTokens)
+		actualQuota = int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
+
+		logger.Infof(ctx, "预估图像计费重新计算: 输入=%d tokens, 输出=%d tokens, 模型倍率=%.2f, 完成倍率=%.2f, 分组倍率=%.2f, 计算配额=%d",
+			promptTokens, completionTokens, modelRatio, completionRatio, groupRatio, actualQuota)
+	} else {
+		// 没有实际tokens时，使用传入的quota
+		actualQuota = quota
+		logger.Infof(ctx, "预估图像计费: 无实际token数据，使用传入配额=%d", actualQuota)
+	}
+
+	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+	if err != nil {
+		logger.SysError("预估图像请求配额消费失败: " + err.Error())
+		return err
+	}
+
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("预估图像请求用户配额缓存更新失败: " + err.Error())
+		return err
+	}
+
+	// 记录消费日志
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+	tokenName := c.GetString("token_name")
+	xRequestID := c.GetString("X-Request-ID")
+
+	rowDuration := time.Since(startTime).Seconds()
+	duration := math.Round(rowDuration*1000) / 1000
+
+	// 根据请求路径判断是生成还是编辑
+	var operationType string
+	if strings.Contains(c.Request.URL.Path, "/images/edits") {
+		operationType = "Edit"
+	} else {
+		operationType = "Generation"
+	}
+
+	modelPriceFloat := float64(actualQuota) / 500000
+	logContent := fmt.Sprintf("Image Stream %s (Estimated) - Model: %s, Price: $%.4f, Tokens: input=%d, output=%d (estimated)",
+		operationType, meta.ActualModelName, modelPriceFloat, promptTokens, completionTokens)
+
+	model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+	channelId := c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+	// 更新多Key使用统计
+	UpdateMultiKeyUsageFromContext(c, actualQuota > 0)
+
+	logger.Infof(ctx, "预估图像计费完成: 配额=%d, 耗时=%.3fs", actualQuota, duration)
+	return nil
+}
+
+// GeminiEventType 定义Gemini流式事件类型
+type GeminiEventType int
+
+const (
+	GeminiTextEvent GeminiEventType = iota
+	GeminiImageEvent
+	GeminiCompletedEvent
+	GeminiErrorEvent
+)
+
+// GeminiStreamEvent 定义Gemini流式事件结构
+type GeminiStreamEvent struct {
+	Candidates []struct {
+		Content struct {
+			Parts []struct {
+				Text       string `json:"text,omitempty"`
+				InlineData *struct {
+					MimeType string `json:"mimeType"`
+					Data     string `json:"data"`
+				} `json:"inlineData,omitempty"`
+			} `json:"parts"`
+			Role string `json:"role"`
+		} `json:"content"`
+		FinishReason string `json:"finishReason,omitempty"`
+		Index        int    `json:"index"`
+	} `json:"candidates"`
+	PromptFeedback *struct {
+		BlockReason        string                   `json:"blockReason,omitempty"`
+		SafetyRatings      []map[string]interface{} `json:"safetyRatings,omitempty"`
+		BlockReasonMessage string                   `json:"blockReasonMessage,omitempty"`
+	} `json:"promptFeedback,omitempty"`
+	UsageMetadata *struct {
+		PromptTokenCount        int                      `json:"promptTokenCount"`
+		CandidatesTokenCount    int                      `json:"candidatesTokenCount"`
+		TotalTokenCount         int                      `json:"totalTokenCount"`
+		PromptTokensDetails     []map[string]interface{} `json:"promptTokensDetails,omitempty"`
+		CandidatesTokensDetails []map[string]interface{} `json:"candidatesTokensDetails,omitempty"`
+	} `json:"usageMetadata,omitempty"`
+	ModelVersion string `json:"modelVersion,omitempty"`
+	ResponseId   string `json:"responseId,omitempty"`
+}
+
+// GeminiStreamUsage 定义Gemini流式usage结构
+type GeminiStreamUsage struct {
+	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// classifyGeminiStreamEvent 分类Gemini流式事件
+func classifyGeminiStreamEvent(event *GeminiStreamEvent) GeminiEventType {
+	// 优先检查是否有错误信息
+	if event.PromptFeedback != nil && event.PromptFeedback.BlockReason != "" {
+		return GeminiErrorEvent
+	}
+
+	if len(event.Candidates) == 0 {
+		return GeminiTextEvent
+	}
+
+	candidate := event.Candidates[0]
+
+	// 检查是否有完成标记
+	if candidate.FinishReason == "STOP" {
+		// 如果有图像数据，则是图像完成事件
+		for _, part := range candidate.Content.Parts {
+			if part.InlineData != nil {
+				return GeminiImageEvent
+			}
+		}
+		return GeminiCompletedEvent
+	}
+
+	// 检查是否包含图像数据
+	for _, part := range candidate.Content.Parts {
+		if part.InlineData != nil {
+			return GeminiImageEvent
+		}
+	}
+
+	// 默认为文字事件
+	return GeminiTextEvent
+}
+
+// writeStreamError 写入流式错误事件的帮助函数
+func writeStreamError(c *gin.Context, ctx context.Context, errorCode, errorMessage string) error {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("不支持流式写入")
+	}
+
+	errorData := map[string]interface{}{
+		"type": "error",
+		"error": map[string]interface{}{
+			"type":    errorCode,
+			"code":    errorCode,
+			"message": errorMessage,
+			"param":   nil,
+		},
+	}
+
+	errorJSON, _ := json.Marshal(errorData)
+	_, err := fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(errorJSON))
+	if err != nil {
+		return fmt.Errorf("写入错误事件失败: %v", err)
+	}
+
+	flusher.Flush()
+	return nil
+}
+
+// extractGeminiUsage 提取Gemini usage信息的帮助函数
+func extractGeminiUsage(metadata *struct {
+	PromptTokenCount        int                      `json:"promptTokenCount"`
+	CandidatesTokenCount    int                      `json:"candidatesTokenCount"`
+	TotalTokenCount         int                      `json:"totalTokenCount"`
+	PromptTokensDetails     []map[string]interface{} `json:"promptTokensDetails,omitempty"`
+	CandidatesTokensDetails []map[string]interface{} `json:"candidatesTokensDetails,omitempty"`
+}) *GeminiStreamUsage {
+	if metadata == nil {
+		return nil
+	}
+	return &GeminiStreamUsage{
+		TotalTokens:  metadata.TotalTokenCount,
+		InputTokens:  metadata.PromptTokenCount,
+		OutputTokens: metadata.CandidatesTokenCount,
+	}
+}
+
+// convertGeminiToOpenAIEvent 将Gemini事件转换为OpenAI格式
+func convertGeminiToOpenAIEvent(event *GeminiStreamEvent, eventPrefix string) (string, error) {
+	if len(event.Candidates) == 0 {
+		return "", fmt.Errorf("Gemini事件无candidates数据")
+	}
+
+	candidate := event.Candidates[0]
+
+	// 查找图像数据
+	var imageData string
+	for _, part := range candidate.Content.Parts {
+		if part.InlineData != nil {
+			imageData = part.InlineData.Data
+			break
+		}
+	}
+
+	if imageData == "" {
+		return "", fmt.Errorf("Gemini事件无图像数据")
+	}
+
+	// 构建OpenAI格式的响应
+	openaiResponse := map[string]interface{}{
+		"type":     eventPrefix + ".completed",
+		"b64_json": imageData,
+	}
+
+	// 如果有usage信息，添加到响应中
+	if event.UsageMetadata != nil {
+		openaiResponse["usage"] = map[string]interface{}{
+			"total_tokens":  event.UsageMetadata.TotalTokenCount,
+			"input_tokens":  event.UsageMetadata.PromptTokenCount,
+			"output_tokens": event.UsageMetadata.CandidatesTokenCount,
+			"input_tokens_details": map[string]interface{}{
+				"text_tokens":  event.UsageMetadata.PromptTokenCount, // Gemini主要是文字输入
+				"image_tokens": 0,                                    // 可能需要从详细信息中解析
+			},
+		}
+	}
+
+	jsonBytes, err := json.Marshal(openaiResponse)
+	if err != nil {
+		return "", fmt.Errorf("序列化OpenAI事件失败: %v", err)
+	}
+
+	return string(jsonBytes), nil
+}
+
+// handleGeminiStreamingImageResponse 处理Gemini图像生成的流式响应
+func handleGeminiStreamingImageResponse(c *gin.Context, ctx context.Context, resp *http.Response, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, quota int64, startTime time.Time) *relaymodel.ErrorWithStatusCode {
+	logger.Infof(ctx, "开始处理Gemini图像流式响应，状态码: %d", resp.StatusCode)
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(resp.Body)
+		logger.Errorf(ctx, "Gemini流式图像请求失败，状态码: %d, 响应: %s", resp.StatusCode, string(responseBody))
+		return openai.ErrorWrapper(
+			fmt.Errorf("Gemini流式图像请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
+			"gemini_streaming_image_error",
+			resp.StatusCode,
+		)
+	}
+
+	// 设置流式响应头
+	common.SetEventStreamHeaders(c)
+	c.Writer.WriteHeader(http.StatusOK)
+
+	// 确保支持 flushing
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		logger.Errorf(ctx, "响应写入器不支持flushing")
+		return openai.ErrorWrapper(fmt.Errorf("响应写入器不支持flushing"), "flusher_not_supported", http.StatusInternalServerError)
+	}
+
+	defer resp.Body.Close()
+
+	// 根据请求路径确定OpenAI事件类型
+	var eventPrefix string
+	if strings.Contains(c.Request.URL.Path, "/images/edits") {
+		eventPrefix = "image_edit"
+		logger.Infof(ctx, "Gemini流式响应: 使用图像编辑事件格式")
+	} else {
+		eventPrefix = "image_generation"
+		logger.Infof(ctx, "Gemini流式响应: 使用图像生成事件格式")
+	}
+
+	// 用于记录最终的usage信息和图像数据
+	var finalUsage *GeminiStreamUsage
+	var hasImageOutput bool
+	var errorAlreadySent bool // 标记是否已经发送过错误事件
+	var promptTokens, completionTokens int
+
+	// 使用bufio.Scanner逐行读取流式响应
+	scanner := bufio.NewScanner(resp.Body)
+
+	// 设置缓冲区大小
+	defaultBufferSizeMB := 100 // 100MB
+	if bufferSizeStr := os.Getenv("IMAGE_STREAM_BUFFER_SIZE"); bufferSizeStr != "" {
+		if bufferSizeMB, err := strconv.Atoi(bufferSizeStr); err == nil && bufferSizeMB > 0 {
+			defaultBufferSizeMB = bufferSizeMB
+		}
+	}
+
+	maxBufferSize := defaultBufferSizeMB * 1024 * 1024
+	scanner.Buffer(make([]byte, 0, maxBufferSize), maxBufferSize)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = strings.TrimSpace(line)
+
+		if line == "" {
+			continue // 跳过空行
+		}
+
+		// 处理SSE格式数据
+		var jsonData string
+		if strings.HasPrefix(line, "data: ") {
+			// 提取JSON数据部分
+			jsonData = strings.TrimPrefix(line, "data: ")
+		} else if strings.HasPrefix(line, "event: ") {
+			// 跳过事件行，Gemini可能发送事件标识
+			continue
+		} else {
+			// 可能是直接的JSON数据（非标准SSE）
+			jsonData = line
+		}
+
+		if jsonData == "" {
+			continue
+		}
+
+		// 解析Gemini JSON格式的响应
+		var geminiEvent GeminiStreamEvent
+		if err := json.Unmarshal([]byte(jsonData), &geminiEvent); err != nil {
+			logger.Errorf(ctx, "解析Gemini流式事件失败: %v, 原始数据: %s", err, jsonData)
+			continue
+		}
+
+		// 分类处理Gemini事件
+		eventType := classifyGeminiStreamEvent(&geminiEvent)
+
+		switch eventType {
+		case GeminiTextEvent:
+			// 跳过文字事件，不做任何处理（性能优化）
+			continue
+
+		case GeminiImageEvent:
+			hasImageOutput = true
+
+			// 提取usage信息
+			if usage := extractGeminiUsage(geminiEvent.UsageMetadata); usage != nil {
+				finalUsage = usage
+				promptTokens = finalUsage.InputTokens
+				completionTokens = finalUsage.OutputTokens
+			}
+
+			// 转换为OpenAI格式并发送completed事件
+			openaiEvent, err := convertGeminiToOpenAIEvent(&geminiEvent, eventPrefix)
+			if err != nil {
+				logger.Errorf(ctx, "转换Gemini图像事件失败: %v", err)
+				continue
+			}
+
+			// 发送OpenAI格式的completed事件
+			if _, err := fmt.Fprintf(c.Writer, "event: %s.completed\ndata: %s\n\n", eventPrefix, openaiEvent); err != nil {
+				logger.Errorf(ctx, "写入图像事件失败: %v", err)
+				return openai.ErrorWrapper(err, "write_image_event_failed", http.StatusInternalServerError)
+			}
+
+			flusher.Flush()
+			logger.Infof(ctx, "✅ 已转发图像事件")
+
+			// 如果已经有usage信息，立即结束流处理并进入计费阶段
+			if finalUsage != nil {
+				goto ProcessBilling
+			}
+
+		case GeminiCompletedEvent:
+			// 提取usage信息
+			if usage := extractGeminiUsage(geminiEvent.UsageMetadata); usage != nil {
+				finalUsage = usage
+				promptTokens = finalUsage.InputTokens
+				completionTokens = finalUsage.OutputTokens
+			}
+			goto ProcessBilling
+
+		case GeminiErrorEvent:
+			// 处理Gemini错误并转换为OpenAI流式错误格式
+			logger.Warnf(ctx, "收到Gemini错误事件: %s", geminiEvent.PromptFeedback.BlockReason)
+
+			// 提取usage信息（如果有的话）
+			if usage := extractGeminiUsage(geminiEvent.UsageMetadata); usage != nil {
+				finalUsage = usage
+				promptTokens = finalUsage.InputTokens
+				completionTokens = finalUsage.OutputTokens
+			}
+
+			// 构建OpenAI格式的错误响应 - 直接使用BlockReason作为消息
+			var errorCode string
+			errorMessage := geminiEvent.PromptFeedback.BlockReason // 直接使用原始的BlockReason
+
+			switch geminiEvent.PromptFeedback.BlockReason {
+			case "PROHIBITED_CONTENT":
+				errorCode = "content_policy_violation"
+			case "OTHER":
+				errorCode = "invalid_request_error"
+			default:
+				errorCode = "invalid_request_error"
+			}
+
+			// 发送OpenAI格式的错误事件
+			if writeErr := writeStreamError(c, ctx, errorCode, errorMessage); writeErr != nil {
+				logger.Errorf(ctx, "发送流式错误失败: %v", writeErr)
+				return openai.ErrorWrapper(writeErr, "write_stream_error_failed", http.StatusInternalServerError)
+			}
+			logger.Infof(ctx, "✅ 已转发Gemini错误为OpenAI格式")
+
+			// 标记已发送错误事件，避免重复发送
+			errorAlreadySent = true
+
+			// 错误事件意味着流结束，跳转到计费处理（使用预估配额）
+			goto ProcessBilling
+		}
+	}
+
+	// 检查扫描过程中的错误
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(ctx, "读取Gemini流式响应出错: %v", err)
+		return openai.ErrorWrapper(err, "read_gemini_stream_failed", http.StatusInternalServerError)
+	}
+
+ProcessBilling:
+	// 检查是否产生了图像输出（但如果已经发送过错误事件，则跳过）
+	if !hasImageOutput && !errorAlreadySent {
+		logger.Warnf(ctx, "Gemini未生成图像内容，发送流式错误")
+
+		// 发送无图像生成错误
+		if writeErr := writeStreamError(c, ctx, "no_image_generated", "The model did not generate any image content, only returned text description."); writeErr != nil {
+			logger.Errorf(ctx, "发送无图像生成错误失败: %v", writeErr)
+			return openai.ErrorWrapper(writeErr, "write_no_image_error_failed", http.StatusInternalServerError)
+		}
+		logger.Infof(ctx, "✅ 已发送OpenAI格式的无图像生成错误")
+
+		// 使用预估配额进行计费
+		if billingErr := handleEstimatedImageBilling(c, ctx, meta, imageRequest, promptTokens, completionTokens, quota, startTime); billingErr != nil {
+			logger.Warnf(ctx, "预估计费处理失败: %v", billingErr)
+		}
+		return nil
+	}
+
+	// 处理计费
+	if finalUsage != nil {
+		err := handleGeminiStreamingImageBilling(c, ctx, meta, imageRequest, finalUsage, quota, startTime)
+		if err != nil {
+			logger.Warnf(ctx, "计费处理失败: %v", err)
+		}
+	} else {
+		// 使用预估配额进行计费
+		err := handleEstimatedImageBilling(c, ctx, meta, imageRequest, promptTokens, completionTokens, quota, startTime)
+		if err != nil {
+			logger.Warnf(ctx, "预估计费处理失败: %v", err)
+		}
+	}
+
+	logger.Infof(ctx, "流式处理完成")
+	return nil
+}
+
+// handleGeminiStreamingImageBilling 处理Gemini流式图像计费
+func handleGeminiStreamingImageBilling(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, usage *GeminiStreamUsage, quota int64, startTime time.Time) error {
+	// 使用统一的ModelRatio和CompletionRatio机制进行计费（参考非流式逻辑）
+	groupRatio := common.GetGroupRatio(meta.Group)
+	promptTokens := usage.InputTokens
+	completionTokens := usage.OutputTokens
+
+	modelRatio := common.GetModelRatio(meta.OriginModelName)
+	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+	// 按照标准公式计算：(inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio
+	inputTokensEquivalent := float64(promptTokens)
+	outputTokens := float64(completionTokens)
+	actualQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
+
+	logger.Infof(ctx, "Gemini流式定价计算: 输入=%d tokens, 输出=%d tokens, 模型倍率=%.2f, 完成倍率=%.2f, 分组倍率=%.2f, 计算配额=%d",
+		promptTokens, completionTokens, modelRatio, completionRatio, groupRatio, actualQuota)
+
+	// 处理配额消费（使用重新计算的配额）
+	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+	if err != nil {
+		logger.SysError("Gemini流式图像请求token配额消费失败: " + err.Error())
+		return err
+	}
+
+	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+	if err != nil {
+		logger.SysError("Gemini流式图像请求用户配额缓存更新失败: " + err.Error())
+		return err
+	}
+
+	// 记录消费日志
+	referer := c.Request.Header.Get("HTTP-Referer")
+	title := c.Request.Header.Get("X-Title")
+	tokenName := c.GetString("token_name")
+	xRequestID := c.GetString("X-Request-ID")
+
+	rowDuration := time.Since(startTime).Seconds()
+	duration := math.Round(rowDuration*1000) / 1000
+
+	// 根据请求路径判断是生成还是编辑
+	var operationType string
+	if strings.Contains(c.Request.URL.Path, "/images/edits") {
+		operationType = "Edit"
+	} else {
+		operationType = "Generation"
+	}
+
+	// 使用正确的价格计算（基于重新计算的配额）
+	modelPriceFloat := float64(actualQuota) / 500000
+	logContent := fmt.Sprintf("Gemini Stream %s - Model: %s, Price: $%.4f, Tokens: input=%d, output=%d, total=%d",
+		operationType, meta.ActualModelName, modelPriceFloat, usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+
+	if otherInfo != "" {
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, usage.InputTokens, usage.OutputTokens, meta.ActualModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+	} else {
+		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, usage.InputTokens, usage.OutputTokens, meta.ActualModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
+	}
+
+	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+	channelId := c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+	// 更新多Key使用统计
+	UpdateMultiKeyUsageFromContext(c, actualQuota > 0)
+
+	logger.Infof(ctx, "Gemini流式图像计费完成: 配额=%d, 耗时=%.3fs", actualQuota, duration)
+	return nil
 }
