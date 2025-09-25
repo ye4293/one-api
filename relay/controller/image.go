@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -186,10 +187,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 			}
 
-			// 设置Content-Type为multipart/form-data和正确的Content-Length
+			// 设置Content-Type为multipart/form-data
+			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", writer.FormDataContentType())
-			req.Header.Set("Content-Length", strconv.Itoa(body.Len()))
-			logger.Debugf(ctx, "Setting multipart form Content-Length: %d", body.Len())
+			// 记录实际body大小用于调试，但不设置header
+			logger.Debugf(ctx, "Multipart form body size: %d bytes", body.Len())
 
 		} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
 			// 解析表单
@@ -220,10 +222,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 			}
 
-			// 设置Content-Type和Content-Length
+			// 设置Content-Type
+			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Set("Content-Length", strconv.Itoa(len(encodedFormData)))
-			logger.Debugf(ctx, "Setting form urlencoded Content-Length: %d", len(encodedFormData))
+			// 记录实际数据大小用于调试，但不设置header
+			logger.Debugf(ctx, "Form urlencoded data size: %d bytes", len(encodedFormData))
 		}
 	} else {
 		// 对于非表单请求，使用原有逻辑
@@ -238,14 +241,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		if strings.HasPrefix(imageRequest.Model, "gemini") {
-			// Print the original request body
+			// 只读取一次请求体，避免双重读取导致Content-Length错误
 			bodyBytes, err := io.ReadAll(c.Request.Body)
 			if err != nil {
 				return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
 			}
 
-			// Restore the request body for further use
+			// 恢复请求体以供后续使用
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+			// 解析请求体到map
+			var requestMap map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("请求中的 JSON 无效: %w", err), "invalid_request_json", http.StatusBadRequest)
+			}
 
 			// Create Gemini image request structure
 			geminiImageRequest := gemini.ChatRequest{
@@ -264,52 +273,37 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				},
 			}
 
-			// 记录原始请求体
-			bodyBytes, err = io.ReadAll(c.Request.Body)
-			if err != nil {
-				return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+			// 处理图片数据，支持多种格式：
+			// 1. "image": "单个URL或base64"
+			// 2. "image": ["多个URL", "多个base64", ...]
+			// 3. "images": "单个URL或base64"
+			// 4. "images": ["多个URL", "多个base64", ...]
+
+			var imageInputs []string
+
+			// 检查 "image" 字段
+			if imageValue, exists := requestMap["image"]; exists {
+				imageInputsFromImage := extractImageInputs(imageValue)
+				imageInputs = append(imageInputs, imageInputsFromImage...)
+				logger.Debugf(ctx, "Found %d image(s) from 'image' field", len(imageInputsFromImage))
 			}
 
-			// 恢复请求体以供后续使用
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-			var requestMap map[string]interface{}
-			if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
-				return openai.ErrorWrapper(fmt.Errorf("请求中的 JSON 无效: %w", err), "invalid_request_json", http.StatusBadRequest)
+			// 检查 "images" 字段
+			if imagesValue, exists := requestMap["images"]; exists {
+				imageInputsFromImages := extractImageInputs(imagesValue)
+				imageInputs = append(imageInputs, imageInputsFromImages...)
+				logger.Debugf(ctx, "Found %d image(s) from 'images' field", len(imageInputsFromImages))
 			}
 
-			if image, ok := requestMap["image"].(string); ok && image != "" {
-				// Parse the base64 image data
-				// Format is typically: data:image/png;base64,BASE64_DATA
-				parts := strings.SplitN(image, ",", 2)
+			logger.Infof(ctx, "Processing %d total image(s) for Gemini request", len(imageInputs))
 
-				var mimeType string
-				var imageData string
+			// 并发处理所有找到的图片
+			imageParts, processedCount := processImagesConcurrently(ctx, imageInputs)
 
-				if len(parts) == 2 {
-					// Extract mime type from the prefix
-					mimeTypeParts := strings.SplitN(parts[0], ":", 2)
-					if len(mimeTypeParts) == 2 {
-						mimeTypeParts = strings.SplitN(mimeTypeParts[1], ";", 2)
-						if len(mimeTypeParts) > 0 {
-							mimeType = mimeTypeParts[0]
-						}
-					}
-					imageData = parts[1]
-				} else {
-					// If no comma found, assume it's just the base64 data
-					mimeType = "image/png" // Default to PNG if not specified
-					imageData = image
-				}
+			// 将成功处理的图片添加到Gemini请求中
+			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, imageParts...)
 
-				// Add the image to the Gemini request
-				geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, gemini.Part{
-					InlineData: &gemini.InlineData{
-						MimeType: mimeType,
-						Data:     imageData,
-					},
-				})
-			}
+			logger.Infof(ctx, "Successfully processed %d out of %d images for Gemini request", processedCount, len(imageInputs))
 
 			// Convert to JSON
 			jsonStr, err := json.Marshal(geminiImageRequest)
@@ -480,14 +474,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(err, "new_request_failed", http.StatusInternalServerError)
 		}
 
-		// 设置Content-Type和Content-Length
+		// 设置Content-Type
+		// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 		req.Header.Set("Content-Type", contentType)
 
-		// 为JSON请求设置正确的Content-Length
+		// 记录JSON请求体大小用于调试，但不设置header
 		if strings.Contains(contentType, "application/json") {
 			if bodyBuffer, ok := requestBody.(*bytes.Buffer); ok {
-				req.Header.Set("Content-Length", strconv.Itoa(bodyBuffer.Len()))
-				logger.Debugf(ctx, "Setting JSON request Content-Length: %d", bodyBuffer.Len())
+				logger.Debugf(ctx, "JSON request body size: %d bytes", bodyBuffer.Len())
 			}
 		}
 	}
@@ -495,7 +489,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 在发送请求前记录详细信息
 	logger.Infof(ctx, "Sending request to %s", fullRequestURL)
 	logger.Infof(ctx, "Request Content-Type: %s", req.Header.Get("Content-Type"))
-	logger.Infof(ctx, "Request Content-Length: %s", req.Header.Get("Content-Length"))
+	// Content-Length现在由Go的http.Client自动计算，不需要手动验证
+	logger.Debugf(ctx, "HTTP client will auto-calculate Content-Length")
 
 	// VertexAI调试信息
 	if meta.ChannelType == common.ChannelTypeVertexAI && strings.HasPrefix(imageRequest.Model, "gemini") {
@@ -601,13 +596,19 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 
-	// 关闭请求体，但不让关闭错误覆盖有用的响应数据
-	if err := req.Body.Close(); err != nil {
-		logger.Warnf(ctx, "关闭请求体失败: %v", err)
-	}
-	if err := c.Request.Body.Close(); err != nil {
-		logger.Warnf(ctx, "关闭原始请求体失败: %v", err)
-	}
+	// defer关闭请求体，确保在任何情况下都会被关闭
+	defer func() {
+		if req.Body != nil {
+			if err := req.Body.Close(); err != nil {
+				logger.Warnf(ctx, "关闭请求体失败: %v", err)
+			}
+		}
+		if c.Request.Body != nil {
+			if err := c.Request.Body.Close(); err != nil {
+				logger.Warnf(ctx, "关闭原始请求体失败: %v", err)
+			}
+		}
+	}()
 	var imageResponse openai.ImageResponse
 	var responseBody []byte
 
@@ -2206,8 +2207,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Length", strconv.Itoa(requestBuffer.Len()))
-	logger.Debugf(ctx, "Setting Gemini form-to-json Content-Length: %d", requestBuffer.Len())
+	// 注意：不手动设置Content-Length，让Go的http.Client自动计算
+	logger.Debugf(ctx, "Gemini form-to-json body size: %d bytes", requestBuffer.Len())
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 开始VertexAI认证流程")
@@ -2624,4 +2625,321 @@ func extractChannelHistoryInfo(ctx context.Context, c *gin.Context) string {
 	}
 
 	return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+}
+
+// extractImageInputs 从interface{}中提取图片输入列表
+// 支持单个字符串或字符串数组
+func extractImageInputs(value interface{}) []string {
+	var inputs []string
+
+	switch v := value.(type) {
+	case string:
+		// 单个字符串
+		if v != "" {
+			inputs = append(inputs, v)
+		}
+	case []interface{}:
+		// 数组形式
+		for _, item := range v {
+			if str, ok := item.(string); ok && str != "" {
+				inputs = append(inputs, str)
+			}
+		}
+	case []string:
+		// 字符串数组
+		for _, str := range v {
+			if str != "" {
+				inputs = append(inputs, str)
+			}
+		}
+	}
+
+	return inputs
+}
+
+// parseImageInput 解析单个图片输入（URL或base64数据）
+func parseImageInput(ctx context.Context, input string) gemini.Part {
+	// 检查是否是base64格式的数据URL
+	if strings.HasPrefix(input, "data:") {
+		// 解析data URL格式: data:image/png;base64,BASE64_DATA
+		parts := strings.SplitN(input, ",", 2)
+
+		var mimeType string
+		var imageData string
+
+		if len(parts) == 2 {
+			// 提取MIME类型
+			mimeTypeParts := strings.SplitN(parts[0], ":", 2)
+			if len(mimeTypeParts) == 2 {
+				mimeTypeParts = strings.SplitN(mimeTypeParts[1], ";", 2)
+				if len(mimeTypeParts) > 0 {
+					mimeType = mimeTypeParts[0]
+				}
+			}
+			imageData = parts[1]
+		} else {
+			// 如果没有找到逗号，默认为PNG格式
+			mimeType = "image/png"
+			imageData = input[5:] // 移除"data:"前缀
+		}
+
+		return gemini.Part{
+			InlineData: &gemini.InlineData{
+				MimeType: mimeType,
+				Data:     imageData,
+			},
+		}
+	} else if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		// 处理URL格式的图片：下载并转换为base64
+		logger.Infof(ctx, "Downloading image from URL: %s", input)
+
+		imageData, mimeType, err := downloadImageToBase64(ctx, input)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to download image from URL %s: %v", input, err)
+			return gemini.Part{}
+		}
+
+		logger.Infof(ctx, "Successfully downloaded image from URL, MIME type: %s, size: %d bytes", mimeType, len(imageData))
+
+		return gemini.Part{
+			InlineData: &gemini.InlineData{
+				MimeType: mimeType,
+				Data:     imageData,
+			},
+		}
+	} else {
+		// 假设是纯base64数据（没有data URL前缀）
+		return gemini.Part{
+			InlineData: &gemini.InlineData{
+				MimeType: "image/png", // 默认PNG格式
+				Data:     input,
+			},
+		}
+	}
+}
+
+// downloadImageToBase64 从URL下载图片并转换为base64
+func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data string, mimeType string, err error) {
+	// 设置HTTP客户端，包含超时和大小限制
+	client := &http.Client{
+		Timeout: 60 * time.Second, // 1分钟超时
+	}
+
+	// 创建请求
+	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create request failed: %w", err)
+	}
+
+	// 设置User-Agent，一些网站需要这个
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Gemini-Image-Processor/1.0)")
+
+	// 发起请求
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("download request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
+	}
+
+	// 获取Content-Type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		// 如果没有Content-Type，尝试从URL扩展名推断
+		contentType = inferContentTypeFromURL(imageURL)
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+	}
+
+	// 不限制图片类型，直接使用获取到的Content-Type
+	// 把类型验证交给Gemini官方API处理
+	logger.Debugf(ctx, "Content-Type from response: %s", contentType)
+
+	// 设置最大下载大小（50MB）
+	const maxImageSize = 50 * 1024 * 1024
+	limitedReader := &io.LimitedReader{
+		R: resp.Body,
+		N: maxImageSize,
+	}
+
+	// 读取图片内容
+	imageBytes, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return "", "", fmt.Errorf("read image data failed: %w", err)
+	}
+
+	// 检查是否超出大小限制
+	if limitedReader.N <= 0 {
+		return "", "", fmt.Errorf("image size exceeds maximum limit of %d bytes", maxImageSize)
+	}
+
+	// 转换为base64
+	base64Data = base64.StdEncoding.EncodeToString(imageBytes)
+
+	// 标准化MIME类型，但不限制类型
+	switch contentType {
+	case "image/jpg":
+		mimeType = "image/jpeg"
+	default:
+		mimeType = contentType
+	}
+
+	// 所有类型都转换为base64，让Gemini官方API判断是否支持
+
+	logger.Debugf(ctx, "Downloaded image: URL=%s, MIME=%s, OriginalSize=%d bytes, Base64Size=%d bytes",
+		imageURL, mimeType, len(imageBytes), len(base64Data))
+
+	return base64Data, mimeType, nil
+}
+
+// inferContentTypeFromURL 从URL的扩展名推断Content-Type
+func inferContentTypeFromURL(imageURL string) string {
+	// 提取文件扩展名
+	parts := strings.Split(imageURL, "?") // 移除查询参数
+	urlPath := parts[0]
+
+	ext := strings.ToLower(filepath.Ext(urlPath))
+
+	switch ext {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	case ".tiff", ".tif":
+		return "image/tiff"
+	case ".svg":
+		return "image/svg+xml"
+	case ".ico":
+		return "image/x-icon"
+	case ".heic":
+		return "image/heic"
+	case ".avif":
+		return "image/avif"
+	default:
+		return "" // 未知类型
+	}
+}
+
+// processImagesConcurrently 并发处理多个图片输入
+func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gemini.Part, int) {
+	if len(imageInputs) == 0 {
+		return []gemini.Part{}, 0
+	}
+
+	// 设置最大并发数，避免创建过多goroutine
+	const maxConcurrency = 10
+	concurrency := len(imageInputs)
+	if concurrency > maxConcurrency {
+		concurrency = maxConcurrency
+	}
+
+	// 创建结果结构和channels
+	type imageTask struct {
+		index int
+		input string
+	}
+
+	type imageResult struct {
+		index int
+		part  gemini.Part
+		error error
+	}
+
+	// 创建任务队列和结果channel
+	taskChan := make(chan imageTask, len(imageInputs))
+	resultChan := make(chan imageResult, len(imageInputs))
+
+	startTime := time.Now()
+	logger.Infof(ctx, "Starting concurrent processing of %d images with %d workers", len(imageInputs), concurrency)
+
+	// 填充任务队列
+	validTasks := 0
+	for i, imageInput := range imageInputs {
+		if imageInput == "" {
+			logger.Debugf(ctx, "Skipping empty image input at index %d", i)
+			continue
+		}
+		taskChan <- imageTask{index: i, input: imageInput}
+		validTasks++
+	}
+	close(taskChan)
+
+	if validTasks == 0 {
+		logger.Infof(ctx, "No valid images to process")
+		return []gemini.Part{}, 0
+	}
+
+	// 启动worker goroutines
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for task := range taskChan {
+				logger.Debugf(ctx, "Worker %d processing image %d: starting", workerID, task.index+1)
+
+				part := parseImageInput(ctx, task.input)
+
+				var err error
+				if part.InlineData == nil {
+					err = fmt.Errorf("failed to parse image input")
+					logger.Warnf(ctx, "Worker %d processing image %d: failed", workerID, task.index+1)
+				} else {
+					logger.Debugf(ctx, "Worker %d processing image %d: success (MIME: %s, size: %d bytes)",
+						workerID, task.index+1, part.InlineData.MimeType, len(part.InlineData.Data))
+				}
+
+				resultChan <- imageResult{
+					index: task.index,
+					part:  part,
+					error: err,
+				}
+			}
+		}(w)
+	}
+
+	// 启动goroutine等待所有worker完成并关闭结果channel
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// 收集结果，保持原始顺序
+	results := make([]gemini.Part, 0, validTasks)
+	successCount := 0
+
+	// 创建一个临时map来存储结果，以便按原始顺序排列
+	resultMap := make(map[int]gemini.Part)
+
+	for result := range resultChan {
+		if result.error == nil && result.part.InlineData != nil {
+			resultMap[result.index] = result.part
+			successCount++
+		}
+	}
+
+	// 按原始顺序添加成功的结果
+	for i := range imageInputs {
+		if part, exists := resultMap[i]; exists {
+			results = append(results, part)
+		}
+	}
+
+	duration := time.Since(startTime)
+	logger.Infof(ctx, "Concurrent image processing completed: %d/%d successful, duration: %v, workers: %d",
+		successCount, validTasks, duration, concurrency)
+
+	return results, successCount
 }

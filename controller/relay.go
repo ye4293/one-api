@@ -160,11 +160,15 @@ func Relay(c *gin.Context) {
 		channelHistory = append(channelHistory, channel.Id)
 
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
-		_, err = common.GetRequestBody(c)
+		// 重新构建请求体 - 修复Content-Length错误
+		requestBody, err := common.GetRequestBody(c)
 		if err != nil {
 			logger.Errorf(ctx, "GetRequestBody failed: %v", err)
 			break
 		}
+		// 重要：重建请求体，确保重试时有正确的内容
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		logger.Debugf(ctx, "Rebuilt request body for retry, size: %d bytes", len(requestBody))
 
 		// 在调用relayHelper之前设置渠道历史，这样RelayImageHelper就能获取到了
 		c.Set("admin_channel_history", channelHistory)
