@@ -98,6 +98,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/images/creativeUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/styles", controller.RelayRecraft)
 		relayV1Router.POST("/images/generations", controller.Relay)
+		relayV1Router.POST("/messages", controller.Relay)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {
@@ -224,5 +225,40 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		runwayResultRouter.GET("/tasks/:taskId", controller.RelayRunwayResult)
 	}
+
+	// // Gemini 原生API透传路由组 - 支持完整的Gemini官方API格式
+	// geminiNativeRouter := router.Group("/gemini/v1beta")
+	// geminiNativeRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	// {
+	// 	// 核心聊天接口
+	// 	geminiNativeRouter.POST("/models/:model:generateContent", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.POST("/models/:model:streamGenerateContent", controller.RelayGeminiNative)
+
+	// 	// Token计数接口
+	// 	geminiNativeRouter.POST("/models/:model:countTokens", controller.RelayGeminiNative)
+
+	// 	// 嵌入接口
+	// 	geminiNativeRouter.POST("/models/:model:embedContent", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.POST("/models/:model:batchEmbedContents", controller.RelayGeminiNative)
+
+	// 	// 模型管理接口
+	// 	geminiNativeRouter.GET("/models", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/models/:model", controller.RelayGeminiNative)
+
+	// 	// 文件上传接口
+	// 	geminiNativeRouter.POST("/files", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/files/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.DELETE("/files/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/files", controller.RelayGeminiNative)
+
+	// 	// 微调接口
+	// 	geminiNativeRouter.POST("/tunedModels", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/tunedModels", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/tunedModels/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.PATCH("/tunedModels/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.DELETE("/tunedModels/:name", controller.RelayGeminiNative)
+	// }
+
+	// Claude 原生API透传路由组 - 支持完整的Anthropic Claude官方API格式
 
 }
