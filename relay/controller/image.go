@@ -1158,25 +1158,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 	}
 
-	// 设置响应头，排除Content-Length（我们稍后会设置正确的值）
+	// 设置响应头，排除Content-Length（让Gin自动处理）
 	for k, v := range resp.Header {
-		// 跳过Content-Length，避免与我们重新计算的值冲突
+		// 跳过Content-Length，让Gin框架自动计算正确的值
 		if strings.ToLower(k) != "content-length" {
 			c.Writer.Header().Set(k, v[0])
 		}
 	}
 
-	// 设置正确的 Content-Length（基于可能已转换的responseBody）
-	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseBody)))
+	// 注意：不手动设置Content-Length，让Gin的c.Data()自动计算
+	// 记录响应体大小用于调试
+	logger.Debugf(ctx, "Response body size: %d bytes", len(responseBody))
 
-	// 设置状态码 - 使用原始响应的状态码
-	c.Writer.WriteHeader(resp.StatusCode)
-
-	// 写入响应体
-	_, err = c.Writer.Write(responseBody)
-	if err != nil {
-		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
-	}
+	// 使用c.Data()让Gin自动处理Content-Length和响应写入
+	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
 
 	// 检查函数结束时的上下文状态
 	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
@@ -2433,18 +2428,12 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		0, // Gemini 不提供详细分解
 		0) // Gemini 不提供详细分解
 
-	// 设置响应头
-	c.Writer.Header().Set("Content-Type", "application/json")
-	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(finalResponseBody)))
+	// 注意：不手动设置Content-Length，让Gin的c.JSON()自动处理
+	// 记录响应体大小用于调试
+	logger.Debugf(ctx, "Gemini form response body size: %d bytes", len(finalResponseBody))
 
-	// 设置状态码
-	c.Writer.WriteHeader(http.StatusOK)
-
-	// 写入响应体
-	_, err = c.Writer.Write(finalResponseBody)
-	if err != nil {
-		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError)
-	}
+	// 使用c.Data()让Gin自动处理Content-Length
+	c.Data(http.StatusOK, "application/json", finalResponseBody)
 
 	// 计算请求耗时
 	rowDuration := time.Since(startTime).Seconds()

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -185,15 +186,13 @@ func DirectRelayRunway(c *gin.Context, meta *util.RelayMeta) {
 		}
 	}
 
-	// 设置响应状态码
-	c.Writer.WriteHeader(resp.StatusCode)
+	// 注意：不手动设置Content-Length，让Gin的c.Data()自动处理
+	// 记录响应体大小用于调试
+	ctx := c.Request.Context()
+	logger.Debugf(ctx, "DirectVideo response body size: %d bytes", len(responseBody))
 
-	// 写入响应体
-	_, err = c.Writer.Write(responseBody)
-	if err != nil {
-		// 这里不能再返回JSON错误，因为响应头已经写入了
-		fmt.Printf("写入响应体失败: %v\n", err)
-	}
+	// 使用c.Data()让Gin自动处理Content-Length和状态码
+	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
 }
 
 // ========================================

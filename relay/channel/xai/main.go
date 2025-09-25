@@ -394,18 +394,19 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	// So the HTTPClient will be confused by the response.
 	// For example, Postman will report error, and we cannot check the response at all.
 	for k, v := range resp.Header {
-		c.Writer.Header().Set(k, v[0])
+		// 跳过Content-Length，让Gin框架自动处理
+		if strings.ToLower(k) != "content-length" {
+			c.Writer.Header().Set(k, v[0])
+		}
 	}
 
-	// 更新 Content-Length 头
-	c.Writer.Header().Set("Content-Length", fmt.Sprintf("%d", len(modifiedResponseBody)))
-	c.Writer.WriteHeader(resp.StatusCode)
+	// 注意：不手动设置Content-Length，让Gin的c.Data()自动计算
+	// 记录修改后的响应体大小用于调试
+	ctx := c.Request.Context()
+	logger.Debugf(ctx, "XAI modified response body size: %d bytes", len(modifiedResponseBody))
 
-	// 发送修改后的响应体
-	_, err = c.Writer.Write(modifiedResponseBody)
-	if err != nil {
-		return openai.ErrorWrapper(err, "write_modified_response_failed", http.StatusInternalServerError), nil
-	}
+	// 使用c.Data()让Gin自动处理Content-Length
+	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), modifiedResponseBody)
 
 	return nil, usage
 }
