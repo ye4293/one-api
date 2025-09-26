@@ -1204,6 +1204,8 @@ func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatu
 		return handleKlingImageRequest(c, ctx, modelName, meta)
 	} else if strings.HasPrefix(modelName, "flux") {
 		return handleFluxImageRequest(c, ctx, modelName, meta)
+	} else if strings.HasPrefix(modelName, "wan") {
+		return handleAliImageRequest(c, ctx, modelName, meta)
 	}
 	// 需要添加处理其他模型类型的逻辑
 	return openai.ErrorWrapper(fmt.Errorf("unsupported model: %s", modelName), "unsupported_model", http.StatusBadRequest)
@@ -1557,6 +1559,179 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 	return nil
 }
 
+func handleAliImageRequest(c *gin.Context, ctx context.Context, modelName string, meta *util.RelayMeta) *relaymodel.ErrorWithStatusCode {
+	baseUrl := meta.BaseURL
+
+	// 构建阿里云万相API URL
+	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/image2image/image-synthesis", baseUrl)
+
+	// Read the original request body
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Restore the request body for further use
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Parse the request body to extract parameters for logging
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_request_body_failed", http.StatusBadRequest)
+	}
+
+	// Extract the 'n' parameter (number of images) from the request
+	// Check both root level and parameters level
+	n := 4 // Default to 1 if not specified
+
+	// First check root level (for backward compatibility)
+	if nValue, ok := requestMap["n"]; ok {
+		if nFloat, ok := nValue.(float64); ok {
+			n = int(nFloat)
+		} else if nInt, ok := nValue.(int); ok {
+			n = nInt
+		}
+	} else if params, ok := requestMap["parameters"]; ok {
+		// Check parameters object for n value
+		if paramsMap, ok := params.(map[string]interface{}); ok {
+			if nValue, ok := paramsMap["n"]; ok {
+				if nFloat, ok := nValue.(float64); ok {
+					n = int(nFloat)
+				} else if nInt, ok := nValue.(int); ok {
+					n = nInt
+				}
+			}
+		}
+	}
+
+	// Ensure n is at least 1
+	if n < 1 {
+		n = 1
+	}
+
+	// Determine the mode based on whether images parameter exists
+	mode := "imagetoimage"
+	// if images, ok := requestMap["images"]; ok {
+	// 	if imageArray, ok := images.([]interface{}); ok && len(imageArray) > 0 {
+	// 		mode = "imagetoimage"
+	// 	}
+	// }
+
+	logger.Debugf(ctx, "Ali Wan API request mode: %s, model: %s, generating %d images", mode, modelName, n)
+
+	// Create a new request with the original body (no transformation needed)
+	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_failed", http.StatusInternalServerError)
+	}
+
+	// Set headers for Ali Wan API
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
+	req.Header.Set("X-DashScope-Async", "enable") // 必须设置为异步模式
+
+	// Send the request
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+	}
+
+	logger.Infof(ctx, "Ali Wan API response status: %d, body: %s", resp.StatusCode, string(responseBody))
+
+	// Parse response regardless of status code
+	var aliResponse struct {
+		RequestId string `json:"request_id,omitempty"`
+		Output    struct {
+			TaskId     string `json:"task_id,omitempty"`
+			TaskStatus string `json:"task_status,omitempty"`
+		} `json:"output,omitempty"`
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+
+	if err := json.Unmarshal(responseBody, &aliResponse); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+	}
+
+	// Check if the request was successful
+	var asyncResponse relaymodel.GeneralImageResponseAsync
+
+	if resp.StatusCode != http.StatusOK || aliResponse.Code != "" {
+		// Handle error case - convert to failed async response
+		errorMessage := fmt.Sprintf("Ali API error (status: %d)", resp.StatusCode)
+		if aliResponse.Code != "" && aliResponse.Message != "" {
+			errorMessage = fmt.Sprintf("%s (code: %s)", aliResponse.Message, aliResponse.Code)
+		}
+
+		asyncResponse = relaymodel.GeneralImageResponseAsync{
+			TaskId:     "", // No task ID for failed requests
+			Message:    errorMessage,
+			TaskStatus: "failed",
+		}
+
+		logger.Warnf(ctx, "Ali Wan API request failed: %s", errorMessage)
+	} else {
+		// Handle success case
+		asyncResponse = relaymodel.GeneralImageResponseAsync{
+			TaskId:     aliResponse.Output.TaskId,
+			Message:    "Request submitted successfully",
+			TaskStatus: "succeed",
+		}
+
+		// 计算配额
+		quota := calculateImageQuota(modelName, mode, n)
+
+		// 记录图像生成日志
+		err = CreateImageLog(
+			"ali",                     // provider
+			aliResponse.Output.TaskId, // taskId
+			meta,                      // meta
+			"submitted",               // status (Ali API 提交成功后的初始状态)
+			"",                        // failReason (空，因为请求成功)
+			mode,                      // mode参数
+			n,                         // n参数
+			quota,                     // quota参数
+		)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to create image log: %v", err)
+			// 继续处理，不因日志记录失败而中断响应
+		}
+
+		// Handle billing based on mode, modelName and number of images (n)
+		err = handleSuccessfulResponseImage(c, ctx, meta, modelName, mode, n)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to process billing: %v", err)
+			// Continue processing, don't interrupt the response due to billing failure
+		}
+	}
+
+	// Marshal the response
+	responseJSON, err := json.Marshal(asyncResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// Set response headers
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Content-Length", strconv.Itoa(len(responseJSON)))
+
+	// Write the response
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(responseJSON)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	return nil
+}
+
 // 更新 CreateImageLog 函数以接受 mode 参数
 func CreateImageLog(provider string, taskId string, meta *util.RelayMeta, status string, failReason string, mode string, n int, quota int64) error {
 	// 创建新的 Image 实例
@@ -1611,6 +1786,8 @@ func calculateImageQuota(modelName string, mode string, n int) int64 {
 		modelPrice = 0.05
 	case "flux-pro-1.0-depth":
 		modelPrice = 0.05
+	case "wan2.5-i2i-preview":
+		modelPrice = 0.2
 	// Legacy Kling models (keep existing logic for compatibility)
 	default:
 		if strings.Contains(modelName, "kling") {
@@ -1727,6 +1904,17 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			fullRequestUrl = fmt.Sprintf("%s/flux/v1/get_result?id=%s", *channel.BaseURL, taskId)
 		}
 
+		req, err = http.NewRequest("GET", fullRequestUrl, nil)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to create request: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+	case "ali":
+		// 阿里云万相API查询结果接口
+		fullRequestUrl = fmt.Sprintf("%s/api/v1/tasks/%s", *channel.BaseURL, taskId)
 		req, err = http.NewRequest("GET", fullRequestUrl, nil)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -1943,6 +2131,145 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			finalResponse.TaskStatus = "processing"
 			finalResponse.Message = fmt.Sprintf("Task processing (status: %s)", fluxImageResult.Status)
 		}
+
+	case "ali":
+		// 阿里云万相API响应结构
+		var aliResponse struct {
+			RequestId string `json:"request_id,omitempty"`
+			Output    struct {
+				TaskId        string `json:"task_id,omitempty"`
+				TaskStatus    string `json:"task_status,omitempty"`
+				SubmitTime    string `json:"submit_time,omitempty"`
+				ScheduledTime string `json:"scheduled_time,omitempty"`
+				EndTime       string `json:"end_time,omitempty"`
+				Results       []struct {
+					OrigPrompt string `json:"orig_prompt,omitempty"`
+					URL        string `json:"url,omitempty"`
+					Code       string `json:"code,omitempty"`
+					Message    string `json:"message,omitempty"`
+				} `json:"results,omitempty"`
+				TaskMetrics struct {
+					Total     int `json:"TOTAL,omitempty"`
+					Succeeded int `json:"SUCCEEDED,omitempty"`
+					Failed    int `json:"FAILED,omitempty"`
+				} `json:"task_metrics,omitempty"`
+				Code    string `json:"code,omitempty"`
+				Message string `json:"message,omitempty"`
+			} `json:"output,omitempty"`
+			Usage struct {
+				ImageCount int `json:"image_count,omitempty"`
+			} `json:"usage,omitempty"`
+			Code    string `json:"code,omitempty"`
+			Message string `json:"message,omitempty"`
+		}
+
+		if err := json.Unmarshal(body, &aliResponse); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to unmarshal ali response body: %v", err),
+				"api_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 处理各种响应情况
+		switch aliResponse.Output.TaskStatus {
+		case "SUCCEEDED":
+			// 任务成功，但需要检查results中是否有实际的图片
+			var imageUrls []string
+			var failedCount int
+			var successCount int
+
+			for _, result := range aliResponse.Output.Results {
+				if result.URL != "" {
+					// 成功的图片
+					imageUrls = append(imageUrls, result.URL)
+					successCount++
+				} else if result.Code != "" {
+					// 失败的图片
+					failedCount++
+				}
+			}
+
+			if len(imageUrls) > 0 {
+				// 有成功的图片
+				finalResponse.TaskStatus = "succeed"
+				finalResponse.ImageUrls = imageUrls
+				finalResponse.ImageId = aliResponse.Output.TaskId
+
+				if failedCount > 0 {
+					finalResponse.Message = fmt.Sprintf("Partially completed: %d succeeded, %d failed", successCount, failedCount)
+				} else {
+					finalResponse.Message = "Image generation completed successfully"
+				}
+			} else {
+				// 没有从API响应中获取到URL，检查数据库中是否有存储的URL
+				if image.Status == "succeeded" && image.StoreUrl != "" {
+					// 尝试从数据库的storeUrl字段解析URL
+					var storedUrls []string
+					if err := json.Unmarshal([]byte(image.StoreUrl), &storedUrls); err == nil && len(storedUrls) > 0 {
+						// 成功解析JSON格式的URL数组
+						finalResponse.TaskStatus = "succeed"
+						finalResponse.ImageUrls = storedUrls
+						finalResponse.ImageId = aliResponse.Output.TaskId
+						finalResponse.Message = "Image generation completed successfully"
+					} else if image.StoreUrl != "" {
+						// 如果不是JSON格式，尝试作为单个URL处理
+						finalResponse.TaskStatus = "succeed"
+						finalResponse.ImageUrls = []string{image.StoreUrl}
+						finalResponse.ImageId = aliResponse.Output.TaskId
+						finalResponse.Message = "Image generation completed successfully"
+					} else {
+						// 数据库中也没有有效的URL，标记为失败
+						finalResponse.TaskStatus = "failed"
+						finalResponse.Message = "No image URLs available"
+					}
+				} else {
+					// 没有成功的图片，全部失败
+					finalResponse.TaskStatus = "failed"
+					if len(aliResponse.Output.Results) > 0 && aliResponse.Output.Results[0].Message != "" {
+						finalResponse.Message = aliResponse.Output.Results[0].Message
+					} else {
+						finalResponse.Message = "All image generation tasks failed"
+					}
+				}
+			}
+
+		case "FAILED":
+			// 任务完全失败
+			finalResponse.TaskStatus = "failed"
+			if aliResponse.Output.Message != "" {
+				finalResponse.Message = aliResponse.Output.Message
+			} else {
+				finalResponse.Message = "Image generation failed"
+			}
+
+		case "UNKNOWN":
+			// 任务过期或不存在
+			finalResponse.TaskStatus = "failed"
+			finalResponse.Message = "Task expired or not found"
+
+		case "PENDING", "RUNNING":
+			// 任务处理中
+			finalResponse.TaskStatus = "processing"
+			if aliResponse.Output.TaskStatus == "PENDING" {
+				finalResponse.Message = "Task is pending in queue"
+			} else {
+				finalResponse.Message = "Task is running, please check later"
+			}
+
+		case "CANCELED":
+			// 任务已取消
+			finalResponse.TaskStatus = "failed"
+			finalResponse.Message = "Task was canceled"
+
+		default:
+			// 未知状态
+			finalResponse.TaskStatus = "processing"
+			finalResponse.Message = fmt.Sprintf("Unknown task status: %s", aliResponse.Output.TaskStatus)
+		}
+
+		// 更新数据库状态 - 传递原始响应体进行解析
+		updateAliImageTaskStatusFromBody(taskId, body, image)
 
 	default:
 		return openai.ErrorWrapper(
@@ -2931,4 +3258,169 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 		successCount, validTasks, duration, concurrency)
 
 	return results, successCount
+}
+
+// updateAliImageTaskStatusFromBody 更新阿里云图片任务状态到数据库
+func updateAliImageTaskStatusFromBody(taskId string, responseBody []byte, imageTask *model.Image) {
+	// 解析阿里云响应结构
+	var aliResponse struct {
+		RequestId string `json:"request_id,omitempty"`
+		Output    struct {
+			TaskId        string `json:"task_id,omitempty"`
+			TaskStatus    string `json:"task_status,omitempty"`
+			SubmitTime    string `json:"submit_time,omitempty"`
+			ScheduledTime string `json:"scheduled_time,omitempty"`
+			EndTime       string `json:"end_time,omitempty"`
+			Results       []struct {
+				OrigPrompt string `json:"orig_prompt,omitempty"`
+				URL        string `json:"url,omitempty"`
+				Code       string `json:"code,omitempty"`
+				Message    string `json:"message,omitempty"`
+			} `json:"results,omitempty"`
+			Code    string `json:"code,omitempty"`
+			Message string `json:"message,omitempty"`
+		} `json:"output,omitempty"`
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+
+	if err := json.Unmarshal(responseBody, &aliResponse); err != nil {
+		logger.Errorf(context.Background(), "Failed to unmarshal ali response for status update: %v", err)
+		return
+	}
+
+	var taskStatus = aliResponse.Output.TaskStatus
+	var failReason string
+	var imageUrls []string
+
+	// 提取失败原因
+	if taskStatus == "FAILED" {
+		if aliResponse.Output.Message != "" {
+			failReason = aliResponse.Output.Message
+		}
+	}
+
+	// 提取成功的图片URL
+	for _, result := range aliResponse.Output.Results {
+		if result.URL != "" {
+			imageUrls = append(imageUrls, result.URL)
+		}
+	}
+
+	// 映射阿里云状态到数据库状态
+	dbStatus := mapAliStatusToDbStatus(taskStatus)
+
+	// 记录原始状态用于退款判断
+	oldStatus := imageTask.Status
+
+	// 更新状态
+	imageTask.Status = dbStatus
+
+	// 如果失败，更新失败原因
+	if taskStatus == "FAILED" || taskStatus == "UNKNOWN" || taskStatus == "CANCELED" {
+		if failReason != "" {
+			imageTask.FailReason = failReason
+		} else {
+			imageTask.FailReason = fmt.Sprintf("Task failed with status: %s", taskStatus)
+		}
+	} else {
+		// 清除失败原因（如果状态不是失败）
+		imageTask.FailReason = ""
+	}
+
+	// 如果成功且有图片URL，更新存储URL
+	if taskStatus == "SUCCEEDED" && len(imageUrls) > 0 {
+		// 将URL数组JSON化为字符串存储
+		if urlsJson, err := json.Marshal(imageUrls); err == nil {
+			imageTask.StoreUrl = string(urlsJson)
+		} else {
+			// 如果JSON化失败，至少保存第一个URL
+			imageTask.StoreUrl = imageUrls[0]
+		}
+	}
+
+	// 检查是否需要退款：只有当状态从非失败变为失败时才退款
+	needRefund := (oldStatus != "failed" && oldStatus != "cancelled") &&
+		(dbStatus == "failed" || dbStatus == "cancelled")
+
+	// 保存到数据库
+	err := model.DB.Model(&model.Image{}).Where("task_id = ?", taskId).Updates(imageTask).Error
+	if err != nil {
+		logger.Errorf(context.Background(), "Failed to update ali image task status for %s: %v", taskId, err)
+	} else {
+		logger.Infof(context.Background(), "Updated ali image task %s status from '%s' to '%s'",
+			taskId, oldStatus, dbStatus)
+
+		if needRefund {
+			// 如果需要退款，执行退款
+			logger.Warnf(context.Background(), "Ali image task %s needs refund: status changed from '%s' to '%s'",
+				taskId, oldStatus, dbStatus)
+			compensateAliImageTask(taskId)
+		}
+	}
+}
+
+// mapAliStatusToDbStatus 映射阿里云API状态到数据库状态
+func mapAliStatusToDbStatus(aliStatus string) string {
+	switch aliStatus {
+	case "PENDING":
+		return "pending"
+	case "RUNNING":
+		return "running"
+	case "SUCCEEDED":
+		return "succeeded"
+	case "FAILED":
+		return "failed"
+	case "CANCELED":
+		return "cancelled"
+	case "UNKNOWN":
+		return "failed" // 将UNKNOWN视为失败
+	default:
+		return "processing" // 未知状态默认为处理中
+	}
+}
+
+// compensateAliImageTask 补偿阿里云图片任务失败的配额
+func compensateAliImageTask(taskId string) {
+	// 获取任务详情
+	imageTask, err := model.GetImageByTaskId(taskId)
+	if err != nil {
+		logger.Errorf(context.Background(), "Failed to get ali image task for compensation: %v", err)
+		return
+	}
+
+	if imageTask.Quota <= 0 {
+		logger.Warnf(context.Background(), "Ali image task %s has no quota to refund", taskId)
+		return
+	}
+
+	logger.Infof(context.Background(), "Compensating user %d for failed ali image task %s with quota %d",
+		imageTask.UserId, taskId, imageTask.Quota)
+
+	// 1. 补偿用户配额（增加余额、减少已使用配额和请求次数）
+	err = model.CompensateVideoTaskQuota(imageTask.UserId, imageTask.Quota)
+	if err != nil {
+		logger.Errorf(context.Background(), "Failed to compensate user quota for ali image task %s: %v", taskId, err)
+		return
+	}
+	logger.Infof(context.Background(), "Successfully compensated user %d quota for ali image task %s",
+		imageTask.UserId, taskId)
+
+	// 2. 补偿渠道配额（减少渠道已使用配额）
+	err = model.CompensateChannelQuota(imageTask.ChannelId, imageTask.Quota)
+	if err != nil {
+		logger.Errorf(context.Background(), "Failed to compensate channel quota for ali image task %s: %v", taskId, err)
+	} else {
+		logger.Infof(context.Background(), "Successfully compensated channel %d quota for ali image task %s",
+			imageTask.ChannelId, taskId)
+	}
+
+	// 更新用户配额缓存
+	err = model.CacheUpdateUserQuota(context.Background(), imageTask.UserId)
+	if err != nil {
+		logger.Errorf(context.Background(), "Failed to update user quota cache after compensation: %v", err)
+	}
+
+	logger.Infof(context.Background(), "Successfully completed compensation for ali image task %s: user %d and channel %d restored quota %d",
+		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
 }
