@@ -23,10 +23,10 @@ import (
 	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
-	commonConfig "github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/luma"
@@ -89,13 +89,13 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		awsConfig.WithRegion("us-east-1"),
 		awsConfig.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 			return aws.Credentials{
-				AccessKeyID:     commonConfig.CfFileAccessKey,
-				SecretAccessKey: commonConfig.CfFileSecretKey,
+				AccessKeyID:     config.CfFileAccessKey,
+				SecretAccessKey: config.CfFileSecretKey,
 			}, nil
 		}))),
 		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
 			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{URL: commonConfig.CfFileEndpoint}, nil
+				return aws.Endpoint{URL: config.CfFileEndpoint}, nil
 			}),
 		),
 	)
@@ -108,7 +108,7 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 
 	// 上传视频到R2
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(commonConfig.CfBucketFileName),
+		Bucket:      aws.String(config.CfBucketFileName),
 		Key:         aws.String(filename),
 		Body:        bytes.NewReader(videoData),
 		ContentType: aws.String(contentType),
@@ -157,9 +157,240 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "veo") {
 		return handleVeoVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.HasPrefix(modelName, "wan") {
+		return handleAliVideoRequest(c, ctx, videoRequest, meta)
 	} else {
-		return openai.ErrorWrapper(fmt.Errorf("Unsupported model"), "unsupported_model", http.StatusBadRequest)
+		return openai.ErrorWrapper(fmt.Errorf("unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
+}
+
+func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 读取原始请求体
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// 恢复请求体
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	log.Printf("ali-video-request-body: %s", string(bodyBytes))
+
+	// 解析请求体获取duration字段
+	var requestData map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
+		return openai.ErrorWrapper(err, "parse_request_body_failed", http.StatusBadRequest)
+	}
+
+	// 提取duration字段，默认为5
+	var duration string = "5"       // 默认值
+	var resolution string = "1080P" // 默认值
+
+	if parameters, ok := requestData["parameters"].(map[string]interface{}); ok {
+		// 提取duration
+		if durationValue, exists := parameters["duration"]; exists {
+			switch v := durationValue.(type) {
+			case float64:
+				duration = strconv.Itoa(int(v))
+			case int:
+				duration = strconv.Itoa(v)
+			case string:
+				duration = v
+			default:
+				duration = "5" // 如果类型不匹配，使用默认值
+			}
+		}
+
+		// 提取resolution
+		if resolutionValue, exists := parameters["resolution"]; exists {
+			if res, ok := resolutionValue.(string); ok {
+				// 验证resolution是否为有效值
+				if res == "480P" || res == "720P" || res == "1080P" {
+					resolution = res
+				}
+			}
+		}
+	}
+
+	log.Printf("ali-video-duration: %s, resolution: %s", duration, resolution)
+
+	// 直接透传请求体，发送请求并处理响应
+	return sendRequestAndHandleAliVideoResponse(c, ctx, bodyBytes, meta, meta.ActualModelName, duration, resolution)
+}
+
+func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, bodyBytes []byte, meta *util.RelayMeta, modelName string, duration string, resolution string) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	// 根据分辨率和时长进行精确计费
+	// 480P: 0.3元/秒, 720P: 0.6元/秒, 1080P: 1元/秒
+	var pricePerSecond float64
+	switch resolution {
+	case "480P":
+		pricePerSecond = 0.3
+	case "720P":
+		pricePerSecond = 0.6
+	case "1080P":
+		pricePerSecond = 1.0
+	default:
+		pricePerSecond = 1.0 // 默认按最高价格计费
+	}
+
+	// 转换duration为数值
+	durationInt, err := strconv.Atoi(duration)
+	if err != nil {
+		log.Printf("Failed to parse duration %s, using default 5", duration)
+		durationInt = 5
+	}
+
+	// 计算总费用（人民币）
+	prePayCNY := float64(durationInt) * pricePerSecond
+	prePayUSD, exchangeErr := convertCNYToUSD(prePayCNY)
+	if exchangeErr != nil {
+		// 如果汇率转换失败，使用固定汇率7.2作为备选方案
+		log.Printf("Failed to get exchange rate for Ali video pre-payment: %v, using fallback rate 7.2", exchangeErr)
+		prePayUSD = prePayCNY / 7.2
+	}
+	quota := int64(prePayUSD * config.QuotaPerUnit)
+	log.Printf("Ali video pre-payment: resolution=%s, duration=%s, pricePerSecond=%.1f, totalCNY=%.2f, usd=%.6f, quota=%d",
+		resolution, duration, pricePerSecond, prePayCNY, prePayUSD, quota)
+
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	// 构建请求URL - 根据不同地域选择端点
+	baseUrl := meta.BaseURL
+
+	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/video-generation/video-synthesis", baseUrl)
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	req.Header.Set("X-DashScope-Async", "enable") // 启用异步模式
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	// 仅在开发环境打印详细响应日志
+	if config.DebugEnabled {
+		log.Printf("[DEBUG] Ali video response: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	// 解析响应
+	var aliResponse ali.AliVideoResponse
+	if err := json.Unmarshal(body, &aliResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_ali_video_response_failed", http.StatusInternalServerError)
+	}
+
+	// 处理响应并统一格式
+	return handleAliVideoResponse(c, ctx, aliResponse, body, meta, modelName, quota, duration, resolution)
+}
+
+func handleAliVideoResponse(c *gin.Context, ctx context.Context, aliResponse ali.AliVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64, duration string, resolution string) *model.ErrorWithStatusCode {
+	var taskId string
+	var taskStatus string
+	var message string
+
+	// 检查是否有错误
+	if aliResponse.Code != "" {
+		// 有错误，不扣费，设置失败状态
+		taskStatus = "failed"
+		message = fmt.Sprintf("Error: %s, request_id: %s", aliResponse.Message, aliResponse.RequestID)
+		// 如果有任务ID，也包含进来
+		if aliResponse.Output != nil && aliResponse.Output.TaskID != "" {
+			taskId = aliResponse.Output.TaskID
+		}
+		logger.SysError(fmt.Sprintf("Ali video request failed: %s, request_id: %s", aliResponse.Message, aliResponse.RequestID))
+	} else {
+		// 没有错误，进行扣费
+		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
+		if err != nil {
+			logger.SysError("error consuming token quota: " + err.Error())
+		}
+		err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		// 处理阿里云响应
+		if aliResponse.Output != nil {
+			taskId = aliResponse.Output.TaskID
+		}
+
+		// 创建视频日志记录
+		// 根据模型名称确定视频类型
+		videoType := "image-to-video"
+		if strings.Contains(strings.ToLower(modelName), "t2v") {
+			videoType = "text-to-video"
+		}
+		err = CreateVideoLog("ali", taskId, meta, resolution, duration, videoType, "", quota)
+		if err != nil {
+			logger.SysError("error creating ali video log: " + err.Error())
+			return openai.ErrorWrapper(
+				fmt.Errorf("error creating video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 记录消费日志到logs表
+		consumeErr := handleSuccessfulResponseWithQuota(c, ctx, meta, meta.OriginModelName, resolution, duration, quota, taskId)
+		if consumeErr != nil {
+			logger.SysError("error recording ali video consume log")
+			return consumeErr
+		}
+
+		// 设置成功状态
+		taskStatus = "succeed"
+		message = fmt.Sprintf("Request submitted successfully, request_id: %s", aliResponse.RequestID)
+	}
+
+	// 创建 GeneralVideoResponse 结构体 - 与其他视频处理保持一致
+	generalResponse := model.GeneralVideoResponse{
+		TaskId:     taskId,
+		Message:    message,
+		TaskStatus: taskStatus,
+	}
+
+	// 将 GeneralVideoResponse 结构体转换为 JSON
+	jsonResponse, err := json.Marshal(generalResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// 发送 JSON 响应给客户端
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(jsonResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	return nil
 }
 
 func handleDoubaoVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -408,9 +639,7 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	}
 
 	// 删除model参数（如果存在）
-	if _, exists := reqBody["model"]; exists {
-		delete(reqBody, "model")
-	}
+	delete(reqBody, "model")
 
 	// 检查parameters字段
 	params, ok := reqBody["parameters"].(map[string]interface{})
@@ -2284,6 +2513,12 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		}
 	}
 
+	// 根据模型名称确定最终的视频类型
+	finalVideoType := videoType
+	if videoType == "image-to-video" && strings.Contains(strings.ToLower(meta.OriginModelName), "t2v") {
+		finalVideoType = "text-to-video"
+	}
+
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
 		Prompt:      "prompt",
@@ -2294,7 +2529,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		ChannelId:   meta.ChannelId,
 		UserId:      meta.UserId,
 		Mode:        mode, //keling
-		Type:        videoType,
+		Type:        finalVideoType,
 		Model:       meta.OriginModelName,
 		Duration:    duration,
 		VideoId:     videoId,
@@ -2509,6 +2744,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		// 保存凭证到context中，供后续请求使用
 		c.Set("query_credentials", credentials)
+	case "ali":
+		// 根据不同地域选择查询端点
+		baseUrl := *channel.BaseURL
+		fullRequestUrl = fmt.Sprintf("%s/api/v1/tasks/%s", baseUrl, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -2736,7 +2975,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		err := handleMinimaxResponse(c, channel, taskId)
 		if err != nil {
 			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
+				fmt.Errorf("Error handling minimax response: %v", err),
 				"internal_error",
 				http.StatusInternalServerError,
 			)
@@ -3442,6 +3681,126 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "ali" {
+		defer resp.Body.Close()
+
+		// 首先检查数据库中是否已有存储的URL
+		if videoTask.StoreUrl != "" {
+			log.Printf("Found existing store URL for Ali task %s: %s", taskId, videoTask.StoreUrl)
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:       taskId,
+				VideoResult:  videoTask.StoreUrl,
+				VideoId:      taskId,
+				TaskStatus:   "succeed",
+				Message:      "Video retrieved from cache",
+				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+			}
+			jsonResponse, err := json.Marshal(generalResponse)
+			if err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
+			}
+			c.Data(http.StatusOK, "application/json", jsonResponse)
+			return nil
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 打印完整的阿里云响应体
+		log.Printf("Ali video query response body: %s", string(body))
+
+		// 解析JSON响应
+		var aliResp ali.AliVideoQueryResponse
+		if err := json.Unmarshal(body, &aliResp); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建 GeneralVideoResponse 结构体
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:      taskId,
+			VideoId:     taskId,
+			TaskStatus:  "processing", // 默认状态
+			Message:     "",
+			VideoResult: "",
+		}
+
+		// 处理响应
+		if aliResp.Code != "" {
+			// 查询API本身出错
+			generalResponse.TaskStatus = "failed"
+			generalResponse.Message = fmt.Sprintf("Query error: %s, request_id: %s", aliResp.Message, aliResp.RequestID)
+		} else if aliResp.Output != nil {
+			// 根据任务状态处理
+			switch aliResp.Output.TaskStatus {
+			case "SUCCEEDED":
+				generalResponse.TaskStatus = "succeed"
+				generalResponse.Message = fmt.Sprintf("Video generation completed, request_id: %s", aliResp.RequestID)
+				if aliResp.Output.VideoURL != "" {
+					// 保存URL到数据库
+					if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, aliResp.Output.VideoURL); updateErr != nil {
+						log.Printf("Failed to save Ali video URL for task %s: %v", taskId, updateErr)
+					} else {
+						log.Printf("Successfully saved Ali video URL for task %s: %s", taskId, aliResp.Output.VideoURL)
+					}
+
+					generalResponse.VideoResult = aliResp.Output.VideoURL
+					generalResponse.VideoResults = []model.VideoResultItem{
+						{Url: aliResp.Output.VideoURL},
+					}
+				}
+			case "FAILED":
+				generalResponse.TaskStatus = "failed"
+				generalResponse.Message = fmt.Sprintf("Video generation failed, request_id: %s", aliResp.RequestID)
+			case "UNKNOWN":
+				generalResponse.TaskStatus = "failed"
+				generalResponse.Message = fmt.Sprintf("Task expired or unknown, request_id: %s", aliResp.RequestID)
+			case "PROCESSING", "RUNNING":
+				generalResponse.TaskStatus = "processing"
+				generalResponse.Message = fmt.Sprintf("Video generation in progress, request_id: %s", aliResp.RequestID)
+			default:
+				generalResponse.TaskStatus = "processing"
+				generalResponse.Message = fmt.Sprintf("Video generation in progress (status: %s), request_id: %s", aliResp.Output.TaskStatus, aliResp.RequestID)
+			}
+		} else {
+			// 无输出，可能是API错误
+			generalResponse.TaskStatus = "failed"
+			generalResponse.Message = fmt.Sprintf("No output received, request_id: %s", aliResp.RequestID)
+		}
+
+		// 更新数据库任务状态并在必要时处理退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message // 包含request_id的完整错误信息
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Ali task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
+		// 将 GeneralVideoResponse 结构体转换为 JSON
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 返回响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
 	return nil
 }
@@ -3848,12 +4207,12 @@ func printJSONStructure(data interface{}, prefix string, maxDepth int) {
 	case map[string]interface{}:
 		log.Printf("%s{", prefix)
 		for key, value := range v {
-			switch value.(type) {
+			switch v := value.(type) {
 			case string:
-				if len(value.(string)) > 100 {
-					log.Printf("%s  \"%s\": \"<string length: %d>\"", prefix, key, len(value.(string)))
+				if len(v) > 100 {
+					log.Printf("%s  \"%s\": \"<string length: %d>\"", prefix, key, len(v))
 				} else {
-					log.Printf("%s  \"%s\": \"%s\"", prefix, key, value.(string))
+					log.Printf("%s  \"%s\": \"%s\"", prefix, key, v)
 				}
 			case bool:
 				log.Printf("%s  \"%s\": %v", prefix, key, value)
