@@ -61,7 +61,7 @@ func SearchChannels(c *gin.Context) {
 	var status *int
 	if statusStr != "" {
 		statusInt, err := strconv.Atoi(statusStr)
-		if err == nil && (statusInt == 1 || statusInt == 2) {
+		if err == nil && (statusInt == 1 || statusInt == 2 || statusInt == 3) {
 			status = &statusInt
 		}
 	}

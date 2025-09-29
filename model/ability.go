@@ -9,6 +9,7 @@ import (
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
+	"gorm.io/gorm"
 )
 
 type Ability struct {
@@ -162,16 +163,34 @@ func CheckDataConsistency() error {
 	if inconsistentCount > 0 {
 		logger.SysLog(fmt.Sprintf("Found %d inconsistent ability records, fixing...", inconsistentCount))
 
-		// 修复不一致的数据
-		result := DB.Exec(`
-			UPDATE abilities a
-			JOIN channels c ON a.channel_id = c.id
-			SET a.enabled = CASE 
-				WHEN c.status = ? THEN 1
-				ELSE 0
-			END
-			WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
-		`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+		// 修复不一致的数据 - 根据数据库类型使用不同语法
+		var result *gorm.DB
+		if common.UsingMySQL || common.UsingPostgreSQL {
+			// MySQL/PostgreSQL: 支持UPDATE JOIN语法
+			result = DB.Exec(`
+				UPDATE abilities a
+				JOIN channels c ON a.channel_id = c.id
+				SET a.enabled = CASE 
+					WHEN c.status = ? THEN 1
+					ELSE 0
+				END
+				WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+		} else {
+			// SQLite: 使用子查询语法
+			result = DB.Exec(`
+				UPDATE abilities 
+				SET enabled = CASE 
+					WHEN (SELECT status FROM channels WHERE channels.id = abilities.channel_id) = ? THEN 1
+					ELSE 0
+				END
+				WHERE EXISTS (
+					SELECT 1 FROM channels 
+					WHERE channels.id = abilities.channel_id 
+					AND ((channels.status = ? AND abilities.enabled = 0) OR (channels.status != ? AND abilities.enabled = 1))
+				)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+		}
 
 		if result.Error != nil {
 			logger.SysError("Failed to fix data consistency: " + result.Error.Error())
