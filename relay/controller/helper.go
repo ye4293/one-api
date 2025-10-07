@@ -163,7 +163,18 @@ func getPreConsumedQuota(textRequest *relaymodel.GeneralOpenAIRequest, promptTok
 }
 
 func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64, meta *util.RelayMeta) (int64, *relaymodel.ErrorWithStatusCode) {
-	preConsumedQuota := getPreConsumedQuota(textRequest, promptTokens, ratio)
+	var preConsumedQuota int64
+
+	// 先检查是否有固定价格
+	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	if modelPrice != -1 {
+		// 使用固定价格计费（按次计费）
+		groupRatio := common.GetGroupRatio(meta.Group)
+		preConsumedQuota = int64(modelPrice * 500000 * groupRatio)
+	} else {
+		// 使用基于token的倍率计费
+		preConsumedQuota = getPreConsumedQuota(textRequest, promptTokens, ratio)
+	}
 
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
@@ -201,20 +212,34 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			meta.UserId, textRequest))
 		return
 	}
+
 	var quota int64
-	completionRatio := common.GetCompletionRatio(textRequest.Model)
+	var logContent string
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
-	quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
-	if ratio != 0 && quota <= 0 {
-		quota = 1
+
+	// 先检查是否有固定价格
+	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	if modelPrice != -1 {
+		// 使用固定价格计费（按次计费）
+		quota = int64(modelPrice * 500000 * groupRatio)
+		logContent = fmt.Sprintf("模型固定价格 %.2f$，分组倍率 %.2f", modelPrice, groupRatio)
+	} else {
+		// 使用基于token的倍率计费
+		completionRatio := common.GetCompletionRatio(textRequest.Model)
+		quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+		if ratio != 0 && quota <= 0 {
+			quota = 1
+		}
+		totalTokens := promptTokens + completionTokens
+		if totalTokens == 0 {
+			// in this case, must be some error happened
+			// we cannot just return, because we may have to return the pre-consumed quota
+			quota = 0
+		}
+		logContent = fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
 	}
-	totalTokens := promptTokens + completionTokens
-	if totalTokens == 0 {
-		// in this case, must be some error happened
-		// we cannot just return, because we may have to return the pre-consumed quota
-		quota = 0
-	}
+
 	quotaDelta := quota - preConsumedQuota
 	err := model.PostConsumeTokenQuota(meta.TokenId, quotaDelta)
 	if err != nil {
@@ -225,8 +250,6 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 	if quota != 0 {
-		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
-
 		// 获取渠道历史信息
 		otherInfo := getChannelHistoryInfo(c)
 

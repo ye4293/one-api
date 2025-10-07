@@ -269,8 +269,25 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					},
 				},
 				GenerationConfig: gemini.ChatGenerationConfig{
-					ResponseModalities: []string{"TEXT", "IMAGE"},
+					ResponseModalities: []string{"Image"},
 				},
+			}
+
+			// 处理 size 参数，转换为 Gemini 的 aspectRatio
+			if sizeValue, exists := requestMap["size"]; exists {
+				if sizeStr, ok := sizeValue.(string); ok && sizeStr != "" {
+					aspectRatio := convertSizeToAspectRatio(sizeStr)
+					if aspectRatio != "" {
+						// 只有成功转换才设置 ImageConfig
+						geminiImageRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{
+							AspectRatio: aspectRatio,
+						}
+						logger.Infof(ctx, "Gemini JSON request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
+					} else {
+						// 无法识别的格式，不设置 ImageConfig，使用 Gemini 默认行为
+						logger.Infof(ctx, "Gemini JSON request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
+					}
+				}
 			}
 
 			// 处理图片数据，支持多种格式：
@@ -2436,8 +2453,26 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 			},
 		},
 		GenerationConfig: gemini.ChatGenerationConfig{
-			ResponseModalities: []string{"TEXT", "IMAGE"},
+			ResponseModalities: []string{"Image"},
 		},
+	}
+
+	// 处理 size 参数，转换为 Gemini 的 aspectRatio
+	if sizeValues, ok := c.Request.MultipartForm.Value["size"]; ok && len(sizeValues) > 0 {
+		sizeStr := sizeValues[0]
+		if sizeStr != "" {
+			aspectRatio := convertSizeToAspectRatio(sizeStr)
+			if aspectRatio != "" {
+				// 只有成功转换才设置 ImageConfig
+				geminiRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{
+					AspectRatio: aspectRatio,
+				}
+				logger.Infof(ctx, "Gemini Form request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
+			} else {
+				// 无法识别的格式，不设置 ImageConfig，使用 Gemini 默认行为
+				logger.Infof(ctx, "Gemini Form request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
+			}
+		}
 	}
 
 	// 转换为 JSON
@@ -2872,8 +2907,9 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	groupRatio := common.GetGroupRatio(meta.Group)
 	modelRatio := common.GetModelRatio(meta.OriginModelName)
 	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-	// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
-	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio / 1000 * 500000))
+	// 使用统一的 ModelRatio 和 CompletionRatio 机制进行计费
+	// modelRatio 已经是相对于基础价格 $0.002/1K tokens 的倍率，直接使用即可
+	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
 
 	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 		promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3423,4 +3459,60 @@ func compensateAliImageTask(taskId string) {
 
 	logger.Infof(context.Background(), "Successfully completed compensation for ali image task %s: user %d and channel %d restored quota %d",
 		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
+}
+
+// convertSizeToAspectRatio 将 OpenAI 格式的尺寸转换为 Gemini 的宽高比格式
+// 支持两种输入格式：
+// 1. 比例格式（包含":"）：如 "16:9" -> 直接赋值返回 "16:9"
+// 2. 尺寸格式（包含"x"）：如 "1024x1024" -> 转换为 "1:1"
+// 返回空字符串表示无法识别的格式，调用方应不传递此参数
+func convertSizeToAspectRatio(size string) string {
+	// 判断是比例格式（包含冒号）还是尺寸格式（包含x）
+	if strings.Contains(size, ":") {
+		// 已经是比例格式，直接返回
+		return size
+	} else if strings.Contains(size, "x") || strings.Contains(size, "X") {
+		// 是尺寸格式，需要转换为比例
+
+		// 定义常见尺寸到宽高比的映射表
+		sizeToRatioMap := map[string]string{
+			"1024x1024": "1:1",
+			"832x1248":  "2:3",
+			"1248x832":  "3:2",
+			"864x1184":  "3:4",
+			"1184x864":  "4:3",
+			"896x1152":  "4:5",
+			"1152x896":  "5:4",
+			"768x1344":  "9:16",
+			"1344x768":  "16:9",
+			"1536x672":  "21:9",
+		}
+
+		// 先查找映射表
+		if ratio, exists := sizeToRatioMap[size]; exists {
+			return ratio
+		}
+
+		// 如果不在映射表中，尝试动态解析并计算比例
+		parts := strings.Split(strings.ToLower(size), "x")
+		if len(parts) == 2 {
+			width, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+			height, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err1 == nil && err2 == nil && width > 0 && height > 0 {
+				// 计算最大公约数
+				gcd := func(a, b int) int {
+					for b != 0 {
+						a, b = b, a%b
+					}
+					return a
+				}
+				divisor := gcd(width, height)
+				return fmt.Sprintf("%d:%d", width/divisor, height/divisor)
+			}
+		}
+	}
+
+	// 如果无法解析或格式不正确，返回空字符串，表示不设置此参数
+	// Gemini 官方默认会使输出图片的大小与输入图片的大小保持一致
+	return ""
 }

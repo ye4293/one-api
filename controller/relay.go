@@ -406,15 +406,17 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 		if strings.Contains(message, "Incorrect API key provided") && strings.Contains(message, "console.x.ai") {
 			return true
 		}
-		// 对于所有 "API key not valid" 错误，都应该允许重试其他渠道
-		if strings.Contains(message, "API key not valid") {
-			logger.Warnf(c.Request.Context(), "API key invalid error detected, will retry with other channels")
-			return true
+		// 对于所有API key相关错误，都应该允许重试其他渠道（忽略大小写）
+		apiKeyErrors := []string{
+			"api key not valid", "invalid_api_key", "authentication_error",
+			"api key not found", "invalid api key",
 		}
-		// 对于其他API key相关错误，也应该重试
-		if strings.Contains(message, "invalid_api_key") || strings.Contains(message, "authentication_error") {
-			logger.Warnf(c.Request.Context(), "API key authentication error detected, will retry with other channels")
-			return true
+		messageLower := strings.ToLower(message)
+		for _, errPattern := range apiKeyErrors {
+			if strings.Contains(messageLower, errPattern) {
+				logger.Warnf(c.Request.Context(), "API key related error detected (%s), will retry with other channels", errPattern)
+				return true
+			}
 		}
 		//对于aws的封号的特殊处理
 		if strings.Contains(message, "Operation not allowed") {

@@ -45,6 +45,11 @@ type ChatGenerationConfig struct {
 	StopSequences      []string        `json:"stopSequences,omitempty"`
 	ResponseModalities []string        `json:"response_modalities,omitempty"`
 	ThinkingConfig     *ThinkingConfig `json:"thinking_config,omitempty"`
+	ImageConfig        *ImageConfig    `json:"imageConfig,omitempty"`
+}
+
+type ImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
 }
 
 type ThinkingConfig struct {
