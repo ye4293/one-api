@@ -25,6 +25,28 @@ func SetRelayRouter(router *gin.Engine) {
 		// Image generation endpoints
 	}
 
+	// Sora 视频生成路由 - 需要 Distribute 中间件进行渠道选择
+	soraRouter := router.Group("/v1")
+	soraRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		soraRouter.POST("/videos", controller.RelaySoraVideo)
+	}
+
+	// Sora 视频 remix 路由 - 不需要 Distribute 中间件，因为必须使用原视频的渠道
+	soraRemixRouter := router.Group("/v1")
+	soraRemixRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		soraRemixRouter.POST("/videos/:videoId/remix", controller.RelaySoraVideoRemix)
+	}
+
+	// Sora 查询路由 - 不需要 Distribute 中间件
+	soraResultRouter := router.Group("/v1")
+	soraResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		soraResultRouter.GET("/videos/:videoId/content", controller.RelaySoraVideoContent)
+		soraResultRouter.GET("/videos/:videoId", controller.RelaySoraVideoResult)
+	}
+
 	// Create separate router groups for POST and GET
 	asyncImagePostRouter := router.Group("/v1/async")
 	asyncImagePostRouter.Use(middleware.TokenAuth(), middleware.Distribute())

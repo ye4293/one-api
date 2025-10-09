@@ -1987,3 +1987,249 @@ func RelayRunwayResult(c *gin.Context) {
 	}
 	controller.GetRunwayResult(c, taskId)
 }
+
+func RelaySoraVideoResult(c *gin.Context) {
+	videoId := c.Param("videoId")
+	if videoId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "videoId is required"})
+		return
+	}
+	controller.GetSoraVideoResult(c, videoId)
+}
+
+func RelaySoraVideoContent(c *gin.Context) {
+	videoId := c.Param("videoId")
+	if videoId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "videoId is required"})
+		return
+	}
+	controller.GetSoraVideoContent(c, videoId)
+}
+
+func RelaySoraVideoRemix(c *gin.Context) {
+	videoId := c.Param("videoId")
+	if videoId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "videoId is required"})
+		return
+	}
+	controller.DirectRelaySoraVideoRemix(c, videoId)
+}
+
+func RelaySoraVideo(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+
+	logger.Infof(ctx, "RelaySoraVideo start - userId: %d, channelId: %d, model: %s, requestID: %s",
+		userId, channelId, modelName, requestID)
+
+	// 尝试第一次请求
+	success, statusCode := trySoraRequest(c)
+	if success {
+		// 第一次成功，记录使用的渠道到上下文中
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
+
+		logger.Infof(ctx, "RelaySoraVideo success on first try - userId: %d, channelId: %d", userId, channelId)
+		return
+	}
+
+	// 第一次失败，处理错误和重试
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	logger.Errorf(ctx, "RelaySoraVideo first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d",
+		userId, channelId, channelName, statusCode)
+
+	// 使用空的错误对象调用 processChannelRelayError，让它自己处理
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		StatusCode: statusCode,
+		Error:      model.Error{Message: "Request failed"},
+	}, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, statusCode, "") {
+		logger.Errorf(ctx, "Sora request error happen, status code is %d, won't retry in this case", statusCode)
+		// 不重试时，记录失败日志并写入响应
+		var channelHistory []int
+		channelHistory = append(channelHistory, channelId)
+		c.Set("admin_channel_history", channelHistory)
+		recordSoraFailedLog(ctx, c, statusCode, channelHistory)
+		writeLastSoraFailureResponse(c, statusCode)
+		return
+	}
+
+	logger.Infof(ctx, "RelaySoraVideo will retry %d times - status code: %d", retryTimes, statusCode)
+
+	// 获取初始渠道信息用于重试日志
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, originalChannelId)
+
+	for i := retryTimes; i > 0; i-- {
+		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
+
+		// 计算应该跳过的优先级数量：第1次重试仍使用最高优先级
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+
+		// 获取重试原因 - 直接使用状态码
+		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
+
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
+		// 使用新通道的配置更新上下文
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		requestBody, err := common.GetRequestBody(c)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+		success, statusCode = trySoraRequest(c)
+		if success {
+			logger.Infof(ctx, "RelaySoraVideo retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			// 成功时记录渠道历史到上下文中
+			c.Set("admin_channel_history", channelHistory)
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+
+		channelName = c.GetString("channel_name")
+		logger.Errorf(ctx, "RelaySoraVideo retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
+			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)
+
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+			StatusCode: statusCode,
+			Error:      model.Error{Message: "Retry failed"},
+		}, modelName)
+
+		// 检查这次失败是否还应该继续重试
+		if !shouldRetry(c, statusCode, "") {
+			logger.Errorf(ctx, "Retry encountered non-retryable error, status code is %d, stopping retries", statusCode)
+			writeLastSoraFailureResponse(c, statusCode)
+			return
+		}
+	}
+
+	// 所有重试都失败后，写入最后一次失败的响应
+	logger.Errorf(ctx, "RelaySoraVideo ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
+	// 失败时记录渠道历史到上下文中
+	c.Set("admin_channel_history", channelHistory)
+
+	// 记录Sora失败请求的日志
+	recordSoraFailedLog(ctx, c, statusCode, channelHistory)
+
+	writeLastSoraFailureResponse(c, statusCode)
+}
+
+// trySoraRequest 尝试执行 Sora 请求，返回是否成功和状态码
+func trySoraRequest(c *gin.Context) (success bool, statusCode int) {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+
+	logger.Debugf(ctx, "trySoraRequest start - channelId: %d", channelId)
+
+	// 保存原始的 ResponseWriter
+	originalWriter := c.Writer
+
+	// 创建一个缓冲的 ResponseWriter 来捕获响应
+	rec := &responseRecorder{
+		ResponseWriter: originalWriter,
+		statusCode:     200,
+		body:           bytes.NewBuffer(nil),
+	}
+	c.Writer = rec
+
+	// 调用原始函数
+	controller.DirectRelaySoraVideo(c, meta)
+
+	// 恢复原始的 ResponseWriter
+	c.Writer = originalWriter
+
+	logger.Debugf(ctx, "trySoraRequest response - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+
+	// 检查响应状态码
+	if rec.statusCode >= 400 {
+		logger.Debugf(ctx, "trySoraRequest FAILED - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+		// 失败时不写入响应，让重试逻辑处理
+		return false, rec.statusCode
+	}
+
+	// 成功时，将响应写入原始的 ResponseWriter
+	logger.Debugf(ctx, "trySoraRequest SUCCESS - channelId: %d, statusCode: %d", channelId, rec.statusCode)
+	originalWriter.WriteHeader(rec.statusCode)
+	for k, v := range rec.Header() {
+		originalWriter.Header()[k] = v
+	}
+	originalWriter.Write(rec.body.Bytes())
+
+	return true, rec.statusCode
+}
+
+// writeLastSoraFailureResponse 写入最后失败的响应到客户端
+func writeLastSoraFailureResponse(c *gin.Context, statusCode int) {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+
+	logger.Debugf(ctx, "writeLastSoraFailureResponse - channelId: %d, statusCode: %d", channelId, statusCode)
+
+	// 重新获取请求体
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get request body for final response: %v", err)
+		c.JSON(statusCode, gin.H{"error": "Request failed"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+	// 直接调用 DirectRelaySoraVideo 让它写入错误响应
+	controller.DirectRelaySoraVideo(c, meta)
+}
+
+// recordSoraFailedLog 记录Sora失败请求的日志
+func recordSoraFailedLog(ctx context.Context, c *gin.Context, statusCode int, channelHistory []int) {
+	// 这里可以添加特定的日志记录逻辑
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+	logger.Errorf(ctx, "Sora request failed - userId: %d, model: %s, statusCode: %d, channelHistory: %v",
+		userId, modelName, statusCode, channelHistory)
+}

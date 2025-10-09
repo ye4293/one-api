@@ -67,6 +67,8 @@ var ModelList = []string{
 
 	// 语音识别
 	"whisper-1",
+
+	"sora-2	", "sora-2-pro",
 }
 
 var ModelDetails = []model.APIModel{
