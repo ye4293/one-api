@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -841,8 +842,19 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 			}
 			defer file.Close()
 
-			// 创建新的表单文件字段
-			part, err := writer.CreateFormFile(key, fileHeader.Filename)
+			// 获取并验证文件的Content-Type
+			contentType, err := detectFileContentType(file, fileHeader)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "文件类型检测失败: " + err.Error()})
+				return
+			}
+
+			// 手动创建multipart header并设置正确的Content-Type
+			h := make(textproto.MIMEHeader)
+			h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, key, fileHeader.Filename))
+			h.Set("Content-Type", contentType)
+
+			part, err := writer.CreatePart(h)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "创建表单文件失败: " + err.Error()})
 				return
@@ -1642,6 +1654,119 @@ func compensateSoraVideoTask(videoId string) {
 }
 
 // ========================================
+// 文件类型检测函数
+// ========================================
+
+// detectFileContentType 基于文件内容和扩展名检测并验证文件类型
+// 返回符合 OpenAI Sora API 要求的MIME类型
+func detectFileContentType(file multipart.File, fileHeader *multipart.FileHeader) (string, error) {
+	// 支持的MIME类型列表（根据OpenAI Sora API文档）
+	supportedTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/webp": true,
+		"video/mp4":  true,
+	}
+
+	// 读取文件前512字节用于内容检测
+	buffer := make([]byte, 512)
+	n, err := file.Read(buffer)
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("读取文件内容失败: %v", err)
+	}
+
+	// 重置文件读取位置到开始
+	if seeker, ok := file.(io.Seeker); ok {
+		seeker.Seek(0, io.SeekStart)
+	} else {
+		return "", fmt.Errorf("无法重置文件读取位置")
+	}
+
+	// 使用Go标准库检测内容类型（基于文件内容，更可靠）
+	detectedType := http.DetectContentType(buffer[:n])
+
+	// 特殊处理：Go的DetectContentType对一些格式检测不够精确
+	filename := strings.ToLower(fileHeader.Filename)
+
+	// 针对图片格式的精确检测
+	if strings.HasPrefix(detectedType, "image/") {
+		// 检查WebP格式（Go的DetectContentType可能不识别）
+		if len(buffer) >= 12 &&
+			string(buffer[0:4]) == "RIFF" &&
+			string(buffer[8:12]) == "WEBP" {
+			detectedType = "image/webp"
+		}
+		// 验证扩展名和检测类型的一致性
+		if strings.HasSuffix(filename, ".webp") && detectedType != "image/webp" {
+			detectedType = "image/webp"
+		}
+	}
+
+	// 针对视频格式的检测
+	if strings.HasSuffix(filename, ".mp4") {
+		// MP4文件检测：检查文件头的ftyp box
+		if len(buffer) >= 8 {
+			// 检查是否有MP4的文件签名
+			if len(buffer) >= 12 && (string(buffer[4:8]) == "ftyp" ||
+				string(buffer[4:12]) == "ftypmp41" ||
+				string(buffer[4:12]) == "ftypmp42" ||
+				string(buffer[4:12]) == "ftypisom") {
+				detectedType = "video/mp4"
+			}
+		}
+	}
+
+	// 验证检测到的类型是否受支持
+	if !supportedTypes[detectedType] {
+		// 如果检测失败，尝试根据扩展名推断（作为后备）
+		if strings.HasSuffix(filename, ".jpg") || strings.HasSuffix(filename, ".jpeg") {
+			detectedType = "image/jpeg"
+		} else if strings.HasSuffix(filename, ".png") {
+			detectedType = "image/png"
+		} else if strings.HasSuffix(filename, ".webp") {
+			detectedType = "image/webp"
+		} else if strings.HasSuffix(filename, ".mp4") {
+			detectedType = "video/mp4"
+		} else {
+			// 返回错误，不支持的文件类型
+			return "", fmt.Errorf("不支持的文件类型。检测到: %s, 文件名: %s。支持的格式: image/jpeg, image/png, image/webp, video/mp4",
+				detectedType, fileHeader.Filename)
+		}
+	}
+
+	// 双重验证：检查扩展名与检测类型的一致性（安全检查）
+	expectedTypes := map[string][]string{
+		"image/jpeg": {".jpg", ".jpeg"},
+		"image/png":  {".png"},
+		"image/webp": {".webp"},
+		"video/mp4":  {".mp4"},
+	}
+
+	if expectedExts, exists := expectedTypes[detectedType]; exists {
+		validExtension := false
+		for _, ext := range expectedExts {
+			if strings.HasSuffix(filename, ext) {
+				validExtension = true
+				break
+			}
+		}
+
+		if !validExtension {
+			// 发出警告但不阻止（可能是重命名的文件）
+			fmt.Printf("警告: 文件 %s 的扩展名与检测到的类型 %s 不匹配\n",
+				fileHeader.Filename, detectedType)
+		}
+	}
+
+	// 可选：检查文件大小（防止过大的文件）
+	if fileHeader.Size > 100*1024*1024 { // 100MB限制
+		return "", fmt.Errorf("文件过大: %d bytes，最大支持100MB", fileHeader.Size)
+	}
+
+	return detectedType, nil
+}
+
+// ========================================
 // 文件结构说明
 // ========================================
 //
@@ -1660,6 +1785,7 @@ func compensateSoraVideoTask(videoId string) {
 //    - calculateSoraQuota: 计算Sora配额
 //    - calculateImageCredits: 计算图像积分
 //    - getDurationSeconds: 获取时长秒数
+//    - detectFileContentType: 智能文件类型检测
 //
 // 3. 数据库状态管理函数
 //    - updateTaskStatus: 更新任务状态（包含退款逻辑）
