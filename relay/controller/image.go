@@ -632,13 +632,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 用于保存 Gemini token 信息
 	var geminiPromptTokens, geminiCompletionTokens int
 
+	// 定义 token 变量供 defer 函数使用
+	var promptTokens, completionTokens int
+
 	defer func(ctx context.Context) {
 		if resp == nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
 			return
 		}
 
-		// 对于 gpt-image-1 模型，先解析响应并计算 quota
-		if meta.ActualModelName == "gpt-image-1" {
+		// 对于 gpt-image-1 和 gpt-image-1-mini 模型，先解析响应并计算 quota
+		if meta.ActualModelName == "gpt-image-1" || meta.ActualModelName == "gpt-image-1-mini" {
 			var parsedResponse openai.ImageResponse
 			if err := json.Unmarshal(responseBody, &parsedResponse); err != nil {
 				logger.SysError("error parsing gpt-image-1 response: " + err.Error())
@@ -652,12 +655,22 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				oldQuota := quota
 
 				// 使用现有的ModelRatio和CompletionRatio机制进行计费
-				modelRatio := common.GetModelRatio("gpt-image-1")
-				completionRatio := common.GetCompletionRatio("gpt-image-1")
+				modelRatio := common.GetModelRatio(meta.ActualModelName)
+				completionRatio := common.GetCompletionRatio(meta.ActualModelName)
 				groupRatio := common.GetGroupRatio(meta.Group)
 
-				// 计算输入tokens：文本tokens + 图片tokens (图片tokens价格是文本的2倍)
-				inputTokensEquivalent := textTokens + imageTokens*2
+				// 根据不同模型设置不同的image tokens价格倍率
+				var imageTokenMultiplier float64
+				if meta.ActualModelName == "gpt-image-1-mini" {
+					// gpt-image-1-mini 的 image tokens 价格是文本的1.25倍
+					imageTokenMultiplier = 1.25
+				} else {
+					// gpt-image-1 的 image tokens 价格是文本的2倍
+					imageTokenMultiplier = 2.0
+				}
+
+				// 计算输入tokens：文本tokens + 图片tokens * 相应倍率
+				inputTokensEquivalent := textTokens + imageTokens*imageTokenMultiplier
 
 				// 使用标准的计费公式：(输入tokens + 输出tokens * 完成比率) * 模型比率 * 分组比率
 				// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
@@ -665,8 +678,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				quota = calculatedQuota
 
 				// 记录日志
-				logger.Infof(ctx, "GPT-Image-1 token usage: text=%d, image=%d, output=%d, old quota=%d, new quota=%d",
-					int(textTokens), int(imageTokens), int(outputTokens), oldQuota, quota)
+				logger.Infof(ctx, "%s token usage: text=%d, image=%d (multiplier=%.2f), output=%d, old quota=%d, new quota=%d",
+					meta.ActualModelName, int(textTokens), int(imageTokens), imageTokenMultiplier, int(outputTokens), oldQuota, quota)
+
+				// 更新 defer 函数中的 token 变量，以便正确记录到日志表中
+				// promptTokens 记录的是等效的输入 tokens（文本 + 图片按比例换算）
+				// 使用向上取整确保小数部分不会丢失
+				promptTokens = int(math.Ceil(inputTokensEquivalent))
+				completionTokens = int(outputTokens)
 			}
 		}
 
@@ -766,7 +785,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 对于 Gemini 模型，跳过处理（已在响应处理中直接处理）
-		var promptTokens, completionTokens int
 		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
 			logger.Infof(ctx, "Defer 函数跳过 Gemini 模型处理（已在响应处理中完成）: ActualModelName=%s, OriginModelName=%s", meta.ActualModelName, meta.OriginModelName)
 			return // 跳过 Gemini 的处理

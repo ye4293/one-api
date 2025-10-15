@@ -19,7 +19,6 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
-	"github.com/songquanpeng/one-api/relay/constant"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 	controller "github.com/songquanpeng/one-api/relay/controller"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -36,7 +35,7 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 	logger.Infof(ctx, "relayHelper: relayMode=%d, path=%s", relayMode, c.Request.URL.Path)
 
 	switch relayMode {
-	case constant.RelayModeImagesGenerations:
+	case relayconstant.RelayModeImagesGenerations:
 		logger.Infof(ctx, "relayHelper: calling RelayImageHelper for images/generations")
 
 		// 检查调用前的上下文状态
@@ -57,11 +56,11 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 
 		logger.Infof(ctx, "relayHelper: RelayImageHelper returned error: %v", err)
 
-	case constant.RelayModeAudioSpeech:
+	case relayconstant.RelayModeAudioSpeech:
 		fallthrough
-	case constant.RelayModeAudioTranslation:
+	case relayconstant.RelayModeAudioTranslation:
 		fallthrough
-	case constant.RelayModeAudioTranscription:
+	case relayconstant.RelayModeAudioTranscription:
 		err = controller.RelayAudioHelper(c, relayMode)
 	default:
 		err = controller.RelayTextHelper(c)
@@ -71,7 +70,7 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 
 func Relay(c *gin.Context) {
 	ctx := c.Request.Context()
-	relayMode := constant.Path2RelayMode(c.Request.URL.Path)
+	relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -391,43 +390,72 @@ func formatRetryLog(ctx context.Context, originalChannelId int, originalChannelN
 	return retryInfo + userInfo + channelSwitch + keyInfo
 }
 
+// retryableErrorPatterns 定义可重试的错误模式（全局常量，避免重复创建）
+var retryableErrorPatterns = []string{
+	// API key相关错误
+	"api key not valid", "invalid_api_key", "authentication_error",
+	"api key not found", "invalid api key",
+	// Billing限制错误
+	"billing_hard_limit_reached", "billing hard limit has been reached",
+	"billing limit has been reached", "hard limit has been reached",
+	// AWS封号错误
+	"operation not allowed",
+}
+
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
+	// 如果指定了特定渠道，不允许重试
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
-	if statusCode == http.StatusTooManyRequests {
-		return true
-	}
-	if statusCode/100 == 5 {
-		return true
-	}
-	if statusCode == http.StatusBadRequest {
-		// 对于x.ai的API key错误，应该允许重试其他渠道
-		if strings.Contains(message, "Incorrect API key provided") && strings.Contains(message, "console.x.ai") {
-			return true
-		}
-		// 对于所有API key相关错误，都应该允许重试其他渠道（忽略大小写）
-		apiKeyErrors := []string{
-			"api key not valid", "invalid_api_key", "authentication_error",
-			"api key not found", "invalid api key",
-		}
-		messageLower := strings.ToLower(message)
-		for _, errPattern := range apiKeyErrors {
-			if strings.Contains(messageLower, errPattern) {
-				logger.Warnf(c.Request.Context(), "API key related error detected (%s), will retry with other channels", errPattern)
-				return true
-			}
-		}
-		//对于aws的封号的特殊处理
-		if strings.Contains(message, "Operation not allowed") {
-			return true
-		}
-		return false
-	}
+
+	// 2xx成功状态码不重试
 	if statusCode/100 == 2 {
 		return false
 	}
+
+	// 5xx服务器错误和429限流错误直接重试
+	if statusCode/100 == 5 || statusCode == http.StatusTooManyRequests {
+		return true
+	}
+
+	// 400错误需要根据具体错误内容判断
+	if statusCode == http.StatusBadRequest {
+		return shouldRetryBadRequest(c, message)
+	}
+
+	// 其他4xx错误（除400外）默认重试
+	if statusCode/100 == 4 {
+		return true
+	}
+
+	// 其他未知错误默认重试
 	return true
+}
+
+// shouldRetryBadRequest 专门处理400错误的重试逻辑
+func shouldRetryBadRequest(c *gin.Context, message string) bool {
+	if message == "" {
+		return false
+	}
+
+	// 转换为小写进行比较，提高匹配效率
+	messageLower := strings.ToLower(message)
+
+	// 检查x.ai的特殊情况（保持原有逻辑）
+	if strings.Contains(message, "Incorrect API key provided") && strings.Contains(message, "console.x.ai") {
+		logger.Warnf(c.Request.Context(), "X.AI API key error detected, will retry with other channels")
+		return true
+	}
+
+	// 检查通用的可重试错误模式
+	for _, errPattern := range retryableErrorPatterns {
+		if strings.Contains(messageLower, errPattern) {
+			logger.Warnf(c.Request.Context(), "Retryable error detected (%s), will retry with other channels", errPattern)
+			return true
+		}
+	}
+
+	return false
 }
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode, modelName string) {
@@ -2028,7 +2056,7 @@ func RelaySoraVideo(c *gin.Context) {
 		userId, channelId, modelName, requestID)
 
 	// 尝试第一次请求
-	success, statusCode := trySoraRequest(c)
+	success, statusCode, errorMessage := trySoraRequest(c)
 	if success {
 		// 第一次成功，记录使用的渠道到上下文中
 		var channelHistory []int
@@ -2043,18 +2071,18 @@ func RelaySoraVideo(c *gin.Context) {
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 
-	logger.Errorf(ctx, "RelaySoraVideo first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d",
-		userId, channelId, channelName, statusCode)
+	logger.Errorf(ctx, "RelaySoraVideo first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d, error: %s",
+		userId, channelId, channelName, statusCode, errorMessage)
 
-	// 使用空的错误对象调用 processChannelRelayError，让它自己处理
+	// 使用具体的错误消息调用 processChannelRelayError
 	keyIndex := c.GetInt("key_index")
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
-		Error:      model.Error{Message: "Request failed"},
+		Error:      model.Error{Message: errorMessage},
 	}, modelName)
 
 	retryTimes := config.RetryTimes
-	if !shouldRetry(c, statusCode, "") {
+	if !shouldRetry(c, statusCode, errorMessage) {
 		logger.Errorf(ctx, "Sora request error happen, status code is %d, won't retry in this case", statusCode)
 		// 不重试时，记录失败日志并写入响应
 		var channelHistory []int
@@ -2120,7 +2148,7 @@ func RelaySoraVideo(c *gin.Context) {
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
 		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", retryTimes-i+1, retryTimes, channel.Id)
-		success, statusCode = trySoraRequest(c)
+		success, statusCode, retryErrorMessage := trySoraRequest(c)
 		if success {
 			logger.Infof(ctx, "RelaySoraVideo retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
 			// 成功时记录渠道历史到上下文中
@@ -2131,17 +2159,17 @@ func RelaySoraVideo(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 
 		channelName = c.GetString("channel_name")
-		logger.Errorf(ctx, "RelaySoraVideo retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
-			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)
+		logger.Errorf(ctx, "RelaySoraVideo retry %d/%d FAILED on channel #%d (%s) - statusCode: %d, error: %s",
+			retryTimes-i+1, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
 
 		keyIndex := c.GetInt("key_index")
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
-			Error:      model.Error{Message: "Retry failed"},
+			Error:      model.Error{Message: retryErrorMessage},
 		}, modelName)
 
 		// 检查这次失败是否还应该继续重试
-		if !shouldRetry(c, statusCode, "") {
+		if !shouldRetry(c, statusCode, retryErrorMessage) {
 			logger.Errorf(ctx, "Retry encountered non-retryable error, status code is %d, stopping retries", statusCode)
 			writeLastSoraFailureResponse(c, statusCode)
 			return
@@ -2159,49 +2187,196 @@ func RelaySoraVideo(c *gin.Context) {
 	writeLastSoraFailureResponse(c, statusCode)
 }
 
-// trySoraRequest 尝试执行 Sora 请求，返回是否成功和状态码
-func trySoraRequest(c *gin.Context) (success bool, statusCode int) {
+// trySoraRequest 尝试执行 Sora 请求，返回是否成功、状态码和错误消息
+func trySoraRequest(c *gin.Context) (success bool, statusCode int, errorMessage string) {
 	ctx := c.Request.Context()
-	meta := util.GetRelayMeta(c)
 	channelId := c.GetInt("channel_id")
 
+	// 记录请求开始
 	logger.Debugf(ctx, "trySoraRequest start - channelId: %d", channelId)
 
-	// 保存原始的 ResponseWriter
-	originalWriter := c.Writer
+	// 获取meta信息，进行空值检查
+	meta := util.GetRelayMeta(c)
+	if meta == nil {
+		logger.Errorf(ctx, "trySoraRequest: failed to get relay meta for channelId: %d", channelId)
+		return false, http.StatusInternalServerError, "Internal server error: missing relay meta"
+	}
 
-	// 创建一个缓冲的 ResponseWriter 来捕获响应
-	rec := &responseRecorder{
-		ResponseWriter: originalWriter,
+	// 保存和替换ResponseWriter
+	originalWriter := c.Writer
+	rec := newResponseRecorder(originalWriter)
+	c.Writer = rec
+
+	// 使用defer确保ResponseWriter始终被恢复
+	defer func() {
+		c.Writer = originalWriter
+	}()
+
+	// 调用原始函数，捕获可能的panic
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf(ctx, "trySoraRequest panic recovered - channelId: %d, error: %v", channelId, r)
+			statusCode = http.StatusInternalServerError
+			errorMessage = "Internal server error: request panic"
+			success = false
+		}
+	}()
+
+	controller.DirectRelaySoraVideo(c, meta)
+
+	// 记录响应信息
+	statusCode = rec.statusCode
+	logger.Debugf(ctx, "trySoraRequest response - channelId: %d, statusCode: %d, bodySize: %d",
+		channelId, statusCode, rec.body.Len())
+
+	// 检查响应状态码
+	if statusCode >= 400 {
+		// 提取错误消息
+		responseBody := rec.body.String()
+		errorMessage = extractErrorMessage(responseBody)
+
+		logger.Debugf(ctx, "trySoraRequest FAILED - channelId: %d, statusCode: %d, error: %s",
+			channelId, statusCode, truncateString(errorMessage, 100))
+		return false, statusCode, errorMessage
+	}
+
+	// 成功时写入响应
+	if err := writeSuccessResponse(originalWriter, rec); err != nil {
+		logger.Errorf(ctx, "trySoraRequest: failed to write success response - channelId: %d, error: %v", channelId, err)
+		return false, http.StatusInternalServerError, "Failed to write response"
+	}
+
+	logger.Debugf(ctx, "trySoraRequest SUCCESS - channelId: %d, statusCode: %d", channelId, statusCode)
+	return true, statusCode, ""
+}
+
+// newResponseRecorder 创建新的响应记录器
+func newResponseRecorder(original gin.ResponseWriter) *responseRecorder {
+	return &responseRecorder{
+		ResponseWriter: original,
 		statusCode:     200,
 		body:           bytes.NewBuffer(nil),
 	}
-	c.Writer = rec
+}
 
-	// 调用原始函数
-	controller.DirectRelaySoraVideo(c, meta)
+// writeSuccessResponse 写入成功响应到原始ResponseWriter
+func writeSuccessResponse(writer gin.ResponseWriter, rec *responseRecorder) error {
+	// 设置状态码
+	writer.WriteHeader(rec.statusCode)
 
-	// 恢复原始的 ResponseWriter
-	c.Writer = originalWriter
-
-	logger.Debugf(ctx, "trySoraRequest response - channelId: %d, statusCode: %d", channelId, rec.statusCode)
-
-	// 检查响应状态码
-	if rec.statusCode >= 400 {
-		logger.Debugf(ctx, "trySoraRequest FAILED - channelId: %d, statusCode: %d", channelId, rec.statusCode)
-		// 失败时不写入响应，让重试逻辑处理
-		return false, rec.statusCode
-	}
-
-	// 成功时，将响应写入原始的 ResponseWriter
-	logger.Debugf(ctx, "trySoraRequest SUCCESS - channelId: %d, statusCode: %d", channelId, rec.statusCode)
-	originalWriter.WriteHeader(rec.statusCode)
+	// 复制响应头
 	for k, v := range rec.Header() {
-		originalWriter.Header()[k] = v
+		writer.Header()[k] = v
 	}
-	originalWriter.Write(rec.body.Bytes())
 
-	return true, rec.statusCode
+	// 写入响应体
+	if _, err := writer.Write(rec.body.Bytes()); err != nil {
+		return fmt.Errorf("failed to write response body: %w", err)
+	}
+
+	return nil
+}
+
+// extractErrorMessage 从响应体中提取错误消息
+func extractErrorMessage(responseBody string) string {
+	if responseBody == "" {
+		return "Request failed"
+	}
+
+	// 防止过长的响应体造成内存问题，限制解析长度
+	const maxParseLength = 2048
+	parseBody := responseBody
+	if len(responseBody) > maxParseLength {
+		parseBody = responseBody[:maxParseLength]
+	}
+
+	// 快速检查是否可能是JSON格式
+	trimmed := strings.TrimSpace(parseBody)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return truncateString(responseBody, 200)
+	}
+
+	// 尝试解析JSON响应
+	var errorResponse map[string]interface{}
+	if err := json.Unmarshal([]byte(parseBody), &errorResponse); err != nil {
+		// JSON解析失败，返回截取的原始内容
+		return truncateString(responseBody, 200)
+	}
+
+	// 尝试提取错误消息，按优先级排序
+	if msg := extractFromErrorObject(errorResponse); msg != "" {
+		return msg
+	}
+
+	if msg := extractFromDirectFields(errorResponse); msg != "" {
+		return msg
+	}
+
+	// 如果都没找到，返回截取的原始内容
+	return truncateString(responseBody, 200)
+}
+
+// extractFromErrorObject 从标准的error对象中提取消息
+func extractFromErrorObject(errorResponse map[string]interface{}) string {
+	errorObj, ok := errorResponse["error"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	// 优先返回message字段
+	if message, ok := errorObj["message"].(string); ok && message != "" {
+		return sanitizeErrorMessage(message)
+	}
+
+	// 其次返回code字段
+	if code, ok := errorObj["code"].(string); ok && code != "" {
+		return sanitizeErrorMessage(code)
+	}
+
+	// 检查type字段
+	if errorType, ok := errorObj["type"].(string); ok && errorType != "" {
+		return sanitizeErrorMessage(errorType)
+	}
+
+	return ""
+}
+
+// extractFromDirectFields 从响应对象的直接字段中提取消息
+func extractFromDirectFields(errorResponse map[string]interface{}) string {
+	// 检查常见的错误字段
+	fields := []string{"message", "detail", "error_description", "description"}
+
+	for _, field := range fields {
+		if value, ok := errorResponse[field].(string); ok && value != "" {
+			return sanitizeErrorMessage(value)
+		}
+	}
+
+	return ""
+}
+
+// sanitizeErrorMessage 清理错误消息，防止恶意内容
+func sanitizeErrorMessage(message string) string {
+	// 限制消息长度，防止日志攻击
+	const maxMessageLength = 500
+	if len(message) > maxMessageLength {
+		message = message[:maxMessageLength] + "..."
+	}
+
+	// 移除控制字符，防止日志注入
+	message = strings.ReplaceAll(message, "\n", " ")
+	message = strings.ReplaceAll(message, "\r", " ")
+	message = strings.ReplaceAll(message, "\t", " ")
+
+	return strings.TrimSpace(message)
+}
+
+// truncateString 截取字符串到指定长度
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // writeLastSoraFailureResponse 写入最后失败的响应到客户端

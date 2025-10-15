@@ -51,7 +51,7 @@ var ModelList = []string{
 	"gpt-audio", "gpt-audio-2025-08-28", "gpt-realtime", "gpt-realtime-2025-08-28",
 
 	// 图像模型
-	"dall-e-2", "dall-e-3", "gpt-image-1",
+	"dall-e-2", "dall-e-3", "gpt-image-1", "gpt-image-1-mini",
 
 	// 嵌入模型
 	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
