@@ -159,9 +159,281 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleVeoVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "wan") {
 		return handleAliVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.Contains(modelName, "remix") || modelName == "sora-2-remix" || modelName == "sora-2-pro-remix" {
+		// Sora Remix 请求
+		return handleSoraRemixRequest(c, ctx, meta)
+	} else if strings.HasPrefix(modelName, "sora") {
+		return handleSoraVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
+}
+
+func handleSoraVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	contentType := c.GetHeader("Content-Type")
+
+	// 判断是 form-data 还是 JSON
+	if strings.Contains(contentType, "multipart/form-data") {
+		// Form-data 格式，直接透传
+		return handleSoraVideoRequestFormData(c, ctx, meta)
+	} else {
+		// JSON 格式，需要转换为 form-data
+		return handleSoraVideoRequestJSON(c, ctx, meta)
+	}
+}
+
+// handleSoraVideoRequestFormData 处理原生 form-data 格式的请求（透传）
+func handleSoraVideoRequestFormData(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 解析 multipart form
+	err := c.Request.ParseMultipartForm(32 << 20) // 32 MB
+	if err != nil {
+		return openai.ErrorWrapper(err, "parse_multipart_form_failed", http.StatusBadRequest)
+	}
+
+	// 提取参数用于计费
+	modelName := c.Request.FormValue("model")
+	if modelName == "" {
+		modelName = meta.ActualModelName
+	}
+
+	secondsStr := c.Request.FormValue("seconds")
+	if secondsStr == "" {
+		secondsStr = "4" // 默认值 - Sora 官方默认 4 秒
+	}
+
+	size := c.Request.FormValue("size")
+	if size == "" {
+		size = "720x1280" // 默认分辨率
+	}
+
+	log.Printf("sora-video-request (form-data): model=%s, seconds=%s, size=%s", modelName, secondsStr, size)
+
+	// 直接透传 form-data
+	return sendRequestAndHandleSoraVideoResponseFormData(c, ctx, meta, modelName, secondsStr, size)
+}
+
+// handleSoraVideoRequestJSON 处理 JSON 格式的请求（转换为 form-data）
+func handleSoraVideoRequestJSON(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 使用 UnmarshalBodyReusable 以支持 body 多次读取（Distribute 中间件已读取过）
+	var soraReq openai.SoraVideoRequest
+	if err := common.UnmarshalBodyReusable(c, &soraReq); err != nil {
+		return openai.ErrorWrapper(err, "parse_json_request_failed", http.StatusBadRequest)
+	}
+
+	// 设置默认值
+	if soraReq.Model == "" {
+		soraReq.Model = meta.ActualModelName
+	}
+	if soraReq.Seconds == "" {
+		soraReq.Seconds = "4" // 默认值 - Sora 官方默认 4 秒
+	}
+	if soraReq.Size == "" {
+		soraReq.Size = "720x1280"
+	}
+
+	log.Printf("sora-video-request (JSON): model=%s, seconds=%s, size=%s, has_input_reference=%v",
+		soraReq.Model, soraReq.Seconds, soraReq.Size, soraReq.InputReference != "")
+
+	// 转换为 form-data 并发送
+	return sendRequestAndHandleSoraVideoResponseJSON(c, ctx, meta, &soraReq)
+}
+
+// handleSoraRemixRequest 处理 Sora Remix 请求
+func handleSoraRemixRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 使用 UnmarshalBodyReusable 以支持 body 多次读取（Distribute 中间件已读取过）
+	var remixReq openai.SoraRemixRequest
+	if err := common.UnmarshalBodyReusable(c, &remixReq); err != nil {
+		return openai.ErrorWrapper(err, "parse_remix_request_failed", http.StatusBadRequest)
+	}
+
+	log.Printf("sora-remix-request: model=%s, video_id=%s, prompt=%s", remixReq.Model, remixReq.VideoID, remixReq.Prompt)
+
+	// 根据 video_id 查找原视频任务，获取原渠道信息
+	videoTask, err := dbmodel.GetVideoTaskByVideoId(remixReq.VideoID)
+	if err != nil {
+		return openai.ErrorWrapper(
+			fmt.Errorf("video_id not found: %s", remixReq.VideoID),
+			"video_not_found",
+			http.StatusNotFound,
+		)
+	}
+
+	// 获取原渠道信息
+	originalChannel, err := dbmodel.GetChannelById(videoTask.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_original_channel_error", http.StatusInternalServerError)
+	}
+
+	log.Printf("sora-remix: using original channel_id=%d, channel_name=%s", videoTask.ChannelId, originalChannel.Name)
+
+	// 构建请求 URL
+	baseUrl := *originalChannel.BaseURL
+	if baseUrl == "" {
+		baseUrl = "https://api.openai.com"
+	}
+	fullRequestUrl := fmt.Sprintf("%s/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+
+	// 构建请求体（只需要 prompt，去掉 model 和 video_id 参数）
+	requestBody := map[string]string{
+		"prompt": remixReq.Prompt,
+	}
+	jsonData, err := json.Marshal(requestBody)
+
+	log.Printf("sora-remix: sending to OpenAI - URL: %s, body: %s (model param removed)", fullRequestUrl, string(jsonData))
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
+	}
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 使用原渠道的 key
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+originalChannel.Key)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	if config.DebugEnabled {
+		log.Printf("[DEBUG] Sora remix response: status=%d, body=%s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var soraResponse openai.SoraVideoResponse
+	if err := json.Unmarshal(respBody, &soraResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_remix_response_failed", http.StatusInternalServerError)
+	}
+	soraResponse.StatusCode = resp.StatusCode
+
+	// 从响应中提取参数进行计费
+	modelName := soraResponse.Model
+	if modelName == "" {
+		modelName = "sora-2" // 默认模型
+	}
+
+	secondsStr := soraResponse.Seconds
+	if secondsStr == "" {
+		secondsStr = "4" // 默认时长 - Sora 官方默认 4 秒
+	}
+
+	size := soraResponse.Size
+	if size == "" {
+		size = "720x1280" // 默认分辨率
+	}
+
+	// 计算费用
+	quota := calculateSoraQuota(modelName, secondsStr, size)
+
+	// 检查用户余额
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	// 处理响应
+	return handleSoraRemixResponse(c, ctx, soraResponse, respBody, meta, modelName, quota, secondsStr, size, remixReq.VideoID)
+}
+
+// handleSoraRemixResponse 处理 Sora Remix 响应
+func handleSoraRemixResponse(c *gin.Context, ctx context.Context, soraResponse openai.SoraVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64, secondsStr string, size string, originalVideoID string) *model.ErrorWithStatusCode {
+	var taskId string
+	var taskStatus string
+	var message string
+
+	// 检查是否有错误
+	if soraResponse.Error != nil {
+		// 有错误，不扣费，设置失败状态
+		taskStatus = "failed"
+		message = fmt.Sprintf("Error: %s (type: %s, code: %s)", soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code)
+		taskId = soraResponse.ID
+		logger.SysError(fmt.Sprintf("Sora remix request failed: %s", message))
+	} else if soraResponse.StatusCode == 200 {
+		// 成功响应，进行扣费
+		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
+		if err != nil {
+			logger.SysError("error consuming token quota: " + err.Error())
+		}
+		err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		// 获取任务ID
+		taskId = soraResponse.ID
+
+		// 创建视频日志记录
+		videoType := "remix" // Remix 类型
+		err = CreateVideoLog("sora", taskId, meta, size, secondsStr, videoType, originalVideoID, quota)
+		if err != nil {
+			logger.SysError("error creating sora remix video log: " + err.Error())
+			return openai.ErrorWrapper(
+				fmt.Errorf("error creating video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 记录消费日志到logs表
+		consumeErr := handleSuccessfulResponseWithQuota(c, ctx, meta, meta.OriginModelName, size, secondsStr, quota, taskId)
+		if consumeErr != nil {
+			logger.SysError("error recording sora remix video consume log")
+			return consumeErr
+		}
+
+		// 设置成功状态
+		taskStatus = "succeed"
+		message = fmt.Sprintf("Video remix request submitted successfully, task_id: %s, remixed_from: %s", taskId, originalVideoID)
+	} else {
+		// 其他错误状态码
+		taskStatus = "failed"
+		taskId = soraResponse.ID
+		if soraResponse.Error != nil {
+			message = fmt.Sprintf("Request failed: %s", soraResponse.Error.Message)
+		} else {
+			message = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+		}
+		logger.SysError(fmt.Sprintf("Sora remix request failed: status=%d, body=%s", soraResponse.StatusCode, string(body)))
+	}
+
+	// 创建 GeneralVideoResponse 结构体
+	generalResponse := model.GeneralVideoResponse{
+		TaskId:     taskId,
+		Message:    message,
+		TaskStatus: taskStatus,
+	}
+
+	// 将 GeneralVideoResponse 结构体转换为 JSON
+	jsonResponse, err := json.Marshal(generalResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// 发送 JSON 响应给客户端
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(jsonResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	return nil
 }
 
 func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -308,6 +580,429 @@ func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, b
 
 	// 处理响应并统一格式
 	return handleAliVideoResponse(c, ctx, aliResponse, body, meta, modelName, quota, duration, resolution)
+}
+
+// calculateSoraQuota 计算 Sora 视频的费用
+func calculateSoraQuota(modelName string, secondsStr string, size string) int64 {
+	var pricePerSecond float64
+	isHighRes := size == "1024x1792" || size == "1792x1024"
+
+	if modelName == "sora-2" {
+		pricePerSecond = 0.10
+	} else if modelName == "sora-2-pro" {
+		if isHighRes {
+			pricePerSecond = 0.50
+		} else {
+			pricePerSecond = 0.30
+		}
+	} else {
+		pricePerSecond = 0.10
+	}
+
+	// 将 string 转换为 int
+	seconds, err := strconv.Atoi(secondsStr)
+	if err != nil || seconds == 0 {
+		seconds = 4 // 默认值 - Sora 官方默认 4 秒
+		log.Printf("Invalid seconds value '%s', using default 4", secondsStr)
+	}
+
+	totalPriceUSD := float64(seconds) * pricePerSecond
+	quota := int64(totalPriceUSD * config.QuotaPerUnit)
+
+	log.Printf("Sora video pricing: model=%s, seconds=%s (%d), size=%s, pricePerSecond=%.2f, totalUSD=%.6f, quota=%d",
+		modelName, secondsStr, seconds, size, pricePerSecond, totalPriceUSD, quota)
+
+	return quota
+}
+
+// sendRequestAndHandleSoraVideoResponseFormData 透传 form-data 格式请求
+func sendRequestAndHandleSoraVideoResponseFormData(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, secondsStr string, size string) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	// 计算费用
+	quota := calculateSoraQuota(modelName, secondsStr, size)
+
+	// 检查用户余额
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	// 构建请求URL
+	baseUrl := meta.BaseURL
+	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+
+	// 重新构建 multipart form
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// 复制所有表单字段
+	for key, values := range c.Request.PostForm {
+		for _, value := range values {
+			writer.WriteField(key, value)
+		}
+	}
+
+	// 复制所有文件
+	if c.Request.MultipartForm != nil && c.Request.MultipartForm.File != nil {
+		for fieldName, files := range c.Request.MultipartForm.File {
+			for _, fileHeader := range files {
+				file, err := fileHeader.Open()
+				if err != nil {
+					return openai.ErrorWrapper(err, "open_uploaded_file_failed", http.StatusBadRequest)
+				}
+				defer file.Close()
+
+				part, err := writer.CreateFormFile(fieldName, fileHeader.Filename)
+				if err != nil {
+					return openai.ErrorWrapper(err, "create_form_file_failed", http.StatusInternalServerError)
+				}
+				io.Copy(part, file)
+			}
+		}
+	}
+	writer.Close()
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	if config.DebugEnabled {
+		log.Printf("[DEBUG] Sora video response (form-data): status=%d, body=%s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var soraResponse openai.SoraVideoResponse
+	if err := json.Unmarshal(respBody, &soraResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_sora_video_response_failed", http.StatusInternalServerError)
+	}
+	soraResponse.StatusCode = resp.StatusCode
+
+	// 处理响应
+	return handleSoraVideoResponse(c, ctx, soraResponse, respBody, meta, modelName, quota, secondsStr, size)
+}
+
+// sendRequestAndHandleSoraVideoResponseJSON 将 JSON 请求转换为 form-data 并发送
+func sendRequestAndHandleSoraVideoResponseJSON(c *gin.Context, ctx context.Context, meta *util.RelayMeta, soraReq *openai.SoraVideoRequest) *model.ErrorWithStatusCode {
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+	}
+
+	// 计算费用
+	quota := calculateSoraQuota(soraReq.Model, soraReq.Seconds, soraReq.Size)
+
+	// 检查用户余额
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	// 构建请求URL
+	baseUrl := meta.BaseURL
+	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+
+	// 创建 multipart form
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// 添加基础字段
+	writer.WriteField("model", soraReq.Model)
+	writer.WriteField("prompt", soraReq.Prompt)
+	if soraReq.Size != "" {
+		writer.WriteField("size", soraReq.Size)
+	}
+	if soraReq.Seconds != "" {
+		writer.WriteField("seconds", soraReq.Seconds)
+	}
+	if soraReq.AspectRatio != "" {
+		writer.WriteField("aspect_ratio", soraReq.AspectRatio)
+	}
+	if soraReq.Loop {
+		writer.WriteField("loop", "true")
+	}
+
+	// 处理 input_reference
+	if soraReq.InputReference != "" {
+		err := handleInputReference(writer, soraReq.InputReference)
+		if err != nil {
+			return openai.ErrorWrapper(err, "handle_input_reference_failed", http.StatusBadRequest)
+		}
+	}
+
+	writer.Close()
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	if config.DebugEnabled {
+		log.Printf("[DEBUG] Sora video response (JSON->form): status=%d, body=%s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var soraResponse openai.SoraVideoResponse
+	if err := json.Unmarshal(respBody, &soraResponse); err != nil {
+		return openai.ErrorWrapper(err, "parse_sora_video_response_failed", http.StatusInternalServerError)
+	}
+	soraResponse.StatusCode = resp.StatusCode
+
+	// 处理响应
+	return handleSoraVideoResponse(c, ctx, soraResponse, respBody, meta, soraReq.Model, quota, soraReq.Seconds, soraReq.Size)
+}
+
+// handleInputReference 处理 input_reference 的不同格式（URL/base64/dataURL）
+func handleInputReference(writer *multipart.Writer, inputReference string) error {
+	// 检测格式
+	if strings.HasPrefix(inputReference, "http://") || strings.HasPrefix(inputReference, "https://") {
+		// URL 格式 - 下载并上传
+		return handleInputReferenceURL(writer, inputReference)
+	} else if strings.HasPrefix(inputReference, "data:") {
+		// Data URL 格式 - 解析并上传
+		return handleInputReferenceDataURL(writer, inputReference)
+	} else {
+		// 纯 base64 格式
+		return handleInputReferenceBase64(writer, inputReference)
+	}
+}
+
+// handleInputReferenceURL 处理 URL 格式的 input_reference
+func handleInputReferenceURL(writer *multipart.Writer, url string) error {
+	// 下载文件
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download input_reference from URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("failed to download input_reference: HTTP %d", resp.StatusCode)
+	}
+
+	// 从 URL 中提取文件名
+	filename := "input_reference"
+	if urlParts := strings.Split(url, "/"); len(urlParts) > 0 {
+		filename = urlParts[len(urlParts)-1]
+	}
+
+	// 创建表单文件字段
+	part, err := writer.CreateFormFile("input_reference", filename)
+	if err != nil {
+		return fmt.Errorf("failed to create form file: %w", err)
+	}
+
+	// 复制文件内容
+	_, err = io.Copy(part, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to copy file content: %w", err)
+	}
+
+	log.Printf("Input reference URL downloaded: %s", url)
+	return nil
+}
+
+// handleInputReferenceDataURL 处理 data URL 格式的 input_reference
+func handleInputReferenceDataURL(writer *multipart.Writer, dataURL string) error {
+	// 解析 data URL: data:image/png;base64,iVBORw0KG...
+	parts := strings.SplitN(dataURL, ",", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid data URL format")
+	}
+
+	// 提取 MIME type 和编码
+	header := parts[0] // data:image/png;base64
+	data := parts[1]   // base64 数据
+
+	// 解码 base64
+	fileData, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64 from data URL: %w", err)
+	}
+
+	// 提取文件扩展名
+	filename := "input_reference"
+	if strings.Contains(header, "image/png") {
+		filename = "input_reference.png"
+	} else if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
+		filename = "input_reference.jpg"
+	} else if strings.Contains(header, "image/gif") {
+		filename = "input_reference.gif"
+	} else if strings.Contains(header, "image/webp") {
+		filename = "input_reference.webp"
+	}
+
+	// 创建表单文件字段
+	part, err := writer.CreateFormFile("input_reference", filename)
+	if err != nil {
+		return fmt.Errorf("failed to create form file: %w", err)
+	}
+
+	// 写入文件数据
+	_, err = part.Write(fileData)
+	if err != nil {
+		return fmt.Errorf("failed to write file data: %w", err)
+	}
+
+	log.Printf("Input reference data URL processed: %s", filename)
+	return nil
+}
+
+// handleInputReferenceBase64 处理纯 base64 格式的 input_reference
+func handleInputReferenceBase64(writer *multipart.Writer, base64Data string) error {
+	// 解码 base64
+	fileData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	// 创建表单文件字段
+	part, err := writer.CreateFormFile("input_reference", "input_reference")
+	if err != nil {
+		return fmt.Errorf("failed to create form file: %w", err)
+	}
+
+	// 写入文件数据
+	_, err = part.Write(fileData)
+	if err != nil {
+		return fmt.Errorf("failed to write file data: %w", err)
+	}
+
+	log.Printf("Input reference base64 processed: %d bytes", len(fileData))
+	return nil
+}
+
+func handleSoraVideoResponse(c *gin.Context, ctx context.Context, soraResponse openai.SoraVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64, secondsStr string, size string) *model.ErrorWithStatusCode {
+	var taskId string
+	var taskStatus string
+	var message string
+
+	// 检查是否有错误
+	if soraResponse.Error != nil {
+		// 有错误，不扣费，设置失败状态
+		taskStatus = "failed"
+		message = fmt.Sprintf("Error: %s (type: %s, code: %s)", soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code)
+		taskId = soraResponse.ID
+		logger.SysError(fmt.Sprintf("Sora video request failed: %s", message))
+	} else if soraResponse.StatusCode == 200 {
+		// 成功响应，进行扣费
+		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
+		if err != nil {
+			logger.SysError("error consuming token quota: " + err.Error())
+		}
+		err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		// 获取任务ID
+		taskId = soraResponse.ID
+
+		// 创建视频日志记录
+		// Sora 是文本生成视频
+		videoType := "text-to-video"
+		err = CreateVideoLog("sora", taskId, meta, size, secondsStr, videoType, "", quota)
+		if err != nil {
+			logger.SysError("error creating sora video log: " + err.Error())
+			return openai.ErrorWrapper(
+				fmt.Errorf("error creating video log: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 记录消费日志到logs表
+		consumeErr := handleSuccessfulResponseWithQuota(c, ctx, meta, meta.OriginModelName, size, secondsStr, quota, taskId)
+		if consumeErr != nil {
+			logger.SysError("error recording sora video consume log")
+			return consumeErr
+		}
+
+		// 设置成功状态
+		taskStatus = "succeed"
+		message = fmt.Sprintf("Video generation request submitted successfully, task_id: %s", taskId)
+	} else {
+		// 其他错误状态码
+		taskStatus = "failed"
+		taskId = soraResponse.ID
+		if soraResponse.Error != nil {
+			message = fmt.Sprintf("Request failed: %s", soraResponse.Error.Message)
+		} else {
+			message = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+		}
+		logger.SysError(fmt.Sprintf("Sora video request failed: status=%d, body=%s", soraResponse.StatusCode, string(body)))
+	}
+
+	// 创建 GeneralVideoResponse 结构体 - 与其他视频处理保持一致
+	generalResponse := model.GeneralVideoResponse{
+		TaskId:     taskId,
+		Message:    message,
+		TaskStatus: taskStatus,
+	}
+
+	// 将 GeneralVideoResponse 结构体转换为 JSON
+	jsonResponse, err := json.Marshal(generalResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+
+	// 发送 JSON 响应给客户端
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err = c.Writer.Write(jsonResponse)
+	if err != nil {
+		return openai.ErrorWrapper(err, "write_response_failed", http.StatusInternalServerError)
+	}
+
+	return nil
 }
 
 func handleAliVideoResponse(c *gin.Context, ctx context.Context, aliResponse ali.AliVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64, duration string, resolution string) *model.ErrorWithStatusCode {
@@ -543,33 +1238,16 @@ func handleDoubaoVideoResponse(c *gin.Context, ctx context.Context, doubaoRespon
 		// 发送响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
-	case 400:
+	default:
+		// 处理错误情况，直接使用豆包返回的错误信息
 		errorMsg := "豆包API错误"
-		if doubaoResponse.Error != nil {
-			errorMsg = fmt.Sprintf("豆包API错误: %s", doubaoResponse.Error.Message)
+		if doubaoResponse.Error != nil && doubaoResponse.Error.Message != "" {
+			errorMsg = doubaoResponse.Error.Message
 		}
 		return openai.ErrorWrapper(
-			fmt.Errorf(errorMsg),
+			fmt.Errorf("%s", errorMsg),
 			"api_error",
-			http.StatusBadRequest,
-		)
-	case 401:
-		return openai.ErrorWrapper(
-			fmt.Errorf("豆包API认证失败"),
-			"api_error",
-			http.StatusUnauthorized,
-		)
-	case 429:
-		return openai.ErrorWrapper(
-			fmt.Errorf("豆包API请求过于频繁"),
-			"api_error",
-			http.StatusTooManyRequests,
-		)
-	default:
-		return openai.ErrorWrapper(
-			fmt.Errorf("豆包API未知错误 (状态码: %d)", doubaoResponse.StatusCode),
-			"api_error",
-			http.StatusInternalServerError,
+			doubaoResponse.StatusCode,
 		)
 	}
 }
@@ -2748,6 +3426,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 根据不同地域选择查询端点
 		baseUrl := *channel.BaseURL
 		fullRequestUrl = fmt.Sprintf("%s/api/v1/tasks/%s", baseUrl, taskId)
+	case "sora":
+		// Sora 视频状态查询
+		baseUrl := *channel.BaseURL
+		if baseUrl == "" {
+			baseUrl = "https://api.openai.com"
+		}
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskId)
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -3801,8 +4486,192 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 返回响应
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "sora" {
+		defer resp.Body.Close()
+
+		// 首先检查数据库中是否已有存储的URL
+		if videoTask.StoreUrl != "" {
+			log.Printf("Found existing store URL for Sora task %s: %s", taskId, videoTask.StoreUrl)
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:       taskId,
+				VideoResult:  videoTask.StoreUrl,
+				VideoId:      taskId,
+				TaskStatus:   "succeed",
+				Message:      "Video retrieved from cache",
+				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				Duration:     videoTask.Duration,
+			}
+			jsonResponse, err := json.Marshal(generalResponse)
+			if err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
+			}
+			c.Data(http.StatusOK, "application/json", jsonResponse)
+			return nil
+		}
+
+		// 读取状态查询响应
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		log.Printf("Sora video query response body: %s", string(body))
+
+		// 解析 Sora 状态响应
+		var soraResp openai.SoraVideoResponse
+		if err := json.Unmarshal(body, &soraResp); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse Sora response JSON: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 创建初始响应
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:     taskId,
+			VideoId:    taskId,
+			TaskStatus: "processing",
+			Message:    "Video is still processing",
+			Duration:   soraResp.Seconds, // 已经是 string 类型
+		}
+
+		// 根据状态处理
+		switch soraResp.Status {
+		case "completed":
+			// 视频已完成，下载并上传到 R2
+			log.Printf("Sora video completed, downloading: task_id=%s", taskId)
+
+			videoUrl, downloadErr := downloadAndUploadSoraVideo(channel, taskId, videoTask.UserId)
+			if downloadErr != nil {
+				// 下载失败，但状态是完成的，可能是暂时性错误
+				generalResponse.TaskStatus = "processing"
+				generalResponse.Message = fmt.Sprintf("Video completed but download failed, please retry: %v", downloadErr)
+				log.Printf("Failed to download Sora video for task %s: %v", taskId, downloadErr)
+			} else {
+				// 下载成功，保存URL到数据库
+				if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, videoUrl); updateErr != nil {
+					log.Printf("Failed to save Sora video URL for task %s: %v", taskId, updateErr)
+				} else {
+					log.Printf("Successfully saved Sora video URL for task %s: %s", taskId, videoUrl)
+				}
+
+				generalResponse.TaskStatus = "succeed"
+				generalResponse.Message = "Video generation completed and uploaded to R2"
+				generalResponse.VideoResult = videoUrl
+				generalResponse.VideoResults = []model.VideoResultItem{{Url: videoUrl}}
+			}
+
+		case "failed":
+			generalResponse.TaskStatus = "failed"
+			if soraResp.Error != nil {
+				generalResponse.Message = fmt.Sprintf("Video generation failed: %s", soraResp.Error.Message)
+			} else {
+				generalResponse.Message = "Video generation failed"
+			}
+
+		case "queued", "processing":
+			generalResponse.TaskStatus = "processing"
+			if soraResp.Progress > 0 {
+				generalResponse.Message = fmt.Sprintf("Video generation in progress (%d%%)", soraResp.Progress)
+			} else {
+				generalResponse.Message = "Video generation in progress"
+			}
+
+		default:
+			generalResponse.TaskStatus = "processing"
+			generalResponse.Message = fmt.Sprintf("Video status: %s", soraResp.Status)
+		}
+
+		// 更新数据库任务状态并在必要时处理退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("Sora task %s failed, compensating user", taskId)
+			CompensateVideoTask(taskId)
+		}
+
+		// 返回响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
 	return nil
+}
+
+// downloadAndUploadSoraVideo 下载 Sora 视频并上传到 R2
+func downloadAndUploadSoraVideo(channel *dbmodel.Channel, videoId string, userId int) (string, error) {
+	// 构建下载 URL
+	baseUrl := *channel.BaseURL
+	if baseUrl == "" {
+		baseUrl = "https://api.openai.com"
+	}
+	downloadUrl := fmt.Sprintf("%s/v1/videos/%s/content", baseUrl, videoId)
+
+	log.Printf("Downloading Sora video: %s", downloadUrl)
+
+	// 创建下载请求
+	req, err := http.NewRequest("GET", downloadUrl, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create download request: %w", err)
+	}
+
+	// 设置授权头
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: 5 * time.Minute, // 5分钟超时，视频下载可能需要时间
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download video: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查状态码
+	if resp.StatusCode == 404 {
+		return "", fmt.Errorf("video not ready yet (404)")
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 读取视频数据
+	videoData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read video data: %w", err)
+	}
+
+	log.Printf("Downloaded Sora video: %d bytes", len(videoData))
+
+	// 转换为 base64
+	base64Data := base64.StdEncoding.EncodeToString(videoData)
+
+	// 上传到 R2
+	videoUrl, err := UploadVideoBase64ToR2(base64Data, userId, "mp4")
+	if err != nil {
+		return "", fmt.Errorf("failed to upload to R2: %w", err)
+	}
+
+	log.Printf("Successfully uploaded Sora video to R2: %s", videoUrl)
+	return videoUrl, nil
 }
 
 // 豆包专用的quota计算函数（基于token，用于查询结果时的实际计费）
