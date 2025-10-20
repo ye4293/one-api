@@ -359,11 +359,19 @@ func handleSoraRemixResponse(c *gin.Context, ctx context.Context, soraResponse o
 
 	// 检查是否有错误
 	if soraResponse.Error != nil {
-		// 有错误，不扣费，设置失败状态
-		taskStatus = "failed"
-		message = fmt.Sprintf("Error: %s (type: %s, code: %s)", soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code)
-		taskId = soraResponse.ID
-		logger.SysError(fmt.Sprintf("Sora remix request failed: %s", message))
+		// 有错误，不扣费，返回错误以触发自动禁用和重试逻辑
+		logger.SysError(fmt.Sprintf("Sora remix request failed: %s (type: %s, code: %s)",
+			soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code))
+
+		// 返回错误对象，以便触发自动禁用和重试逻辑
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: soraResponse.Error.Message,
+				Type:    soraResponse.Error.Type,
+				Code:    soraResponse.Error.Code,
+			},
+			StatusCode: soraResponse.StatusCode,
+		}
 	} else if soraResponse.StatusCode == 200 {
 		// 成功响应，进行扣费
 		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
@@ -401,18 +409,35 @@ func handleSoraRemixResponse(c *gin.Context, ctx context.Context, soraResponse o
 		taskStatus = "succeed"
 		message = fmt.Sprintf("Video remix request submitted successfully, task_id: %s, remixed_from: %s", taskId, originalVideoID)
 	} else {
-		// 其他错误状态码
-		taskStatus = "failed"
-		taskId = soraResponse.ID
+		// 其他错误状态码，返回错误以触发自动禁用和重试逻辑
+		var errMsg string
+		var errType string
+		var errCode string
+
 		if soraResponse.Error != nil {
-			message = fmt.Sprintf("Request failed: %s", soraResponse.Error.Message)
+			errMsg = soraResponse.Error.Message
+			errType = soraResponse.Error.Type
+			errCode = soraResponse.Error.Code
 		} else {
-			message = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+			errMsg = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+			errType = "api_error"
+			errCode = ""
 		}
+
 		logger.SysError(fmt.Sprintf("Sora remix request failed: status=%d, body=%s", soraResponse.StatusCode, string(body)))
+
+		// 返回错误对象，以便触发自动禁用和重试逻辑
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: errMsg,
+				Type:    errType,
+				Code:    errCode,
+			},
+			StatusCode: soraResponse.StatusCode,
+		}
 	}
 
-	// 创建 GeneralVideoResponse 结构体
+	// 成功情况：创建 GeneralVideoResponse 结构体
 	generalResponse := model.GeneralVideoResponse{
 		TaskId:     taskId,
 		Message:    message,
@@ -1030,11 +1055,19 @@ func handleSoraVideoResponse(c *gin.Context, ctx context.Context, soraResponse o
 
 	// 检查是否有错误
 	if soraResponse.Error != nil {
-		// 有错误，不扣费，设置失败状态
-		taskStatus = "failed"
-		message = fmt.Sprintf("Error: %s (type: %s, code: %s)", soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code)
-		taskId = soraResponse.ID
-		logger.SysError(fmt.Sprintf("Sora video request failed: %s", message))
+		// 有错误，不扣费，返回错误以触发自动禁用和重试逻辑
+		logger.SysError(fmt.Sprintf("Sora video request failed: %s (type: %s, code: %s)",
+			soraResponse.Error.Message, soraResponse.Error.Type, soraResponse.Error.Code))
+
+		// 返回错误对象，以便触发自动禁用和重试逻辑
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: soraResponse.Error.Message,
+				Type:    soraResponse.Error.Type,
+				Code:    soraResponse.Error.Code,
+			},
+			StatusCode: soraResponse.StatusCode,
+		}
 	} else if soraResponse.StatusCode == 200 {
 		// 成功响应，进行扣费
 		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
@@ -1073,18 +1106,35 @@ func handleSoraVideoResponse(c *gin.Context, ctx context.Context, soraResponse o
 		taskStatus = "succeed"
 		message = fmt.Sprintf("Video generation request submitted successfully, task_id: %s", taskId)
 	} else {
-		// 其他错误状态码
-		taskStatus = "failed"
-		taskId = soraResponse.ID
+		// 其他错误状态码，返回错误以触发自动禁用和重试逻辑
+		var errMsg string
+		var errType string
+		var errCode string
+
 		if soraResponse.Error != nil {
-			message = fmt.Sprintf("Request failed: %s", soraResponse.Error.Message)
+			errMsg = soraResponse.Error.Message
+			errType = soraResponse.Error.Type
+			errCode = soraResponse.Error.Code
 		} else {
-			message = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+			errMsg = fmt.Sprintf("Request failed with status code: %d", soraResponse.StatusCode)
+			errType = "api_error"
+			errCode = ""
 		}
+
 		logger.SysError(fmt.Sprintf("Sora video request failed: status=%d, body=%s", soraResponse.StatusCode, string(body)))
+
+		// 返回错误对象，以便触发自动禁用和重试逻辑
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: errMsg,
+				Type:    errType,
+				Code:    errCode,
+			},
+			StatusCode: soraResponse.StatusCode,
+		}
 	}
 
-	// 创建 GeneralVideoResponse 结构体 - 与其他视频处理保持一致
+	// 成功情况：创建 GeneralVideoResponse 结构体 - 与其他视频处理保持一致
 	generalResponse := model.GeneralVideoResponse{
 		TaskId:     taskId,
 		Message:    message,
@@ -1115,14 +1165,18 @@ func handleAliVideoResponse(c *gin.Context, ctx context.Context, aliResponse ali
 
 	// 检查是否有错误
 	if aliResponse.Code != "" {
-		// 有错误，不扣费，设置失败状态
-		taskStatus = "failed"
-		message = fmt.Sprintf("Error: %s, request_id: %s", aliResponse.Message, aliResponse.RequestID)
-		// 如果有任务ID，也包含进来
-		if aliResponse.Output != nil && aliResponse.Output.TaskID != "" {
-			taskId = aliResponse.Output.TaskID
-		}
+		// 有错误，不扣费，返回错误以触发自动禁用和重试逻辑
 		logger.SysError(fmt.Sprintf("Ali video request failed: %s, request_id: %s", aliResponse.Message, aliResponse.RequestID))
+
+		// 返回错误对象，以便触发自动禁用和重试逻辑
+		return &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: aliResponse.Message,
+				Type:    "api_error",
+				Code:    aliResponse.Code,
+			},
+			StatusCode: http.StatusBadRequest, // 阿里云API错误一般返回400
+		}
 	} else {
 		// 没有错误，进行扣费
 		err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
