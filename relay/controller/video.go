@@ -828,25 +828,81 @@ func handleInputReferenceURL(writer *multipart.Writer, url string) error {
 		return fmt.Errorf("failed to download input_reference: HTTP %d", resp.StatusCode)
 	}
 
-	// 从 URL 中提取文件名
-	filename := "input_reference"
-	if urlParts := strings.Split(url, "/"); len(urlParts) > 0 {
-		filename = urlParts[len(urlParts)-1]
-	}
-
-	// 创建表单文件字段
-	part, err := writer.CreateFormFile("input_reference", filename)
+	// 读取文件内容
+	fileData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to create form file: %w", err)
+		return fmt.Errorf("failed to read file data: %w", err)
 	}
 
-	// 复制文件内容
-	_, err = io.Copy(part, resp.Body)
+	// 获取 Content-Type，用于确定文件扩展名
+	contentType := resp.Header.Get("Content-Type")
+
+	// 根据 Content-Type 确定文件扩展名
+	filename := ""
+	if strings.Contains(contentType, "image/jpeg") || strings.Contains(contentType, "image/jpg") {
+		filename = "input_reference.jpg"
+	} else if strings.Contains(contentType, "image/png") {
+		filename = "input_reference.png"
+	} else if strings.Contains(contentType, "image/webp") {
+		filename = "input_reference.webp"
+	} else if strings.Contains(contentType, "image/gif") {
+		filename = "input_reference.gif"
+	}
+
+	// 如果 Content-Type 未识别，从 URL 提取扩展名
+	if filename == "" {
+		// 从 URL 中尝试提取扩展名
+		urlLower := strings.ToLower(url)
+		if strings.HasSuffix(urlLower, ".jpg") || strings.HasSuffix(urlLower, ".jpeg") {
+			filename = "input_reference.jpg"
+		} else if strings.HasSuffix(urlLower, ".png") {
+			filename = "input_reference.png"
+		} else if strings.HasSuffix(urlLower, ".webp") {
+			filename = "input_reference.webp"
+		} else if strings.HasSuffix(urlLower, ".gif") {
+			filename = "input_reference.gif"
+		} else if strings.Contains(urlLower, ".jpg?") || strings.Contains(urlLower, ".jpeg?") {
+			filename = "input_reference.jpg"
+		} else if strings.Contains(urlLower, ".png?") {
+			filename = "input_reference.png"
+		} else if strings.Contains(urlLower, ".webp?") {
+			filename = "input_reference.webp"
+		} else {
+			// 尝试通过文件头检测
+			filename = detectImageFilename(fileData)
+		}
+	}
+
+	log.Printf("Input reference URL: %s, Content-Type: %s, detected filename: %s", url, contentType, filename)
+
+	// 确定正确的 MIME type
+	mimeType := "image/jpeg" // 默认
+	if strings.HasSuffix(filename, ".png") {
+		mimeType = "image/png"
+	} else if strings.HasSuffix(filename, ".webp") {
+		mimeType = "image/webp"
+	} else if strings.HasSuffix(filename, ".gif") {
+		mimeType = "image/gif"
+	}
+
+	// 手动创建 part header，设置正确的 Content-Type
+	h := make(map[string][]string)
+	h["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, filename)}
+	h["Content-Type"] = []string{mimeType}
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
-		return fmt.Errorf("failed to copy file content: %w", err)
+		return fmt.Errorf("failed to create form part: %w", err)
 	}
 
-	log.Printf("Input reference URL downloaded: %s", url)
+	// 写入文件数据
+	_, err = part.Write(fileData)
+	if err != nil {
+		return fmt.Errorf("failed to write file data: %w", err)
+	}
+
+	log.Printf("Input reference URL uploaded: %s, MIME: %s, filename: %s, size: %d bytes",
+		url, mimeType, filename, len(fileData))
 	return nil
 }
 
@@ -868,22 +924,32 @@ func handleInputReferenceDataURL(writer *multipart.Writer, dataURL string) error
 		return fmt.Errorf("failed to decode base64 from data URL: %w", err)
 	}
 
-	// 提取文件扩展名
-	filename := "input_reference"
+	// 提取文件扩展名和 MIME type
+	filename := "input_reference.jpg"
+	mimeType := "image/jpeg"
+
 	if strings.Contains(header, "image/png") {
 		filename = "input_reference.png"
+		mimeType = "image/png"
 	} else if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
 		filename = "input_reference.jpg"
+		mimeType = "image/jpeg"
 	} else if strings.Contains(header, "image/gif") {
 		filename = "input_reference.gif"
+		mimeType = "image/gif"
 	} else if strings.Contains(header, "image/webp") {
 		filename = "input_reference.webp"
+		mimeType = "image/webp"
 	}
 
-	// 创建表单文件字段
-	part, err := writer.CreateFormFile("input_reference", filename)
+	// 手动创建 part header，设置正确的 Content-Type
+	h := make(map[string][]string)
+	h["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, filename)}
+	h["Content-Type"] = []string{mimeType}
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
-		return fmt.Errorf("failed to create form file: %w", err)
+		return fmt.Errorf("failed to create form part: %w", err)
 	}
 
 	// 写入文件数据
@@ -892,7 +958,7 @@ func handleInputReferenceDataURL(writer *multipart.Writer, dataURL string) error
 		return fmt.Errorf("failed to write file data: %w", err)
 	}
 
-	log.Printf("Input reference data URL processed: %s", filename)
+	log.Printf("Input reference data URL processed: filename=%s, MIME=%s, size=%d bytes", filename, mimeType, len(fileData))
 	return nil
 }
 
@@ -904,10 +970,27 @@ func handleInputReferenceBase64(writer *multipart.Writer, base64Data string) err
 		return fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	// 创建表单文件字段
-	part, err := writer.CreateFormFile("input_reference", "input_reference")
+	// 通过文件头检测文件类型
+	filename := detectImageFilename(fileData)
+
+	// 根据文件名确定 MIME type
+	mimeType := "image/jpeg" // 默认
+	if strings.HasSuffix(filename, ".png") {
+		mimeType = "image/png"
+	} else if strings.HasSuffix(filename, ".webp") {
+		mimeType = "image/webp"
+	} else if strings.HasSuffix(filename, ".gif") {
+		mimeType = "image/gif"
+	}
+
+	// 手动创建 part header，设置正确的 Content-Type
+	h := make(map[string][]string)
+	h["Content-Disposition"] = []string{fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, filename)}
+	h["Content-Type"] = []string{mimeType}
+
+	part, err := writer.CreatePart(h)
 	if err != nil {
-		return fmt.Errorf("failed to create form file: %w", err)
+		return fmt.Errorf("failed to create form part: %w", err)
 	}
 
 	// 写入文件数据
@@ -916,8 +999,28 @@ func handleInputReferenceBase64(writer *multipart.Writer, base64Data string) err
 		return fmt.Errorf("failed to write file data: %w", err)
 	}
 
-	log.Printf("Input reference base64 processed: %d bytes", len(fileData))
+	log.Printf("Input reference base64 processed: filename=%s, MIME=%s, size=%d bytes", filename, mimeType, len(fileData))
 	return nil
+}
+
+// detectImageFilename 通过文件头检测图片类型并返回合适的文件名
+func detectImageFilename(data []byte) string {
+	if len(data) < 12 {
+		return "input_reference.jpg" // 默认
+	}
+
+	// 检测文件头
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
+		return "input_reference.jpg" // JPEG
+	} else if len(data) >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
+		return "input_reference.png" // PNG
+	} else if len(data) >= 12 && string(data[8:12]) == "WEBP" {
+		return "input_reference.webp" // WebP
+	} else if len(data) >= 6 && string(data[0:3]) == "GIF" {
+		return "input_reference.gif" // GIF
+	}
+
+	return "input_reference.jpg" // 默认使用 JPG
 }
 
 func handleSoraVideoResponse(c *gin.Context, ctx context.Context, soraResponse openai.SoraVideoResponse, body []byte, meta *util.RelayMeta, modelName string, quota int64, secondsStr string, size string) *model.ErrorWithStatusCode {
