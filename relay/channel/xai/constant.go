@@ -54,6 +54,9 @@ var modelList = []string{
 	"grok-3-mini-fast-medium-search",
 	"grok-3-mini-fast-high-search",
 	"grok-2-vision-1212-search",
+	"grok-code-fast-1",
+	"grok-4-fast-non-reasoning",
+	"grok-4-fast-reasoning",
 }
 
 var channelName = "xai"

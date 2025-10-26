@@ -2,9 +2,9 @@ package gemini
 
 type ChatRequest struct {
 	Contents          []ChatContent        `json:"contents"`
-	SystemInstruction *SystemInstruction   `json:"system_instruction,omitempty"`
-	SafetySettings    []ChatSafetySettings `json:"safety_settings,omitempty"`
-	GenerationConfig  ChatGenerationConfig `json:"generation_config,omitempty"`
+	SystemInstruction *SystemInstruction   `json:"systemInstruction,omitempty"`
+	SafetySettings    []ChatSafetySettings `json:"safetySettings,omitempty"`
+	GenerationConfig  ChatGenerationConfig `json:"generationConfig,omitempty"`
 	Tools             []ChatTools          `json:"tools,omitempty"`
 }
 
@@ -43,8 +43,8 @@ type ChatGenerationConfig struct {
 	MaxOutputTokens    int             `json:"maxOutputTokens,omitempty"`
 	CandidateCount     int             `json:"candidateCount,omitempty"`
 	StopSequences      []string        `json:"stopSequences,omitempty"`
-	ResponseModalities []string        `json:"response_modalities,omitempty"`
-	ThinkingConfig     *ThinkingConfig `json:"thinking_config,omitempty"`
+	ResponseModalities []string        `json:"responseModalities,omitempty"`
+	ThinkingConfig     *ThinkingConfig `json:"thinkingConfig,omitempty"`
 	ImageConfig        *ImageConfig    `json:"imageConfig,omitempty"`
 }
 
