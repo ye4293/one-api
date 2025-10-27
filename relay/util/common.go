@@ -130,16 +130,20 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 			Param:   strconv.Itoa(resp.StatusCode),
 		},
 	}
+
+	// ✅ 关键修复：使用 defer 确保响应体一定会被关闭
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return
 	}
 	if config.DebugEnabled {
 		logger.SysLog(fmt.Sprintf("error happened, status code: %d, response: \n%s", resp.StatusCode, string(responseBody)))
-	}
-	err = resp.Body.Close()
-	if err != nil {
-		return
 	}
 
 	var errResponse GeneralErrorResponse

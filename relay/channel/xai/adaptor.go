@@ -102,6 +102,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
 	log.Printf("[xAI] ===== 开始处理xAI错误响应 =====")
 
+	// ✅ 关键修复：defer必须在读取之前，确保一定会关闭
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("[xAI] 读取错误响应体失败: %v", err)
@@ -114,7 +121,6 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 			StatusCode: resp.StatusCode,
 		}
 	}
-	defer resp.Body.Close()
 
 	// 先打印原始错误响应
 	responseBodyStr := string(responseBody)

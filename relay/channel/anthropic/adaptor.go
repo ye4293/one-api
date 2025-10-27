@@ -68,6 +68,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 // HandleErrorResponse 处理Anthropic特有的错误响应格式
 func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
+	// ✅ 关键修复：defer必须在读取之前，确保一定会关闭
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return &model.ErrorWithStatusCode{
@@ -79,7 +86,6 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 			StatusCode: resp.StatusCode,
 		}
 	}
-	defer resp.Body.Close()
 
 	// 尝试解析Anthropic错误格式
 	var claudeResponse Response

@@ -190,8 +190,13 @@ func Relay(c *gin.Context) {
 		// 记录渠道历史到上下文中，供后续日志记录使用
 		c.Set("admin_channel_history", channelHistory)
 
-		// 记录失败请求的日志
-		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+		// 检查是否是xAI内容违规错误，如果是则记录费用
+		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
+			recordXAIContentViolationCharge(ctx, c, channelHistory)
+		} else {
+			// 记录失败请求的日志（不消费quota）
+			recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+		}
 
 		if bizErr.StatusCode == http.StatusTooManyRequests {
 			bizErr.Error.Message = "The current group upstream load is saturated, please try again later."
@@ -423,7 +428,12 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 		return shouldRetryBadRequest(c, message)
 	}
 
-	// 其他4xx错误（除400外）默认重试
+	// 403错误需要根据具体错误内容判断
+	if statusCode == http.StatusForbidden {
+		return shouldRetryForbidden(c, message)
+	}
+
+	// 其他4xx错误（除400、403外）默认重试
 	if statusCode/100 == 4 {
 		return true
 	}
@@ -456,6 +466,128 @@ func shouldRetryBadRequest(c *gin.Context, message string) bool {
 	}
 
 	return false
+}
+
+// shouldRetryForbidden 专门处理403错误的重试逻辑
+func shouldRetryForbidden(c *gin.Context, message string) bool {
+	if message == "" {
+		// 没有错误消息时，默认重试
+		return true
+	}
+
+	// 转换为小写进行比较
+	messageLower := strings.ToLower(message)
+
+	// 检查xai的内容违规错误（不应重试）
+	contentViolationPatterns := []string{
+		"content violates usage guidelines",
+		"violates usage guidelines",
+		"safety_check_type",
+	}
+
+	for _, pattern := range contentViolationPatterns {
+		if strings.Contains(messageLower, pattern) {
+			logger.Warnf(c.Request.Context(), "Content violation error detected (%s), will NOT retry", pattern)
+			return false
+		}
+	}
+
+	// 检查通用的可重试错误模式
+	for _, errPattern := range retryableErrorPatterns {
+		if strings.Contains(messageLower, errPattern) {
+			logger.Warnf(c.Request.Context(), "Retryable 403 error detected (%s), will retry with other channels", errPattern)
+			return true
+		}
+	}
+
+	// 其他403错误默认重试（可能是认证或权限问题）
+	return true
+}
+
+// isXAIContentViolation 检测是否是xAI的内容违规错误
+func isXAIContentViolation(statusCode int, message string) bool {
+	if statusCode != http.StatusForbidden {
+		return false
+	}
+
+	messageLower := strings.ToLower(message)
+	contentViolationPatterns := []string{
+		"content violates usage guidelines",
+		"violates usage guidelines",
+		"safety_check_type",
+	}
+
+	for _, pattern := range contentViolationPatterns {
+		if strings.Contains(messageLower, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// recordXAIContentViolationCharge 记录xAI内容违规产生的费用（0.05美金）
+func recordXAIContentViolationCharge(ctx context.Context, c *gin.Context, channelHistory []int) {
+	userId := c.GetInt("id")
+	channelId := c.GetInt("channel_id")
+	originalModel := c.GetString("original_model")
+	tokenName := c.GetString("token_name")
+	requestID := c.GetHeader("X-Request-ID")
+
+	// xAI对内容违规请求收费0.05美金
+	// quota计算: 0.05 * 500000 = 25000
+	quota := int64(25000)
+
+	// 获取渠道历史信息
+	var otherInfo string
+	if len(channelHistory) > 0 {
+		if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+			otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+		}
+	}
+
+	// 构建日志内容
+	logContent := "xAI内容违规检查失败（已扣费$0.05）"
+	if requestID != "" {
+		logContent = fmt.Sprintf("xAI内容违规检查失败 [%s]（已扣费$0.05）", requestID)
+	}
+
+	// 记录消费日志
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(
+		ctx,
+		userId,
+		channelId,
+		0, // promptTokens
+		0, // completionTokens
+		originalModel,
+		tokenName,
+		quota, // 扣费25000 quota（对应0.05美金）
+		logContent,
+		0.0,   // duration
+		"",    // title
+		"",    // httpReferer
+		false, // isStream
+		0.0,   // firstWordLatency
+		otherInfo,
+		requestID,
+	)
+
+	// 更新用户和渠道quota
+	err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+
+	err = dbmodel.CacheUpdateUserQuota(ctx, userId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+
+	dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
+	dbmodel.UpdateChannelUsedQuota(channelId, quota)
+
+	logger.Infof(ctx, "Recorded xAI content violation charge: userId=%d, channelId=%d, model=%s, quota=%d ($0.05)",
+		userId, channelId, originalModel, quota)
 }
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode, modelName string) {

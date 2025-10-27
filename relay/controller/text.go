@@ -102,6 +102,10 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	resp, err := adaptor.DoRequest(c, meta, requestBody)
 	if err != nil {
 		logger.Errorf(ctx, "DoRequest failed: %s", err.Error())
+		// 确保关闭响应体（即使有错误）
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 	if resp != nil {
