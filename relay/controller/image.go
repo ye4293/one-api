@@ -1004,6 +1004,60 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				responseStr = responseStr[:1000] + "...[truncated]"
 			}
 			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
+
+			// 记录消费日志（即使没有候选项，也要记录请求消耗）
+			rowDuration := time.Since(startTime).Seconds()
+			duration := math.Round(rowDuration*1000) / 1000
+
+			groupRatio := common.GetGroupRatio(meta.Group)
+			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+
+			modelRatio := common.GetModelRatio(meta.OriginModelName)
+			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+
+			logger.Infof(ctx, "Gemini JSON 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+				promptTokens, completionTokens, groupRatio, actualQuota, duration)
+
+			// 消费配额
+			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+			if err != nil {
+				logger.SysError("error consuming token remain quota: " + err.Error())
+			}
+
+			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+			if err != nil {
+				logger.SysError("error update user quota cache: " + err.Error())
+			}
+
+			// 记录消费日志
+			referer := c.Request.Header.Get("HTTP-Referer")
+			title := c.Request.Header.Get("X-Title")
+			tokenName := c.GetString("token_name")
+			xRequestID := c.GetString("X-Request-ID")
+
+			logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
+				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
+
+			// 获取渠道历史信息
+			var otherInfo string
+			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+					}
+				}
+			}
+
+			// 记录日志
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+
+			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+			channelId := c.GetInt("channel_id")
+			model.UpdateChannelUsedQuota(channelId, actualQuota)
+
 			return openai.ErrorWrapper(
 				fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
 				"gemini_no_candidates",
@@ -1023,6 +1077,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					errorMessage = fmt.Sprintf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
 					logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
 				}
+
+				// 打印原始响应体用于调试（限制长度）
+				responseStr := string(responseBody)
+				if len(responseStr) > 1000 {
+					responseStr = responseStr[:1000] + "...[truncated]"
+				}
+				logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 				// 构建包含错误和usage信息的响应
 				errorResponse := map[string]interface{}{
@@ -2900,6 +2961,60 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			responseStr = responseStr[:1000] + "...[truncated]"
 		}
 		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
+
+		// 记录消费日志（即使没有候选项，也要记录请求消耗）
+		rowDuration := time.Since(startTime).Seconds()
+		duration := math.Round(rowDuration*1000) / 1000
+
+		groupRatio := common.GetGroupRatio(meta.Group)
+		promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+		completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+
+		modelRatio := common.GetModelRatio(meta.OriginModelName)
+		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+		actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+
+		logger.Infof(ctx, "Gemini JSON 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+			promptTokens, completionTokens, groupRatio, actualQuota, duration)
+
+		// 消费配额
+		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+		if err != nil {
+			logger.SysError("error consuming token remain quota: " + err.Error())
+		}
+
+		err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		// 记录消费日志
+		referer := c.Request.Header.Get("HTTP-Referer")
+		title := c.Request.Header.Get("X-Title")
+		tokenName := c.GetString("token_name")
+		xRequestID := c.GetString("X-Request-ID")
+
+		logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
+			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
+
+		// 获取渠道历史信息
+		var otherInfo string
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+				}
+			}
+		}
+
+		// 记录日志
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
+			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+
+		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+		channelId := c.GetInt("channel_id")
+		model.UpdateChannelUsedQuota(channelId, actualQuota)
+
 		return openai.ErrorWrapper(
 			fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
 			"gemini_no_candidates",
@@ -2919,6 +3034,13 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				errorMessage = fmt.Sprintf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
 				logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
 			}
+
+			// 打印原始响应体用于调试（限制长度）
+			responseStr := string(responseBody)
+			if len(responseStr) > 1000 {
+				responseStr = responseStr[:1000] + "...[truncated]"
+			}
+			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 			// 构建包含错误和usage信息的响应
 			errorResponse := map[string]interface{}{
@@ -3026,6 +3148,13 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	// 检查是否有图片数据，如果没有则返回错误
 	if len(imageData) == 0 {
 		logger.Errorf(ctx, "Gemini API 未返回图片数据，可能返回的是文本或空响应")
+
+		// 打印原始响应体用于调试（限制长度）
+		responseStr := string(responseBody)
+		if len(responseStr) > 1000 {
+			responseStr = responseStr[:1000] + "...[truncated]"
+		}
+		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 		// 构建包含错误和usage信息的响应
 		errorResponse := map[string]interface{}{
@@ -3258,6 +3387,12 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 // handleGeminiTokenConsumption 处理 Gemini JSON 请求的 token 消费和日志记录
 func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64, startTime time.Time) error {
+	// 检查是否已经记录过（通过检查是否已经设置了响应状态码）
+	if c.Writer.Status() == http.StatusBadRequest {
+		logger.Infof(ctx, "Gemini 请求已在错误处理中记录消费日志，跳过重复处理")
+		return nil
+	}
+
 	// 计算请求耗时
 	rowDuration := time.Since(startTime).Seconds()
 	duration := math.Round(rowDuration*1000) / 1000
@@ -3275,8 +3410,9 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 				} `json:"parts,omitempty"`
 				Role string `json:"role,omitempty"`
 			} `json:"content,omitempty"`
-			FinishReason string `json:"finishReason,omitempty"`
-			Index        int    `json:"index,omitempty"`
+			FinishReason  string `json:"finishReason,omitempty"`
+			FinishMessage string `json:"finishMessage,omitempty"`
+			Index         int    `json:"index,omitempty"`
 		} `json:"candidates,omitempty"`
 		ModelVersion  string `json:"modelVersion,omitempty"`
 		UsageMetadata struct {
@@ -3285,14 +3421,20 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
 		} `json:"usageMetadata,omitempty"`
 	}); ok {
+		// 检查是否有有效的 UsageMetadata
+		if respStruct.UsageMetadata.TotalTokenCount == 0 {
+			logger.Warnf(ctx, "Gemini 响应中 UsageMetadata 为空，可能已在错误处理中记录")
+			return nil
+		}
+
 		promptTokens = respStruct.UsageMetadata.PromptTokenCount
 		completionTokens = respStruct.UsageMetadata.CandidatesTokenCount
 
-		logger.Infof(ctx, "Gemini JSON 直接处理 token: prompt=%d, completion=%d, total=%d",
+		logger.Infof(ctx, "Gemini JSON 成功响应处理 token: prompt=%d, completion=%d, total=%d",
 			promptTokens, completionTokens, respStruct.UsageMetadata.TotalTokenCount)
 	} else {
-		logger.Warnf(ctx, "Failed to extract token info from Gemini response")
-		return fmt.Errorf("failed to extract token info")
+		logger.Warnf(ctx, "无法从 Gemini 响应中提取 token 信息（可能已在错误处理中记录）")
+		return nil // 不返回错误，避免影响成功响应
 	}
 
 	// 使用统一的ModelRatio和CompletionRatio机制进行计费
