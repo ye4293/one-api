@@ -826,14 +826,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	}(c.Request.Context())
 
+	// ✅ 关键修复：使用 defer 确保响应体一定会被关闭
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
-	}
-
-	err = resp.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError)
 	}
 
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
@@ -996,6 +998,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		// 检查是否有候选项
 		if len(geminiResponse.Candidates) == 0 {
 			logger.Errorf(ctx, "Gemini API 未返回任何候选项")
+			// 打印原始响应体用于调试（限制长度）
+			responseStr := string(responseBody)
+			if len(responseStr) > 1000 {
+				responseStr = responseStr[:1000] + "...[truncated]"
+			}
+			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 			return openai.ErrorWrapper(
 				fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
 				"gemini_no_candidates",
@@ -2886,6 +2894,12 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	// 检查是否有候选项
 	if len(geminiResponse.Candidates) == 0 {
 		logger.Errorf(ctx, "Gemini API 未返回任何候选项")
+		// 打印原始响应体用于调试（限制长度）
+		responseStr := string(responseBody)
+		if len(responseStr) > 1000 {
+			responseStr = responseStr[:1000] + "...[truncated]"
+		}
+		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 		return openai.ErrorWrapper(
 			fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
 			"gemini_no_candidates",

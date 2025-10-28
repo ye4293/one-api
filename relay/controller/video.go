@@ -3756,6 +3756,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	}
 
 	if videoTask.Provider == "zhipu" {
+		// ✅ 修复：defer 必须在 ReadAll 之前
+		defer func() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}()
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -3764,7 +3771,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				http.StatusInternalServerError,
 			)
 		}
-		defer resp.Body.Close()
 
 		// 解析JSON响应
 		var zhipuResp model.FinalVideoResponse
@@ -3823,6 +3829,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 	} else if videoTask.Provider == "kling" {
+		// ✅ 修复：defer 必须在 ReadAll 之前
+		defer func() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}()
+
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return openai.ErrorWrapper(
@@ -3831,7 +3844,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				http.StatusInternalServerError,
 			)
 		}
-		defer resp.Body.Close()
 
 		// 打印完整响应体
 		log.Printf("Kling response body: %s", string(body))
@@ -3904,7 +3916,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		return nil
 	} else if videoTask.Provider == "runway" {
-		defer resp.Body.Close()
+		// ✅ defer 位置正确（在 ReadAll 之前）
+		defer func() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -3971,7 +3988,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "luma" {
-		defer resp.Body.Close()
+		// ✅ defer 位置正确（在 ReadAll 之前）
+		defer func() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -4052,7 +4074,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		c.Data(resp.StatusCode, "application/json", jsonResponse)
 		return nil
 	} else if videoTask.Provider == "viggle" {
-		defer resp.Body.Close()
+		// ✅ defer 位置正确（在 ReadAll 之前）
+		defer func() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
