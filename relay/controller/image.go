@@ -120,12 +120,19 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			body := &bytes.Buffer{}
 			writer := multipart.NewWriter(body)
 
+			// 检查是否是 Gemini 模型
+			isGemini := strings.HasPrefix(imageRequest.Model, "gemini")
+
 			// 添加所有表单字段
 			for key, values := range c.Request.MultipartForm.Value {
 				for _, value := range values {
 					// 如果模型被映射，则更新model字段
 					if key == "model" && isModelMapped {
 						writer.WriteField(key, imageRequest.Model)
+					} else if isGemini && key == "response_format" {
+						// Gemini 不支持 response_format 参数，跳过该参数
+						logger.Debugf(ctx, "Skipping response_format parameter for Gemini model (value: %s)", value)
+						continue
 					} else {
 						writer.WriteField(key, value)
 					}
@@ -201,10 +208,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			// 创建新的表单数据
 			formData := url.Values{}
+
+			// 检查是否是 Gemini 模型
+			isGemini := strings.HasPrefix(imageRequest.Model, "gemini")
+
 			for key, values := range c.Request.Form {
 				// 如果模型被映射，则更新model字段
 				if key == "model" && isModelMapped {
 					formData.Set(key, imageRequest.Model)
+				} else if isGemini && key == "response_format" {
+					// Gemini 不支持 response_format 参数，跳过该参数
+					logger.Debugf(ctx, "Skipping response_format parameter for Gemini model (value: %v)", values)
+					continue
 				} else {
 					for _, value := range values {
 						formData.Add(key, value)
