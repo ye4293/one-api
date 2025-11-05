@@ -966,6 +966,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				FinishMessage string `json:"finishMessage,omitempty"`
 				Index         int    `json:"index,omitempty"`
 			} `json:"candidates,omitempty"`
+			PromptFeedback *struct {
+				BlockReason        string `json:"blockReason,omitempty"`
+				BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
+			} `json:"promptFeedback,omitempty"`
 			ModelVersion  string `json:"modelVersion,omitempty"`
 			UsageMetadata struct {
 				PromptTokenCount     int `json:"promptTokenCount,omitempty"`
@@ -1008,6 +1012,110 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				geminiPromptTokens, geminiCompletionTokens)
 			logger.Infof(ctx, "Gemini JSON token usage: prompt=%d, completion=%d, total=%d",
 				geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
+		}
+
+		// 检查 promptFeedback 是否有阻止原因
+		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
+			var errorMessage string
+			if geminiResponse.PromptFeedback.BlockReasonMessage != "" {
+				errorMessage = fmt.Sprintf("Gemini API 错误: %s (原因: %s)",
+					geminiResponse.PromptFeedback.BlockReasonMessage,
+					geminiResponse.PromptFeedback.BlockReason)
+			} else {
+				errorMessage = fmt.Sprintf("Gemini API 错误: 提示词被阻止 (原因: %s)",
+					geminiResponse.PromptFeedback.BlockReason)
+			}
+
+			logger.Errorf(ctx, "Gemini API promptFeedback 阻止: BlockReason=%s, Message=%s",
+				geminiResponse.PromptFeedback.BlockReason,
+				geminiResponse.PromptFeedback.BlockReasonMessage)
+
+			// 打印原始响应体用于调试
+			responseStr := string(responseBody)
+			if len(responseStr) > 1000 {
+				responseStr = responseStr[:1000] + "...[truncated]"
+			}
+			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
+
+			// 构建包含错误和usage信息的响应
+			errorResponse := map[string]interface{}{
+				"error": map[string]interface{}{
+					"code":    "gemini_prompt_blocked",
+					"message": errorMessage,
+					"param":   "",
+					"type":    "api_error",
+				},
+				"created": time.Now().Unix(),
+				"data":    nil,
+				"usage": map[string]interface{}{
+					"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
+					"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
+					"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
+					"input_tokens_details": map[string]int{
+						"text_tokens":  0,
+						"image_tokens": 0,
+					},
+				},
+			}
+
+			// 直接返回响应
+			c.JSON(http.StatusBadRequest, errorResponse)
+
+			// 计算请求耗时
+			rowDuration := time.Since(startTime).Seconds()
+			duration := math.Round(rowDuration*1000) / 1000
+
+			// 处理配额消费
+			groupRatio := common.GetGroupRatio(meta.Group)
+			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+
+			modelRatio := common.GetModelRatio(meta.OriginModelName)
+			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+
+			logger.Infof(ctx, "Gemini JSON promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+				promptTokens, completionTokens, groupRatio, actualQuota, duration)
+
+			// 消费配额
+			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+			if err != nil {
+				logger.SysError("error consuming token remain quota: " + err.Error())
+			}
+
+			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+			if err != nil {
+				logger.SysError("error update user quota cache: " + err.Error())
+			}
+
+			// 记录消费日志
+			referer := c.Request.Header.Get("HTTP-Referer")
+			title := c.Request.Header.Get("X-Title")
+			tokenName := c.GetString("token_name")
+			xRequestID := c.GetString("X-Request-ID")
+
+			logContent := fmt.Sprintf("Gemini JSON Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
+				meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
+
+			// 获取渠道历史信息
+			var otherInfo string
+			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+					}
+				}
+			}
+
+			// 记录日志
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+
+			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+			channelId := c.GetInt("channel_id")
+			model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+			return nil
 		}
 
 		// 检查是否有候选项
@@ -2945,6 +3053,10 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			FinishMessage string `json:"finishMessage,omitempty"`
 			Index         int    `json:"index,omitempty"`
 		} `json:"candidates,omitempty"`
+		PromptFeedback *struct {
+			BlockReason        string `json:"blockReason,omitempty"`
+			BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
+		} `json:"promptFeedback,omitempty"`
 		ModelVersion  string `json:"modelVersion,omitempty"`
 		UsageMetadata struct {
 			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
@@ -2965,6 +3077,110 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	if err != nil {
 		logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
 		return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
+	}
+
+	// 检查 promptFeedback 是否有阻止原因
+	if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
+		var errorMessage string
+		if geminiResponse.PromptFeedback.BlockReasonMessage != "" {
+			errorMessage = fmt.Sprintf("Gemini API 错误: %s (原因: %s)",
+				geminiResponse.PromptFeedback.BlockReasonMessage,
+				geminiResponse.PromptFeedback.BlockReason)
+		} else {
+			errorMessage = fmt.Sprintf("Gemini API 错误: 提示词被阻止 (原因: %s)",
+				geminiResponse.PromptFeedback.BlockReason)
+		}
+
+		logger.Errorf(ctx, "Gemini API promptFeedback 阻止: BlockReason=%s, Message=%s",
+			geminiResponse.PromptFeedback.BlockReason,
+			geminiResponse.PromptFeedback.BlockReasonMessage)
+
+		// 打印原始响应体用于调试
+		responseStr := string(responseBody)
+		if len(responseStr) > 1000 {
+			responseStr = responseStr[:1000] + "...[truncated]"
+		}
+		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
+
+		// 构建包含错误和usage信息的响应
+		errorResponse := map[string]interface{}{
+			"error": map[string]interface{}{
+				"code":    "gemini_prompt_blocked",
+				"message": errorMessage,
+				"param":   "",
+				"type":    "api_error",
+			},
+			"created": time.Now().Unix(),
+			"data":    nil,
+			"usage": map[string]interface{}{
+				"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
+				"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
+				"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
+				"input_tokens_details": map[string]int{
+					"text_tokens":  0,
+					"image_tokens": 0,
+				},
+			},
+		}
+
+		// 直接返回响应
+		c.JSON(http.StatusBadRequest, errorResponse)
+
+		// 计算请求耗时
+		rowDuration := time.Since(startTime).Seconds()
+		duration := math.Round(rowDuration*1000) / 1000
+
+		// 处理配额消费
+		groupRatio := common.GetGroupRatio(meta.Group)
+		promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+		completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+
+		modelRatio := common.GetModelRatio(meta.OriginModelName)
+		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
+		actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+
+		logger.Infof(ctx, "Gemini Form promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+			promptTokens, completionTokens, groupRatio, actualQuota, duration)
+
+		// 消费配额
+		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
+		if err != nil {
+			logger.SysError("error consuming token remain quota: " + err.Error())
+		}
+
+		err = model.CacheUpdateUserQuota(ctx, meta.UserId)
+		if err != nil {
+			logger.SysError("error update user quota cache: " + err.Error())
+		}
+
+		// 记录消费日志
+		referer := c.Request.Header.Get("HTTP-Referer")
+		title := c.Request.Header.Get("X-Title")
+		tokenName := c.GetString("token_name")
+		xRequestID := c.GetString("X-Request-ID")
+
+		logContent := fmt.Sprintf("Gemini Form Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
+			meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
+
+		// 获取渠道历史信息
+		var otherInfo string
+		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+				}
+			}
+		}
+
+		// 记录日志
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
+			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+
+		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
+		channelId := c.GetInt("channel_id")
+		model.UpdateChannelUsedQuota(channelId, actualQuota)
+
+		return nil
 	}
 
 	// 检查是否有候选项
@@ -3429,6 +3645,10 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 			FinishMessage string `json:"finishMessage,omitempty"`
 			Index         int    `json:"index,omitempty"`
 		} `json:"candidates,omitempty"`
+		PromptFeedback *struct {
+			BlockReason        string `json:"blockReason,omitempty"`
+			BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
+		} `json:"promptFeedback,omitempty"`
 		ModelVersion  string `json:"modelVersion,omitempty"`
 		UsageMetadata struct {
 			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
