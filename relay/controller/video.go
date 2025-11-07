@@ -3788,6 +3788,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskStatus:  mapTaskStatus(zhipuResp.TaskStatus), // 使用 mapTaskStatus 函数
 			Message:     "",
 			VideoResult: "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 如果任务成功且有视频结果，添加到响应中
@@ -3863,13 +3864,16 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskId:      klingResp.Data.TaskID,
 			Message:     klingResp.Data.TaskStatusMsg,
 			VideoResult: "",
-			Duration:    "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 检查是否有视频结果
 		if len(klingResp.Data.TaskResult.Videos) > 0 {
 			generalResponse.VideoId = klingResp.Data.TaskResult.Videos[0].ID
-			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
+			// 如果响应中有Duration，使用响应中的值
+			if klingResp.Data.TaskResult.Videos[0].Duration != "" {
+				generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
+			}
 		}
 
 		// 处理任务状态
@@ -3949,6 +3953,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskStatus:  mapTaskStatusRunway(runwayResp.Status),
 			Message:     "", // 添加错误信息
 			VideoResult: "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 如果任务成功且有视频结果，添加到响应中
@@ -4021,6 +4026,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskStatus:  mapTaskStatusLuma(lumaResp.State),
 			Message:     "", // 添加错误信息
 			VideoResult: "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 如果任务成功且有视频结果，添加到响应中
@@ -4107,6 +4113,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskStatus:  "",
 			Message:     viggleResp.Message, // 添加错误信息
 			VideoResult: "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 首先检查 Data 切片是否为空
@@ -4194,6 +4201,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			VideoId:     strconv.Itoa(pixverseResp.Resp.Id),
 			TaskStatus:  "succeed",
 			Message:     pixverseResp.ErrMsg,
+			Duration:    videoTask.Duration,
 		}
 
 		if pixverseResp.Resp.Url != "" {
@@ -4266,6 +4274,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			VideoResult: "",
 			VideoId:     doubaoResp.ID,
 			Message:     "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 处理任务状态映射
@@ -4361,6 +4370,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				TaskStatus:   "succeed",
 				Message:      "Video retrieved from cache",
 				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				Duration:     videoTask.Duration,
 			}
 			jsonResponse, err := json.Marshal(generalResponse)
 			if err != nil {
@@ -4405,6 +4415,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			VideoId:    taskId,
 			TaskStatus: "processing", // 默认状态
 			Message:    "Operation in progress",
+			Duration:   videoTask.Duration,
 		}
 
 		if done, ok := veoResp["done"].(bool); ok && done {
@@ -4563,6 +4574,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				TaskStatus:   "succeed",
 				Message:      "Video retrieved from cache",
 				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				Duration:     videoTask.Duration,
 			}
 			jsonResponse, err := json.Marshal(generalResponse)
 			if err != nil {
@@ -4601,6 +4613,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			TaskStatus:  "processing", // 默认状态
 			Message:     "",
 			VideoResult: "",
+			Duration:    videoTask.Duration,
 		}
 
 		// 处理响应
@@ -4721,7 +4734,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			VideoId:    taskId,
 			TaskStatus: "processing",
 			Message:    "Video is still processing",
-			Duration:   soraResp.Seconds, // 已经是 string 类型
+			Duration:   videoTask.Duration, // 从数据库获取
 		}
 
 		// 根据状态处理
@@ -4895,6 +4908,13 @@ func calculateQuotaForDoubao(modelName string, tokens int64, c *gin.Context) int
 }
 
 func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId string) *model.ErrorWithStatusCode {
+	// 查询数据库中的任务信息以获取Duration等字段
+	videoTask, err := dbmodel.GetVideoTaskById(taskId)
+	if err != nil {
+		log.Printf("Failed to get video task for minimax: %v", err)
+		// 继续处理，但duration将为空
+	}
+
 	// 第一次请求，获取初始状态
 	url := fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
 	req, err := http.NewRequest("GET", url, nil)
@@ -4921,11 +4941,17 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
 	}
 
+	duration := ""
+	if videoTask != nil {
+		duration = videoTask.Duration
+	}
+
 	generalResponse := model.GeneralFinalVideoResponse{
 		TaskId:      taskId,
 		TaskStatus:  mapTaskStatusMinimax(minimaxResp.Status),
 		Message:     minimaxResp.BaseResp.StatusMsg,
 		VideoResult: "",
+		Duration:    duration,
 	}
 
 	// 如果 FileID 为空，直接返回当前状态

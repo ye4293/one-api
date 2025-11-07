@@ -1311,11 +1311,57 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 		}
 
-		// 检查是否有图片数据，如果没有则返回错误
-		if len(imageData) == 0 {
-			logger.Errorf(ctx, "Gemini API 未返回图片数据，可能返回的是文本或空响应")
+	// 检查是否有图片数据，如果没有则返回错误
+	if len(imageData) == 0 {
+		// 详细分析无图片的原因
+		var detailReason string
+		candidatesInfo := ""
+		if len(geminiResponse.Candidates) == 0 {
+			detailReason = "candidates 数组为空"
+		} else {
+			candidate := geminiResponse.Candidates[0]
+			candidatesInfo = fmt.Sprintf("finishReason=%s, partsCount=%d", 
+				candidate.FinishReason, len(candidate.Content.Parts))
+			
+			if len(candidate.Content.Parts) == 0 {
+				detailReason = "content.parts 数组为空"
+			} else {
+				hasText := false
+				hasEmptyPart := false
+				textContent := ""
+				for _, part := range candidate.Content.Parts {
+					if part.Text != "" {
+						hasText = true
+						if len(part.Text) > 50 {
+							textContent = part.Text[:50] + "..."
+						} else {
+							textContent = part.Text
+						}
+					}
+					if part.InlineData == nil && part.Text == "" {
+						hasEmptyPart = true
+					}
+				}
+				if hasText {
+					detailReason = fmt.Sprintf("只包含文本，没有图片数据: %s", textContent)
+				} else if hasEmptyPart {
+					detailReason = "parts 包含空对象"
+				} else {
+					detailReason = "未知原因"
+				}
+			}
+		}
+		
+		logger.Errorf(ctx, "Gemini API 未返回图片数据: %s (%s)", detailReason, candidatesInfo)
+		
+		// 打印原始响应体用于调试（限制长度）
+		responseStr := string(responseBody)
+		if len(responseStr) > 1000 {
+			responseStr = responseStr[:1000] + "...[truncated]"
+		}
+		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
-			// 构建包含错误和usage信息的响应
+		// 构建包含错误和usage信息的响应
 			errorResponse := map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    "gemini_no_image_generated",
@@ -3378,7 +3424,33 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	// 检查是否有图片数据，如果没有则返回错误
 	if len(imageData) == 0 {
-		logger.Errorf(ctx, "Gemini API 未返回图片数据，可能返回的是文本或空响应")
+		// 详细分析无图片的原因
+		var detailReason string
+		if len(geminiResponse.Candidates) == 0 {
+			detailReason = "candidates 数组为空"
+		} else if len(geminiResponse.Candidates[0].Content.Parts) == 0 {
+			detailReason = "content.parts 数组为空"
+		} else {
+			hasText := false
+			hasEmptyPart := false
+			for _, part := range geminiResponse.Candidates[0].Content.Parts {
+				if part.Text != "" {
+					hasText = true
+				}
+				if part.InlineData == nil && part.Text == "" {
+					hasEmptyPart = true
+				}
+			}
+			if hasText {
+				detailReason = "只包含文本，没有图片数据"
+			} else if hasEmptyPart {
+				detailReason = "parts 包含空对象"
+			} else {
+				detailReason = "未知原因"
+			}
+		}
+		
+		logger.Errorf(ctx, "Gemini API 未返回图片数据: %s", detailReason)
 
 		// 打印原始响应体用于调试（限制长度）
 		responseStr := string(responseBody)
