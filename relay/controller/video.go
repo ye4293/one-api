@@ -4363,13 +4363,27 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 首先检查数据库中是否已有存储的URL
 		if videoTask.StoreUrl != "" {
 			log.Printf("Found existing store URL for task %s: %s", taskId, videoTask.StoreUrl)
+
+			// 解析StoreUrl，可能是JSON数组格式或单个URL
+			var videoUrls []string
+			if err := json.Unmarshal([]byte(videoTask.StoreUrl), &videoUrls); err != nil {
+				// 如果不是JSON数组，就当作单个URL处理
+				videoUrls = []string{videoTask.StoreUrl}
+			}
+
+			// 构建VideoResults
+			videoResults := make([]model.VideoResultItem, len(videoUrls))
+			for i, url := range videoUrls {
+				videoResults[i] = model.VideoResultItem{Url: url}
+			}
+
 			generalResponse := model.GeneralFinalVideoResponse{
 				TaskId:       taskId,
-				VideoResult:  videoTask.StoreUrl,
+				VideoResult:  videoUrls[0], // 第一个URL作为主URL
 				VideoId:      taskId,
 				TaskStatus:   "succeed",
 				Message:      "Video retrieved from cache",
-				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				VideoResults: videoResults,
 				Duration:     videoTask.Duration,
 			}
 			jsonResponse, err := json.Marshal(generalResponse)
@@ -4567,13 +4581,27 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 首先检查数据库中是否已有存储的URL
 		if videoTask.StoreUrl != "" {
 			log.Printf("Found existing store URL for Ali task %s: %s", taskId, videoTask.StoreUrl)
+
+			// 解析StoreUrl，可能是JSON数组格式或单个URL
+			var videoUrls []string
+			if err := json.Unmarshal([]byte(videoTask.StoreUrl), &videoUrls); err != nil {
+				// 如果不是JSON数组，就当作单个URL处理
+				videoUrls = []string{videoTask.StoreUrl}
+			}
+
+			// 构建VideoResults
+			videoResults := make([]model.VideoResultItem, len(videoUrls))
+			for i, url := range videoUrls {
+				videoResults[i] = model.VideoResultItem{Url: url}
+			}
+
 			generalResponse := model.GeneralFinalVideoResponse{
 				TaskId:       taskId,
-				VideoResult:  videoTask.StoreUrl,
+				VideoResult:  videoUrls[0], // 第一个URL作为主URL
 				VideoId:      taskId,
 				TaskStatus:   "succeed",
 				Message:      "Video retrieved from cache",
-				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				VideoResults: videoResults,
 				Duration:     videoTask.Duration,
 			}
 			jsonResponse, err := json.Marshal(generalResponse)
@@ -4689,13 +4717,27 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		// 首先检查数据库中是否已有存储的URL
 		if videoTask.StoreUrl != "" {
 			log.Printf("Found existing store URL for Sora task %s: %s", taskId, videoTask.StoreUrl)
+
+			// 解析StoreUrl，可能是JSON数组格式或单个URL
+			var videoUrls []string
+			if err := json.Unmarshal([]byte(videoTask.StoreUrl), &videoUrls); err != nil {
+				// 如果不是JSON数组，就当作单个URL处理
+				videoUrls = []string{videoTask.StoreUrl}
+			}
+
+			// 构建VideoResults
+			videoResults := make([]model.VideoResultItem, len(videoUrls))
+			for i, url := range videoUrls {
+				videoResults[i] = model.VideoResultItem{Url: url}
+			}
+
 			generalResponse := model.GeneralFinalVideoResponse{
 				TaskId:       taskId,
-				VideoResult:  videoTask.StoreUrl,
+				VideoResult:  videoUrls[0], // 第一个URL作为主URL
 				VideoId:      taskId,
 				TaskStatus:   "succeed",
 				Message:      "Video retrieved from cache",
-				VideoResults: []model.VideoResultItem{{Url: videoTask.StoreUrl}},
+				VideoResults: videoResults,
 				Duration:     videoTask.Duration,
 			}
 			jsonResponse, err := json.Marshal(generalResponse)
