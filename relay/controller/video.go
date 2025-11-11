@@ -139,7 +139,8 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		modelName == "T2V-01-Director" ||
 		modelName == "I2V-01-Director" ||
 		modelName == "I2V-01-live" ||
-		modelName == "MiniMax-Hailuo-02" {
+		modelName == "MiniMax-Hailuo-02" ||
+		modelName == "MiniMax-Hailuo-2.3" {
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
@@ -2352,30 +2353,74 @@ func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullR
 }
 
 func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	// 验证必填参数
-	if videoRequest.Prompt == "" {
-		return openai.ErrorWrapper(
-			fmt.Errorf("prompt is required"),
-			"invalid_request_error",
-			http.StatusBadRequest,
-		)
-	}
 
 	baseUrl := meta.BaseURL
 	fullRequestUrl := baseUrl + "/v1/video_generation"
 
-	// 直接绑定请求体到 VideoRequestMinimax 结构体
-	var videoRequestMinimax model.VideoRequestMinimax
-	if err := c.ShouldBindJSON(&videoRequestMinimax); err != nil {
+	// 读取原始请求体
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_request_body_failed", http.StatusBadRequest)
+	}
+
+	// 先解析为 map 以便处理 duration 的多种类型
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
 		return openai.ErrorWrapper(err, "invalid_request_error", http.StatusBadRequest)
 	}
 
-	// 如果存在 image 参数，将其值赋给 FirstFrameImage 并清空 image
-	if videoRequestMinimax.Image != "" {
-		videoRequestMinimax.FirstFrameImage = videoRequestMinimax.Image
-		videoRequestMinimax.Image = ""
+	// 处理 duration 字段，兼容多种类型（int、float64、string）
+	var durationInt int
+	if durationValue, exists := requestMap["duration"]; exists && durationValue != nil {
+		switch v := durationValue.(type) {
+		case float64:
+			durationInt = int(v)
+		case string:
+			parsed, parseErr := strconv.Atoi(v)
+			if parseErr == nil {
+				durationInt = parsed
+			} else {
+				durationInt = 6 // 解析失败使用默认值
+			}
+		case int:
+			durationInt = v
+		default:
+			durationInt = 6 // 未知类型使用默认值
+		}
 	}
 
+	// 如果没有传递或值为 0，设置默认值
+	if durationInt == 0 {
+		durationInt = 6
+		requestMap["duration"] = 6
+	} else {
+		requestMap["duration"] = durationInt
+	}
+
+	// 重新序列化为 JSON
+	modifiedBodyBytes, err := json.Marshal(requestMap)
+	if err != nil {
+		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
+	}
+
+	// 解析请求体以获取 duration 和 resolution 参数
+	var videoRequestMinimax model.VideoRequestMinimax
+	if err := json.Unmarshal(modifiedBodyBytes, &videoRequestMinimax); err != nil {
+		return openai.ErrorWrapper(err, "invalid_request_error", http.StatusBadRequest)
+	}
+
+	// 设置默认 resolution（如果未提供则使用 768P）
+	if videoRequestMinimax.Resolution == "" {
+		videoRequestMinimax.Resolution = "768P"
+	}
+
+	// 将 duration 和 resolution 存储到 context 中供后续计费使用
+	c.Set("minimax_duration", videoRequestMinimax.Duration)
+	c.Set("minimax_resolution", videoRequestMinimax.Resolution)
+
+	// 请求参数已通过c.Set存储，无需额外日志
+
+	// 重新序列化请求体
 	jsonData, err := json.Marshal(videoRequestMinimax)
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
@@ -2852,7 +2897,22 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 		// 先计算quota
 		quota := calculateQuota(meta, modelName, "", "", c)
 
-		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, "", "", "", "", quota)
+		// 从 context 中获取 duration 和 resolution
+		var durationStr string
+		var resolutionStr string
+		if minimaxDuration, exists := c.Get("minimax_duration"); exists {
+			if durationInt, ok := minimaxDuration.(int); ok {
+				durationStr = fmt.Sprintf("%d", durationInt)
+			}
+		}
+		if minimaxResolution, exists := c.Get("minimax_resolution"); exists {
+			if resolution, ok := minimaxResolution.(string); ok {
+				resolutionStr = resolution
+			}
+		}
+
+		// 将 resolution 存储到 mode 参数中
+		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, resolutionStr, durationStr, "", "", quota, resolutionStr)
 		if err != nil {
 
 		}
@@ -3234,6 +3294,84 @@ func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duratio
 		quota = quota * 2
 	}
 
+	// 特殊处理 MiniMax-Hailuo 视频模型（基于 duration 和 resolution 计费）
+	if modelName == "MiniMax-Hailuo-2.3-Fast" || modelName == "MiniMax-Hailuo-2.3" || modelName == "MiniMax-Hailuo-02" {
+		// 从 context 中获取 duration 和 resolution
+		minimaxDuration, hasDuration := c.Get("minimax_duration")
+		minimaxResolution, hasResolution := c.Get("minimax_resolution")
+
+		if hasDuration && hasResolution {
+			// 安全的类型断言
+			durationInt, ok1 := minimaxDuration.(int)
+			resolutionStr, ok2 := minimaxResolution.(string)
+
+			if !ok1 || !ok2 {
+				// 类型断言失败，使用默认值
+				log.Printf("[计费警告] duration 或 resolution 类型不匹配，使用默认计费")
+				return quota
+			}
+
+			// 定义价格（人民币）
+			var priceCNY float64
+
+			// 根据模型、分辨率和时长设置价格（单位：人民币元）
+			switch modelName {
+			case "MiniMax-Hailuo-2.3-Fast":
+				switch {
+				case resolutionStr == "768P" && durationInt == 6:
+					priceCNY = 1.35
+				case resolutionStr == "768P" && durationInt == 10:
+					priceCNY = 2.25
+				case resolutionStr == "1080P" && durationInt == 6:
+					priceCNY = 2.31
+				default:
+					// 未匹配到价格表，使用 768P 6秒作为默认
+					log.Printf("[计费警告] MiniMax-Hailuo-2.3-Fast 未找到匹配价格: resolution=%s, duration=%d, 使用默认价格1.35元", resolutionStr, durationInt)
+					priceCNY = 1.35
+				}
+			case "MiniMax-Hailuo-2.3":
+				switch {
+				case resolutionStr == "768P" && durationInt == 6:
+					priceCNY = 2.0
+				case resolutionStr == "768P" && durationInt == 10:
+					priceCNY = 4.0
+				case resolutionStr == "1080P" && durationInt == 6:
+					priceCNY = 3.5
+				default:
+					// 未匹配到价格表，使用 768P 6秒作为默认
+					log.Printf("[计费警告] MiniMax-Hailuo-2.3 未找到匹配价格: resolution=%s, duration=%d, 使用默认价格2.0元", resolutionStr, durationInt)
+					priceCNY = 2.0
+				}
+			case "MiniMax-Hailuo-02":
+				// MiniMax-Hailuo-02 支持多种分辨率
+				switch {
+				case resolutionStr == "512P" && durationInt == 6:
+					priceCNY = 1.5 // 根据官方文档补充
+				case resolutionStr == "512P" && durationInt == 10:
+					priceCNY = 3.0 // 根据官方文档补充
+				case resolutionStr == "768P" && durationInt == 6:
+					priceCNY = 2.0
+				case resolutionStr == "768P" && durationInt == 10:
+					priceCNY = 4.0
+				case resolutionStr == "1080P" && durationInt == 6:
+					priceCNY = 3.5
+				case resolutionStr == "1088P" && durationInt == 6:
+					priceCNY = 3.5 // 根据官方文档补充
+				default:
+					// 未匹配到价格表，使用 768P 6秒作为默认
+					log.Printf("[计费警告] MiniMax-Hailuo-02 未找到匹配价格: resolution=%s, duration=%d, 使用默认价格2.0元", resolutionStr, durationInt)
+					priceCNY = 2.0
+				}
+			}
+
+			// 将人民币转换为美元（使用固定汇率 7.2）
+			priceUSD := priceCNY / 7.2
+			quota = int64(priceUSD * config.QuotaPerUnit)
+
+			// 计费信息已记录到数据库
+		}
+	}
+
 	value, exists := c.Get("duration")
 	if exists {
 		runwayDuration := value.(string)
@@ -3319,7 +3457,7 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 	return nil
 }
 
-func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64) error {
+func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64, resolution ...string) error {
 	// 对于VertexAI，保存完整的JSON凭证
 	var credentialsJSON string
 	if provider == "vertexai" {
@@ -3354,6 +3492,12 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		finalVideoType = "text-to-video"
 	}
 
+	// 处理 resolution 参数
+	var resolutionStr string
+	if len(resolution) > 0 {
+		resolutionStr = resolution[0]
+	}
+
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
 		Prompt:      "prompt",
@@ -3367,6 +3511,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		Type:        finalVideoType,
 		Model:       meta.OriginModelName,
 		Duration:    duration,
+		Resolution:  resolutionStr, // 保存分辨率
 		VideoId:     videoId,
 		Quota:       quota,
 		Credentials: credentialsJSON, // 保存完整的JSON凭证
@@ -3396,6 +3541,8 @@ func mapTaskStatus(status string) string {
 
 func mapTaskStatusMinimax(status string) string {
 	switch status {
+	case "Preparing":
+		return "processing"
 	case "Processing":
 		return "processing"
 	case "Success":
@@ -3403,6 +3550,7 @@ func mapTaskStatusMinimax(status string) string {
 	case "Fail":
 		return "failed"
 	default:
+		log.Printf("[MiniMax状态映射] 未知状态: %s", status)
 		return "unknown"
 	}
 }
@@ -3449,7 +3597,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			http.StatusInternalServerError,
 		)
 	}
-	logger.SysLog(fmt.Sprintf("channelId2:%d", channel.Id))
 	cfg, err := channel.LoadConfig()
 	if err != nil {
 		return openai.ErrorWrapper(
@@ -3744,7 +3891,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		)
 	}
 	defer resp.Body.Close()
-	log.Printf("video response body: %+v", resp)
+	// log.Printf("video response body: %+v", resp)
 	// 检查响应状态码
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -3798,6 +3945,14 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			generalResponse.VideoResults = []model.VideoResultItem{
 				{Url: zhipuResp.VideoResults[0].URL},
 			}
+
+			// 将视频URL存储到数据库
+			if generalResponse.VideoResult != "" {
+				err := dbmodel.UpdateVideoStoreUrl(taskId, generalResponse.VideoResult)
+				if err != nil {
+					log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+				}
+			}
 		}
 
 		// 更新任务状态并检查是否需要退款
@@ -3846,8 +4001,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			)
 		}
 
-		// 打印完整响应体
-		log.Printf("Kling response body: %s", string(body))
+		// Kling 响应已接收
 
 		// 解析JSON响应
 		var klingResp keling.KelingVideoResponse
@@ -3891,6 +4045,14 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			// 同时设置 VideoResults
 			generalResponse.VideoResults = []model.VideoResultItem{
 				{Url: klingResp.Data.TaskResult.Videos[0].URL},
+			}
+
+			// 将视频URL存储到数据库
+			if generalResponse.VideoResult != "" {
+				err := dbmodel.UpdateVideoStoreUrl(taskId, generalResponse.VideoResult)
+				if err != nil {
+					log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+				}
 			}
 		}
 
@@ -3962,6 +4124,14 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			// 同时设置 VideoResults
 			generalResponse.VideoResults = []model.VideoResultItem{
 				{Url: runwayResp.Output[0]},
+			}
+
+			// 将视频URL存储到数据库
+			if generalResponse.VideoResult != "" {
+				err := dbmodel.UpdateVideoStoreUrl(taskId, generalResponse.VideoResult)
+				if err != nil {
+					log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+				}
 			}
 		} else {
 			log.Printf("Task not succeeded or no output. Status: %s, Output length: %d",
@@ -4039,6 +4209,14 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					// 同时设置 VideoResults
 					generalResponse.VideoResults = []model.VideoResultItem{
 						{Url: videoURL},
+					}
+
+					// 将视频URL存储到数据库
+					if videoURL != "" {
+						err := dbmodel.UpdateVideoStoreUrl(taskId, videoURL)
+						if err != nil {
+							log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+						}
 					}
 				} else {
 					log.Printf("Video URL not found or invalid type in assets")
@@ -4646,9 +4824,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		// 处理响应
 		if aliResp.Code != "" {
-			// 查询API本身出错
+			// 查询API本身出错 - 直接返回阿里云的错误信息
 			generalResponse.TaskStatus = "failed"
-			generalResponse.Message = fmt.Sprintf("Query error: %s, request_id: %s", aliResp.Message, aliResp.RequestID)
+			if aliResp.Message != "" {
+				generalResponse.Message = fmt.Sprintf("阿里云API错误: [%s] %s (request_id: %s)", aliResp.Code, aliResp.Message, aliResp.RequestID)
+			} else {
+				generalResponse.Message = fmt.Sprintf("阿里云API错误: [%s] (request_id: %s)", aliResp.Code, aliResp.RequestID)
+			}
 		} else if aliResp.Output != nil {
 			// 根据任务状态处理
 			switch aliResp.Output.TaskStatus {
@@ -4670,10 +4852,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				}
 			case "FAILED":
 				generalResponse.TaskStatus = "failed"
-				generalResponse.Message = fmt.Sprintf("Video generation failed, request_id: %s", aliResp.RequestID)
+				// 优先使用阿里云返回的详细错误信息
+				if aliResp.Code != "" && aliResp.Message != "" {
+					generalResponse.Message = fmt.Sprintf("视频生成失败: [%s] %s (request_id: %s)", aliResp.Code, aliResp.Message, aliResp.RequestID)
+				} else if aliResp.Message != "" {
+					generalResponse.Message = fmt.Sprintf("视频生成失败: %s (request_id: %s)", aliResp.Message, aliResp.RequestID)
+				} else {
+					generalResponse.Message = fmt.Sprintf("视频生成失败 (request_id: %s)", aliResp.RequestID)
+				}
 			case "UNKNOWN":
 				generalResponse.TaskStatus = "failed"
-				generalResponse.Message = fmt.Sprintf("Task expired or unknown, request_id: %s", aliResp.RequestID)
+				if aliResp.Message != "" {
+					generalResponse.Message = fmt.Sprintf("任务已过期或未知: %s (request_id: %s)", aliResp.Message, aliResp.RequestID)
+				} else {
+					generalResponse.Message = fmt.Sprintf("任务已过期或未知 (request_id: %s)", aliResp.RequestID)
+				}
 			case "PROCESSING", "RUNNING":
 				generalResponse.TaskStatus = "processing"
 				generalResponse.Message = fmt.Sprintf("Video generation in progress, request_id: %s", aliResp.RequestID)
@@ -4684,7 +4877,11 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		} else {
 			// 无输出，可能是API错误
 			generalResponse.TaskStatus = "failed"
-			generalResponse.Message = fmt.Sprintf("No output received, request_id: %s", aliResp.RequestID)
+			if aliResp.Message != "" {
+				generalResponse.Message = fmt.Sprintf("未收到响应数据: %s (request_id: %s)", aliResp.Message, aliResp.RequestID)
+			} else {
+				generalResponse.Message = fmt.Sprintf("未收到响应数据 (request_id: %s)", aliResp.RequestID)
+			}
 		}
 
 		// 更新数据库任务状态并在必要时处理退款
@@ -4978,6 +5175,9 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		return openai.ErrorWrapper(fmt.Errorf("failed to read response body: %v", err), "internal_error", http.StatusInternalServerError)
 	}
 
+	// 打印海螺原始响应体
+	log.Printf("[MiniMax原始响应] TaskId:%s, StatusCode:%d, Body:%s", taskId, resp.StatusCode, string(body))
+
 	var minimaxResp model.FinalVideoResponse
 	if err := json.Unmarshal(body, &minimaxResp); err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
@@ -5040,6 +5240,9 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		return openai.ErrorWrapper(fmt.Errorf("failed to read file response body: %v", err), "internal_error", http.StatusInternalServerError)
 	}
 
+	// 打印海螺文件信息原始响应体
+	log.Printf("[MiniMax文件响应] TaskId:%s, FileID:%s, StatusCode:%d, Body:%s", taskId, minimaxResp.FileID, fileResp.StatusCode, string(fileBody))
+
 	var fileResponse model.MinimaxFinalResponse
 	if err := json.Unmarshal(fileBody, &fileResponse); err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse file response JSON: %v", err), "json_parse_error", http.StatusInternalServerError)
@@ -5051,6 +5254,14 @@ func handleMinimaxResponse(c *gin.Context, channel *dbmodel.Channel, taskId stri
 		{Url: fileResponse.File.DownloadURL},
 	}
 	generalResponse.TaskStatus = "succeed" // 假设有 FileID 且能获取到下载 URL 就意味着成功
+
+	// 将视频URL存储到数据库的StoreUrl字段
+	if fileResponse.File.DownloadURL != "" {
+		err := dbmodel.UpdateVideoStoreUrl(taskId, fileResponse.File.DownloadURL)
+		if err != nil {
+			log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+		}
+	}
 
 	// 更新任务状态并检查是否需要退款
 	failReason := ""

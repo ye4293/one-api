@@ -15,6 +15,7 @@ type Video struct {
 	Provider    string `json:"provider"`
 	Mode        string `json:"mode"`
 	Duration    string `json:"duration"`
+	Resolution  string `json:"resolution"` // 视频分辨率
 	Username    string `json:"username"`
 	ChannelId   int    `json:"channel_id"`
 	UserId      int    `json:"user_id"`
