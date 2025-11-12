@@ -140,7 +140,8 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		modelName == "I2V-01-Director" ||
 		modelName == "I2V-01-live" ||
 		modelName == "MiniMax-Hailuo-02" ||
-		modelName == "MiniMax-Hailuo-2.3" {
+		modelName == "MiniMax-Hailuo-2.3" ||
+		modelName == "MiniMax-Hailuo-2.3-Fast" {
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)

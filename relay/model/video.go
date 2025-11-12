@@ -15,8 +15,8 @@ type VideoRequestMinimax struct {
 	Duration         int    `json:"duration,omitempty"`          // 视频时长（秒）
 	Resolution       string `json:"resolution,omitempty"`        // 视频分辨率
 	SubjectReference []struct {
-		Type  string `json:"type"`  // 主体类型，目前仅支持 "character"
-		Image string `json:"image"` // Base64编码的图片数据或URL
+		Type  string   `json:"type"`  // 主体类型，目前仅支持 "character"
+		Image []string `json:"image"` // 图片URL数组（目前仅支持单张图片）
 	} `json:"subject_reference,omitempty"` // 主体参考数组，仅当model为S2V-01时可用
 	CallbackUrl string `json:"callback_url,omitempty"` // 回调通知地址
 
