@@ -1517,6 +1517,12 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	}
 	c.Set("durationSeconds", duration)
 
+	// 添加storageUri参数（从渠道配置中读取GoogleStorage）
+	if meta.Config.GoogleStorage != "" {
+		params["storageUri"] = meta.Config.GoogleStorage
+		log.Printf("[VEO] Added storageUri to parameters: %s", meta.Config.GoogleStorage)
+	}
+
 	// 更新parameters
 	reqBody["parameters"] = params
 
@@ -5593,6 +5599,18 @@ func extractVeoVideoURI(response map[string]interface{}) string {
 	return ""
 }
 
+// convertGCStoHTTPS 将 gs:// 格式的 URI 转换为 https://storage.googleapis.com/ 格式
+func convertGCStoHTTPS(gcsUri string) string {
+	if strings.HasPrefix(gcsUri, "gs://") {
+		// 将 gs:// 替换为 https://storage.googleapis.com/
+		httpsUrl := strings.Replace(gcsUri, "gs://", "https://storage.googleapis.com/", 1)
+		log.Printf("[VEO URL转换] GCS URI: %s -> HTTPS URL: %s", gcsUri, httpsUrl)
+		return httpsUrl
+	}
+	// 如果不是 gs:// 格式，直接返回原始 URI
+	return gcsUri
+}
+
 // extractVeoVideoURIs 从 Vertex AI Veo 操作响应中提取所有视频URI或base64数据
 func extractVeoVideoURIs(response map[string]interface{}) []string {
 	var videoURIs []string
@@ -5622,7 +5640,9 @@ func extractVeoVideoURIs(response map[string]interface{}) []string {
 				// 优先检查是否有 GCS URI
 				if gcsUri, ok := video["gcsUri"].(string); ok && gcsUri != "" {
 					log.Printf("[VEO视频提取] ✅ 找到GCS URI: %s", gcsUri)
-					videoURIs = append(videoURIs, gcsUri)
+					// 转换 gs:// 为 https://storage.googleapis.com/
+					httpsUrl := convertGCStoHTTPS(gcsUri)
+					videoURIs = append(videoURIs, httpsUrl)
 					continue
 				}
 				// 检查是否有 base64 编码的视频数据
@@ -5655,7 +5675,9 @@ func extractVeoVideoURIs(response map[string]interface{}) []string {
 					// 优先检查是否有 URI
 					if uri, ok := video["uri"].(string); ok && uri != "" {
 						log.Printf("[VEO视频提取] ✅ 找到URI: %s", uri)
-						videoURIs = append(videoURIs, uri)
+						// 转换 gs:// 为 https://storage.googleapis.com/
+						httpsUrl := convertGCStoHTTPS(uri)
+						videoURIs = append(videoURIs, httpsUrl)
 						continue
 					}
 					// 检查是否有 base64 编码的视频数据

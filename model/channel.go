@@ -144,6 +144,7 @@ type ChannelConfig struct {
 	Plugin            string `json:"plugin,omitempty"`
 	VertexAIProjectID string `json:"vertex_ai_project_id,omitempty"`
 	VertexAIADC       string `json:"vertex_ai_adc,omitempty"`
+	GoogleStorage     string `json:"google_storage,omitempty"`
 }
 
 func (channel *Channel) LoadConfig() (ChannelConfig, error) {
