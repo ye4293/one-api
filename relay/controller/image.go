@@ -2912,21 +2912,43 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		},
 	}
 
+	// 准备 ImageConfig 字段
+	var aspectRatio string
+	var imageSize string
+
 	// 处理 size 参数，转换为 Gemini 的 aspectRatio
 	if sizeValues, ok := c.Request.MultipartForm.Value["size"]; ok && len(sizeValues) > 0 {
 		sizeStr := sizeValues[0]
 		if sizeStr != "" {
-			aspectRatio := convertSizeToAspectRatio(sizeStr)
-			if aspectRatio != "" {
-				// 只有成功转换才设置 ImageConfig
-				geminiRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{
-					AspectRatio: aspectRatio,
-				}
+			convertedRatio := convertSizeToAspectRatio(sizeStr)
+			if convertedRatio != "" {
+				aspectRatio = convertedRatio
 				logger.Infof(ctx, "Gemini Form request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
 			} else {
-				// 无法识别的格式，不设置 ImageConfig，使用 Gemini 默认行为
+				// 无法识别的格式
 				logger.Infof(ctx, "Gemini Form request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
 			}
+		}
+	}
+
+	// 处理 quality 参数，映射到 Gemini 的 imageSize
+	if qualityValues, ok := c.Request.MultipartForm.Value["quality"]; ok && len(qualityValues) > 0 {
+		qualityStr := qualityValues[0]
+		if qualityStr != "" {
+			// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
+			imageSize = strings.ToUpper(qualityStr)
+			logger.Infof(ctx, "Gemini Form request: mapped quality '%s' to imageSize", imageSize)
+		}
+	}
+
+	// 如果有任意配置项，设置 ImageConfig
+	if aspectRatio != "" || imageSize != "" {
+		geminiRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{}
+		if aspectRatio != "" {
+			geminiRequest.GenerationConfig.ImageConfig.AspectRatio = aspectRatio
+		}
+		if imageSize != "" {
+			geminiRequest.GenerationConfig.ImageConfig.ImageSize = imageSize
 		}
 	}
 
