@@ -50,6 +50,7 @@ type ChatGenerationConfig struct {
 
 type ImageConfig struct {
 	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
 }
 
 type ThinkingConfig struct {

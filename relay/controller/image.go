@@ -288,20 +288,41 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				},
 			}
 
+			// 准备 ImageConfig 字段
+			var aspectRatio string
+			var imageSize string
+
 			// 处理 size 参数，转换为 Gemini 的 aspectRatio
 			if sizeValue, exists := requestMap["size"]; exists {
 				if sizeStr, ok := sizeValue.(string); ok && sizeStr != "" {
-					aspectRatio := convertSizeToAspectRatio(sizeStr)
-					if aspectRatio != "" {
-						// 只有成功转换才设置 ImageConfig
-						geminiImageRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{
-							AspectRatio: aspectRatio,
-						}
+					convertedRatio := convertSizeToAspectRatio(sizeStr)
+					if convertedRatio != "" {
+						aspectRatio = convertedRatio
 						logger.Infof(ctx, "Gemini JSON request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
 					} else {
-						// 无法识别的格式，不设置 ImageConfig，使用 Gemini 默认行为
+						// 无法识别的格式
 						logger.Infof(ctx, "Gemini JSON request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
 					}
+				}
+			}
+
+			// 处理 quality 参数，映射到 Gemini 的 imageSize
+			if qualityValue, exists := requestMap["quality"]; exists {
+				if qualityStr, ok := qualityValue.(string); ok && qualityStr != "" {
+					// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
+					imageSize = strings.ToUpper(qualityStr)
+					logger.Infof(ctx, "Gemini JSON request: mapped quality '%s' to imageSize", imageSize)
+				}
+			}
+
+			// 如果有任意配置项，设置 ImageConfig
+			if aspectRatio != "" || imageSize != "" {
+				geminiImageRequest.GenerationConfig.ImageConfig = &gemini.ImageConfig{}
+				if aspectRatio != "" {
+					geminiImageRequest.GenerationConfig.ImageConfig.AspectRatio = aspectRatio
+				}
+				if imageSize != "" {
+					geminiImageRequest.GenerationConfig.ImageConfig.ImageSize = imageSize
 				}
 			}
 
@@ -1311,57 +1332,57 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 		}
 
-	// 检查是否有图片数据，如果没有则返回错误
-	if len(imageData) == 0 {
-		// 详细分析无图片的原因
-		var detailReason string
-		candidatesInfo := ""
-		if len(geminiResponse.Candidates) == 0 {
-			detailReason = "candidates 数组为空"
-		} else {
-			candidate := geminiResponse.Candidates[0]
-			candidatesInfo = fmt.Sprintf("finishReason=%s, partsCount=%d", 
-				candidate.FinishReason, len(candidate.Content.Parts))
-			
-			if len(candidate.Content.Parts) == 0 {
-				detailReason = "content.parts 数组为空"
+		// 检查是否有图片数据，如果没有则返回错误
+		if len(imageData) == 0 {
+			// 详细分析无图片的原因
+			var detailReason string
+			candidatesInfo := ""
+			if len(geminiResponse.Candidates) == 0 {
+				detailReason = "candidates 数组为空"
 			} else {
-				hasText := false
-				hasEmptyPart := false
-				textContent := ""
-				for _, part := range candidate.Content.Parts {
-					if part.Text != "" {
-						hasText = true
-						if len(part.Text) > 50 {
-							textContent = part.Text[:50] + "..."
-						} else {
-							textContent = part.Text
+				candidate := geminiResponse.Candidates[0]
+				candidatesInfo = fmt.Sprintf("finishReason=%s, partsCount=%d",
+					candidate.FinishReason, len(candidate.Content.Parts))
+
+				if len(candidate.Content.Parts) == 0 {
+					detailReason = "content.parts 数组为空"
+				} else {
+					hasText := false
+					hasEmptyPart := false
+					textContent := ""
+					for _, part := range candidate.Content.Parts {
+						if part.Text != "" {
+							hasText = true
+							if len(part.Text) > 50 {
+								textContent = part.Text[:50] + "..."
+							} else {
+								textContent = part.Text
+							}
+						}
+						if part.InlineData == nil && part.Text == "" {
+							hasEmptyPart = true
 						}
 					}
-					if part.InlineData == nil && part.Text == "" {
-						hasEmptyPart = true
+					if hasText {
+						detailReason = fmt.Sprintf("只包含文本，没有图片数据: %s", textContent)
+					} else if hasEmptyPart {
+						detailReason = "parts 包含空对象"
+					} else {
+						detailReason = "未知原因"
 					}
 				}
-				if hasText {
-					detailReason = fmt.Sprintf("只包含文本，没有图片数据: %s", textContent)
-				} else if hasEmptyPart {
-					detailReason = "parts 包含空对象"
-				} else {
-					detailReason = "未知原因"
-				}
 			}
-		}
-		
-		logger.Errorf(ctx, "Gemini API 未返回图片数据: %s (%s)", detailReason, candidatesInfo)
-		
-		// 打印原始响应体用于调试（限制长度）
-		responseStr := string(responseBody)
-		if len(responseStr) > 1000 {
-			responseStr = responseStr[:1000] + "...[truncated]"
-		}
-		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
-		// 构建包含错误和usage信息的响应
+			logger.Errorf(ctx, "Gemini API 未返回图片数据: %s (%s)", detailReason, candidatesInfo)
+
+			// 打印原始响应体用于调试（限制长度）
+			responseStr := string(responseBody)
+			if len(responseStr) > 1000 {
+				responseStr = responseStr[:1000] + "...[truncated]"
+			}
+			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
+
+			// 构建包含错误和usage信息的响应
 			errorResponse := map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    "gemini_no_image_generated",
@@ -3449,7 +3470,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				detailReason = "未知原因"
 			}
 		}
-		
+
 		logger.Errorf(ctx, "Gemini API 未返回图片数据: %s", detailReason)
 
 		// 打印原始响应体用于调试（限制长度）
