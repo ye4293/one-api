@@ -204,4 +204,21 @@ func SetRelayRouter(router *gin.Engine) {
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")
 	doubaoApiRouter.Use(middleware.TokenAuth()).GET("/tasks/:taskid", controller.RelayDouBaoVideoResultById)
 	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
+
+	// Gemini API原生接口路由组
+	// 路径格式: /v1beta/models/{model_name}:{action}
+	// 支持 generateContent, streamGenerateContent, embedContent, batchEmbedContents 等操作
+	geminiRouter := router.Group("/v1beta")
+	geminiRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		// 使用通配符捕获 models/ 后的所有内容: gemini-2.0-flash:generateContent
+		geminiRouter.POST("/models/*path", controller.RelayGemini)
+	}
+
+	// Gemini API v1 版本路由（某些模型使用 v1）
+	geminiV1Router := router.Group("/v1")
+	geminiV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		geminiV1Router.POST("/models/*path", controller.RelayGemini)
+	}
 }

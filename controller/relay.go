@@ -1055,3 +1055,65 @@ func RelayImageResult(c *gin.Context) {
 	}
 
 }
+
+func relayGeminiHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
+	if relayMode == relayconstant.RelayModeGeminiGenerateContent || relayMode == relayconstant.RelayModeGeminiStreamGenerateContent {
+		return controller.RelayGeminiNative(c)
+	}
+	return nil
+}
+func RelayGemini(c *gin.Context) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	relayMode := c.GetInt("relay_mode")
+	geminiErr := relayGeminiHelper(c, relayMode)
+
+	if geminiErr == nil {
+		return
+	}
+
+	lastFailedChannelId := channelId
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, geminiErr.StatusCode, geminiErr.Error.Message) {
+		logger.Errorf(ctx, "Gemini relay error happen, status code is %d, won't retry in this case", geminiErr.StatusCode)
+		retryTimes = 0
+	}
+
+	for i := retryTimes; i > 0; i-- {
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, c.GetString("original_model"), i != retryTimes)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %s", err.Error())
+			break
+		}
+		if channel.Id == lastFailedChannelId {
+			continue
+		}
+		logger.Infof(ctx, "Using channel #%d to retry Gemini request (remain times %d)", channel.Id, i)
+
+		middleware.SetupContextForSelectedChannel(c, channel, c.GetString("original_model"))
+		requestBody, err := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		geminiErr = relayGeminiHelper(c, relayMode)
+		if geminiErr == nil {
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName = c.GetString("channel_name")
+		go processChannelRelayError(ctx, userId, channelId, channelName, geminiErr)
+	}
+
+	if geminiErr != nil {
+		c.JSON(geminiErr.StatusCode, gin.H{
+			"error": gin.H{
+				"message": geminiErr.Error.Message,
+				"type":    geminiErr.Error.Type,
+				"code":    geminiErr.Error.Code,
+			},
+		})
+	}
+}

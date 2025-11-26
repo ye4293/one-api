@@ -51,6 +51,7 @@ type RelayMeta struct {
 	ActualModelName string
 	RequestURLPath  string
 	PromptTokens    int // only for DoResponse
+	PreConsumedQuota int64
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -78,6 +79,9 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	}
 	if meta.BaseURL == "" {
 		meta.BaseURL = common.ChannelBaseURLs[meta.ChannelType]
+	}
+	if meta.Mode == constant.RelayModeGeminiGenerateContent || meta.Mode == constant.RelayModeGeminiStreamGenerateContent {
+		meta.ActualModelName = meta.OriginModelName 
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
 	return &meta

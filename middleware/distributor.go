@@ -21,6 +21,36 @@ type ModelRequest struct {
 	ModelName string `json:"model_name,omitempty" form:"model_name"`
 }
 
+// extractModelNameFromGeminiPath 从 Gemini API 路径中提取模型名称
+// 路径格式: /v1beta/models/{model_name}:{action}
+// 例如:
+//   - 完整路径: /v1beta/models/gemini-2.0-flash:generateContent -> gemini-2.0-flash
+//   - 通配符参数: /gemini-2.0-flash:generateContent -> gemini-2.0-flash
+func extractModelNameFromGeminiPath(path string) string {
+	// 处理通配符路径参数（以 / 开头）
+	if strings.HasPrefix(path, "/") {
+		path = path[1:] // 移除开头的 /
+	}
+
+	// 查找 /models/ 的位置
+	modelsIndex := strings.Index(path, "/models/")
+	if modelsIndex != -1 {
+		// 获取 /models/ 之后的部分
+		path = path[modelsIndex+8:] // 8 = len("/models/")
+	}
+
+	// 查找 : 的位置（action 分隔符）
+	colonIndex := strings.Index(path, ":")
+	if colonIndex == -1 {
+		// 如果没有 :，返回整个字符串
+		return path
+	}
+
+	// 返回 : 之前的模型名称
+	modelName := path[:colonIndex]
+	return modelName
+}
+
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		userId := c.GetInt("id")
@@ -94,6 +124,21 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 				modelRequest.Model = sdModel
+				c.Set("relay_mode", relayMode)
+			} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+				// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
+				//relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)
+				relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)
+				if relayMode == relayconstant.RelayModeUnknown {
+					abortWithMessage(c, http.StatusBadRequest, "Invalid gemini request path: "+c.Request.URL.Path)
+					return
+				}
+				modelName := extractModelNameFromGeminiPath(c.Request.URL.Path)
+				if modelName == "" {
+					abortWithMessage(c, http.StatusBadRequest, "Invalid gemini request path: "+c.Request.URL.Path)
+					return
+				}
+				modelRequest.Model = modelName
 				c.Set("relay_mode", relayMode)
 			} else {
 

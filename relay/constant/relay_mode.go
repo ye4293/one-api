@@ -42,11 +42,20 @@ const (
 	RelayModeImageToVideo
 	RelayModeVideoResult
 	RelayMode3D
+	RelayModeGeminiGenerateContent
+	RelayModeGeminiStreamGenerateContent
 )
 
 func Path2RelayMode(path string) int {
 	relayMode := RelayModeUnknown
-	if strings.HasPrefix(path, "/v1/chat/completions") {
+	// Gemini API 路径判断: /v1beta/models/{model}:{action} 或 /v1/models/{model}:{action}
+	if strings.HasPrefix(path, "/v1beta/models/") || strings.HasPrefix(path, "/v1/models/") {
+		if strings.Contains(path, ":generateContent") {
+			relayMode = RelayModeGeminiGenerateContent
+		} else if strings.Contains(path, ":streamGenerateContent") {
+			relayMode = RelayModeGeminiStreamGenerateContent
+		} 
+	} else if strings.HasPrefix(path, "/v1/chat/completions") {
 		relayMode = RelayModeChatCompletions
 	} else if strings.HasPrefix(path, "/v1/completions") {
 		relayMode = RelayModeCompletions
@@ -157,5 +166,20 @@ func Path2RelayModeSd(path string) int {
 		relayMode = RelayMode3D
 	}
 
+	return relayMode
+}
+
+func Path2RelayModeGemini(path string) int {
+	relayMode := RelayModeUnknown
+
+	// 匹配 Gemini API 路径格式: /v1beta/models/{model}:{action}
+	// 或 /v1/models/{model}:{action}
+	if strings.Contains(path, ":generateContent") {
+		if strings.Contains(path, ":streamGenerateContent") {
+			relayMode = RelayModeGeminiStreamGenerateContent
+		} else {
+			relayMode = RelayModeGeminiGenerateContent
+		}
+	}
 	return relayMode
 }
