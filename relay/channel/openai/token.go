@@ -114,29 +114,15 @@ func CountTokenMessages(messages []model.Message, model string) int {
 							}
 						}
 					case "image_url":
-						imageUrl, ok := m["image_url"].(map[string]any)
-						if !ok {
-							continue
-						}
-
-						url, ok := imageUrl["url"].(string)
-						if !ok {
-							continue
-						}
-
-						detail := ""
-						if detailValue := imageUrl["detail"]; detailValue != nil {
-							if detailString, ok := detailValue.(string); ok {
-								detail = detailString
-							}
-						}
-
-						imageTokens, err := countImageTokens(url, detail)
-						if err != nil {
-							logger.SysError("error counting image tokens: " + err.Error())
-							continue
-						}
-						tokenNum += imageTokens
+						// 默认跳过图片token计算以节省服务器资源
+						// 媒体token计算消耗性能，且响应中会包含准确的token信息
+						logger.SysLog(fmt.Sprintf("Skipping image token calculation for performance optimization - model: %s", model))
+						continue
+					case "audio_url", "video_url", "input_audio", "file_url":
+						// 默认跳过音频、视频、文档token计算以节省服务器资源
+						// 媒体token计算消耗性能，且响应中会包含准确的token信息
+						logger.SysLog(fmt.Sprintf("Skipping %s token calculation for performance optimization - model: %s", contentType, model))
+						continue
 					}
 				}
 			}

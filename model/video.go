@@ -8,22 +8,25 @@ import (
 )
 
 type Video struct {
-	Prompt     string `json:"prompt"`
-	CreatedAt  int64  `json:"created_at"`
-	TaskId     string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:30"`
-	Type       string `json:"type"`
-	Provider   string `json:"provider"`
-	Mode       string `json:"mode"`
-	Duration   string `json:"duration"`
-	Username   string `json:"username"`
-	ChannelId  int    `json:"channel_id"`
-	UserId     int    `json:"user_id"`
-	Model      string `json:"model"`
-	Status     string `json:"status"`
-	FailReason string `json:"fail_reason"`
-	VideoId    string `json:"video_id"`
-	StoreUrl   string `json:"store_url"`
-	Quota      int64  `json:"quota"`
+	Prompt      string `json:"prompt"`
+	CreatedAt   int64  `json:"created_at"`
+	TaskId      string `json:"task_id" gorm:"type:varchar(200);index:idx_tid,length:40"`
+	Type        string `json:"type"`
+	Provider    string `json:"provider"`
+	Mode        string `json:"mode"`
+	Duration    string `json:"duration"`
+	Resolution  string `json:"resolution"` // 视频分辨率
+	Username    string `json:"username"`
+	ChannelId   int    `json:"channel_id"`
+	UserId      int    `json:"user_id"`
+	Model       string `json:"model"`
+	Status      string `json:"status"`
+	FailReason  string `json:"fail_reason"`
+	VideoId     string `json:"video_id"`
+	StoreUrl    string `json:"store_url"` // 直接存储JSON化的URL数组字符串
+	Quota       int64  `json:"quota"`
+	N           int    `json:"n"`
+	Credentials string `json:"credentials"` // 保存任务创建时使用的完整JSON凭证
 }
 
 func (video *Video) Insert() error {
@@ -34,9 +37,9 @@ func (video *Video) Insert() error {
 
 func (video *Video) Update() error {
 	var err error
-	// TaskId现在是主键，可以直接使用GORM的Updates方法
+	// TaskId现在是主键，需要提供WHERE条件进行更新
 	if video.TaskId != "" {
-		err = DB.Model(video).Updates(video).Error
+		err = DB.Model(&Video{}).Where("task_id = ?", video.TaskId).Updates(video).Error
 	} else {
 		return fmt.Errorf("TaskId must be provided for update")
 	}
@@ -222,4 +225,21 @@ func GetCurrentUserVideosAndCount(
 	}
 
 	return videos, total, nil
+}
+
+// UpdateStoreUrl 更新视频任务的存储URL
+func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
+	result := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("store_url", storeUrl)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update store_url for task_id %s: %w", taskId, result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
 }

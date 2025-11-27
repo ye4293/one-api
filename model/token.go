@@ -33,7 +33,7 @@ func GetAllUserTokens(userId int, startIdx int, num int, order string) ([]*Token
 	var tokens []*Token
 	var err error
 	query := DB.Where("user_id = ?", userId)
-	
+
 	switch order {
 	case "remain_quota":
 		query = query.Order("unlimited_quota desc, remain_quota desc")
@@ -42,7 +42,7 @@ func GetAllUserTokens(userId int, startIdx int, num int, order string) ([]*Token
 	default:
 		query = query.Order("id desc")
 	}
-	
+
 	err = query.Limit(num).Offset(startIdx).Find(&tokens).Error
 	return tokens, err
 }
@@ -345,11 +345,10 @@ func PreConsumeTokenQuota(tokenId int, quota int64) (err error) {
 		}
 	}
 
-	if !token.UnlimitedQuota {
-		err = DecreaseTokenQuota(tokenId, quota)
-		if err != nil {
-			return err
-		}
+	err = DecreaseTokenQuota(tokenId, quota)
+	if err != nil {
+		return err
+
 	}
 	err = DecreaseUserQuota(token.UserId, quota)
 	return err
@@ -376,15 +375,13 @@ func PostConsumeTokenQuota(tokenId int, quota int64) (err error) {
 	if err != nil {
 		return err
 	}
-	if !token.UnlimitedQuota {
-		if quota > 0 {
-			err = DecreaseTokenQuota(tokenId, quota)
-		} else {
-			err = IncreaseTokenQuota(tokenId, -quota)
-		}
-		if err != nil {
-			return err
-		}
+	if quota > 0 {
+		err = DecreaseTokenQuota(tokenId, quota)
+	} else {
+		err = IncreaseTokenQuota(tokenId, -quota)
+	}
+	if err != nil {
+		return err
 	}
 	return nil
 }

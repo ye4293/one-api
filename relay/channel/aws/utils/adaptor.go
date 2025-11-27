@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -23,12 +24,34 @@ type Adaptor struct {
 	AwsClient *bedrockruntime.Client
 }
 
-func (a *Adaptor) Init(meta *util.RelayMeta) {
+func (a *Adaptor) Init(meta *util.RelayMeta) error {
 	a.Meta = meta
+
+	key := meta.ActualAPIKey
+	parts := strings.Split(key, "|")
+
+	var accessKey, secretKey, region string
+
+	if len(parts) == 3 {
+		accessKey = parts[0]
+		secretKey = parts[1]
+		region = parts[2]
+	} else {
+		// Fallback to legacy config for backward compatibility
+		accessKey = meta.Config.AK
+		secretKey = meta.Config.SK
+		region = meta.Config.Region
+	}
+
+	if accessKey == "" || secretKey == "" || region == "" {
+		return errors.New("AWS credentials not provided or invalid")
+	}
+
 	a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
-		Region:      meta.Config.Region,
-		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(meta.Config.AK, meta.Config.SK, "")),
+		Region:      region,
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	})
+	return nil
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {

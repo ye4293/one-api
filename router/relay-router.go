@@ -25,6 +25,28 @@ func SetRelayRouter(router *gin.Engine) {
 		// Image generation endpoints
 	}
 
+	// Sora 视频生成路由 - 需要 Distribute 中间件进行渠道选择
+	soraRouter := router.Group("/v1")
+	soraRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		soraRouter.POST("/videos", controller.RelaySoraVideo)
+	}
+
+	// Sora 视频 remix 路由 - 不需要 Distribute 中间件，因为必须使用原视频的渠道
+	soraRemixRouter := router.Group("/v1")
+	soraRemixRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		soraRemixRouter.POST("/videos/:videoId/remix", controller.RelaySoraVideoRemix)
+	}
+
+	// Sora 查询路由 - 不需要 Distribute 中间件
+	soraResultRouter := router.Group("/v1")
+	soraResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		soraResultRouter.GET("/videos/:videoId/content", controller.RelaySoraVideoContent)
+		soraResultRouter.GET("/videos/:videoId", controller.RelaySoraVideoResult)
+	}
+
 	// Create separate router groups for POST and GET
 	asyncImagePostRouter := router.Group("/v1/async")
 	asyncImagePostRouter.Use(middleware.TokenAuth(), middleware.Distribute())
@@ -35,7 +57,7 @@ func SetRelayRouter(router *gin.Engine) {
 	asyncImageGetRouter := router.Group("/v1/async")
 	asyncImageGetRouter.Use(middleware.TokenAuth())
 	{
-		asyncImageGetRouter.GET("/images/generations", controller.RelayImageResult)
+		asyncImageGetRouter.GET("/images/result", controller.RelayImageResult)
 	}
 
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
@@ -98,6 +120,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/images/creativeUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/styles", controller.RelayRecraft)
 		relayV1Router.POST("/images/generations", controller.Relay)
+		relayV1Router.POST("/messages", controller.Relay)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {
@@ -204,6 +227,62 @@ func SetRelayRouter(router *gin.Engine) {
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")
 	doubaoApiRouter.Use(middleware.TokenAuth()).GET("/tasks/:taskid", controller.RelayDouBaoVideoResultById)
 	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
+
+	// Runway AI 路由组 - 在官方API路径中间插入"runway"
+	// Runway API 使用直接代理模式，不需要 Distribute 中间件
+	runwayRouter := router.Group("/runway/v1")
+	runwayRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		// 视频生成相关端点
+		runwayRouter.POST("/image_to_video", controller.RelayRunway)
+		runwayRouter.POST("/video_to_video", controller.RelayRunway)
+		runwayRouter.POST("/text_to_image", controller.RelayRunway)
+		runwayRouter.POST("/video_upscale", controller.RelayRunway)
+		runwayRouter.POST("/character_performance", controller.RelayRunway)
+	}
+
+	// 不需要模型分发的查询端点
+	runwayResultRouter := router.Group("/runway/v1")
+	runwayResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		runwayResultRouter.GET("/tasks/:taskId", controller.RelayRunwayResult)
+	}
+
+	// // Gemini 原生API透传路由组 - 支持完整的Gemini官方API格式
+	// geminiNativeRouter := router.Group("/gemini/v1beta")
+	// geminiNativeRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	// {
+	// 	// 核心聊天接口
+	// 	geminiNativeRouter.POST("/models/:model:generateContent", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.POST("/models/:model:streamGenerateContent", controller.RelayGeminiNative)
+
+	// 	// Token计数接口
+	// 	geminiNativeRouter.POST("/models/:model:countTokens", controller.RelayGeminiNative)
+
+	// 	// 嵌入接口
+	// 	geminiNativeRouter.POST("/models/:model:embedContent", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.POST("/models/:model:batchEmbedContents", controller.RelayGeminiNative)
+
+	// 	// 模型管理接口
+	// 	geminiNativeRouter.GET("/models", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/models/:model", controller.RelayGeminiNative)
+
+	// 	// 文件上传接口
+	// 	geminiNativeRouter.POST("/files", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/files/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.DELETE("/files/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/files", controller.RelayGeminiNative)
+
+	// 	// 微调接口
+	// 	geminiNativeRouter.POST("/tunedModels", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/tunedModels", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.GET("/tunedModels/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.PATCH("/tunedModels/:name", controller.RelayGeminiNative)
+	// 	geminiNativeRouter.DELETE("/tunedModels/:name", controller.RelayGeminiNative)
+	// }
+
+	// Claude 原生API透传路由组 - 支持完整的Anthropic Claude官方API格式
+
 
 	// Gemini API原生接口路由组
 	// 路径格式: /v1beta/models/{model_name}:{action}

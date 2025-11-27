@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -34,6 +35,21 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 	dataChan := make(chan string)
 	stopChan := make(chan bool)
 	var usage *model.Usage
+
+	// 获取请求开始时间用于计算首字延迟
+	var startTime time.Time
+	if requestStartTime, exists := c.Get("request_start_time"); exists {
+		if t, ok := requestStartTime.(time.Time); ok {
+			startTime = t
+		} else {
+			startTime = time.Now() // fallback
+		}
+	} else {
+		startTime = time.Now() // fallback
+	}
+
+	var firstWordTime *time.Time
+
 	go func() {
 		for scanner.Scan() {
 			data := scanner.Text()
@@ -55,7 +71,13 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						continue // just ignore the error
 					}
 					for _, choice := range streamResponse.Choices {
-						responseText += conv.AsString(choice.Delta.Content)
+						content := conv.AsString(choice.Delta.Content)
+						if content != "" && firstWordTime == nil {
+							// 记录首字时间
+							now := time.Now()
+							firstWordTime = &now
+						}
+						responseText += content
 					}
 					if streamResponse.Usage != nil {
 						usage = streamResponse.Usage
@@ -68,6 +90,11 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						continue
 					}
 					for _, choice := range streamResponse.Choices {
+						if choice.Text != "" && firstWordTime == nil {
+							// 记录首字时间
+							now := time.Now()
+							firstWordTime = &now
+						}
 						responseText += choice.Text
 					}
 				}
@@ -94,6 +121,13 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 	if err != nil {
 		return ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), "", nil
 	}
+
+	// 计算首字延迟并存储到 context 中
+	if firstWordTime != nil {
+		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
+		c.Set("first_word_latency", firstWordLatency)
+	}
+
 	return nil, responseText, usage
 }
 

@@ -27,49 +27,40 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if err == nil {
 		return false
 	}
+
+	// 检查401状态码 - 通常是认证问题，应该禁用
 	if statusCode == http.StatusUnauthorized {
 		return true
 	}
+
+	// 移除403状态码的直接检查，改为完全依靠关键字判断
+
+	// 检查错误类型
 	switch err.Type {
-	case "insufficient_quota":
-		return true
-	case "authentication_error":
-		return true
-	case "permission_error":
-		return true
-	case "forbidden":
+	case "insufficient_quota", "authentication_error", "permission_error", "forbidden":
 		return true
 	}
-	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" {
+
+	// 检查错误代码
+	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" || err.Code == "Some resource has been exhausted" {
 		return true
 	}
-	if strings.HasPrefix(err.Message, "Your credit balance is too low") {
-		return true
-	} else if strings.HasPrefix(err.Message, "This organization has been disabled.") {
-		return true
-	}
-	if strings.Contains(err.Message, "credit") {
-		return true
-	}
-	if strings.Contains(err.Message, "not_enough_credits") { //recraft
-		return true
-	}
-	if strings.Contains(err.Message, "balance") {
-		return true
-	}
-	// 添加对 "Operation not allowed" 错误的处理
-	if strings.Contains(err.Message, "Operation not allowed") {
-		return true
-	}
-	// 添加对 "resource pack exhausted" 错误的处理
-	if strings.Contains(err.Message, "resource pack exhausted") {
-		return true
-	}
-	if strings.Contains(err.Message, "Imagen API") {
-		return true
-	}
-	if strings.Contains(err.Message, "This API method requires billing to be enabled.") {
-		return true
+
+	// 使用可配置的关键词进行检查（按行分割，忽略大小写）
+	config.OptionMapRWMutex.RLock()
+	autoDisableKeywords := config.AutoDisableKeywords
+	config.OptionMapRWMutex.RUnlock()
+
+	if autoDisableKeywords != "" {
+		message := strings.ToLower(err.Message)
+		keywords := strings.Split(autoDisableKeywords, "\n")
+
+		for _, keyword := range keywords {
+			keyword = strings.TrimSpace(strings.ToLower(keyword))
+			if keyword != "" && strings.Contains(message, keyword) {
+				return true
+			}
+		}
 	}
 
 	return false
@@ -139,6 +130,14 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 			Param:   strconv.Itoa(resp.StatusCode),
 		},
 	}
+
+	// ✅ 关键修复：使用 defer 确保响应体一定会被关闭
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return
@@ -146,10 +145,7 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 	if config.DebugEnabled {
 		logger.SysLog(fmt.Sprintf("error happened, status code: %d, response: \n%s", resp.StatusCode, string(responseBody)))
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		return
-	}
+
 	var errResponse GeneralErrorResponse
 	err = json.Unmarshal(responseBody, &errResponse)
 	if err != nil {
@@ -162,9 +158,42 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 		ErrorWithStatusCode.Error.Message = errResponse.ToMessage()
 	}
 	if ErrorWithStatusCode.Error.Message == "" {
-		ErrorWithStatusCode.Error.Message = fmt.Sprintf("bad response status code %d", resp.StatusCode)
+		// 提供更详细的错误信息
+		switch resp.StatusCode {
+		case 504:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("网关超时 (504): 上游服务器响应超时，请稍后重试或检查API服务状态")
+		case 502:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("网关错误 (502): 上游服务器返回无效响应")
+		case 503:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("服务不可用 (503): 上游服务器暂时无法处理请求")
+		case 429:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("请求过于频繁 (429): 已达到API调用限制，请稍后重试")
+		case 401:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("认证失败 (401): API密钥无效或已过期")
+		case 403:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("权限不足 (403): 无权访问此资源或模型")
+		case 404:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("资源未找到 (404): 请求的端点或模型不存在")
+		default:
+			ErrorWithStatusCode.Error.Message = fmt.Sprintf("上游服务错误 (状态码: %d)", resp.StatusCode)
+		}
 	}
 	return
+}
+
+// RelayErrorHandlerWithAdaptor 使用 adaptor 特定的错误处理逻辑
+func RelayErrorHandlerWithAdaptor(resp *http.Response, adaptor interface{}) (ErrorWithStatusCode *relaymodel.ErrorWithStatusCode) {
+	// 首先尝试使用 adaptor 的错误处理方法（如果它实现了 ErrorHandler 接口）
+	if errorHandler, ok := adaptor.(interface {
+		HandleErrorResponse(resp *http.Response) *relaymodel.ErrorWithStatusCode
+	}); ok {
+		if adaptorError := errorHandler.HandleErrorResponse(resp); adaptorError != nil {
+			return adaptorError
+		}
+	}
+
+	// 如果 adaptor 无法处理，回退到通用处理器
+	return RelayErrorHandler(resp)
 }
 
 func GetFullRequestURL(baseURL string, requestURL string, channelType int) string {
@@ -199,7 +228,60 @@ func PostConsumeQuota(ctx context.Context, tokenId int, quotaDelta int64, totalQ
 	// totalQuota is total quota consumed
 	if totalQuota != 0 {
 		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
-		model.RecordConsumeLog(ctx, userId, channelId, int(totalQuota), 0, modelName, tokenName, totalQuota, logContent, duration, title, httpReferer)
+		model.RecordConsumeLog(ctx, userId, channelId, int(totalQuota), 0, modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0)
+		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
+		model.UpdateChannelUsedQuota(channelId, totalQuota)
+	}
+	if totalQuota <= 0 {
+		logger.Error(ctx, fmt.Sprintf("totalQuota consumed is %d, something is wrong", totalQuota))
+	}
+}
+
+// PostConsumeQuotaWithTokens 处理包含分离的输入和输出token的配额消费
+func PostConsumeQuotaWithTokens(ctx context.Context, tokenId int, quotaDelta int64, totalQuota int64, userId int, channelId int, modelRatio float64, groupRatio float64, modelName string, tokenName string, duration float64, title string, httpReferer string, inputTokens int64, outputTokens int64) {
+	// quotaDelta is remaining quota to be consumed
+	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+	err = model.CacheUpdateUserQuota(ctx, userId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+	// totalQuota is total quota consumed
+	if totalQuota != 0 {
+		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+		// 正确记录inputTokens和outputTokens
+		model.RecordConsumeLog(ctx, userId, channelId, int(inputTokens), int(outputTokens), modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0)
+		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
+		model.UpdateChannelUsedQuota(channelId, totalQuota)
+	}
+	if totalQuota <= 0 {
+		logger.Error(ctx, fmt.Sprintf("totalQuota consumed is %d, something is wrong", totalQuota))
+	}
+}
+
+// PostConsumeQuotaWithDetailedTokens 处理包含详细token分类的配额消费（用于音频转录等）
+func PostConsumeQuotaWithDetailedTokens(ctx context.Context, tokenId int, quotaDelta int64, totalQuota int64, userId int, channelId int, modelRatio float64, groupRatio float64, modelName string, tokenName string, duration float64, title string, httpReferer string, inputTokens int64, outputTokens int64, textInput int64, textOutput int64, audioInput int64, audioOutput int64) {
+	// quotaDelta is remaining quota to be consumed
+	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+	err = model.CacheUpdateUserQuota(ctx, userId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+	// totalQuota is total quota consumed
+	if totalQuota != 0 {
+		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio)
+
+		// 创建详细的token信息JSON
+		otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+			textInput, textOutput, audioInput, audioOutput)
+
+		// 正确记录inputTokens和outputTokens，并添加详细信息到other字段
+		model.RecordConsumeLogWithOther(ctx, userId, channelId, int(inputTokens), int(outputTokens), modelName, tokenName, totalQuota, logContent, duration, title, httpReferer, false, 0.0, otherInfo)
 		model.UpdateUserUsedQuotaAndRequestCount(userId, totalQuota)
 		model.UpdateChannelUsedQuota(channelId, totalQuota)
 	}
@@ -213,6 +295,10 @@ func GetAzureAPIVersion(c *gin.Context) string {
 	apiVersion := query.Get("api-version")
 	if apiVersion == "" {
 		apiVersion = c.GetString(common.ConfigKeyAPIVersion)
+	}
+	// 如果还是空，使用默认版本
+	if apiVersion == "" {
+		apiVersion = "2024-02-15-preview"
 	}
 	return apiVersion
 }

@@ -1,6 +1,7 @@
 package util
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -8,27 +9,6 @@ import (
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/constant"
 )
-
-// type RelayMeta struct {
-// 	Mode            int
-// 	ChannelType     int
-// 	ChannelId       int
-// 	TokenId         int
-// 	TokenName       string
-// 	UserId          int
-// 	Group           string
-// 	ModelMapping    map[string]string
-// 	BaseURL         string
-// 	APIVersion      string
-// 	APIKey          string
-// 	APIType         int
-// 	Config          map[string]string
-// 	IsStream        bool
-// 	OriginModelName string
-// 	ActualModelName string
-// 	RequestURLPath  string
-// 	PromptTokens    int // only for DoResponse
-// }
 
 type RelayMeta struct {
 	Mode         int
@@ -48,10 +28,19 @@ type RelayMeta struct {
 	// OriginModelName is the model name from the raw user request
 	OriginModelName string
 	// ActualModelName is the model name after mapping
-	ActualModelName string
-	RequestURLPath  string
-	PromptTokens    int // only for DoResponse
-	PreConsumedQuota int64
+	ActualModelName         string
+	RequestURLPath          string
+	PromptTokens            int // only for DoResponse
+	ChannelRatio            float64
+	UserChannelTypeRatio    float64
+	UserChannelTypeRatioMap string
+	// 用于计算首字延迟
+	FirstWordLatency float64
+	// 多Key相关信息
+	ActualAPIKey string
+	KeyIndex     *int // 使用指针以支持nil值
+	IsMultiKey   bool
+	Keys         []string // 存储所有解析的密钥
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -69,9 +58,30 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		BaseURL:      c.GetString("base_url"),
 		// APIVersion:     c.GetString(common.ConfigKeyAPIVersion),
 		// APIKey:          channel.Key,
-		APIKey:          strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
-		RequestURLPath:  c.Request.URL.String(),
-		OriginModelName: c.GetString("original_model"),
+		APIKey:                  strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
+		RequestURLPath:          c.Request.URL.String(),
+		OriginModelName:         c.GetString("original_model"),
+		ChannelRatio:            c.GetFloat64("channel_ratio"),
+		UserChannelTypeRatioMap: c.GetString("user_channel_type_ratio_map"),
+		UserChannelTypeRatio:    GetChannelTypeRatio(c.GetString("user_channel_type_ratio_map"), c.GetInt("channel")),
+		ActualAPIKey:            c.GetString("actual_key"),
+		IsMultiKey:              c.GetBool("is_multi_key"),
+	}
+
+	// 处理多密钥索引
+	if keyIndexValue, exists := c.Get("key_index"); exists {
+		if keyIndex, ok := keyIndexValue.(int); ok {
+			meta.KeyIndex = &keyIndex
+		}
+	}
+
+	// 处理多密钥列表（如果是多密钥渠道）
+	if meta.IsMultiKey {
+		if channelId := c.GetInt("channel_id"); channelId > 0 {
+			if channel, err := model.GetChannelById(channelId, true); err == nil {
+				meta.Keys = channel.ParseKeys()
+			}
+		}
 	}
 	cfg, ok := c.Get("Config")
 	if ok {
@@ -85,4 +95,46 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
 	return &meta
+}
+
+// GetChannelTypeRatio 根据 ChannelType 从 UserChannelTypeRatioMap 中获取对应的倍率
+// ratioMapStr 格式: "{41:0.2,42:0.6}"
+// 如果找不到对应的 ChannelType，返回默认值 1.0
+func GetChannelTypeRatio(ratioMapStr string, channelType int) float64 {
+	if ratioMapStr == "" {
+		return 1.0
+	}
+
+	// 移除大括号
+	ratioMapStr = strings.Trim(ratioMapStr, "{}")
+
+	// 按逗号分割键值对
+	pairs := strings.Split(ratioMapStr, ",")
+
+	for _, pair := range pairs {
+		// 按冒号分割键和值
+		kv := strings.Split(strings.TrimSpace(pair), ":")
+		if len(kv) != 2 {
+			continue
+		}
+
+		// 解析 ChannelType
+		key, err := strconv.Atoi(strings.TrimSpace(kv[0]))
+		if err != nil {
+			continue
+		}
+
+		// 如果找到匹配的 ChannelType
+		if key == channelType {
+			// 解析倍率值
+			ratio, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
+			if err != nil {
+				return 1.0
+			}
+			return ratio
+		}
+	}
+
+	// 如果没有找到对应的 ChannelType，返回默认值
+	return 1.0
 }

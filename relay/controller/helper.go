@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -51,18 +52,26 @@ func getImageRequest(c *gin.Context, relayMode int) (*relaymodel.ImageRequest, e
 			Model: "dall-e-2",
 		}
 
-		// 尝试获取model字段，但不解析整个表单
+		// 尝试获取表单字段，但不解析整个表单文件部分
 		if strings.Contains(contentType, "multipart/form-data") {
-			// 尝试只解析model字段，不读取文件
+			// 尝试只解析表单字段，不读取文件
 			c.Request.ParseMultipartForm(1 << 10) // 只解析1KB的数据
 			if model := c.Request.FormValue("model"); model != "" {
 				imageRequest.Model = model
+			}
+			// 解析stream参数
+			if stream := c.Request.FormValue("stream"); stream != "" {
+				imageRequest.Stream = stream == "true"
 			}
 		} else {
 			// 对于url编码的表单
 			c.Request.ParseForm()
 			if model := c.Request.FormValue("model"); model != "" {
 				imageRequest.Model = model
+			}
+			// 解析stream参数
+			if stream := c.Request.FormValue("stream"); stream != "" {
+				imageRequest.Stream = stream == "true"
 			}
 		}
 
@@ -154,7 +163,18 @@ func getPreConsumedQuota(textRequest *relaymodel.GeneralOpenAIRequest, promptTok
 }
 
 func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64, meta *util.RelayMeta) (int64, *relaymodel.ErrorWithStatusCode) {
-	preConsumedQuota := getPreConsumedQuota(textRequest, promptTokens, ratio)
+	var preConsumedQuota int64
+
+	// 先检查是否有固定价格
+	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	if modelPrice != -1 {
+		// 使用固定价格计费（按次计费）
+		groupRatio := common.GetGroupRatio(meta.Group)
+		preConsumedQuota = int64(modelPrice * 500000 * groupRatio)
+	} else {
+		// 使用基于token的倍率计费
+		preConsumedQuota = getPreConsumedQuota(textRequest, promptTokens, ratio)
+	}
 
 	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
@@ -182,25 +202,44 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	return preConsumedQuota, nil
 }
 
-func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, userModelTypeRatio float64, duration float64, title string, httpReferer string) {
+func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
+	// 更新多Key使用统计
+	updateMultiKeyUsage(meta, usage != nil)
+
 	if usage == nil {
-		logger.Error(ctx, "usage is nil, which is unexpected")
+		// 打印用户和请求体信息
+		logger.Error(ctx, fmt.Sprintf("usage is nil, which is unexpected. UserId: %d, RequestBody: %+v",
+			meta.UserId, textRequest))
 		return
 	}
+
 	var quota int64
-	completionRatio := common.GetCompletionRatio(textRequest.Model)
+	var logContent string
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
-	quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
-	if ratio != 0 && quota <= 0 {
-		quota = 1
+
+	// 先检查是否有固定价格
+	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	if modelPrice != -1 {
+		// 使用固定价格计费（按次计费）
+		quota = int64(modelPrice * 500000 * groupRatio)
+		logContent = fmt.Sprintf("模型固定价格 %.2f$，分组倍率 %.2f", modelPrice, groupRatio)
+	} else {
+		// 使用基于token的倍率计费
+		completionRatio := common.GetCompletionRatio(textRequest.Model)
+		quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+		if ratio != 0 && quota <= 0 {
+			quota = 1
+		}
+		totalTokens := promptTokens + completionTokens
+		if totalTokens == 0 {
+			// in this case, must be some error happened
+			// we cannot just return, because we may have to return the pre-consumed quota
+			quota = 0
+		}
+		logContent = fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
 	}
-	totalTokens := promptTokens + completionTokens
-	if totalTokens == 0 {
-		// in this case, must be some error happened
-		// we cannot just return, because we may have to return the pre-consumed quota
-		quota = 0
-	}
+
 	quotaDelta := quota - preConsumedQuota
 	err := model.PostConsumeTokenQuota(meta.TokenId, quotaDelta)
 	if err != nil {
@@ -211,9 +250,83 @@ func postConsumeQuota(ctx context.Context, usage *relaymodel.Usage, meta *util.R
 		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 	if quota != 0 {
-		logContent := fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f 用户模型倍率 %.2f", modelRatio, groupRatio, completionRatio, userModelTypeRatio)
-		model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer)
+		// 获取渠道历史信息
+		otherInfo := getChannelHistoryInfo(c)
+
+		if otherInfo != "" {
+			model.RecordConsumeLogWithOther(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo)
+		} else {
+			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency)
+		}
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
+}
+
+// updateMultiKeyUsage 更新多Key使用统计
+func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
+	// 只有多Key模式才需要更新统计
+	if !meta.IsMultiKey {
+		return
+	}
+
+	// 异步更新Key使用统计，避免影响主流程性能
+	go func() {
+		channel, err := model.GetChannelById(meta.ChannelId, true)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to get channel %d for multi-key usage update: %s",
+				meta.ChannelId, err.Error()))
+			return
+		}
+
+		keyIndex := 0
+		if meta.KeyIndex != nil {
+			keyIndex = *meta.KeyIndex
+		}
+		err = channel.HandleKeyUsed(keyIndex, success)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to update multi-key usage for channel %d, key %d: %s",
+				meta.ChannelId, keyIndex, err.Error()))
+		}
+	}()
+}
+
+// getChannelHistoryInfo 从gin.Context中获取渠道历史信息并格式化为JSON字符串
+func getChannelHistoryInfo(c *gin.Context) string {
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			// 使用JSON格式存储，确保用逗号分隔
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+	return ""
+}
+
+// UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计
+func UpdateMultiKeyUsageFromContext(c *gin.Context, success bool) {
+	isMultiKey := c.GetBool("is_multi_key")
+	if !isMultiKey {
+		return
+	}
+
+	channelId := c.GetInt("channel_id")
+	keyIndex := c.GetInt("key_index")
+
+	// 异步更新Key使用统计
+	go func() {
+		channel, err := model.GetChannelById(channelId, true)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to get channel %d for context multi-key usage update: %s",
+				channelId, err.Error()))
+			return
+		}
+
+		err = channel.HandleKeyUsed(keyIndex, success)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to update context multi-key usage for channel %d, key %d: %s",
+				channelId, keyIndex, err.Error()))
+		}
+	}()
 }

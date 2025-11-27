@@ -177,26 +177,24 @@ var channelOptions = []ChannelOption{
 	{Key: 1, Text: "OpenAI", Value: 1, Color: "green"},
 	{Key: 14, Text: "Anthropic Claude", Value: 14, Color: "black"},
 	{Key: 3, Text: "Azure OpenAI", Value: 3, Color: "olive"},
-	// {Key: 11, Text: "Google PaLM2", Value: 11, Color: "orange"},
+
 	{Key: 24, Text: "Google Gemini", Value: 24, Color: "orange"},
 	{Key: 28, Text: "Mistral AI", Value: 28, Color: "orange"},
 	{Key: 31, Text: "零一万物", Value: 31, Color: "green"},
 	{Key: 32, Text: "midjourney-Plus", Value: 32, Color: "green"},
 	{Key: 33, Text: "AWS Claude", Value: 33, Color: "black"},
-	// {Key: 34, Text: "Coze", Value: 34, Color: "blue"},
+
 	{Key: 35, Text: "Cohere", Value: 35, Color: "green"},
 	{Key: 36, Text: "together", Value: 36, Color: "blue"},
 	{Key: 37, Text: "Deepseek", Value: 37, Color: "green"},
 	{Key: 38, Text: "Stability", Value: 38, Color: "blue"},
-	// {Key: 39, Text: "Novita", Value: 39, Color: "blue"},
-	// {Key: 40, Text: "Replicate", Value: 40, Color: "blue"},
-	// {Key: 30, Text: "Ollama", Value: 30, Color: "orange"},
+
 	{Key: 29, Text: "Groq", Value: 29, Color: "orange"},
 	{Key: 15, Text: "百度文心千帆", Value: 15, Color: "blue"},
 	{Key: 17, Text: "阿里通义千问", Value: 17, Color: "orange"},
 	{Key: 18, Text: "讯飞星火认知", Value: 18, Color: "blue"},
 	{Key: 16, Text: "智谱 ChatGLM", Value: 16, Color: "violet"},
-	// {Key: 19, Text: "360 智脑", Value: 19, Color: "blue"},
+
 	{Key: 25, Text: "Moonshot AI", Value: 25, Color: "black"},
 	{Key: 23, Text: "腾讯混元", Value: 23, Color: "teal"},
 	{Key: 26, Text: "百川大模型", Value: 26, Color: "orange"},
@@ -208,6 +206,9 @@ var channelOptions = []ChannelOption{
 	{Key: 44, Text: "Luma", Value: 44, Color: "purple"},
 	{Key: 45, Text: "Pixverse", Value: 45, Color: "purple"},
 	{Key: 46, Text: "Flux", Value: 46, Color: "green"},
+	{Key: 47, Text: "XAI", Value: 47, Color: "orange"},
+	{Key: 48, Text: "Vertex AI", Value: 48, Color: "purple"},
+	{Key: 40, Text: "豆包", Value: 40, Color: "purple"},
 }
 
 // 定义返回的数据结构

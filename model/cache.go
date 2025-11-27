@@ -248,7 +248,7 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPriority bool) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -256,15 +256,20 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		trueVal = "true"
 	}
 
-	// 查询所有可用的优先级
+	// 查询所有有可用渠道的优先级（确保abilities和channels状态一致）
 	var priorities []int
-	err := DB.Model(&Ability{}).Where(groupCol+" = ? and model = ? and enabled = "+trueVal, group, model).
-		Pluck("DISTINCT priority", &priorities).Error
+	err := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled).
+		Pluck("DISTINCT abilities.priority", &priorities).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
 	}
 
+	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v", group, model, priorities)) // 调试用，生产环境可注释
+
 	if len(priorities) == 0 {
+		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s", group, model))
 		return nil, errors.New("no priorities available")
 	}
 
@@ -275,35 +280,63 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return priorities[i] > priorities[j]
 	})
 
-	// 如果有多于一个优先级且需要忽略最高优先级
-	if len(priorities) > 1 && ignoreFirstPriority {
-		// 选择次高优先级，即在降序列表中的第二个元素
-		priorityToUse = priorities[1]
-	} else {
-		// 否则，选择最高优先级，即在降序列表中的第一个元素
-		priorityToUse = priorities[0]
+	// 智能选择有可用渠道的优先级
+	selectedPriorityIndex := skipPriorityLevels
+	if selectedPriorityIndex >= len(priorities) {
+		selectedPriorityIndex = len(priorities) - 1
 	}
+	priorityToUse = priorities[selectedPriorityIndex]
+
+	// 验证选择的优先级是否有可用渠道
+	// logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, ignoreFirstPriority=%v", priorityToUse, group, model, ignoreFirstPriority)) // 调试用，生产环境可注释
 
 	// 获取符合条件的所有渠道及其权重
 	var channels []Channel
 	err = DB.Table("channels").
 		Joins("JOIN abilities ON channels.id = abilities.channel_id").
-		Where("`abilities`.`group` = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ?", group, model, trueVal, priorityToUse).
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled).
 		Find(&channels).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch channels: %w", err)
 	}
 
 	if len(channels) == 0 {
-		return nil, errors.New("no channels available with the required priority and weight")
+		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d", group, model, priorityToUse, skipPriorityLevels))
+
+		// 回退机制：如果当前优先级没有可用渠道，尝试使用其他优先级
+		if skipPriorityLevels > 0 && len(priorities) > 1 {
+			// 尝试使用最高优先级作为回退
+			logger.SysLog(fmt.Sprintf("Fallback: trying highest priority %d instead", priorities[0]))
+			priorityToUse = priorities[0]
+
+			// 重新查询
+			err = DB.Table("channels").
+				Joins("JOIN abilities ON channels.id = abilities.channel_id").
+				Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled).
+				Find(&channels).Error
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch channels in fallback: %w", err)
+			}
+
+			if len(channels) > 0 {
+				logger.SysLog(fmt.Sprintf("Fallback successful: found %d channels with priority %d", len(channels), priorityToUse))
+			}
+		}
+
+		if len(channels) == 0 {
+			return nil, errors.New("no channels available with the required priority and weight")
+		}
 	}
 
+	// 计算总权重并准备加权随机选择
 	totalWeight := 0
-	for _, channel := range channels {
+	channelWeights := make([]int, len(channels))
+	for i, channel := range channels {
 		weight := int(*channel.Weight)
 		if weight <= 0 {
 			weight = 1
 		}
+		channelWeights[i] = weight
 		totalWeight += weight
 	}
 
@@ -311,19 +344,15 @@ func CacheGetRandomSatisfiedChannel(group string, model string, ignoreFirstPrior
 		return nil, errors.New("total weight of channels is zero")
 	}
 
-	// 生成一个随机权重阈值
-	randSource := rand.NewSource(time.Now().UnixNano())
+	randSource := rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(10000)))
 	randGen := rand.New(randSource)
 	weightThreshold := randGen.Intn(totalWeight) + 1
 
 	currentWeight := 0
-	for _, channel := range channels {
-		weight := int(*channel.Weight)
-		if weight <= 0 {
-			weight = 1
-		}
-		currentWeight += weight
+	for i, channel := range channels {
+		currentWeight += channelWeights[i]
 		if currentWeight >= weightThreshold {
+			// logger.SysLog(fmt.Sprintf("Selected channel %d (name=%s) with weight %d, threshold=%d", channel.Id, channel.Name, channelWeights[i], weightThreshold)) // 调试用，生产环境可注释
 			return &channel, nil
 		}
 	}
@@ -340,7 +369,7 @@ func CacheGetChannel(id int) (*Channel, error) {
 
 	c, ok := channelsIDM[id]
 	if !ok {
-		return nil, errors.New(fmt.Sprintf("当前渠道# %d，已不存在", id))
+		return nil, fmt.Errorf("当前渠道# %d，已不存在", id)
 	}
 	return c, nil
 }

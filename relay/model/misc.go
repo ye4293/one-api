@@ -7,6 +7,8 @@ type Usage struct {
 	PromptTokensDetails struct {
 		CachedTokens int `json:"cached_tokens,omitempty"`
 		AudioTokens  int `json:"audio_tokens,omitempty"`
+		TextTokens   int `json:"text_tokens,omitempty"`
+		ImageTokens  int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails struct {
 		ReasoningTokens          int `json:"reasoning_tokens,omitempty"`

@@ -34,8 +34,11 @@ type Log struct {
 	HttpReferer      string  `json:"http_referer"`
 	Provider         string  `json:"provider"`
 	XRequestID       string  `json:"x_request_id"`
+	XResponseID      string  `json:"x_response_id"`
 	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
-	VideoTaskId      string  `json:"video_task_id" gorm:"type:varchar(200);index:idx_id,length:30;default:''"`
+	VideoTaskId      string  `json:"video_task_id" gorm:"type:varchar(200);index:idx_video_task_id;default:''"`
+	IsStream         bool    `json:"is_stream" gorm:"default:false"`
+	Other            string  `json:"other"`
 }
 
 const (
@@ -64,8 +67,20 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
-func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string) {
-	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content))
+func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64) {
+	RecordConsumeLogWithOther(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "")
+}
+
+func RecordConsumeLogWithRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, xRequestID string) {
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "", xRequestID)
+}
+
+func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string) {
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, other, "")
+}
+
+func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string) {
+	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, xRequestID))
 	if !config.LogConsumeEnabled {
 		return
 	}
@@ -93,6 +108,10 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 		Title:            title,
 		HttpReferer:      httpReferer,
 		Speed:            speed,
+		IsStream:         isStream,
+		FirstWordLatency: firstWordLatency,
+		Other:            other,
+		XRequestID:       xRequestID,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -100,7 +119,7 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 	}
 }
 
-func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
+func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, xRequestId string, xResponseId string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
 	// 根据日志类型筛选
@@ -119,6 +138,12 @@ func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp i
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if xRequestId != "" {
+		tx = tx.Where("x_request_id = ?", xRequestId)
+	}
+	if xResponseId != "" {
+		tx = tx.Where("x_response_id = ?", xResponseId)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("created_at >= ?", startTimestamp)
@@ -149,7 +174,7 @@ func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp i
 	return logs, total, nil
 }
 
-func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, page int, pageSize int) (logs []*Log, total int64, err error) {
+func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, xRequestId string, xResponseId string, page int, pageSize int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
 	// 筛选基于用户ID和日志类型
@@ -165,6 +190,12 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if xRequestId != "" {
+		tx = tx.Where("x_request_id = ?", xRequestId)
+	}
+	if xResponseId != "" {
+		tx = tx.Where("x_response_id = ?", xResponseId)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("created_at >= ?", startTimestamp)
@@ -183,7 +214,7 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = tx.Select("id, request_id, user_id, created_at, type, username, token_name, model_name, quota, prompt_tokens, completion_tokens, channel_id, duration").Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
+	err = tx.Select("id, request_id, user_id, created_at, type, username, token_name, model_name, quota, prompt_tokens, completion_tokens, channel_id, duration, is_stream, first_word_latency, content, x_request_id, x_response_id").Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
 	if err != nil {
 		return nil, total, err
 	}

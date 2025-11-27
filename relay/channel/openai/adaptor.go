@@ -1,11 +1,9 @@
 package openai
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -71,10 +69,6 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		request.StreamOptions = &model.StreamOptions{
 			IncludeUsage: true,
 		}
-
-		// 打印转换后的请求
-		convertedJSON, _ := json.MarshalIndent(request, "", "  ")
-		log.Printf("Converted request:\n%s", string(convertedJSON))
 	}
 
 	return request, nil

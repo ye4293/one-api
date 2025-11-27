@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -25,15 +26,43 @@ type Adaptor struct {
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
 	a.Meta = meta
+
+	key := meta.ActualAPIKey
+	parts := strings.Split(key, "|")
+
+	var accessKey, secretKey, region string
+
+	if len(parts) == 3 {
+		accessKey = parts[0]
+		secretKey = parts[1]
+		region = parts[2]
+	} else {
+		// Fallback to legacy config for backward compatibility
+		accessKey = meta.Config.AK
+		secretKey = meta.Config.SK
+		region = meta.Config.Region
+	}
+
+	if accessKey == "" || secretKey == "" || region == "" {
+		// Store the error for later handling
+		meta.Config.Region = "" // Use this as an error indicator
+		return
+	}
+
 	a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
-		Region:      meta.Config.Region,
-		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(meta.Config.AK, meta.Config.SK, "")),
+		Region:      region,
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	})
 }
 
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
+	}
+
+	// Check if initialization was successful
+	if a.AwsClient == nil {
+		return nil, errors.New("AWS credentials not provided or invalid")
 	}
 
 	adaptor := GetAdaptor(request.Model)

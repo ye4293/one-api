@@ -4,7 +4,9 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -15,12 +17,66 @@ import (
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/router"
 )
 
 //go:embed web/build/*
 var buildFS embed.FS
+
+// monitorGoroutines 定期监控 goroutine 数量
+func monitorGoroutines() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		count := runtime.NumGoroutine()
+
+		// 记录当前goroutine数量
+		if count > 5000 {
+			logger.SysError(fmt.Sprintf("⚠️ High goroutine count detected: %d", count))
+		} else if count > 2000 {
+			logger.SysLog(fmt.Sprintf("⚠️ Goroutine count elevated: %d", count))
+		} else {
+			// 只在调试模式下记录正常数量
+			if config.DebugEnabled {
+				logger.SysLog(fmt.Sprintf("Goroutine count: %d", count))
+			}
+		}
+
+		// 记录内存统计
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		if config.DebugEnabled {
+			logger.SysLog(fmt.Sprintf("Memory: Alloc=%dMB, TotalAlloc=%dMB, Sys=%dMB, NumGC=%d",
+				m.Alloc/1024/1024, m.TotalAlloc/1024/1024, m.Sys/1024/1024, m.NumGC))
+		}
+	}
+}
+
+// setupMonitoringEndpoints 设置监控端点
+func setupMonitoringEndpoints(server *gin.Engine) {
+	// 添加健康检查端点
+	server.GET("/api/monitor/health", func(c *gin.Context) {
+		count := runtime.NumGoroutine()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		c.JSON(200, gin.H{
+			"status":     "ok",
+			"goroutines": count,
+			"memory": gin.H{
+				"alloc_mb":       m.Alloc / 1024 / 1024,
+				"total_alloc_mb": m.TotalAlloc / 1024 / 1024,
+				"sys_mb":         m.Sys / 1024 / 1024,
+				"num_gc":         m.NumGC,
+			},
+		})
+	})
+
+	logger.SysLog("monitoring endpoints enabled at /api/monitor/health")
+}
 
 func main() {
 	logger.SetupLogger()
@@ -75,6 +131,16 @@ func main() {
 		logger.SysError(fmt.Sprintf("sync frequency: %d seconds", config.SyncFrequency))
 		model.InitChannelCache()
 	}
+
+	// 系统启动时检查数据一致性
+	logger.SysLog("checking data consistency between channels and abilities...")
+	err = model.CheckDataConsistency()
+	if err != nil {
+		logger.SysError("data consistency check failed: " + err.Error())
+		// 数据一致性检查失败不应该阻止系统启动，但需要记录
+	} else {
+		logger.SysLog("data consistency check completed successfully")
+	}
 	if config.MemoryCacheEnabled {
 		go model.SyncOptions(config.SyncFrequency)
 		go model.SyncChannelCache(config.SyncFrequency)
@@ -99,6 +165,13 @@ func main() {
 	})
 	openai.InitTokenEncoders()
 
+	// 启动Key禁用通知监听器
+	monitor.StartKeyNotificationListener()
+	logger.SysLog("key disable notification listener started")
+
+	// 启动 Goroutine 监控
+	go monitorGoroutines()
+
 	// Initialize HTTP server
 	server := gin.New()
 	server.Use(gin.Recovery())
@@ -111,6 +184,9 @@ func main() {
 	server.Use(sessions.Sessions("session", store))
 
 	router.SetRouter(server, buildFS)
+
+	// 添加监控端点
+	setupMonitoringEndpoints(server)
 	var port = os.Getenv("PORT")
 	if port == "" {
 		port = strconv.Itoa(*common.Port)

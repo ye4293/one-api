@@ -39,6 +39,16 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 }
 
 func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
+	// 确保请求体被关闭
+	defer func() {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		if c.Request.Body != nil {
+			_ = c.Request.Body.Close()
+		}
+	}()
+
 	resp, err := util.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -46,7 +56,5 @@ func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
-	_ = req.Body.Close()
-	_ = c.Request.Body.Close()
 	return resp, nil
 }

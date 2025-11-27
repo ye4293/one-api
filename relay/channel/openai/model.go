@@ -74,6 +74,7 @@ type TextToSpeechRequest struct {
 	Voice          string  `json:"voice" binding:"required"`
 	Speed          float64 `json:"speed"`
 	ResponseFormat string  `json:"response_format"`
+	StreamFormat   string  `json:"stream_format,omitempty"`
 }
 
 type UsageOrResponseText struct {
@@ -152,4 +153,44 @@ type CompletionsStreamResponse struct {
 		Text         string `json:"text"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// SoraVideoRequest Sora 视频生成请求 (JSON 格式)
+type SoraVideoRequest struct {
+	Model          string `json:"model" binding:"required"`  // 模型名称 (sora-2, sora-2-pro)
+	Prompt         string `json:"prompt" binding:"required"` // 视频描述
+	Size           string `json:"size,omitempty"`            // 分辨率 (720x1280, 1280x720, 1024x1792, 1792x1024)
+	Seconds        string `json:"seconds,omitempty"`         // 视频时长（秒）- 官方字段名，string 类型
+	AspectRatio    string `json:"aspect_ratio,omitempty"`    // 宽高比
+	Loop           bool   `json:"loop,omitempty"`            // 是否循环
+	InputReference string `json:"input_reference,omitempty"` // 输入参考（URL/base64/dataURL）
+}
+
+// SoraRemixRequest Sora 视频 remix 请求
+type SoraRemixRequest struct {
+	Model   string `json:"model,omitempty"`             // 模型名称（用于路由识别，发送时会去掉）
+	VideoID string `json:"video_id" binding:"required"` // 原视频ID
+	Prompt  string `json:"prompt" binding:"required"`   // 新的描述
+}
+
+// SoraVideoResponse Sora 视频生成响应
+type SoraVideoResponse struct {
+	ID                 string `json:"id"`
+	Object             string `json:"object"`
+	Created            int64  `json:"created,omitempty"`
+	CreatedAt          int64  `json:"created_at,omitempty"` // Remix 响应使用
+	Model              string `json:"model"`
+	Status             string `json:"status"`             // queued, processing, completed, failed
+	Progress           int    `json:"progress,omitempty"` // Remix 响应使用
+	Prompt             string `json:"prompt,omitempty"`
+	Size               string `json:"size,omitempty"`
+	Seconds            string `json:"seconds,omitempty"` // 视频时长（秒），string 类型
+	VideoURL           string `json:"video_url,omitempty"`
+	RemixedFromVideoID string `json:"remixed_from_video_id,omitempty"` // Remix 响应使用
+	Error              *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+	} `json:"error,omitempty"`
+	StatusCode int `json:"status_code,omitempty"` // HTTP status code
 }

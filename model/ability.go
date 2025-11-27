@@ -2,11 +2,14 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
+	"gorm.io/gorm"
 )
 
 type Ability struct {
@@ -76,9 +79,17 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 func (channel *Channel) AddAbilities() error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")
-	abilities := make([]Ability, 0, len(models_))
+	abilities := make([]Ability, 0, len(models_)*len(groups_))
 	for _, model := range models_ {
+		model = strings.TrimSpace(model) // 去除空格
+		if model == "" {
+			continue // 跳过空模型
+		}
 		for _, group := range groups_ {
+			group = strings.TrimSpace(group) // 去除空格
+			if group == "" {
+				continue // 跳过空组
+			}
 			ability := Ability{
 				Group:     group,
 				Model:     model,
@@ -89,7 +100,22 @@ func (channel *Channel) AddAbilities() error {
 			abilities = append(abilities, ability)
 		}
 	}
-	return DB.Create(&abilities).Error
+
+	// 分批插入以避免 "too many SQL variables" 错误
+	// SQLite 默认限制为999个变量，每条记录5个字段，所以每批最多150条记录 (150 * 5 = 750 < 999)
+	// MySQL 限制更高，但使用相同的批量大小保持兼容性
+	batchSize := 150
+	for i := 0; i < len(abilities); i += batchSize {
+		end := i + batchSize
+		if end > len(abilities) {
+			end = len(abilities)
+		}
+		batch := abilities[i:end]
+		if err := DB.Create(&batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (channel *Channel) DeleteAbilities() error {
@@ -113,8 +139,90 @@ func (channel *Channel) UpdateAbilities() error {
 	return nil
 }
 
+// UpdateAbilityStatus 已废弃：请使用 UpdateChannelStatusById 确保数据一致性
+// Deprecated: Use UpdateChannelStatusById instead to ensure data consistency
 func UpdateAbilityStatus(channelId int, status bool) error {
+	logger.SysError("WARNING: UpdateAbilityStatus is deprecated and may cause data inconsistency. Use UpdateChannelStatusById instead.")
 	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Select("enabled").Update("enabled", status).Error
+}
+
+// CheckDataConsistency 检查并修复 channels 和 abilities 表的数据一致性
+func CheckDataConsistency() error {
+	// 先检查不一致的数量
+	var inconsistentCount int64
+	err := DB.Table("abilities a").
+		Joins("JOIN channels c ON a.channel_id = c.id").
+		Where("(c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)", common.ChannelStatusEnabled, common.ChannelStatusEnabled).
+		Count(&inconsistentCount).Error
+
+	if err != nil {
+		logger.SysError("Failed to check data consistency: " + err.Error())
+		return err
+	}
+
+	if inconsistentCount > 0 {
+		logger.SysLog(fmt.Sprintf("Found %d inconsistent ability records, fixing...", inconsistentCount))
+
+		// 修复不一致的数据 - 根据数据库类型使用不同语法
+		var result *gorm.DB
+		if common.UsingMySQL || common.UsingPostgreSQL {
+			// MySQL/PostgreSQL: 支持UPDATE JOIN语法
+			result = DB.Exec(`
+				UPDATE abilities a
+				JOIN channels c ON a.channel_id = c.id
+				SET a.enabled = CASE 
+					WHEN c.status = ? THEN 1
+					ELSE 0
+				END
+				WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+		} else {
+			// SQLite: 使用子查询语法
+			result = DB.Exec(`
+				UPDATE abilities 
+				SET enabled = CASE 
+					WHEN (SELECT status FROM channels WHERE channels.id = abilities.channel_id) = ? THEN 1
+					ELSE 0
+				END
+				WHERE EXISTS (
+					SELECT 1 FROM channels 
+					WHERE channels.id = abilities.channel_id 
+					AND ((channels.status = ? AND abilities.enabled = 0) OR (channels.status != ? AND abilities.enabled = 1))
+				)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+		}
+
+		if result.Error != nil {
+			logger.SysError("Failed to fix data consistency: " + result.Error.Error())
+			return result.Error
+		}
+
+		logger.SysLog(fmt.Sprintf("Fixed %d ability records for data consistency", result.RowsAffected))
+	} else {
+		logger.SysLog("Data consistency check passed - no issues found")
+	}
+
+	return nil
+}
+
+// SyncChannelAbilities 同步指定渠道的 abilities 状态
+func SyncChannelAbilities(channelId int) error {
+	var channel Channel
+	err := DB.First(&channel, channelId).Error
+	if err != nil {
+		return fmt.Errorf("channel not found: %w", err)
+	}
+
+	enabled := channel.Status == common.ChannelStatusEnabled
+	result := DB.Model(&Ability{}).Where("channel_id = ?", channelId).Update("enabled", enabled)
+
+	if result.Error != nil {
+		logger.SysError(fmt.Sprintf("Failed to sync abilities for channel %d: %s", channelId, result.Error.Error()))
+		return result.Error
+	}
+
+	logger.SysLog(fmt.Sprintf("Synced %d abilities for channel %d (enabled=%v)", result.RowsAffected, channelId, enabled))
+	return nil
 }
 
 func FindEnabledModelsByGroup(group string) ([]string, error) {

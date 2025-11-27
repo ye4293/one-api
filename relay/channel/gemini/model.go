@@ -1,10 +1,15 @@
 package gemini
 
 type ChatRequest struct {
-	Contents         []ChatContent        `json:"contents"`
-	SafetySettings   []ChatSafetySettings `json:"safety_settings,omitempty"`
-	GenerationConfig ChatGenerationConfig `json:"generation_config,omitempty"`
-	Tools            []ChatTools          `json:"tools,omitempty"`
+	Contents          []ChatContent        `json:"contents"`
+	SystemInstruction *SystemInstruction   `json:"systemInstruction,omitempty"`
+	SafetySettings    []ChatSafetySettings `json:"safetySettings,omitempty"`
+	GenerationConfig  ChatGenerationConfig `json:"generationConfig,omitempty"`
+	Tools             []ChatTools          `json:"tools,omitempty"`
+}
+
+type SystemInstruction struct {
+	Parts []Part `json:"parts"`
 }
 
 type InlineData struct {
@@ -32,13 +37,25 @@ type ChatTools struct {
 }
 
 type ChatGenerationConfig struct {
-	Temperature        float64  `json:"temperature,omitempty"`
-	TopP               float64  `json:"topP,omitempty"`
-	TopK               float64  `json:"topK,omitempty"`
-	MaxOutputTokens    int      `json:"maxOutputTokens,omitempty"`
-	CandidateCount     int      `json:"candidateCount,omitempty"`
-	StopSequences      []string `json:"stopSequences,omitempty"`
-	ResponseModalities []string `json:"response_modalities,omitempty"`
+	Temperature        float64         `json:"temperature,omitempty"`
+	TopP               float64         `json:"topP,omitempty"`
+	TopK               float64         `json:"topK,omitempty"`
+	MaxOutputTokens    int             `json:"maxOutputTokens,omitempty"`
+	CandidateCount     int             `json:"candidateCount,omitempty"`
+	StopSequences      []string        `json:"stopSequences,omitempty"`
+	ResponseModalities []string        `json:"responseModalities,omitempty"`
+	ThinkingConfig     *ThinkingConfig `json:"thinkingConfig,omitempty"`
+	ImageConfig        *ImageConfig    `json:"imageConfig,omitempty"`
+}
+
+type ImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	ImageSize   string `json:"imageSize,omitempty"`
+}
+
+type ThinkingConfig struct {
+	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 }
 
 // type GeminiImageRequest struct {

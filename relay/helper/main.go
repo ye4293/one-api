@@ -11,6 +11,8 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/tencent"
+	"github.com/songquanpeng/one-api/relay/channel/vertexai"
+	"github.com/songquanpeng/one-api/relay/channel/xai"
 	"github.com/songquanpeng/one-api/relay/channel/xunfei"
 	"github.com/songquanpeng/one-api/relay/channel/zhipu"
 	"github.com/songquanpeng/one-api/relay/constant"
@@ -40,6 +42,10 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &cohere.Adaptor{}
 	case constant.APITypeMinimax:
 		return &minimax.Adaptor{}
+	case constant.APITypeXAI:
+		return &xai.Adaptor{}
+	case constant.APITypeVertexAI:
+		return &vertexai.Adaptor{}
 	}
 	return nil
 }
