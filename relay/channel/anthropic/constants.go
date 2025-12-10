@@ -21,6 +21,8 @@ var ModelList = []string{
 	"claude-haiku-4-5-20251001-thinking",
 	"claude-sonnet-4-5-20250929-thinking",
 	"claude-sonnet-4-5-20250929",
+	"claude-opus-4-5-20251101-thinking",
+	"claude-opus-4-5-20251101",
 }
 
 var ModelDetails = []model.APIModel{

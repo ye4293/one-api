@@ -33,6 +33,122 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Gemini Token 详情 Modality 常量
+const (
+	ModalityImage = "IMAGE"
+	ModalityText  = "TEXT"
+)
+
+// GeminiUsageDetails 用于存储从 Gemini UsageMetadata 提取的详细使用信息
+type GeminiUsageDetails struct {
+	InputTextTokens   int
+	InputImageTokens  int
+	OutputImageTokens int
+	ReasoningTokens   int
+}
+
+// extractGeminiUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息
+// promptDetails: PromptTokensDetails 数组
+// candidatesDetails: CandidatesTokensDetails 数组
+// thoughtsTokenCount: ThoughtsTokenCount 值
+func extractGeminiUsageDetails(
+	promptDetails []struct {
+		Modality   string `json:"modality"`
+		TokenCount int    `json:"tokenCount"`
+	},
+	candidatesDetails []struct {
+		Modality   string `json:"modality"`
+		TokenCount int    `json:"tokenCount"`
+	},
+	thoughtsTokenCount int,
+) GeminiUsageDetails {
+	details := GeminiUsageDetails{
+		ReasoningTokens: thoughtsTokenCount,
+	}
+
+	for _, d := range promptDetails {
+		switch d.Modality {
+		case ModalityImage:
+			details.InputImageTokens = d.TokenCount
+		case ModalityText:
+			details.InputTextTokens = d.TokenCount
+		}
+	}
+
+	for _, d := range candidatesDetails {
+		if d.Modality == ModalityImage {
+			details.OutputImageTokens = d.TokenCount
+		}
+	}
+
+	return details
+}
+
+// buildGeminiUsageMap 构建包含详细使用信息的 usage map
+func buildGeminiUsageMap(totalTokens, inputTokens, outputTokens int, details GeminiUsageDetails) map[string]interface{} {
+	return map[string]interface{}{
+		"total_tokens":  totalTokens,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"input_tokens_details": map[string]int{
+			"text_tokens":  details.InputTextTokens,
+			"image_tokens": details.InputImageTokens,
+		},
+		"output_tokens_details": map[string]int{
+			"text_tokens":      0,
+			"image_tokens":     details.OutputImageTokens,
+			"reasoning_tokens": details.ReasoningTokens,
+		},
+	}
+}
+
+// UsageDetailsForLog Usage 详情结构体，用于序列化到日志 other 字段
+type UsageDetailsForLog struct {
+	InputText       int `json:"input_text"`
+	InputImage      int `json:"input_image"`
+	OutputText      int `json:"output_text"`
+	OutputImage     int `json:"output_image"`
+	OutputReasoning int `json:"output_reasoning"`
+}
+
+// buildOtherInfoWithUsageDetails 构建包含 adminInfo 和 usageDetails 的 otherInfo 字符串
+// adminInfo: 渠道历史信息（可为空）
+// usageDetails: Usage 详情（可为 nil）
+func buildOtherInfoWithUsageDetails(adminInfo string, usageDetails *GeminiUsageDetails) string {
+	var parts []string
+
+	if adminInfo != "" {
+		parts = append(parts, adminInfo)
+	}
+
+	if usageDetails != nil {
+		detailsForLog := UsageDetailsForLog{
+			InputText:       usageDetails.InputTextTokens,
+			InputImage:      usageDetails.InputImageTokens,
+			OutputText:      0, // Gemini 不返回 output text token 详情
+			OutputImage:     usageDetails.OutputImageTokens,
+			OutputReasoning: usageDetails.ReasoningTokens,
+		}
+		if detailsBytes, err := json.Marshal(detailsForLog); err == nil {
+			parts = append(parts, fmt.Sprintf("usageDetails:%s", string(detailsBytes)))
+		}
+	}
+
+	return strings.Join(parts, ";")
+}
+
+// extractAdminInfoFromContext 从 gin.Context 中提取 adminInfo
+func extractAdminInfoFromContext(c *gin.Context) string {
+	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
+		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
+			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
+				return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
+			}
+		}
+	}
+	return ""
+}
+
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
 
 	startTime := time.Now()
@@ -46,18 +162,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// 获取 meta 信息用于调试
 	meta := util.GetRelayMeta(c)
-
-	// VertexAI 配置调试信息
-	if meta.ChannelType == common.ChannelTypeVertexAI {
-		logger.Infof(ctx, "🔍 [VertexAI Debug] =====【VertexAI渠道配置信息】=====")
-		logger.Infof(ctx, "🔍 [VertexAI Debug] ChannelId: %d, ChannelType: %d", meta.ChannelId, meta.ChannelType)
-		logger.Infof(ctx, "🔍 [VertexAI Debug] IsMultiKey: %v, KeyIndex: %v", meta.IsMultiKey, meta.KeyIndex)
-		logger.Infof(ctx, "🔍 [VertexAI Debug] Keys数量: %d, ActualAPIKey长度: %d", len(meta.Keys), len(meta.ActualAPIKey))
-		logger.Infof(ctx, "🔍 [VertexAI Debug] Config.Region: '%s', Config.VertexAIProjectID: '%s'", meta.Config.Region, meta.Config.VertexAIProjectID)
-		logger.Infof(ctx, "🔍 [VertexAI Debug] Config.VertexAIADC是否为空: %v", meta.Config.VertexAIADC == "")
-		logger.Infof(ctx, "🔍 [VertexAI Debug] BaseURL: '%s'", meta.BaseURL)
-		logger.Infof(ctx, "🔍 [VertexAI Debug] =============================")
-	}
 
 	// 检查函数开始时的上下文状态
 	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
@@ -364,24 +468,22 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 			}
 
+			// // Print the converted request body
+			// logger.Infof(ctx, "Converted Gemini Request Body: %s", string(jsonStr))
+
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
 			if meta.ChannelType == common.ChannelTypeVertexAI {
-				logger.Infof(ctx, "🔧 [VertexAI Debug] 开始处理VertexAI图像请求")
-				logger.Infof(ctx, "🔧 [VertexAI Debug] ChannelId: %d, ChannelType: %d", meta.ChannelId, meta.ChannelType)
-				logger.Infof(ctx, "🔧 [VertexAI Debug] IsMultiKey: %v, KeyIndex: %v", meta.IsMultiKey, meta.KeyIndex)
-
 				// 为VertexAI构建URL
 				keyIndex := 0
 				if meta.KeyIndex != nil {
 					keyIndex = *meta.KeyIndex
-					logger.Infof(ctx, "🔧 [VertexAI Debug] 使用KeyIndex: %d", keyIndex)
 				}
 
 				// 安全检查：确保keyIndex不为负数
 				if keyIndex < 0 {
-					logger.Errorf(ctx, "🔧 [VertexAI Debug] keyIndex为负数: %d，重置为0", keyIndex)
+					logger.Errorf(ctx, "VertexAI keyIndex为负数: %d，重置为0", keyIndex)
 					keyIndex = 0
 				}
 
@@ -389,38 +491,32 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 				// 尝试从Key字段解析项目ID（支持多密钥）
 				if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-					logger.Infof(ctx, "🔧 [VertexAI Debug] 多密钥模式，Keys总数: %d, 当前索引: %d", len(meta.Keys), keyIndex)
 					// 多密钥模式：从指定索引的密钥解析
 					var credentials vertexai.Credentials
 					if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
 						projectID = credentials.ProjectID
-						logger.Infof(ctx, "🔧 [VertexAI Debug] 从多密钥解析ProjectID成功: %s", projectID)
 					} else {
-						logger.Errorf(ctx, "🔧 [VertexAI Debug] 从多密钥解析ProjectID失败: %v", err)
+						logger.Errorf(ctx, "VertexAI 从多密钥解析ProjectID失败: %v", err)
 					}
 				} else if meta.ActualAPIKey != "" {
-					logger.Infof(ctx, "🔧 [VertexAI Debug] 单密钥模式，ActualAPIKey长度: %d", len(meta.ActualAPIKey))
 					// 单密钥模式：从ActualAPIKey解析
 					var credentials vertexai.Credentials
 					if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
 						projectID = credentials.ProjectID
-						logger.Infof(ctx, "🔧 [VertexAI Debug] 从ActualAPIKey解析ProjectID成功: %s", projectID)
 					} else {
-						logger.Errorf(ctx, "🔧 [VertexAI Debug] 从ActualAPIKey解析ProjectID失败: %v", err)
+						logger.Errorf(ctx, "VertexAI 从ActualAPIKey解析ProjectID失败: %v", err)
 					}
 				} else {
-					logger.Warnf(ctx, "🔧 [VertexAI Debug] 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d, ActualAPIKey是否为空: %v",
-						meta.IsMultiKey, len(meta.Keys), meta.ActualAPIKey == "")
+					logger.Warnf(ctx, "VertexAI 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d", meta.IsMultiKey, len(meta.Keys))
 				}
 
 				// 回退：尝试从Config获取项目ID
 				if projectID == "" && meta.Config.VertexAIProjectID != "" {
 					projectID = meta.Config.VertexAIProjectID
-					logger.Infof(ctx, "🔧 [VertexAI Debug] 从Config获取ProjectID: %s", projectID)
 				}
 
 				if projectID == "" {
-					logger.Errorf(ctx, "🔧 [VertexAI Debug] 无法获取ProjectID，所有方式都失败了")
+					logger.Errorf(ctx, "VertexAI 无法获取ProjectID")
 					return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
 				}
 
@@ -428,8 +524,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				if region == "" {
 					region = "global"
 				}
-				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Region: %s", region)
-				logger.Infof(ctx, "🔧 [VertexAI Debug] 使用Model: %s", meta.OriginModelName)
 
 				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
 				if region == "global" {
@@ -437,7 +531,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				} else {
 					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
 				}
-				logger.Infof(ctx, "🔧 [VertexAI Debug] 构建的完整URL: %s", fullRequestURL)
 			} else {
 				// 原有的Gemini官方API URL
 				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
@@ -544,16 +637,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// VertexAI调试信息
 	if meta.ChannelType == common.ChannelTypeVertexAI && strings.HasPrefix(imageRequest.Model, "gemini") {
-		logger.Infof(ctx, "📤 [VertexAI Debug] 即将发送请求到VertexAI")
-		logger.Infof(ctx, "📤 [VertexAI Debug] Request Headers: Content-Type=%s, Authorization=%s",
-			req.Header.Get("Content-Type"),
-			func() string {
-				auth := req.Header.Get("Authorization")
-				if len(auth) > 20 {
-					return auth[:20] + "..."
-				}
-				return auth
-			}())
+		logger.Debugf(ctx, "VertexAI request ready: Content-Type=%s", req.Header.Get("Content-Type"))
 	}
 
 	// 如果是表单请求，记录表单内容
@@ -600,7 +684,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		req.Header.Set("api-key", token)
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
 		if meta.ChannelType == common.ChannelTypeVertexAI {
-			logger.Infof(ctx, "🔐 [VertexAI Debug] 开始VertexAI认证流程")
 			// 为VertexAI使用Bearer token认证 - 复用已有的adaptor实例
 			var vertexAIAdaptor *vertexai.Adaptor
 			if va, ok := adaptor.(*vertexai.Adaptor); ok {
@@ -609,27 +692,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
 				vertexAIAdaptor = &vertexai.Adaptor{}
 				vertexAIAdaptor.Init(meta)
-				logger.Warnf(ctx, "🔐 [VertexAI Debug] 警告：adaptor类型不匹配，创建新的VertexAI适配器实例")
+				logger.Warnf(ctx, "VertexAI adaptor类型不匹配，创建新实例")
 			}
 
-			logger.Infof(ctx, "🔐 [VertexAI Debug] 调用GetAccessToken获取访问令牌")
 			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
 			if err != nil {
-				logger.Errorf(ctx, "🔐 [VertexAI Debug] 获取访问令牌失败: %v", err)
+				logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
 				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
 			}
 
-			// 只显示令牌的前10个字符用于调试，避免完整令牌泄露
-			tokenPreview := ""
-			if len(accessToken) > 10 {
-				tokenPreview = accessToken[:10] + "..."
-			} else {
-				tokenPreview = accessToken
-			}
-			logger.Infof(ctx, "🔐 [VertexAI Debug] 成功获取访问令牌，长度: %d, 前缀: %s", len(accessToken), tokenPreview)
-
 			req.Header.Set("Authorization", "Bearer "+accessToken)
-			logger.Infof(ctx, "🔐 [VertexAI Debug] 已设置Authorization header为Bearer token")
 		} else {
 			// For Gemini, set the API key in the x-goog-api-key header
 			req.Header.Set("x-goog-api-key", meta.APIKey)
@@ -819,7 +891,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 对于 Gemini 模型，跳过处理（已在响应处理中直接处理）
 		if strings.HasPrefix(meta.ActualModelName, "gemini") || strings.HasPrefix(meta.OriginModelName, "gemini") {
-			logger.Infof(ctx, "Defer 函数跳过 Gemini 模型处理（已在响应处理中完成）: ActualModelName=%s, OriginModelName=%s", meta.ActualModelName, meta.OriginModelName)
 			return // 跳过 Gemini 的处理
 		}
 
@@ -877,15 +948,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		logger.Errorf(ctx, "API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
-
-		// 检查错误返回时的上下文状态
-		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-			logger.Infof(ctx, "RelayImageHelper: EXIT ERROR - admin_channel_history exists: %v", channelHistoryInterface)
-		} else {
-			logger.Warnf(ctx, "RelayImageHelper: EXIT ERROR - admin_channel_history NOT found")
-		}
-
-		logger.Errorf(ctx, "RelayImageHelper EXIT ERROR: returning error for status %d", resp.StatusCode)
 		return openai.ErrorWrapper(
 			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
 			"api_error",
@@ -895,21 +957,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(meta.OriginModelName, "gemini") {
-		logger.Infof(ctx, "进入 Gemini 响应处理逻辑，原始模型: %s, 映射后模型: %s", meta.OriginModelName, imageRequest.Model)
-		// Add debug logging for the original response body（省略具体内容，避免 base64 数据占用日志）
-		logger.Infof(ctx, "Gemini 原始响应已接收，状态码: %d", resp.StatusCode)
-
-		// VertexAI特定的调试信息
-		if meta.ChannelType == common.ChannelTypeVertexAI {
-			logger.Infof(ctx, "📥 [VertexAI Debug] 收到VertexAI响应，状态码: %d", resp.StatusCode)
-			logger.Infof(ctx, "📥 [VertexAI Debug] 响应体长度: %d bytes", len(responseBody))
-
-			// 检查响应头
-			if contentType := resp.Header.Get("Content-Type"); contentType != "" {
-				logger.Infof(ctx, "📥 [VertexAI Debug] 响应Content-Type: %s", contentType)
-			}
-		}
-
 		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
 
 		// Check if response is an error
@@ -924,30 +971,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		if err := json.Unmarshal(responseBody, &geminiError); err != nil {
 			logger.Errorf(ctx, "解析 Gemini 错误响应失败: %s", err.Error())
-			// VertexAI特定的错误解析调试
-			if meta.ChannelType == common.ChannelTypeVertexAI {
-				logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI错误响应解析失败，原始响应: %s", string(responseBody))
-			}
 		} else if geminiError.Error.Message != "" {
-			if meta.ChannelType == common.ChannelTypeVertexAI {
-				logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI API 返回错误: 代码=%d, 消息=%s, 状态=%s",
-					geminiError.Error.Code,
-					geminiError.Error.Message,
-					geminiError.Error.Status)
-			} else {
-				logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
-					geminiError.Error.Code,
-					geminiError.Error.Message,
-					geminiError.Error.Status)
-			}
+			logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
+				geminiError.Error.Code,
+				geminiError.Error.Message,
+				geminiError.Error.Status)
 
 			if len(geminiError.Error.Details) > 0 {
 				detailsJson, _ := json.Marshal(geminiError.Error.Details)
-				if meta.ChannelType == common.ChannelTypeVertexAI {
-					logger.Errorf(ctx, "🚨 [VertexAI Debug] VertexAI错误详情: %s", string(detailsJson))
-				} else {
-					logger.Errorf(ctx, "错误详情: %s", string(detailsJson))
-				}
+				logger.Errorf(ctx, "错误详情: %s", string(detailsJson))
 			}
 
 			// Use the existing ErrorWrapper function to handle the error
@@ -996,6 +1028,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				PromptTokenCount     int `json:"promptTokenCount,omitempty"`
 				CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
 				TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+				ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
+				PromptTokensDetails  []struct {
+					Modality   string `json:"modality"`
+					TokenCount int    `json:"tokenCount"`
+				} `json:"promptTokensDetails,omitempty"`
+				CandidatesTokensDetails []struct {
+					Modality   string `json:"modality"`
+					TokenCount int    `json:"tokenCount"`
+				} `json:"candidatesTokensDetails,omitempty"`
 			} `json:"usageMetadata,omitempty"`
 		}
 
@@ -1006,34 +1047,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 保存 Gemini token 信息到全局变量，供 defer 函数使用
-		if meta.ChannelType == common.ChannelTypeVertexAI {
-			logger.Infof(ctx, "📊 [VertexAI Debug] 准备保存 VertexAI token 信息")
-			logger.Infof(ctx, "📊 [VertexAI Debug] 原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
-				geminiResponse.UsageMetadata.PromptTokenCount,
-				geminiResponse.UsageMetadata.CandidatesTokenCount,
-				geminiResponse.UsageMetadata.TotalTokenCount)
-		} else {
-			logger.Infof(ctx, "准备保存 Gemini token 信息")
-			logger.Infof(ctx, "原始 UsageMetadata: PromptTokenCount=%d, CandidatesTokenCount=%d, TotalTokenCount=%d",
-				geminiResponse.UsageMetadata.PromptTokenCount,
-				geminiResponse.UsageMetadata.CandidatesTokenCount,
-				geminiResponse.UsageMetadata.TotalTokenCount)
-		}
-
 		geminiPromptTokens = geminiResponse.UsageMetadata.PromptTokenCount
 		geminiCompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount
 
-		if meta.ChannelType == common.ChannelTypeVertexAI {
-			logger.Infof(ctx, "📊 [VertexAI Debug] 已保存 VertexAI token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
-				geminiPromptTokens, geminiCompletionTokens)
-			logger.Infof(ctx, "📊 [VertexAI Debug] VertexAI JSON token usage: prompt=%d, completion=%d, total=%d",
-				geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
-		} else {
-			logger.Infof(ctx, "已保存 Gemini token 信息: geminiPromptTokens=%d, geminiCompletionTokens=%d",
-				geminiPromptTokens, geminiCompletionTokens)
-			logger.Infof(ctx, "Gemini JSON token usage: prompt=%d, completion=%d, total=%d",
-				geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
-		}
+		logger.Infof(ctx, "Gemini token usage: prompt=%d, completion=%d, total=%d",
+			geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
 
 		// 检查 promptFeedback 是否有阻止原因
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
@@ -1059,6 +1077,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 			// 构建包含错误和usage信息的响应
+			usageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			)
+
 			errorResponse := map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    "gemini_prompt_blocked",
@@ -1068,15 +1092,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				},
 				"created": time.Now().Unix(),
 				"data":    nil,
-				"usage": map[string]interface{}{
-					"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-					"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-					"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-					"input_tokens_details": map[string]int{
-						"text_tokens":  0,
-						"image_tokens": 0,
-					},
-				},
+				"usage": buildGeminiUsageMap(
+					geminiResponse.UsageMetadata.TotalTokenCount,
+					geminiResponse.UsageMetadata.PromptTokenCount,
+					geminiResponse.UsageMetadata.CandidatesTokenCount,
+					usageDetails,
+				),
 			}
 
 			// 直接返回响应
@@ -1118,15 +1139,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent := fmt.Sprintf("Gemini JSON Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
 
-			// 获取渠道历史信息
-			var otherInfo string
-			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-					}
-				}
-			}
+			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+			adminInfo := extractAdminInfoFromContext(c)
+			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -1184,15 +1199,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-			// 获取渠道历史信息
-			var otherInfo string
-			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-					}
-				}
-			}
+			// 提取 token 详情并构建 otherInfo
+			usageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			)
+			adminInfo := extractAdminInfoFromContext(c)
+			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -1229,6 +1243,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				}
 				logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
+				// Extract usage details for error response
+				usageDetails := extractGeminiUsageDetails(
+					geminiResponse.UsageMetadata.PromptTokensDetails,
+					geminiResponse.UsageMetadata.CandidatesTokensDetails,
+					geminiResponse.UsageMetadata.ThoughtsTokenCount,
+				)
+
 				// 构建包含错误和usage信息的响应
 				errorResponse := map[string]interface{}{
 					"error": map[string]interface{}{
@@ -1239,15 +1260,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					},
 					"created": time.Now().Unix(),
 					"data":    nil,
-					"usage": map[string]interface{}{
-						"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-						"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-						"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-						"input_tokens_details": map[string]int{
-							"text_tokens":  0,
-							"image_tokens": 0,
-						},
-					},
+					"usage": buildGeminiUsageMap(
+						geminiResponse.UsageMetadata.TotalTokenCount,
+						geminiResponse.UsageMetadata.PromptTokenCount,
+						geminiResponse.UsageMetadata.CandidatesTokenCount,
+						usageDetails,
+					),
 				}
 
 				// 直接返回响应
@@ -1289,15 +1307,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				logContent := fmt.Sprintf("Gemini JSON Error - Model: %s, FinishReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 					meta.OriginModelName, candidate.FinishReason, promptTokens, completionTokens, actualQuota, duration)
 
-				// 获取渠道历史信息
-				var otherInfo string
-				if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-					if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-						if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-							otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-						}
-					}
-				}
+				// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+				adminInfo := extractAdminInfoFromContext(c)
+				otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 				// 记录日志
 				model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -1353,8 +1365,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					for _, part := range candidate.Content.Parts {
 						if part.Text != "" {
 							hasText = true
-							if len(part.Text) > 50 {
-								textContent = part.Text[:50] + "..."
+							if len(part.Text) > 200 {
+								textContent = part.Text[:200] + "..."
 							} else {
 								textContent = part.Text
 							}
@@ -1382,25 +1394,29 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
+			// Extract usage details for error response
+			usageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			)
+
 			// 构建包含错误和usage信息的响应
 			errorResponse := map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    "gemini_no_image_generated",
-					"message": "Gemini API 错误: 未生成图片，请检查提示词或重试",
+					"message": fmt.Sprintf("Gemini API 错误: 未生成图片 (%s)", detailReason),
 					"param":   "",
 					"type":    "api_error",
 				},
 				"created": time.Now().Unix(),
 				"data":    nil,
-				"usage": map[string]interface{}{
-					"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-					"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-					"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-					"input_tokens_details": map[string]int{
-						"text_tokens":  0,
-						"image_tokens": 0,
-					},
-				},
+				"usage": buildGeminiUsageMap(
+					geminiResponse.UsageMetadata.TotalTokenCount,
+					geminiResponse.UsageMetadata.PromptTokenCount,
+					geminiResponse.UsageMetadata.CandidatesTokenCount,
+					usageDetails,
+				),
 			}
 
 			// 直接返回响应
@@ -1442,15 +1458,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent := fmt.Sprintf("Gemini JSON No Image - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-			// 获取渠道历史信息
-			var otherInfo string
-			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-					}
-				}
-			}
+			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+			adminInfo := extractAdminInfoFromContext(c)
+			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -1492,8 +1502,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					TextTokens  int `json:"text_tokens"`
 					ImageTokens int `json:"image_tokens"`
 				} `json:"input_tokens_details"`
+				OutputTokensDetails struct {
+					TextTokens      int `json:"text_tokens"`
+					ImageTokens     int `json:"image_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
 			} `json:"usage,omitempty"`
 		}
+
+		// 提取详细的 Token 信息
+		usageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			geminiResponse.UsageMetadata.ThoughtsTokenCount,
+		)
 
 		imageResponseWithUsage := GeminiImageResponse{
 			Created: int(time.Now().Unix()),
@@ -1506,6 +1528,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					TextTokens  int `json:"text_tokens"`
 					ImageTokens int `json:"image_tokens"`
 				} `json:"input_tokens_details"`
+				OutputTokensDetails struct {
+					TextTokens      int `json:"text_tokens"`
+					ImageTokens     int `json:"image_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
 			}{
 				TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
 				InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
@@ -1514,9 +1541,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					TextTokens  int `json:"text_tokens"`
 					ImageTokens int `json:"image_tokens"`
 				}{
-					// Gemini 不提供详细的 token 分解，设为 0
-					TextTokens:  0,
-					ImageTokens: 0,
+					TextTokens:  usageDetails.InputTextTokens,
+					ImageTokens: usageDetails.InputImageTokens,
+				},
+				OutputTokensDetails: struct {
+					TextTokens      int `json:"text_tokens"`
+					ImageTokens     int `json:"image_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				}{
+					TextTokens:      0,
+					ImageTokens:     usageDetails.OutputImageTokens,
+					ReasoningTokens: usageDetails.ReasoningTokens,
 				},
 			},
 		}
@@ -1529,12 +1564,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 记录 usage 信息
-		logger.Infof(ctx, "Gemini JSON 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, text_tokens=%d, image_tokens=%d",
+		logger.Infof(ctx, "Gemini JSON 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, input_text=%d, input_image=%d, output_image=%d, reasoning=%d",
 			imageResponseWithUsage.Usage.TotalTokens,
 			imageResponseWithUsage.Usage.InputTokens,
 			imageResponseWithUsage.Usage.OutputTokens,
-			0, // Gemini 不提供详细分解
-			0) // Gemini 不提供详细分解
+			imageResponseWithUsage.Usage.InputTokensDetails.TextTokens,
+			imageResponseWithUsage.Usage.InputTokensDetails.ImageTokens,
+			imageResponseWithUsage.Usage.OutputTokensDetails.ImageTokens,
+			imageResponseWithUsage.Usage.OutputTokensDetails.ReasoningTokens)
 
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
 		err = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
@@ -1645,14 +1682,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 使用c.Data()让Gin自动处理Content-Length和响应写入
 	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
 
-	// 检查函数结束时的上下文状态
-	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-		logger.Infof(ctx, "RelayImageHelper: EXIT SUCCESS - admin_channel_history exists: %v", channelHistoryInterface)
-	} else {
-		logger.Warnf(ctx, "RelayImageHelper: EXIT SUCCESS - admin_channel_history NOT found (this is the problem!)")
-	}
-
-	logger.Infof(ctx, "RelayImageHelper EXIT SUCCESS: returning nil")
 	return nil
 }
 
@@ -2961,17 +2990,15 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
 	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求处理 - 开始构建VertexAI URL")
 		// 为VertexAI构建URL
 		keyIndex := 0
 		if meta.KeyIndex != nil {
 			keyIndex = *meta.KeyIndex
-			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 使用KeyIndex: %d", keyIndex)
 		}
 
 		// 安全检查：确保keyIndex不为负数
 		if keyIndex < 0 {
-			logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - keyIndex为负数: %d，重置为0", keyIndex)
+			logger.Errorf(ctx, "VertexAI Form请求 keyIndex为负数: %d，重置为0", keyIndex)
 			keyIndex = 0
 		}
 
@@ -2979,37 +3006,32 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 		// 尝试从Key字段解析项目ID（支持多密钥）
 		if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 多密钥模式，Keys总数: %d", len(meta.Keys))
 			// 多密钥模式：从指定索引的密钥解析
 			var credentials vertexai.Credentials
 			if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
 				projectID = credentials.ProjectID
-				logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从多密钥解析ProjectID成功: %s", projectID)
 			} else {
-				logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 从多密钥解析ProjectID失败: %v", err)
+				logger.Errorf(ctx, "VertexAI Form请求 从多密钥解析ProjectID失败: %v", err)
 			}
 		} else if meta.ActualAPIKey != "" {
-			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 单密钥模式，ActualAPIKey长度: %d", len(meta.ActualAPIKey))
 			// 单密钥模式：从ActualAPIKey解析
 			var credentials vertexai.Credentials
 			if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
 				projectID = credentials.ProjectID
-				logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从ActualAPIKey解析ProjectID成功: %s", projectID)
 			} else {
-				logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 从ActualAPIKey解析ProjectID失败: %v", err)
+				logger.Errorf(ctx, "VertexAI Form请求 从ActualAPIKey解析ProjectID失败: %v", err)
 			}
 		} else {
-			logger.Warnf(ctx, "🔧 [VertexAI Debug] Form请求 - 无法获取密钥信息")
+			logger.Warnf(ctx, "VertexAI Form请求 无法获取密钥信息")
 		}
 
 		// 回退：尝试从Config获取项目ID
 		if projectID == "" && meta.Config.VertexAIProjectID != "" {
 			projectID = meta.Config.VertexAIProjectID
-			logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 从Config获取ProjectID: %s", projectID)
 		}
 
 		if projectID == "" {
-			logger.Errorf(ctx, "🔧 [VertexAI Debug] Form请求 - 无法获取ProjectID")
+			logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
 			return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
 		}
 
@@ -3017,7 +3039,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		if region == "" {
 			region = "global"
 		}
-		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 使用Region: %s, Model: %s", region, meta.OriginModelName)
 
 		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
 		if region == "global" {
@@ -3025,7 +3046,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		} else {
 			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
 		}
-		logger.Infof(ctx, "🔧 [VertexAI Debug] Form请求 - 构建的完整URL: %s", fullRequestURL)
 	} else {
 		// 原有的Gemini官方API URL
 		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
@@ -3045,29 +3065,17 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	logger.Debugf(ctx, "Gemini form-to-json body size: %d bytes", requestBuffer.Len())
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 开始VertexAI认证流程")
 		// 为VertexAI使用Bearer token认证 - 创建新的adaptor实例（Form请求处理时没有预先创建的adaptor）
 		vertexAIAdaptor := &vertexai.Adaptor{}
 		vertexAIAdaptor.Init(meta)
 
-		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 调用GetAccessToken获取访问令牌")
 		accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
 		if err != nil {
-			logger.Errorf(ctx, "🔐 [VertexAI Debug] Form请求 - 获取访问令牌失败: %v", err)
+			logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
 			return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
 		}
 
-		// 只显示令牌的前10个字符用于调试，避免完整令牌泄露
-		tokenPreview := ""
-		if len(accessToken) > 10 {
-			tokenPreview = accessToken[:10] + "..."
-		} else {
-			tokenPreview = accessToken
-		}
-		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 成功获取访问令牌，长度: %d, 前缀: %s", len(accessToken), tokenPreview)
-
 		req.Header.Set("Authorization", "Bearer "+accessToken)
-		logger.Infof(ctx, "🔐 [VertexAI Debug] Form请求 - 已设置Authorization header为Bearer token")
 	} else {
 		// Gemini API 正确的 header 格式
 		req.Header.Set("x-goog-api-key", meta.APIKey)
@@ -3151,6 +3159,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
 			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
 			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+			ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
 			PromptTokensDetails  []struct {
 				Modality   string `json:"modality"`
 				TokenCount int    `json:"tokenCount"`
@@ -3191,6 +3200,13 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		}
 		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
+		// Extract usage details for error response
+		usageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			geminiResponse.UsageMetadata.ThoughtsTokenCount,
+		)
+
 		// 构建包含错误和usage信息的响应
 		errorResponse := map[string]interface{}{
 			"error": map[string]interface{}{
@@ -3201,15 +3217,12 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			},
 			"created": time.Now().Unix(),
 			"data":    nil,
-			"usage": map[string]interface{}{
-				"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-				"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-				"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-				"input_tokens_details": map[string]int{
-					"text_tokens":  0,
-					"image_tokens": 0,
-				},
-			},
+			"usage": buildGeminiUsageMap(
+				geminiResponse.UsageMetadata.TotalTokenCount,
+				geminiResponse.UsageMetadata.PromptTokenCount,
+				geminiResponse.UsageMetadata.CandidatesTokenCount,
+				usageDetails,
+			),
 		}
 
 		// 直接返回响应
@@ -3251,15 +3264,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		logContent := fmt.Sprintf("Gemini Form Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
 
-		// 获取渠道历史信息
-		var otherInfo string
-		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-				}
-			}
-		}
+		// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+		adminInfo := extractAdminInfoFromContext(c)
+		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -3317,15 +3324,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-		// 获取渠道历史信息
-		var otherInfo string
-		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-				}
-			}
-		}
+		// 提取 token 详情并构建 otherInfo
+		usageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			geminiResponse.UsageMetadata.ThoughtsTokenCount,
+		)
+		adminInfo := extractAdminInfoFromContext(c)
+		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -3362,6 +3368,13 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			}
 			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
+			// Extract usage details for error response
+			usageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			)
+
 			// 构建包含错误和usage信息的响应
 			errorResponse := map[string]interface{}{
 				"error": map[string]interface{}{
@@ -3372,15 +3385,12 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				},
 				"created": time.Now().Unix(),
 				"data":    nil,
-				"usage": map[string]interface{}{
-					"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-					"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-					"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-					"input_tokens_details": map[string]int{
-						"text_tokens":  0,
-						"image_tokens": 0,
-					},
-				},
+				"usage": buildGeminiUsageMap(
+					geminiResponse.UsageMetadata.TotalTokenCount,
+					geminiResponse.UsageMetadata.PromptTokenCount,
+					geminiResponse.UsageMetadata.CandidatesTokenCount,
+					usageDetails,
+				),
 			}
 
 			// 直接返回响应
@@ -3422,15 +3432,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			logContent := fmt.Sprintf("Gemini Form Error - Model: %s, FinishReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, candidate.FinishReason, promptTokens, completionTokens, actualQuota, duration)
 
-			// 获取渠道历史信息
-			var otherInfo string
-			if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-				if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-					if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-						otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-					}
-				}
-			}
+			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+			adminInfo := extractAdminInfoFromContext(c)
+			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -3476,16 +3480,22 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		} else {
 			hasText := false
 			hasEmptyPart := false
+			textContent := ""
 			for _, part := range geminiResponse.Candidates[0].Content.Parts {
 				if part.Text != "" {
 					hasText = true
+					if len(part.Text) > 200 {
+						textContent = part.Text[:200] + "..."
+					} else {
+						textContent = part.Text
+					}
 				}
 				if part.InlineData == nil && part.Text == "" {
 					hasEmptyPart = true
 				}
 			}
 			if hasText {
-				detailReason = "只包含文本，没有图片数据"
+				detailReason = fmt.Sprintf("只包含文本，没有图片数据: %s", textContent)
 			} else if hasEmptyPart {
 				detailReason = "parts 包含空对象"
 			} else {
@@ -3502,25 +3512,29 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		}
 		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
+		// Extract usage details for error response
+		usageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			geminiResponse.UsageMetadata.ThoughtsTokenCount,
+		)
+
 		// 构建包含错误和usage信息的响应
 		errorResponse := map[string]interface{}{
 			"error": map[string]interface{}{
 				"code":    "gemini_no_image_generated",
-				"message": "Gemini API 错误: 未生成图片，请检查提示词或重试",
+				"message": fmt.Sprintf("Gemini API 错误: 未生成图片 (%s)", detailReason),
 				"param":   "",
 				"type":    "api_error",
 			},
 			"created": time.Now().Unix(),
 			"data":    nil,
-			"usage": map[string]interface{}{
-				"total_tokens":  geminiResponse.UsageMetadata.TotalTokenCount,
-				"input_tokens":  geminiResponse.UsageMetadata.PromptTokenCount,
-				"output_tokens": geminiResponse.UsageMetadata.CandidatesTokenCount,
-				"input_tokens_details": map[string]int{
-					"text_tokens":  0,
-					"image_tokens": 0,
-				},
-			},
+			"usage": buildGeminiUsageMap(
+				geminiResponse.UsageMetadata.TotalTokenCount,
+				geminiResponse.UsageMetadata.PromptTokenCount,
+				geminiResponse.UsageMetadata.CandidatesTokenCount,
+				usageDetails,
+			),
 		}
 
 		// 直接返回响应
@@ -3562,15 +3576,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		logContent := fmt.Sprintf("Gemini Form No Image - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-		// 获取渠道历史信息
-		var otherInfo string
-		if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-			if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-				if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-					otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-				}
-			}
-		}
+		// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+		adminInfo := extractAdminInfoFromContext(c)
+		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
@@ -3612,8 +3620,20 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				TextTokens  int `json:"text_tokens"`
 				ImageTokens int `json:"image_tokens"`
 			} `json:"input_tokens_details"`
+			OutputTokensDetails struct {
+				TextTokens      int `json:"text_tokens"`
+				ImageTokens     int `json:"image_tokens"`
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
 		} `json:"usage,omitempty"`
 	}
+
+	// 提取详细的 Token 信息
+	usageDetails := extractGeminiUsageDetails(
+		geminiResponse.UsageMetadata.PromptTokensDetails,
+		geminiResponse.UsageMetadata.CandidatesTokensDetails,
+		geminiResponse.UsageMetadata.ThoughtsTokenCount,
+	)
 
 	// 构建最终响应
 	imageResponse := ImageResponseWithUsage{
@@ -3627,6 +3647,11 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				TextTokens  int `json:"text_tokens"`
 				ImageTokens int `json:"image_tokens"`
 			} `json:"input_tokens_details"`
+			OutputTokensDetails struct {
+				TextTokens      int `json:"text_tokens"`
+				ImageTokens     int `json:"image_tokens"`
+				ReasoningTokens int `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
 		}{
 			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
 			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
@@ -3635,9 +3660,17 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 				TextTokens  int `json:"text_tokens"`
 				ImageTokens int `json:"image_tokens"`
 			}{
-				// Gemini 不提供详细的 token 分解，设为 0
-				TextTokens:  0,
-				ImageTokens: 0,
+				TextTokens:  usageDetails.InputTextTokens,
+				ImageTokens: usageDetails.InputImageTokens,
+			},
+			OutputTokensDetails: struct {
+				TextTokens      int `json:"text_tokens"`
+				ImageTokens     int `json:"image_tokens"`
+				ReasoningTokens int `json:"reasoning_tokens"`
+			}{
+				TextTokens:      0,
+				ImageTokens:     usageDetails.OutputImageTokens,
+				ReasoningTokens: usageDetails.ReasoningTokens,
 			},
 		},
 	}
@@ -3650,12 +3683,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	}
 
 	// 记录 usage 信息
-	logger.Infof(ctx, "Gemini Form 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, text_tokens=%d, image_tokens=%d",
+	logger.Infof(ctx, "Gemini Form 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, input_text=%d, input_image=%d, output_image=%d, reasoning=%d",
 		imageResponse.Usage.TotalTokens,
 		imageResponse.Usage.InputTokens,
 		imageResponse.Usage.OutputTokens,
-		0, // Gemini 不提供详细分解
-		0) // Gemini 不提供详细分解
+		imageResponse.Usage.InputTokensDetails.TextTokens,
+		imageResponse.Usage.InputTokensDetails.ImageTokens,
+		imageResponse.Usage.OutputTokensDetails.ImageTokens,
+		imageResponse.Usage.OutputTokensDetails.ReasoningTokens)
 
 	// 注意：不手动设置Content-Length，让Gin的c.JSON()自动处理
 	// 记录响应体大小用于调试
@@ -3709,15 +3744,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	logger.Infof(ctx, "Gemini Form Token Usage - Prompt: %d, Candidates: %d, Total: %d, Duration: %.3fs",
 		promptTokens, completionTokens, geminiResponse.UsageMetadata.TotalTokenCount, duration)
 
-	// 获取渠道历史信息并记录日志
-	var otherInfo string
-	if channelHistoryInterface, exists := c.Get("admin_channel_history"); exists {
-		if channelHistory, ok := channelHistoryInterface.([]int); ok && len(channelHistory) > 0 {
-			if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
-				otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
-			}
-		}
-	}
+	// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+	adminInfo := extractAdminInfoFromContext(c)
+	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
 	if otherInfo != "" {
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
@@ -3745,6 +3774,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 
 	// 从 geminiResponse 中提取 token 信息
 	var promptTokens, completionTokens int
+	var usageDetails *GeminiUsageDetails
 
 	// 使用类型断言来获取 UsageMetadata
 	if respStruct, ok := geminiResponse.(*struct {
@@ -3769,6 +3799,15 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
 			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
 			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+			ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
+			PromptTokensDetails  []struct {
+				Modality   string `json:"modality"`
+				TokenCount int    `json:"tokenCount"`
+			} `json:"promptTokensDetails,omitempty"`
+			CandidatesTokensDetails []struct {
+				Modality   string `json:"modality"`
+				TokenCount int    `json:"tokenCount"`
+			} `json:"candidatesTokensDetails,omitempty"`
 		} `json:"usageMetadata,omitempty"`
 	}); ok {
 		// 检查是否有有效的 UsageMetadata
@@ -3780,8 +3819,13 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		promptTokens = respStruct.UsageMetadata.PromptTokenCount
 		completionTokens = respStruct.UsageMetadata.CandidatesTokenCount
 
-		logger.Infof(ctx, "Gemini JSON 成功响应处理 token: prompt=%d, completion=%d, total=%d",
-			promptTokens, completionTokens, respStruct.UsageMetadata.TotalTokenCount)
+		// 提取 token 详情
+		details := extractGeminiUsageDetails(
+			respStruct.UsageMetadata.PromptTokensDetails,
+			respStruct.UsageMetadata.CandidatesTokensDetails,
+			respStruct.UsageMetadata.ThoughtsTokenCount,
+		)
+		usageDetails = &details
 	} else {
 		logger.Warnf(ctx, "无法从 Gemini 响应中提取 token 信息（可能已在错误处理中记录）")
 		return nil // 不返回错误，避免影响成功响应
@@ -3825,8 +3869,9 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
 
-	// 获取渠道历史信息并记录日志
-	otherInfo := extractChannelHistoryInfo(ctx, c)
+	// 构建包含 adminInfo 和 usageDetails 的 otherInfo
+	adminInfo := extractAdminInfoFromContext(c)
+	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	if otherInfo != "" {
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
@@ -3837,30 +3882,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	channelId := c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, actualQuota)
 
-	logger.Infof(ctx, "Gemini JSON token consumption completed: prompt=%d, completion=%d, duration=%.3fs", promptTokens, completionTokens, duration)
 	return nil
-}
-
-// extractChannelHistoryInfo 从gin上下文中提取渠道历史信息
-func extractChannelHistoryInfo(ctx context.Context, c *gin.Context) string {
-	channelHistoryInterface, exists := c.Get("admin_channel_history")
-	if !exists {
-		return ""
-	}
-
-	channelHistory, ok := channelHistoryInterface.([]int)
-	if !ok || len(channelHistory) == 0 {
-		logger.Debugf(ctx, "Invalid channel history type or empty: %T", channelHistoryInterface)
-		return ""
-	}
-
-	channelHistoryBytes, err := json.Marshal(channelHistory)
-	if err != nil {
-		logger.Warnf(ctx, "Failed to marshal channel history %v: %v", channelHistory, err)
-		return ""
-	}
-
-	return fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
 }
 
 // extractImageInputs 从interface{}中提取图片输入列表

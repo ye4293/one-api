@@ -18,8 +18,9 @@ type InlineData struct {
 }
 
 type Part struct {
-	Text       string      `json:"text,omitempty"`
-	InlineData *InlineData `json:"inlineData,omitempty"`
+	Text             string      `json:"text,omitempty"`
+	InlineData       *InlineData `json:"inlineData,omitempty"`
+	ThoughtSignature string      `json:"thoughtSignature,omitempty"`
 }
 
 type ChatContent struct {
