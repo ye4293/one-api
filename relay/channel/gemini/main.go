@@ -298,6 +298,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		}
 		content.Parts = parts
 
+		// Add ThoughtSignature if present
+		if message.ThoughtSignature != "" {
+			if len(content.Parts) > 0 {
+				content.Parts[0].ThoughtSignature = message.ThoughtSignature
+			} else {
+				content.Parts = append(content.Parts, Part{ThoughtSignature: message.ThoughtSignature})
+			}
+		}
+
 		// there's no assistant role in gemini and API shall vomit if Role is not user or model
 		if content.Role == "assistant" {
 			content.Role = "model"
@@ -332,9 +341,10 @@ type UsageMetadata struct {
 	ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
 	ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount,omitempty"`
 	CachedContentTokenCount        int `json:"cachedContentTokenCount,omitempty"`
-	PromptTokensDetails  []GeminiPromptTokensDetails `json:"promptTokensDetails"`
+	PromptTokensDetails     []TokenDetails `json:"promptTokensDetails,omitempty"`
+	CandidatesTokensDetails []TokenDetails `json:"candidatesTokensDetails,omitempty"`
 }
-type GeminiPromptTokensDetails struct {
+type TokenDetails struct {
 	Modality   string `json:"modality"`
 	TokenCount int    `json:"tokenCount"`
 }
@@ -416,8 +426,15 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 		// 处理Parts，分离思考内容和实际回答内容
 		var reasoningContent string
 		var actualContent string
+		var thoughtSignature string
 
 		parts := candidate.Content.Parts
+		for _, part := range parts {
+			if part.ThoughtSignature != "" {
+				thoughtSignature = part.ThoughtSignature
+			}
+		}
+
 		if len(parts) == 2 {
 			// 当parts长度为2时，第一个是思考内容，第二个是实际回答
 			reasoningContent = parts[0].Text
@@ -429,6 +446,7 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 
 		choice.Message.Content = actualContent
 		choice.Message.ReasoningContent = reasoningContent
+		choice.Message.ThoughtSignature = thoughtSignature
 
 		fullTextResponse.Choices = append(fullTextResponse.Choices, choice)
 	}
@@ -439,6 +457,14 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName str
 	var choice openai.ChatCompletionsStreamResponseChoice
 	choice.Delta.Content = geminiResponse.GetActualContent()
 	choice.Delta.ReasoningContent = geminiResponse.GetReasoningContent()
+	if len(geminiResponse.Candidates) > 0 {
+		for _, part := range geminiResponse.Candidates[0].Content.Parts {
+			if part.ThoughtSignature != "" {
+				choice.Delta.ThoughtSignature = part.ThoughtSignature
+			}
+		}
+	}
+
 	var response openai.ChatCompletionsStreamResponse
 	response.Id = fmt.Sprintf("chatcmpl-%s", helper.GetUUID())
 	response.Created = helper.GetTimestamp()
@@ -596,6 +622,19 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 						usage.CompletionTokensDetails.ReasoningTokens = lastUsageMetadata.ThoughtsTokenCount
 					}
 
+					for _, detail := range lastUsageMetadata.PromptTokensDetails {
+						if detail.Modality == "TEXT" {
+							usage.PromptTokensDetails.TextTokens = detail.TokenCount
+						} else if detail.Modality == "IMAGE" {
+							usage.PromptTokensDetails.ImageTokens = detail.TokenCount
+						}
+					}
+					for _, detail := range lastUsageMetadata.CandidatesTokensDetails {
+						if detail.Modality == "IMAGE" {
+							usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
+						}
+					}
+
 					finalResponse := &openai.ChatCompletionsStreamResponse{
 						Id:      response.Id,
 						Object:  "chat.completion.chunk",
@@ -703,9 +742,23 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		TotalTokens:      promptTokens + completionTokens, // 使用包含推理token的completionTokens
 	}
 
-	// 如果有推理 token，添加详细信息
-	if geminiResponse.UsageMetadata != nil && geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
-		usage.CompletionTokensDetails.ReasoningTokens = geminiResponse.UsageMetadata.ThoughtsTokenCount
+	// 如果有 usage metadata，处理详细信息
+	if geminiResponse.UsageMetadata != nil {
+		if geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
+			usage.CompletionTokensDetails.ReasoningTokens = geminiResponse.UsageMetadata.ThoughtsTokenCount
+		}
+		for _, detail := range geminiResponse.UsageMetadata.PromptTokensDetails {
+			if detail.Modality == "TEXT" {
+				usage.PromptTokensDetails.TextTokens = detail.TokenCount
+			} else if detail.Modality == "IMAGE" {
+				usage.PromptTokensDetails.ImageTokens = detail.TokenCount
+			}
+		}
+		for _, detail := range geminiResponse.UsageMetadata.CandidatesTokensDetails {
+			if detail.Modality == "IMAGE" {
+				usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
+			}
+		}
 	}
 	fullTextResponse.Usage = usage
 	jsonResponse, err := json.Marshal(fullTextResponse)

@@ -15,6 +15,8 @@ type Usage struct {
 		AudioTokens              int `json:"audio_tokens,omitempty"`
 		AcceptedPredictionTokens int `json:"accepted_prediction_tokens,omitempty"`
 		RejectedPredictionTokens int `json:"rejected_prediction_tokens,omitempty"`
+		TextTokens               int `json:"text_tokens,omitempty"`
+		ImageTokens              int `json:"image_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 }
 

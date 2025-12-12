@@ -7,6 +7,7 @@ type Message struct {
 	ToolCalls        []Tool  `json:"tool_calls,omitempty"`
 	ToolCallId       string  `json:"tool_call_id,omitempty"`
 	ReasoningContent string  `json:"reasoning_content,omitempty"`
+	ThoughtSignature string  `json:"thought_signature,omitempty"`
 }
 
 func (m Message) IsStringContent() bool {
