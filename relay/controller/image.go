@@ -800,7 +800,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				}
 
 				if otherInfo != "" {
-					model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+					model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0)
 				} else {
 					model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
 				}
@@ -1130,7 +1130,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 			channelId := c.GetInt("channel_id")
@@ -1196,7 +1196,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 			channelId := c.GetInt("channel_id")
@@ -1301,7 +1301,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 				// 记录日志
 				model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-					tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+					tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 				model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 				channelId := c.GetInt("channel_id")
@@ -1454,7 +1454,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 			channelId := c.GetInt("channel_id")
@@ -2331,7 +2331,7 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 		}
 
 		if otherInfo != "" {
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID)
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID, 0)
 		} else {
 			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
 		}
@@ -3263,7 +3263,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 		channelId := c.GetInt("channel_id")
@@ -3329,7 +3329,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 		channelId := c.GetInt("channel_id")
@@ -3434,7 +3434,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 			// 记录日志
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 			channelId := c.GetInt("channel_id")
@@ -3574,7 +3574,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		// 记录日志
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID)
+			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0)
 
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
 		channelId := c.GetInt("channel_id")
@@ -3720,7 +3720,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	}
 
 	if otherInfo != "" {
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0)
 	} else {
 		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
 	}
@@ -3829,7 +3829,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	otherInfo := extractChannelHistoryInfo(ctx, c)
 
 	if otherInfo != "" {
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID)
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0)
 	} else {
 		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
 	}

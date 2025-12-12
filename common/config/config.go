@@ -111,7 +111,9 @@ var QuotaForInvitee int64 = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
-
+var FeiShuHookUrl = ""
+var PingIntervalEnabled = false
+var PingIntervalSeconds = 0
 // 自动禁用关键词配置（一行一个关键词）
 var AutoDisableKeywords = `api key not valid
 invalid_api_key

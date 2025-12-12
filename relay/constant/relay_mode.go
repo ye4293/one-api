@@ -171,15 +171,12 @@ func Path2RelayModeSd(path string) int {
 
 func Path2RelayModeGemini(path string) int {
 	relayMode := RelayModeUnknown
-
 	// 匹配 Gemini API 路径格式: /v1beta/models/{model}:{action}
 	// 或 /v1/models/{model}:{action}
 	if strings.Contains(path, ":generateContent") {
-		if strings.Contains(path, ":streamGenerateContent") {
-			relayMode = RelayModeGeminiStreamGenerateContent
-		} else {
-			relayMode = RelayModeGeminiGenerateContent
-		}
+		relayMode = RelayModeGeminiGenerateContent
+	}else if strings.Contains(path, ":streamGenerateContent") {
+		relayMode = RelayModeGeminiStreamGenerateContent
 	}
 	return relayMode
 }

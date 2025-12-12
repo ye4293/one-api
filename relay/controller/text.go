@@ -97,9 +97,11 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		logger.Debugf(ctx, "converted request: \n%s", string(jsonData))
 		requestBody = bytes.NewBuffer(jsonData)
 	}
-
+	requestStartTime := time.Now()
 	// do request
 	resp, err := adaptor.DoRequest(c, meta, requestBody)
+	logger.Infof(ctx, "model_name: %s, hand_request_time: %.3f seconds", textRequest.Model, math.Round(time.Since(requestStartTime).Seconds()*1000) / 1000)
+
 	if err != nil {
 		logger.Errorf(ctx, "DoRequest failed: %s", err.Error())
 		// 确保关闭响应体（即使有错误）
@@ -126,6 +128,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return respErr
 	}
+	logger.Infof(ctx, "model_name: %s, hand_response_time: %.3f seconds",  textRequest.Model, math.Round(time.Since(responseStartTime).Seconds()*1000) / 1000)
 
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
@@ -147,12 +150,16 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 	}
 
+	//logger.Infof(ctx, "total_request_time: %.3f seconds", duration)
+
 	referer := c.Request.Header.Get("HTTP-Referer")
 
 	// 获取X-Title header
 	title := c.Request.Header.Get("X-Title")
-
+	handResultStartTime := time.Now()
 	// post-consume quota
 	go postConsumeQuota(ctx, c, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
+	
+	logger.Infof(ctx, "model_name: %s, hand_consume_quota_time: %.3f seconds", textRequest.Model, math.Round(time.Since(handResultStartTime).Seconds()*1000) / 1000)
 	return nil
 }

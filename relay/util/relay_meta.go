@@ -41,6 +41,7 @@ type RelayMeta struct {
 	KeyIndex     *int // 使用指针以支持nil值
 	IsMultiKey   bool
 	Keys         []string // 存储所有解析的密钥
+	DisablePing bool
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -92,6 +93,9 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	}
 	if meta.Mode == constant.RelayModeGeminiGenerateContent || meta.Mode == constant.RelayModeGeminiStreamGenerateContent {
 		meta.ActualModelName = meta.OriginModelName 
+		if meta.Mode == constant.RelayModeGeminiStreamGenerateContent {
+			meta.IsStream = true
+		}
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
 	return &meta

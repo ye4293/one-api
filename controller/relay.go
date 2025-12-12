@@ -257,6 +257,7 @@ func recordFailedRequestLog(ctx context.Context, c *gin.Context, bizErr *model.E
 		0.0,   // firstWordLatency
 		otherInfo,
 		requestID,
+		0,
 	)
 
 	logger.Infof(ctx, "Recorded failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -309,6 +310,7 @@ func recordMidjourneyFailedLog(ctx context.Context, c *gin.Context, mjErr *midjo
 		0.0,   // firstWordLatency
 		otherInfo,
 		requestID,
+		0,
 	)
 
 	logger.Infof(ctx, "Recorded Midjourney failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -361,6 +363,7 @@ func recordRunwayFailedLog(ctx context.Context, c *gin.Context, statusCode int, 
 		0.0,   // firstWordLatency
 		otherInfo,
 		requestID,
+		0,
 	)
 
 	logger.Infof(ctx, "Recorded Runway failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -570,6 +573,7 @@ func recordXAIContentViolationCharge(ctx context.Context, c *gin.Context, channe
 		0.0,   // firstWordLatency
 		otherInfo,
 		requestID,
+		0,
 	)
 
 	// 更新用户和渠道quota
@@ -1685,7 +1689,7 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 		if otherInfo != "" {
 			dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, inputTokens, outputTokens,
-				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, otherInfo, xRequestID)
+				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, otherInfo, xRequestID, 0)
 		} else {
 			dbmodel.RecordConsumeLogWithRequestID(ctx, userId, channelId, inputTokens, outputTokens,
 				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, xRequestID)
@@ -2552,23 +2556,59 @@ func RelayGemini(c *gin.Context) {
 	channelId := c.GetInt("channel_id")
 	userId := c.GetInt("id")
 	relayMode := c.GetInt("relay_mode")
+	originalModel := c.GetString("original_model")
+	originalChannelId := c.GetInt("channel_id")
+	originalChannelName := c.GetString("channel_name")
+	originalKeyIndex := c.GetInt("key_index")
+	requestID := c.GetString("request_id")
 	geminiErr := relayGeminiHelper(c, relayMode)
-
 	if geminiErr == nil {
 		return
 	}
 
 	lastFailedChannelId := channelId
-	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, geminiErr.StatusCode, geminiErr.Error.Message) {
 		logger.Errorf(ctx, "Gemini relay error happen, status code is %d, won't retry in this case", geminiErr.StatusCode)
 		retryTimes = 0
 	}
+	// 记录使用的渠道历史，用于添加到日志中
+	var channelHistory []int
+	// 添加初始失败的渠道
+	channelHistory = append(channelHistory, originalChannelId)
 
 	for i := retryTimes; i > 0; i-- {
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, c.GetString("original_model"), i != retryTimes)
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := geminiErr.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
+
+		// 记录重试使用的渠道
+		channelHistory = append(channelHistory, channel.Id)
+
+		channel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %s", err.Error())
 			break
@@ -2578,8 +2618,8 @@ func RelayGemini(c *gin.Context) {
 		}
 		logger.Infof(ctx, "Using channel #%d to retry Gemini request (remain times %d)", channel.Id, i)
 
-		middleware.SetupContextForSelectedChannel(c, channel, c.GetString("original_model"))
-		requestBody, err := common.GetRequestBody(c)
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		geminiErr = relayGeminiHelper(c, relayMode)
 		if geminiErr == nil {
@@ -2588,11 +2628,17 @@ func RelayGemini(c *gin.Context) {
 
 		channelId = c.GetInt("channel_id")
 		lastFailedChannelId = channelId
-		channelName = c.GetString("channel_name")
-		go processChannelRelayError(ctx, userId, channelId, channelName, geminiErr)
+		channelName := c.GetString("channel_name")
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 	}
 
 	if geminiErr != nil {
+		// 失败时记录渠道历史到上下文中
+		c.Set("admin_channel_history", channelHistory)
+
+		// 记录gemin失败请求的日志
+		recordFailedRequestLog(ctx, c, geminiErr, channelHistory)
 		c.JSON(geminiErr.StatusCode, gin.H{
 			"error": gin.H{
 				"message": geminiErr.Error.Message,

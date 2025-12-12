@@ -330,6 +330,13 @@ type UsageMetadata struct {
 	CandidatesTokenCount int `json:"candidatesTokenCount"`
 	TotalTokenCount      int `json:"totalTokenCount"`
 	ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
+	ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount,omitempty"`
+	CachedContentTokenCount        int `json:"cachedContentTokenCount,omitempty"`
+	PromptTokensDetails  []GeminiPromptTokensDetails `json:"promptTokensDetails"`
+}
+type GeminiPromptTokensDetails struct {
+	Modality   string `json:"modality"`
+	TokenCount int    `json:"tokenCount"`
 }
 
 func (g *ChatResponse) GetResponseText() string {

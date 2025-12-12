@@ -27,6 +27,7 @@ type Log struct {
 	Quota            int     `json:"quota" gorm:"default:0"`
 	PromptTokens     int     `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens int     `json:"completion_tokens" gorm:"default:0"`
+	CachedTokens     int     `json:"cached_tokens" gorm:"default:0"`
 	ChannelId        int     `json:"channel" gorm:"index"`
 	Duration         float64 `json:"duration" gorm:"default:0"`
 	Speed            float64 `json:"speed" gorm:"default:0"`
@@ -72,15 +73,15 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 }
 
 func RecordConsumeLogWithRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, xRequestID string) {
-	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "", xRequestID)
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "", xRequestID, 0)
 }
 
 func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string) {
-	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, other, "")
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, other, "", 0)
 }
 
-func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string) {
-	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, xRequestID))
+func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int) {
+	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, cachedTokens=%d", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, xRequestID, cachedTokens))
 	if !config.LogConsumeEnabled {
 		return
 	}
@@ -102,6 +103,7 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		CompletionTokens: completionTokens,
 		TokenName:        tokenName,
 		ModelName:        modelName,
+		CachedTokens:     cachedTokens,
 		Quota:            int(quota),
 		ChannelId:        channelId,
 		Duration:         duration,

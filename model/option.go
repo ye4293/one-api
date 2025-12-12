@@ -100,6 +100,7 @@ func InitOptionMap() {
 	config.OptionMap["CfImageAccessKey"] = ""
 	config.OptionMap["CfImageSecretKey"] = ""
 	config.OptionMap["CfImageEndpoint"] = ""
+	config.OptionMap["FeiShuHookUrl"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -196,7 +197,10 @@ func updateOptionMap(key string, value string) (err error) {
 			config.StripePaymentEnabled = boolValue
 		case "CfR2storeEnabled":
 			config.CfR2storeEnabled = boolValue
+		case "PingIntervalEnabled":
+			config.PingIntervalEnabled = boolValue
 		}
+		
 	}
 
 	// 处理其他配置选项
@@ -310,6 +314,10 @@ func updateOptionMap(key string, value string) (err error) {
 		config.CfImageSecretKey = value
 	case "CfImageEndpoint":
 		config.CfImageEndpoint = value
+	case "FeiShuHookUrl":
+		config.FeiShuHookUrl = value
+	case "PingIntervalSeconds":
+		config.PingIntervalSeconds,_ = strconv.Atoi(value)
 	}
 	return err
 }
