@@ -3447,13 +3447,14 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 		}
 
 		tokenName := c.GetString("token_name")
+		xRequestID := c.GetString("X-Request-ID")
 		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
 
-		// 如果提供了videoTaskId，使用RecordVideoConsumeLog，否则使用普通的RecordConsumeLog
+		// 如果提供了videoTaskId，使用RecordVideoConsumeLog，否则使用普通的RecordConsumeLogWithRequestID
 		if len(videoTaskId) > 0 && videoTaskId[0] != "" {
 			dbmodel.RecordVideoConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, videoTaskId[0])
 		} else {
-			dbmodel.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0)
+			dbmodel.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
 		}
 
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)

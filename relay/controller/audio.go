@@ -757,14 +757,15 @@ func handleAudioStreamResponse(c *gin.Context, resp *http.Response, audioModel s
 			textInputTokens, textOutputTokens, audioInputTokens, audioOutputTokens)
 
 		// 异步记录配额消费
+		xRequestID := c.GetString("X-Request-ID")
 		go func() {
 			duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
 			referer := c.Request.Header.Get("HTTP-Referer")
 			title := c.Request.Header.Get("X-Title")
 
-			model.RecordConsumeLogWithOther(ctx, userId, channelId, int(textInputTokens+audioInputTokens), int(textOutputTokens),
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens+audioInputTokens), int(textOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-				duration, title, referer, true, 0.0, otherInfo)
+				duration, title, referer, true, 0.0, otherInfo, xRequestID)
 			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 			model.UpdateChannelUsedQuota(channelId, quota)
 			model.PostConsumeTokenQuota(tokenId, quota)
@@ -989,14 +990,15 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 			textInputTokens, int64(0), int64(0), audioOutputTokens)
 
 		// 异步记录配额消费
+		xRequestID := c.GetString("X-Request-ID")
 		go func() {
 			duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
 			referer := c.Request.Header.Get("HTTP-Referer")
 			title := c.Request.Header.Get("X-Title")
 
-			model.RecordConsumeLogWithOther(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-				duration, title, referer, true, 0.0, otherInfo)
+				duration, title, referer, true, 0.0, otherInfo, xRequestID)
 			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 			model.UpdateChannelUsedQuota(channelId, quota)
 			model.PostConsumeTokenQuota(tokenId, quota) // Consume the quota
@@ -1014,29 +1016,30 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 					textInputTokens := inputTokens.(int64)
 					audioOutputTokens := outputTokens.(int64)
 
-					// 记录详细的token信息到other字段
-					otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
-						textInputTokens, int64(0), int64(0), audioOutputTokens)
+				// 记录详细的token信息到other字段
+				otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+					textInputTokens, int64(0), int64(0), audioOutputTokens)
 
-					// 异步记录配额消费
-					go func() {
-						duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-						referer := c.Request.Header.Get("HTTP-Referer")
-						title := c.Request.Header.Get("X-Title")
+				// 异步记录配额消费
+				xRequestID := c.GetString("X-Request-ID")
+				go func() {
+					duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
+					referer := c.Request.Header.Get("HTTP-Referer")
+					title := c.Request.Header.Get("X-Title")
 
-						model.RecordConsumeLogWithOther(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
-							audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-							duration, title, referer, true, 0.0, otherInfo)
-						model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
-						model.UpdateChannelUsedQuota(channelId, quota)
-						model.PostConsumeTokenQuota(tokenId, quota)
-					}()
-				}
+					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
+						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
+						duration, title, referer, true, 0.0, otherInfo, xRequestID)
+					model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
+					model.UpdateChannelUsedQuota(channelId, quota)
+					model.PostConsumeTokenQuota(tokenId, quota)
+				}()
 			}
-		} else {
-			// 没有预计算的配额，使用默认值0（使用预消费配额）
-			quota = 0
 		}
+	} else {
+		// 没有预计算的配额，使用默认值0（使用预消费配额）
+		quota = 0
+	}
 	}
 
 	logger.Info(ctx, fmt.Sprintf("TTS stream processing completed successfully, total quota: %d", quota))
@@ -1114,14 +1117,15 @@ func handleAzureTTSStream(c *gin.Context, resp *http.Response, audioModel string
 					textInputTokens, int64(0), int64(0), audioOutputTokens)
 
 				// 异步记录配额消费
+				xRequestID := c.GetString("X-Request-ID")
 				go func() {
 					duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
 					referer := c.Request.Header.Get("HTTP-Referer")
 					title := c.Request.Header.Get("X-Title")
 
-					model.RecordConsumeLogWithOther(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
+					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-						duration, title, referer, true, 0.0, otherInfo)
+						duration, title, referer, true, 0.0, otherInfo, xRequestID)
 					model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 					model.UpdateChannelUsedQuota(channelId, quota)
 					model.PostConsumeTokenQuota(tokenId, quota)

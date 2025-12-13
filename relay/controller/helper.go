@@ -252,11 +252,13 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	if quota != 0 {
 		// 获取渠道历史信息
 		otherInfo := getChannelHistoryInfo(c)
+		// 获取 X-Request-ID
+		xRequestID := c.GetString("X-Request-ID")
 
 		if otherInfo != "" {
-			model.RecordConsumeLogWithOther(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo)
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID)
 		} else {
-			model.RecordConsumeLog(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency)
+			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, xRequestID)
 		}
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)

@@ -468,9 +468,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 			}
 
-			// // Print the converted request body
-			// logger.Infof(ctx, "Converted Gemini Request Body: %s", string(jsonStr))
-
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API

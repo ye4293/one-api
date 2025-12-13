@@ -20,9 +20,6 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		relayV1Router.POST("/files", controller.UploadFile)
 		relayV1Router.GET("/video/generations/result", controller.RelayVideoResult)
-		relayV1Router.POST("/flux-pro-1.1", controller.RelayDirectFlux)
-		relayV1Router.POST("/flux-pro", controller.RelayDirectFlux)
-		// Image generation endpoints
 	}
 
 	// Sora 视频生成路由 - 需要 Distribute 中间件进行渠道选择
