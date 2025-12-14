@@ -76,6 +76,8 @@ func InitOptionMap() {
 	config.OptionMap["CompletionRatio"] = common.CompletionRatio2JSONString()
 	config.OptionMap["AudioInputRatio"] = common.AudioInputRatio2JSONString()
 	config.OptionMap["AudioOutputRatio"] = common.AudioOutputRatio2JSONString()
+	config.OptionMap["ImageInputRatio"] = common.ImageInputRatio2JSONString()
+	config.OptionMap["ImageOutputRatio"] = common.ImageOutputRatio2JSONString()
 	config.OptionMap["PerCallPricing"] = common.ModelPrice2JSONString()
 	config.OptionMap["TopUpLink"] = config.TopUpLink
 	config.OptionMap["ChatLink"] = config.ChatLink
@@ -122,6 +124,12 @@ func loadOptionsFromDatabase() {
 		}
 		if option.Key == "AudioOutputRatio" {
 			option.Value = common.AddNewMissingAudioOutputRatio(option.Value)
+		}
+		if option.Key == "ImageInputRatio" {
+			option.Value = common.AddNewMissingImageInputRatio(option.Value)
+		}
+		if option.Key == "ImageOutputRatio" {
+			option.Value = common.AddNewMissingImageOutputRatio(option.Value)
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
@@ -274,6 +282,10 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateAudioInputRatioByJSONString(value)
 	case "AudioOutputRatio":
 		err = common.UpdateAudioOutputRatioByJSONString(value)
+	case "ImageInputRatio":
+		err = common.UpdateImageInputRatioByJSONString(value)
+	case "ImageOutputRatio":
+		err = common.UpdateImageOutputRatioByJSONString(value)
 	case "PerCallPricing":
 		err = common.UpdateModelPriceByJSONString(value)
 	case "TopUpLink":

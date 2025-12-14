@@ -188,10 +188,22 @@ var AudioOutputRatio = map[string]float64{
 	// "gpt-4o-realtime-preview": 200,
 }
 
+// 图片输入token倍率：图片输入token相对于文本输入token的价格倍率
+var ImageInputRatio = map[string]float64{
+	// 支持图片输入的模型配置
+}
+
+// 图片输出token倍率：图片输出token相对于文本输出token的价格倍率
+var ImageOutputRatio = map[string]float64{
+	// 支持图片输出的模型配置
+}
+
 var DefaultModelRatio map[string]float64
 var DefaultCompletionRatio map[string]float64
 var DefaultAudioInputRatio map[string]float64
 var DefaultAudioOutputRatio map[string]float64
+var DefaultImageInputRatio map[string]float64
+var DefaultImageOutputRatio map[string]float64
 var ModelPrice map[string]float64
 
 func init() {
@@ -210,6 +222,14 @@ func init() {
 	DefaultAudioOutputRatio = make(map[string]float64)
 	for k, v := range AudioOutputRatio {
 		DefaultAudioOutputRatio[k] = v
+	}
+	DefaultImageInputRatio = make(map[string]float64)
+	for k, v := range ImageInputRatio {
+		DefaultImageInputRatio[k] = v
+	}
+	DefaultImageOutputRatio = make(map[string]float64)
+	for k, v := range ImageOutputRatio {
+		DefaultImageOutputRatio[k] = v
 	}
 	ModelPrice = make(map[string]float64)
 	for k, v := range DefaultModelPrice {
@@ -387,6 +407,72 @@ func UpdateAudioOutputRatioByJSONString(jsonStr string) error {
 	return json.Unmarshal([]byte(jsonStr), &AudioOutputRatio)
 }
 
+func ImageInputRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(ImageInputRatio)
+	if err != nil {
+		logger.SysError("error marshalling image input ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateImageInputRatioByJSONString(jsonStr string) error {
+	ImageInputRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &ImageInputRatio)
+}
+
+func ImageOutputRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(ImageOutputRatio)
+	if err != nil {
+		logger.SysError("error marshalling image output ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateImageOutputRatioByJSONString(jsonStr string) error {
+	ImageOutputRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &ImageOutputRatio)
+}
+
+func AddNewMissingImageInputRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old image input ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultImageInputRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new image input ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+func AddNewMissingImageOutputRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old image output ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultImageOutputRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new image output ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
 func GetCompletionRatio(name string) float64 {
 	if ratio, ok := CompletionRatio[name]; ok {
 		return ratio
@@ -547,6 +633,22 @@ func GetAudioInputRatio(name string) float64 {
 // GetAudioOutputRatio 获取音频输出token倍率
 func GetAudioOutputRatio(name string) float64 {
 	if ratio, ok := AudioOutputRatio[name]; ok {
+		return ratio
+	}
+	return 1.0 // 默认倍率为1（与文本token价格相同）
+}
+
+// GetImageInputRatio 获取图片输入token倍率
+func GetImageInputRatio(name string) float64 {
+	if ratio, ok := ImageInputRatio[name]; ok {
+		return ratio
+	}
+	return 1.0 // 默认倍率为1（与文本token价格相同）
+}
+
+// GetImageOutputRatio 获取图片输出token倍率
+func GetImageOutputRatio(name string) float64 {
+	if ratio, ok := ImageOutputRatio[name]; ok {
 		return ratio
 	}
 	return 1.0 // 默认倍率为1（与文本token价格相同）

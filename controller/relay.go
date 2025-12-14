@@ -2353,6 +2353,12 @@ func RelayGemini(c *gin.Context) {
 	originalChannelName := c.GetString("channel_name")
 	originalKeyIndex := c.GetInt("key_index")
 	requestID := c.GetString("request_id")
+
+	// 记录使用的渠道历史，用于添加到日志中
+	// 在调用前就初始化并设置，确保成功时也能记录
+	channelHistory := []int{originalChannelId}
+	c.Set("admin_channel_history", channelHistory)
+
 	geminiErr := relayGeminiHelper(c, relayMode)
 	if geminiErr == nil {
 		return
@@ -2365,10 +2371,6 @@ func RelayGemini(c *gin.Context) {
 		logger.Errorf(ctx, "Gemini relay error happen, status code is %d, won't retry in this case", geminiErr.StatusCode)
 		retryTimes = 0
 	}
-	// 记录使用的渠道历史，用于添加到日志中
-	var channelHistory []int
-	// 添加初始失败的渠道
-	channelHistory = append(channelHistory, originalChannelId)
 
 	for i := retryTimes; i > 0; i-- {
 		skipPriorityLevels := retryTimes - i
@@ -2376,6 +2378,11 @@ func RelayGemini(c *gin.Context) {
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
 			break
+		}
+
+		// 跳过上次失败的渠道
+		if channel.Id == lastFailedChannelId {
+			continue
 		}
 
 		// 获取重试原因 - 直接使用原始错误消息
@@ -2397,17 +2404,14 @@ func RelayGemini(c *gin.Context) {
 
 		logger.Infof(ctx, retryLog)
 
-		// 记录重试使用的渠道
-		channelHistory = append(channelHistory, channel.Id)
+		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
+		if historyInterface, exists := c.Get("admin_channel_history"); exists {
+			if history, ok := historyInterface.([]int); ok {
+				history = append(history, channel.Id)
+				c.Set("admin_channel_history", history)
+			}
+		}
 
-		channel, err = dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
-		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %s", err.Error())
-			break
-		}
-		if channel.Id == lastFailedChannelId {
-			continue
-		}
 		logger.Infof(ctx, "Using channel #%d to retry Gemini request (remain times %d)", channel.Id, i)
 
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
@@ -2426,16 +2430,21 @@ func RelayGemini(c *gin.Context) {
 	}
 
 	if geminiErr != nil {
-		// 失败时记录渠道历史到上下文中
-		c.Set("admin_channel_history", channelHistory)
+		// 从上下文中获取渠道历史用于记录失败日志
+		var failedChannelHistory []int
+		if historyInterface, exists := c.Get("admin_channel_history"); exists {
+			if history, ok := historyInterface.([]int); ok {
+				failedChannelHistory = history
+			}
+		}
 
 		// 记录gemin失败请求的日志
-		recordFailedRequestLog(ctx, c, geminiErr, channelHistory)
+		recordFailedRequestLog(ctx, c, geminiErr, failedChannelHistory)
 		c.JSON(geminiErr.StatusCode, gin.H{
 			"error": gin.H{
 				"message": geminiErr.Error.Message,
-				"type":    geminiErr.Error.Type,
 				"code":    geminiErr.Error.Code,
+				"status":  geminiErr.Error.Status,
 			},
 		})
 	}

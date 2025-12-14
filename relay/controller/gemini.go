@@ -42,7 +42,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
 	meta := util.GetRelayMeta(c)
-	
+
 	adaptor := helper.GetAdaptor(meta.APIType)
 	if adaptor == nil {
 		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
@@ -89,8 +89,8 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	if openaiErr != nil {
 		return openaiErr
 	}
-	
-	actualQuota,costInfo := CalculateGeminiQuotaFromUsageMetadata(usageMetadata, modelName, ratio)
+
+	actualQuota, _ := CalculateGeminiQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
 
 	//logger.Infof(ctx, "Gemini actual quota: %d, total tokens: %d", actualQuota, usage.TotalTokens)
 	// 记录消费日志
@@ -101,12 +101,12 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	totalTokens := usageMetadata.TotalTokenCount
 	cachedTokens := usageMetadata.CachedContentTokenCount
 
-	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, costInfo)
+	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata)
 	return nil
 }
 
 // recordGeminiConsumption 记录 Gemini 消费日志
-func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64,isStream bool, c *gin.Context, costInfo GeminiTokenCost) {
+func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -124,11 +124,53 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 	logContent := fmt.Sprintf("Gemini API %s", requestPath)
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
-	other := common.GetJsonString(costInfo)
+
+	// 提取用量详情并格式化为统一格式
+	usageDetails := extractGeminiNativeUsageDetails(usageMetadata)
+	adminInfo := extractAdminInfoFromContext(c)
+	other := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, 0, other, c.GetHeader("X-Request-ID"), cachedTokens)
 }
+
+// extractGeminiNativeUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息（用于 native 接口）
+func extractGeminiNativeUsageDetails(usageMetadata *gemini.UsageMetadata) *GeminiUsageDetails {
+	if usageMetadata == nil {
+		return nil
+	}
+
+	details := &GeminiUsageDetails{
+		ReasoningTokens: usageMetadata.ThoughtsTokenCount,
+	}
+
+	// 从 promptTokensDetails 提取 input_text 和 input_image
+	for _, d := range usageMetadata.PromptTokensDetails {
+		switch d.Modality {
+		case "TEXT":
+			details.InputTextTokens = d.TokenCount
+		case "IMAGE":
+			details.InputImageTokens = d.TokenCount
+		}
+	}
+
+	// 从 candidatesTokensDetails 提取 output_image
+	for _, d := range usageMetadata.CandidatesTokensDetails {
+		if d.Modality == "IMAGE" {
+			details.OutputImageTokens = d.TokenCount
+		}
+	}
+
+	// 计算 output_text = candidatesTokenCount - output_image
+	// 如果没有 IMAGE，output_text 就等于 candidatesTokenCount
+	details.OutputTextTokens = usageMetadata.CandidatesTokenCount - details.OutputImageTokens
+	if details.OutputTextTokens < 0 {
+		details.OutputTextTokens = 0
+	}
+
+	return details
+}
+
 func CalculateGeminiQuotaFromRequest(requestBody []byte, modelName string, ratio float64) (int64, int, error) {
 	var geminiReq gemini.ChatRequest
 	if err := json.Unmarshal(requestBody, &geminiReq); err != nil {
@@ -172,9 +214,10 @@ func CalculateGeminiQuotaFromRequest(requestBody []byte, modelName string, ratio
 	// // 总 tokens = 输入 + 预估输出
 	// totalEstimatedTokens := estimatedTokens + estimatedOutputTokens
 
-	// 计算配额 (tokens * ratio / 1000 * QuotaPerUnit)
+	// 计算预消费配额 (tokens * ratio / 1000000 * 2 * QuotaPerUnit)
+	// ratio 是基于每 100万 tokens 的价格/2，需要除以 1000000 再乘以 2 还原
 	// 预消费按 30% 估算，避免预扣太多
-	quota := int64(float64(estimatedTokens) * ratio * 0.3 / 1000 * config.QuotaPerUnit)
+	quota := int64(float64(estimatedTokens) * ratio * 0.3 / 1000000 * 2 * config.QuotaPerUnit)
 
 	return quota, estimatedTokens, nil
 }
@@ -184,251 +227,192 @@ func CalculateGeminiQuotaFromRequest(requestBody []byte, modelName string, ratio
 // 英文: 1个词 ≈ 1.3 tokens
 // 这里简化为: 每4个字符 ≈ 1 token
 
-// GeminiModelPricing 定义 Gemini 模型的价格结构
-// 价格单位: 美元/百万tokens
-type GeminiModelPricing struct {
-	InputPriceLow      float64 // 输入价格（低阈值）
-	InputPriceHigh     float64 // 输入价格（高阈值）
-	OutputPriceLow     float64 // 输出价格（低阈值）
-	OutputPriceHigh    float64 // 输出价格（高阈值）
-	ThinkingPriceLow   float64 // 思考token价格（低阈值）- 仅 Flash 系列
-	ThinkingPriceHigh  float64 // 思考token价格（高阈值）- 仅 Flash 系列
-	Threshold          int     // 阈值（token数量），超过此值使用高价格
-	HasThinkingPricing bool    // 是否有单独的思考token定价
-}
-
-// GeminiPricingTable Gemini 模型价格表
-// 参考: https://ai.google.dev/gemini-api/docs/pricing
-var GeminiPricingTable = map[string]GeminiModelPricing{
-	// Gemini 2.5 Pro
-	"gemini-2.5-pro": {
-		InputPriceLow: 1.25, InputPriceHigh: 2.50,
-		OutputPriceLow: 10.00, OutputPriceHigh: 15.00,
-		Threshold: 200000, HasThinkingPricing: false,
-	},
-	"gemini-2.5-pro-preview": {
-		InputPriceLow: 1.25, InputPriceHigh: 2.50,
-		OutputPriceLow: 10.00, OutputPriceHigh: 15.00,
-		Threshold: 200000, HasThinkingPricing: false,
-	},
-	// Gemini 2.5 Flash
-	"gemini-2.5-flash": {
-		InputPriceLow: 0.15, InputPriceHigh: 0.30,
-		OutputPriceLow: 0.60, OutputPriceHigh: 1.20,
-		ThinkingPriceLow: 3.50, ThinkingPriceHigh: 7.00,
-		Threshold: 200000, HasThinkingPricing: true,
-	},
-	"gemini-2.5-flash-preview": {
-		InputPriceLow: 0.15, InputPriceHigh: 0.30,
-		OutputPriceLow: 0.60, OutputPriceHigh: 1.20,
-		ThinkingPriceLow: 3.50, ThinkingPriceHigh: 7.00,
-		Threshold: 200000, HasThinkingPricing: true,
-	},
-	// Gemini 2.0 Flash
-	"gemini-2.0-flash": {
-		InputPriceLow: 0.10, InputPriceHigh: 0.10,
-		OutputPriceLow: 0.40, OutputPriceHigh: 0.40,
-		Threshold: 0, HasThinkingPricing: false, // 无阶梯价格
-	},
-	"gemini-2.0-flash-exp": {
-		InputPriceLow: 0.10, InputPriceHigh: 0.10,
-		OutputPriceLow: 0.40, OutputPriceHigh: 0.40,
-		Threshold: 0, HasThinkingPricing: false,
-	},
-	// Gemini 1.5 Pro
-	"gemini-1.5-pro": {
-		InputPriceLow: 1.25, InputPriceHigh: 2.50,
-		OutputPriceLow: 5.00, OutputPriceHigh: 10.00,
-		Threshold: 128000, HasThinkingPricing: false,
-	},
-	"gemini-1.5-pro-latest": {
-		InputPriceLow: 1.25, InputPriceHigh: 2.50,
-		OutputPriceLow: 5.00, OutputPriceHigh: 10.00,
-		Threshold: 128000, HasThinkingPricing: false,
-	},
-	// Gemini 1.5 Flash
-	"gemini-1.5-flash": {
-		InputPriceLow: 0.075, InputPriceHigh: 0.15,
-		OutputPriceLow: 0.30, OutputPriceHigh: 0.60,
-		Threshold: 128000, HasThinkingPricing: false,
-	},
-	"gemini-1.5-flash-latest": {
-		InputPriceLow: 0.075, InputPriceHigh: 0.15,
-		OutputPriceLow: 0.30, OutputPriceHigh: 0.60,
-		Threshold: 128000, HasThinkingPricing: false,
-	},
-	// Gemini 3 Pro Preview
-	"gemini-3-pro-preview": {
-		InputPriceLow: 2.00, InputPriceHigh: 4.00,
-		OutputPriceLow: 12.00, OutputPriceHigh: 18.00,
-		Threshold: 200000, HasThinkingPricing: false,
-	},
-}
-
-// GeminiTokenCost 表示 Gemini API 的费用明细
+// GeminiTokenCost 表示 Gemini API 的费用明细（使用动态倍率计算）
 type GeminiTokenCost struct {
-	InputTokens    int     // 输入 token 数量
-	OutputTokens   int     // 输出 token 数量 (不含思考)
-	ThinkingTokens int     // 思考 token 数量
-	CachedTokens   int     // 缓存 token 数量
-	TotalTokens    int     // 总 token 数量
-	InputCost      float64 // 输入费用 (美元)
-	OutputCost     float64 // 输出费用 (美元)
-	ThinkingCost   float64 // 思考 token 费用 (美元)
-	CachedCost     float64 // 缓存 token 费用 (美元)
-	TotalCost      float64 // 总费用 (美元)
-	ModelName      string  // 模型名称
+	// 输入部分 token 数量
+	InputTextTokens  int // 输入文字 token 数量
+	InputImageTokens int // 输入图片 token 数量
+	InputAudioTokens int // 输入音频 token 数量
+	// 输出部分 token 数量
+	OutputTextTokens  int // 输出文字 token 数量
+	OutputImageTokens int // 输出图片 token 数量
+	OutputAudioTokens int // 输出音频 token 数量
+	ThinkingTokens    int // 思考 token 数量
+	CachedTokens      int // 缓存 token 数量
+	TotalTokens       int // 总 token 数量
+	ModelName         string
 }
 
-// CalculateGeminiTokenCost 根据 Gemini 响应体的 UsageMetadata 计算 token 费用
-// 参数:
-//   - usageMetadata: Gemini API 响应中的 UsageMetadata
-//   - modelName: 使用的模型名称
+// CalculateGeminiQuotaByRatio 使用动态倍率计算 Gemini API 的配额消耗
 //
-// 返回:
-//   - GeminiTokenCost: 费用明细
+// ==================== 计费原理说明 ====================
 //
-// 定价规则（参考 https://ai.google.dev/gemini-api/docs/pricing）:
-//  1. 部分模型有阶梯定价：输入token超过阈值后使用更高价格
-//  2. Flash 2.5 系列有单独的思考token定价（thinking tokens）
-//  3. 缓存的token享有 90% 折扣（价格为正常价格的 1/10）
-//  4. 不同模型的输入/输出价格不同，需根据模型名称匹配价格表
-func CalculateGeminiTokenCost(usageMetadata *gemini.UsageMetadata, modelName string) GeminiTokenCost {
-	result := GeminiTokenCost{
+// 【背景】
+// 之前的计费方式是硬编码各模型的价格，新增模型需要修改代码。
+// 新方案通过前端配置的倍率动态计算，支持灵活配置新模型价格。
+//
+// 【倍率定义规则】（在前端"价格设置"页面配置）
+//
+//   - ModelRatio（模型基础价格倍率）= 官方输入价格($/1M tokens) / 2
+//     例如: Gemini 2.5 Flash 输入 $0.30/1M → ModelRatio = 0.30 / 2 = 0.15
+//
+//   - CompletionRatio（输出token价格倍率）= 官方输出价格 / 官方输入价格
+//     例如: Gemini 2.5 Flash 输出 $2.50, 输入 $0.30 → CompletionRatio = 2.50 / 0.30 ≈ 8.33
+//
+//   - ImageInputRatio（图片输入倍率）= 图片输入价格 / 文字输入价格
+//     如果模型图片输入价格与文字相同，则设为 1.0
+//
+//   - ImageOutputRatio（图片输出倍率）= 图片输出价格 / 文字输入价格
+//     注意：这是相对于"输入"的倍率，不是相对于"输出文字"的倍率
+//     例如: 图片输出 $6/1M, 文字输入 $0.10/1M → ImageOutputRatio = 60
+//
+//   - AudioInputRatio / AudioOutputRatio 同理
+//
+// 【配额计算公式】
+//   - 输入文字配额 = inputTextTokens × ModelRatio
+//   - 输入图片配额 = inputImageTokens × ModelRatio × ImageInputRatio
+//   - 输入音频配额 = inputAudioTokens × ModelRatio × AudioInputRatio
+//   - 输出文字配额 = outputTextTokens × ModelRatio × CompletionRatio
+//   - 输出图片配额 = outputImageTokens × ModelRatio × ImageOutputRatio
+//     ⚠️ 注意：输出图片不乘 CompletionRatio，因为 ImageOutputRatio 已经是相对于输入的完整倍率
+//   - 输出音频配额 = outputAudioTokens × ModelRatio × AudioOutputRatio（同上）
+//   - 思考配额 = thinkingTokens × ModelRatio × CompletionRatio
+//
+// 【最终配额】
+//
+//	总配额 = (各部分之和) / 1000000 × 2 × groupRatio × QuotaPerUnit
+//	- 除以 1000000：因为倍率是基于每百万 token 的价格
+//	- 乘以 2：因为 ModelRatio = 官方价格 / 2，需要还原真实价格
+//	- groupRatio：用户分组的价格倍率
+//	- QuotaPerUnit：系统配额单位（如 500000 表示 $1 = 500000 配额）
+//
+// 【计算示例】Gemini 2.5 Flash, 1000输入+500输出, groupRatio=1.0, QuotaPerUnit=500000
+//
+//	输入配额 = 1000 × 0.15 = 150
+//	输出配额 = 500 × 0.15 × 8.33 = 624.75
+//	总配额 = (150 + 624.75) / 1000000 × 2 × 1.0 × 500000 ≈ 775
+func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName string, groupRatio float64) (int64, GeminiTokenCost) {
+	cost := GeminiTokenCost{
 		ModelName: modelName,
 	}
 
 	if usageMetadata == nil {
-		return result
+		return 0, cost
 	}
 
-	// 提取 token 数量
-	result.InputTokens = usageMetadata.PromptTokenCount
-	result.OutputTokens = usageMetadata.CandidatesTokenCount
-	result.ThinkingTokens = usageMetadata.ThoughtsTokenCount
-	result.TotalTokens = usageMetadata.TotalTokenCount
-	result.CachedTokens = usageMetadata.CachedContentTokenCount
+	// 从 UsageMetadata 中提取各类型 token 数量
+	cost.CachedTokens = usageMetadata.CachedContentTokenCount
+	cost.TotalTokens = usageMetadata.TotalTokenCount
+	cost.ThinkingTokens = usageMetadata.ThoughtsTokenCount
 
-	// 获取模型价格，如果找不到则使用默认价格（gemini-2.0-flash）
-	pricing, found := getGeminiPricing(modelName)
-	if !found {
-		// 默认使用 gemini-2.0-flash 的价格
-		pricing = GeminiPricingTable["gemini-2.0-flash"]
-	}
-
-	// 根据输入 token 数量判断使用高/低价格
-	// 注意：阈值判断应该基于非缓存的输入token数量
-	nonCachedInputTokens := result.InputTokens - result.CachedTokens
-	useHighPrice := pricing.Threshold > 0 && result.InputTokens > pricing.Threshold
-
-	// 计算输入费用（分为缓存和非缓存部分）
-	inputPrice := pricing.InputPriceLow
-	if useHighPrice {
-		inputPrice = pricing.InputPriceHigh
-	}
-
-	// 非缓存输入token按正常价格计算
-	result.InputCost = float64(nonCachedInputTokens) / 1000000.0 * inputPrice
-
-	// 缓存token享有90%折扣（价格为正常价格的1/10）
-	if result.CachedTokens > 0 {
-		cachedPrice := inputPrice * 0.1 // 10% 的正常价格
-		result.CachedCost = float64(result.CachedTokens) / 1000000.0 * cachedPrice
-	}
-
-	// 计算输出费用（不含思考 token）
-	outputPrice := pricing.OutputPriceLow
-	if useHighPrice {
-		outputPrice = pricing.OutputPriceHigh
-	}
-	result.OutputCost = float64(result.OutputTokens) / 1000000.0 * outputPrice
-
-	// 计算思考 token 费用（如果模型支持且有思考 token）
-	if pricing.HasThinkingPricing && result.ThinkingTokens > 0 {
-		thinkingPrice := pricing.ThinkingPriceLow
-		if useHighPrice {
-			thinkingPrice = pricing.ThinkingPriceHigh
-		}
-		result.ThinkingCost = float64(result.ThinkingTokens) / 1000000.0 * thinkingPrice
-	} else if result.ThinkingTokens > 0 {
-		// 对于不区分思考token价格的模型，思考token按输出价格计算
-		result.ThinkingCost = float64(result.ThinkingTokens) / 1000000.0 * outputPrice
-	}
-
-	// 总费用 = 输入费用 + 缓存费用 + 输出费用 + 思考token费用
-	result.TotalCost = result.InputCost + result.CachedCost + result.OutputCost + result.ThinkingCost
-
-	return result
-}
-
-// getGeminiPricing 根据模型名称获取价格配置
-func getGeminiPricing(modelName string) (GeminiModelPricing, bool) {
-	// 直接匹配
-	if pricing, ok := GeminiPricingTable[modelName]; ok {
-		return pricing, true
-	}
-
-	// 模糊匹配：去掉后缀版本号等
-	normalizedName := normalizeGeminiModelName(modelName)
-	if pricing, ok := GeminiPricingTable[normalizedName]; ok {
-		return pricing, true
-	}
-
-	// 前缀匹配
-	for key, pricing := range GeminiPricingTable {
-		if strings.HasPrefix(modelName, key) {
-			return pricing, true
+	// 解析输入 token 详情 (PromptTokensDetails)
+	for _, detail := range usageMetadata.PromptTokensDetails {
+		switch detail.Modality {
+		case "TEXT":
+			cost.InputTextTokens = detail.TokenCount
+		case "IMAGE":
+			cost.InputImageTokens = detail.TokenCount
+		case "AUDIO":
+			cost.InputAudioTokens = detail.TokenCount
 		}
 	}
 
-	return GeminiModelPricing{}, false
-}
+	// 如果没有详细信息，则所有输入都算作文字
+	if cost.InputTextTokens == 0 && cost.InputImageTokens == 0 && cost.InputAudioTokens == 0 {
+		cost.InputTextTokens = usageMetadata.PromptTokenCount
+	}
 
-// normalizeGeminiModelName 规范化模型名称
-func normalizeGeminiModelName(modelName string) string {
-	// 移除常见后缀如 -001, -002, -latest, -exp 等
-	name := strings.ToLower(modelName)
-
-	// 移除日期后缀 (如 -0801, -1206)
-	for i := len(name) - 1; i >= 0; i-- {
-		if name[i] == '-' {
-			suffix := name[i+1:]
-			if isDateSuffix(suffix) {
-				name = name[:i]
-				break
-			}
+	// 解析输出 token 详情 (CandidatesTokensDetails)
+	for _, detail := range usageMetadata.CandidatesTokensDetails {
+		switch detail.Modality {
+		case "TEXT":
+			cost.OutputTextTokens = detail.TokenCount
+		case "IMAGE":
+			cost.OutputImageTokens = detail.TokenCount
+		case "AUDIO":
+			cost.OutputAudioTokens = detail.TokenCount
 		}
 	}
 
-	return name
-}
-
-// isDateSuffix 检查是否是日期后缀
-func isDateSuffix(s string) bool {
-	if len(s) != 4 {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
+	// 如果没有详细信息，计算输出文字 = candidatesTokenCount - 输出图片 - 输出音频
+	if cost.OutputTextTokens == 0 && cost.OutputImageTokens == 0 && cost.OutputAudioTokens == 0 {
+		cost.OutputTextTokens = usageMetadata.CandidatesTokenCount
+	} else if cost.OutputTextTokens == 0 {
+		// 有图片或音频输出，但没有文字输出的详情
+		cost.OutputTextTokens = usageMetadata.CandidatesTokenCount - cost.OutputImageTokens - cost.OutputAudioTokens
+		if cost.OutputTextTokens < 0 {
+			cost.OutputTextTokens = 0
 		}
 	}
-	return true
+
+	// ========== 获取各类型的倍率 ==========
+	modelRatio := common.GetModelRatio(modelName)
+	imageInputRatio := common.GetImageInputRatio(modelName)
+	audioInputRatio := common.GetAudioInputRatio(modelName)
+	completionRatio := common.GetCompletionRatio(modelName)
+	imageOutputRatio := common.GetImageOutputRatio(modelName)
+	audioOutputRatio := common.GetAudioOutputRatio(modelName)
+
+	// 打印倍率信息
+	logger.SysLog(fmt.Sprintf("[Gemini计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, ImageInputRatio=%.4f, AudioInputRatio=%.4f, ImageOutputRatio=%.4f, AudioOutputRatio=%.4f",
+		modelName, modelRatio, completionRatio, imageInputRatio, audioInputRatio, imageOutputRatio, audioOutputRatio))
+
+	// 打印 token 数量
+	logger.SysLog(fmt.Sprintf("[Gemini计费] Token数量: 输入文字=%d, 输入图片=%d, 输入音频=%d, 输出文字=%d, 输出图片=%d, 输出音频=%d, 思考=%d, 缓存=%d, 总计=%d",
+		cost.InputTextTokens, cost.InputImageTokens, cost.InputAudioTokens,
+		cost.OutputTextTokens, cost.OutputImageTokens, cost.OutputAudioTokens,
+		cost.ThinkingTokens, cost.CachedTokens, cost.TotalTokens))
+
+	// ========== 计算各部分的等效 ratio tokens ==========
+	// 输入部分：tokens × modelRatio × 相对倍率
+	inputTextQuota := float64(cost.InputTextTokens) * modelRatio
+	inputImageQuota := float64(cost.InputImageTokens) * modelRatio * imageInputRatio
+	inputAudioQuota := float64(cost.InputAudioTokens) * modelRatio * audioInputRatio
+
+	// 输出文字部分：tokens × modelRatio × completionRatio
+	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
+
+	// 输出图片/音频部分：tokens × modelRatio × 对应OutputRatio
+	// ImageOutputRatio/AudioOutputRatio 已经是相对于输入文字的倍率，不需要再乘 completionRatio
+	outputImageQuota := float64(cost.OutputImageTokens) * modelRatio * imageOutputRatio
+	outputAudioQuota := float64(cost.OutputAudioTokens) * modelRatio * audioOutputRatio
+
+	// 思考 token：与输出文字相同的倍率
+	thinkingQuota := float64(cost.ThinkingTokens) * modelRatio * completionRatio
+
+	// 打印各部分配额计算
+	logger.SysLog(fmt.Sprintf("[Gemini计费] 各部分Ratio Tokens: 输入文字=%.2f (%d×%.4f), 输入图片=%.2f (%d×%.4f×%.4f), 输入音频=%.2f (%d×%.4f×%.4f)",
+		inputTextQuota, cost.InputTextTokens, modelRatio,
+		inputImageQuota, cost.InputImageTokens, modelRatio, imageInputRatio,
+		inputAudioQuota, cost.InputAudioTokens, modelRatio, audioInputRatio))
+
+	logger.SysLog(fmt.Sprintf("[Gemini计费] 各部分Ratio Tokens: 输出文字=%.2f (%d×%.4f×%.4f), 输出图片=%.2f (%d×%.4f×%.4f), 输出音频=%.2f (%d×%.4f×%.4f)",
+		outputTextQuota, cost.OutputTextTokens, modelRatio, completionRatio,
+		outputImageQuota, cost.OutputImageTokens, modelRatio, imageOutputRatio,
+		outputAudioQuota, cost.OutputAudioTokens, modelRatio, audioOutputRatio))
+
+	logger.SysLog(fmt.Sprintf("[Gemini计费] 思考Ratio Tokens: %.2f (%d×%.4f×%.4f)",
+		thinkingQuota, cost.ThinkingTokens, modelRatio, completionRatio))
+
+	// ========== 计算最终配额 ==========
+	// 公式: 总RatioTokens / 1000000 × 2 × groupRatio × QuotaPerUnit
+	// 乘以 2 是因为 ModelRatio = 官方价格 / 2，需要还原真实价格
+	totalRatioTokens := inputTextQuota + inputImageQuota + inputAudioQuota +
+		outputTextQuota + outputImageQuota + outputAudioQuota + thinkingQuota
+
+	quota := int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+
+	// 打印最终配额计算
+	logger.SysLog(fmt.Sprintf("[Gemini计费] 最终计算: 总RatioTokens=%.2f, 公式=%.2f/1000000×2×%.4f×%.2f, 最终配额=%d",
+		totalRatioTokens, totalRatioTokens, groupRatio, config.QuotaPerUnit, quota))
+
+	return quota, cost
 }
 
 // CalculateGeminiQuotaFromUsageMetadata 根据 UsageMetadata 计算配额
-// 此方法将费用转换为系统配额单位
-func CalculateGeminiQuotaFromUsageMetadata(usageMetadata *gemini.UsageMetadata, modelName string, groupRatio float64) (int64,GeminiTokenCost) {
-	cost := CalculateGeminiTokenCost(usageMetadata, modelName)
-
-	// 将美元费用转换为配额
-	// 假设 1 美元 = QuotaPerUnit * 1000 配额 (可根据实际情况调整)
-	// 这里使用 config.QuotaPerUnit 作为基准
-	quotaPerDollar := float64(config.QuotaPerUnit) * 500 // 1美元 = 500K 配额单位
-
-	quota := int64(cost.TotalCost * quotaPerDollar * groupRatio)
-
-	return quota,cost
+// 使用动态倍率计算各类型 token 的费用
+func CalculateGeminiQuotaFromUsageMetadata(usageMetadata *gemini.UsageMetadata, modelName string, groupRatio float64) (int64, GeminiTokenCost) {
+	return CalculateGeminiQuotaByRatio(usageMetadata, modelName, groupRatio)
 }
 
 // doNativeGeminiResponse 处理 Gemini 非流式响应
@@ -583,79 +567,31 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 	return lastUsageMetadata, nil
 }
 
-// ExampleCalculateGeminiCost 示例：如何计算 Gemini API 的费用
-// 此函数展示了完整的费用计算流程
-func ExampleCalculateGeminiCost() {
-	// 假设我们从 Gemini API 响应中获取了以下 UsageMetadata
-	usageMetadata := &gemini.UsageMetadata{
-		PromptTokenCount:        10000, // 输入token
-		CandidatesTokenCount:    5000,  // 输出token（不含思考token）
-		ThoughtsTokenCount:      1000,  // 思考token（仅Flash 2.5系列）
-		TotalTokenCount:         16000, // 总token
-		CachedContentTokenCount: 2000,  // 缓存的token（享有90%折扣）
-	}
-
-	modelName := "gemini-2.5-flash"
-
-	// 计算费用
-	cost := CalculateGeminiTokenCost(usageMetadata, modelName)
-
-	// 输出费用明细
-	fmt.Printf("===== Gemini 费用计算明细 =====\n")
-	fmt.Printf("模型名称: %s\n", cost.ModelName)
-	fmt.Printf("输入 tokens: %d\n", cost.InputTokens)
-	fmt.Printf("  - 非缓存: %d tokens, 费用: $%.6f\n", cost.InputTokens-cost.CachedTokens, cost.InputCost)
-	fmt.Printf("  - 缓存: %d tokens, 费用: $%.6f (享90%%折扣)\n", cost.CachedTokens, cost.CachedCost)
-	fmt.Printf("输出 tokens: %d, 费用: $%.6f\n", cost.OutputTokens, cost.OutputCost)
-	if cost.ThinkingTokens > 0 {
-		fmt.Printf("思考 tokens: %d, 费用: $%.6f\n", cost.ThinkingTokens, cost.ThinkingCost)
-	}
-	fmt.Printf("总计 tokens: %d\n", cost.TotalTokens)
-	fmt.Printf("总费用: $%.6f\n", cost.TotalCost)
-	fmt.Printf("===============================\n")
-
-	// 示例输出:
-	// ===== Gemini 费用计算明细 =====
-	// 模型名称: gemini-2.5-flash
-	// 输入 tokens: 10000
-	//   - 非缓存: 8000 tokens, 费用: $0.001200
-	//   - 缓存: 2000 tokens, 费用: $0.000030 (享90%折扣)
-	// 输出 tokens: 5000, 费用: $0.003000
-	// 思考 tokens: 1000, 费用: $0.003500
-	// 总计 tokens: 16000
-	// 总费用: $0.007730
-	// ===============================
-}
-
-// GetGeminiModelPricing 获取指定模型的价格信息（供外部调用）
-// 返回模型的详细定价配置，如果模型不存在则返回默认配置
-func GetGeminiModelPricing(modelName string) GeminiModelPricing {
-	pricing, found := getGeminiPricing(modelName)
-	if !found {
-		// 返回默认配置
-		return GeminiPricingTable["gemini-2.0-flash"]
-	}
-	return pricing
-}
-
 // FormatGeminiCost 格式化输出 Gemini 费用明细（用于日志或调试）
 func FormatGeminiCost(cost GeminiTokenCost) string {
 	var builder strings.Builder
 
 	builder.WriteString(fmt.Sprintf("Model: %s | ", cost.ModelName))
-	builder.WriteString(fmt.Sprintf("Input: %d tokens ($%.6f) | ", cost.InputTokens, cost.InputCost))
+
+	// 输入部分
+	totalInputTokens := cost.InputTextTokens + cost.InputImageTokens + cost.InputAudioTokens
+	builder.WriteString(fmt.Sprintf("Input: %d tokens (text:%d, image:%d, audio:%d) | ",
+		totalInputTokens, cost.InputTextTokens, cost.InputImageTokens, cost.InputAudioTokens))
 
 	if cost.CachedTokens > 0 {
-		builder.WriteString(fmt.Sprintf("Cached: %d tokens ($%.6f) | ", cost.CachedTokens, cost.CachedCost))
+		builder.WriteString(fmt.Sprintf("Cached: %d tokens | ", cost.CachedTokens))
 	}
 
-	builder.WriteString(fmt.Sprintf("Output: %d tokens ($%.6f) | ", cost.OutputTokens, cost.OutputCost))
+	// 输出部分
+	totalOutputTokens := cost.OutputTextTokens + cost.OutputImageTokens + cost.OutputAudioTokens
+	builder.WriteString(fmt.Sprintf("Output: %d tokens (text:%d, image:%d, audio:%d) | ",
+		totalOutputTokens, cost.OutputTextTokens, cost.OutputImageTokens, cost.OutputAudioTokens))
 
 	if cost.ThinkingTokens > 0 {
-		builder.WriteString(fmt.Sprintf("Thinking: %d tokens ($%.6f) | ", cost.ThinkingTokens, cost.ThinkingCost))
+		builder.WriteString(fmt.Sprintf("Thinking: %d tokens | ", cost.ThinkingTokens))
 	}
 
-	builder.WriteString(fmt.Sprintf("Total: %d tokens ($%.6f)", cost.TotalTokens, cost.TotalCost))
+	builder.WriteString(fmt.Sprintf("Total: %d tokens", cost.TotalTokens))
 
 	return builder.String()
 }

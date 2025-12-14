@@ -125,7 +125,7 @@ func Distribute() func(c *gin.Context) {
 				}
 				modelRequest.Model = sdModel
 				c.Set("relay_mode", relayMode)
-			} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+			} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models/") {
 				// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
 				//relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)
 				relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)

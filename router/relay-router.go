@@ -280,7 +280,6 @@ func SetRelayRouter(router *gin.Engine) {
 
 	// Claude 原生API透传路由组 - 支持完整的Anthropic Claude官方API格式
 
-
 	// Gemini API原生接口路由组
 	// 路径格式: /v1beta/models/{model_name}:{action}
 	// 支持 generateContent, streamGenerateContent, embedContent, batchEmbedContents 等操作
@@ -296,5 +295,12 @@ func SetRelayRouter(router *gin.Engine) {
 	geminiV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
 		geminiV1Router.POST("/models/*path", controller.RelayGemini)
+	}
+
+	// Gemini API v1alpha 版本路由（某些项目使用 v1alpha）
+	geminiV1AlphaRouter := router.Group("/v1alpha")
+	geminiV1AlphaRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		geminiV1AlphaRouter.POST("/models/*path", controller.RelayGemini)
 	}
 }

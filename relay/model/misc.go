@@ -25,6 +25,7 @@ type Error struct {
 	Type    string `json:"type"`
 	Param   string `json:"param"`
 	Code    any    `json:"code"`
+	Status  string `json:"status,omitempty"`
 }
 
 type ErrorWithStatusCode struct {

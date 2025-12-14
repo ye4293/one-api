@@ -765,7 +765,7 @@ func handleAudioStreamResponse(c *gin.Context, resp *http.Response, audioModel s
 
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens+audioInputTokens), int(textOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-				duration, title, referer, true, 0.0, otherInfo, xRequestID)
+				duration, title, referer, true, 0.0, otherInfo, xRequestID, 0)
 			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 			model.UpdateChannelUsedQuota(channelId, quota)
 			model.PostConsumeTokenQuota(tokenId, quota)
@@ -998,7 +998,7 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-				duration, title, referer, true, 0.0, otherInfo, xRequestID)
+				duration, title, referer, true, 0.0, otherInfo, xRequestID, 0)
 			model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 			model.UpdateChannelUsedQuota(channelId, quota)
 			model.PostConsumeTokenQuota(tokenId, quota) // Consume the quota
@@ -1029,7 +1029,7 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 
 					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-						duration, title, referer, true, 0.0, otherInfo, xRequestID)
+						duration, title, referer, true, 0.0, otherInfo, xRequestID, 0)
 					model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 					model.UpdateChannelUsedQuota(channelId, quota)
 					model.PostConsumeTokenQuota(tokenId, quota)
@@ -1125,7 +1125,7 @@ func handleAzureTTSStream(c *gin.Context, resp *http.Response, audioModel string
 
 					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-						duration, title, referer, true, 0.0, otherInfo, xRequestID)
+						duration, title, referer, true, 0.0, otherInfo, xRequestID, 0)
 					model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
 					model.UpdateChannelUsedQuota(channelId, quota)
 					model.PostConsumeTokenQuota(tokenId, quota)

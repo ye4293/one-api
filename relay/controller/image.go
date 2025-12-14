@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
@@ -43,6 +44,7 @@ const (
 type GeminiUsageDetails struct {
 	InputTextTokens   int
 	InputImageTokens  int
+	OutputTextTokens  int // output_text = candidatesTokenCount - output_image
 	OutputImageTokens int
 	ReasoningTokens   int
 }
@@ -125,7 +127,7 @@ func buildOtherInfoWithUsageDetails(adminInfo string, usageDetails *GeminiUsageD
 		detailsForLog := UsageDetailsForLog{
 			InputText:       usageDetails.InputTextTokens,
 			InputImage:      usageDetails.InputImageTokens,
-			OutputText:      0, // Gemini 不返回 output text token 详情
+			OutputText:      usageDetails.OutputTextTokens,
 			OutputImage:     usageDetails.OutputImageTokens,
 			OutputReasoning: usageDetails.ReasoningTokens,
 		}
@@ -147,6 +149,81 @@ func extractAdminInfoFromContext(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// calculateGeminiImageQuota 计算 Gemini 图片生成的配额
+//
+// ==================== Gemini 图片生成计费说明 ====================
+//
+// 此函数用于 Gemini 图片生成接口的计费，与 gemini.go 中的 CalculateGeminiQuotaByRatio 逻辑保持一致。
+//
+// 【为什么需要单独的函数】
+// image.go 中的 Gemini 图片生成走的是不同的代码路径，需要单独处理计费逻辑。
+//
+// 【计费公式】（与 Gemini Native API 一致）
+//   - 输入文字: inputTextTokens × ModelRatio
+//   - 输入图片: inputImageTokens × ModelRatio × ImageInputRatio
+//   - 输出文字: outputTextTokens × ModelRatio × CompletionRatio
+//   - 输出图片: outputImageTokens × ModelRatio × ImageOutputRatio
+//     ⚠️ 重点：输出图片不乘 CompletionRatio！
+//     因为 ImageOutputRatio 是"图片输出价格/文字输入价格"，已经是完整的相对倍率
+//   - 思考: thinkingTokens × ModelRatio × CompletionRatio
+//   - 总配额 = (各部分之和) / 1000000 × 2 × groupRatio × QuotaPerUnit
+//
+// 【参数说明】
+//   - modelName: 模型名称，用于获取各类倍率
+//   - groupRatio: 用户分组的价格倍率
+//   - usageDetails: 从 Gemini 响应中解析的详细 token 信息
+//   - promptTokens, completionTokens: 备用参数，当 usageDetails 为空时使用
+//   - thinkingTokens: 思考 token 数量
+func calculateGeminiImageQuota(modelName string, groupRatio float64, usageDetails *GeminiUsageDetails, promptTokens, completionTokens, thinkingTokens int) int64 {
+	// 从配置中获取各类倍率（在前端"价格设置"页面配置）
+	modelRatio := common.GetModelRatio(modelName)             // 模型基础价格倍率 = 官方输入价格 / 2
+	completionRatio := common.GetCompletionRatio(modelName)   // 输出倍率 = 官方输出价格 / 官方输入价格
+	imageInputRatio := common.GetImageInputRatio(modelName)   // 图片输入倍率（相对于文字输入）
+	imageOutputRatio := common.GetImageOutputRatio(modelName) // 图片输出倍率 = 图片输出价格 / 文字输入价格
+
+	// 如果没有详细的 token 分类信息，使用简单的计算方式
+	if usageDetails == nil {
+		inputQuota := float64(promptTokens) * modelRatio
+		outputQuota := float64(completionTokens) * modelRatio * completionRatio
+		totalRatioTokens := inputQuota + outputQuota
+		return int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+	}
+
+	// ===== 精确计算各部分配额 =====
+	// 输入文字：直接使用 ModelRatio
+	inputTextQuota := float64(usageDetails.InputTextTokens) * modelRatio
+	// 输入图片：需要乘以图片输入倍率
+	inputImageQuota := float64(usageDetails.InputImageTokens) * modelRatio * imageInputRatio
+	// 输出文字：需要乘以输出倍率
+	outputTextQuota := float64(usageDetails.OutputTextTokens) * modelRatio * completionRatio
+	// 输出图片：使用 ImageOutputRatio（注意：不乘 CompletionRatio）
+	// 因为 ImageOutputRatio 已经是"图片输出价格/文字输入价格"的完整倍率
+	outputImageQuota := float64(usageDetails.OutputImageTokens) * modelRatio * imageOutputRatio
+	// 思考 token：与输出文字相同的计费方式
+	thinkingQuota := float64(usageDetails.ReasoningTokens) * modelRatio * completionRatio
+
+	totalRatioTokens := inputTextQuota + inputImageQuota + outputTextQuota + outputImageQuota + thinkingQuota
+
+	// 最终配额计算：
+	// - 除以 1000000：因为倍率基于每百万 token
+	// - 乘以 2：还原真实价格（ModelRatio = 官方价格 / 2）
+	// - 乘以 groupRatio：用户分组倍率
+	// - 乘以 QuotaPerUnit：转换为系统配额单位
+	quota := int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+
+	// 打印调试日志
+	logger.SysLog(fmt.Sprintf("[Gemini图片计费] 模型=%s, 倍率: Model=%.4f, Completion=%.4f, ImageInput=%.4f, ImageOutput=%.4f",
+		modelName, modelRatio, completionRatio, imageInputRatio, imageOutputRatio))
+	logger.SysLog(fmt.Sprintf("[Gemini图片计费] Tokens: 输入文字=%d, 输入图片=%d, 输出文字=%d, 输出图片=%d, 思考=%d",
+		usageDetails.InputTextTokens, usageDetails.InputImageTokens, usageDetails.OutputTextTokens, usageDetails.OutputImageTokens, usageDetails.ReasoningTokens))
+	logger.SysLog(fmt.Sprintf("[Gemini图片计费] RatioTokens: 输入文字=%.2f, 输入图片=%.2f, 输出文字=%.2f, 输出图片=%.2f, 思考=%.2f, 总计=%.2f",
+		inputTextQuota, inputImageQuota, outputTextQuota, outputImageQuota, thinkingQuota, totalRatioTokens))
+	logger.SysLog(fmt.Sprintf("[Gemini图片计费] 最终: %.2f/1000000×2×%.4f×%.2f = %d",
+		totalRatioTokens, groupRatio, config.QuotaPerUnit, quota))
+
+	return quota
 }
 
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
@@ -753,35 +830,44 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				imageTokens := float64(parsedResponse.Usage.InputTokensDetails.ImageTokens)
 				outputTokens := float64(parsedResponse.Usage.OutputTokens)
 
-				// 保存旧的 quota 值用于日志
+				// 保存旧的 quota 值用于日志对比
 				oldQuota := quota
 
-				// 使用现有的ModelRatio和CompletionRatio机制进行计费
+				// ==================== gpt-image-1 计费说明 ====================
+				//
+				// 【修改背景】
+				// 之前使用 CompletionRatio 计算输出价格，现改为使用 ImageOutputRatio
+				// 因为 gpt-image-1 的输出是图片，应该使用图片输出倍率
+				//
+				// 【倍率获取】
+				// - ModelRatio: 模型基础价格倍率（= 官方输入价格 / 2）
+				// - ImageInputRatio: 图片输入相对于文字输入的倍率
+				// - ImageOutputRatio: 图片输出相对于文字输入的倍率（注意：不是相对于输出文字）
+				//
 				modelRatio := common.GetModelRatio(meta.ActualModelName)
-				completionRatio := common.GetCompletionRatio(meta.ActualModelName)
+				imageOutputRatio := common.GetImageOutputRatio(meta.ActualModelName) // 图片输出倍率 = 图片输出价格 / 文字输入价格
+				imageInputRatio := common.GetImageInputRatio(meta.ActualModelName)   // 图片输入倍率
 				groupRatio := common.GetGroupRatio(meta.Group)
 
-				// 根据不同模型设置不同的image tokens价格倍率
-				var imageTokenMultiplier float64
-				if meta.ActualModelName == "gpt-image-1-mini" {
-					// gpt-image-1-mini 的 image tokens 价格是文本的1.25倍
-					imageTokenMultiplier = 1.25
-				} else {
-					// gpt-image-1 的 image tokens 价格是文本的2倍
-					imageTokenMultiplier = 2.0
-				}
+				// 【输入计算】
+				// 输入包含文本和图片两部分，图片需要乘以 ImageInputRatio 转换为等效文本 token
+				inputTokensEquivalent := textTokens + imageTokens*imageInputRatio
 
-				// 计算输入tokens：文本tokens + 图片tokens * 相应倍率
-				inputTokensEquivalent := textTokens + imageTokens*imageTokenMultiplier
-
-				// 使用标准的计费公式：(输入tokens + 输出tokens * 完成比率) * 模型比率 * 分组比率
-				// 注意：价格是1000tokens的单价，需要除以1000，然后乘以500000得到真正的扣费quota
-				calculatedQuota := int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * modelRatio * groupRatio))
+				// 【输出计算】
+				// gpt-image-1 输出的是图片，使用 ImageOutputRatio
+				// ImageOutputRatio 是"图片输出价格/文字输入价格"的完整倍率，不需要再乘其他倍率
+				//
+				// 【最终公式】
+				// 配额 = (输入等效tokens × ModelRatio + 输出tokens × ModelRatio × ImageOutputRatio)
+				//        / 1000000 × 2 × groupRatio × QuotaPerUnit
+				inputQuota := inputTokensEquivalent * modelRatio
+				outputQuota := outputTokens * modelRatio * imageOutputRatio
+				calculatedQuota := int64((inputQuota + outputQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 				quota = calculatedQuota
 
-				// 记录日志
-				logger.Infof(ctx, "%s token usage: text=%d, image=%d (multiplier=%.2f), output=%d, old quota=%d, new quota=%d",
-					meta.ActualModelName, int(textTokens), int(imageTokens), imageTokenMultiplier, int(outputTokens), oldQuota, quota)
+				// 记录详细日志便于调试
+				logger.Infof(ctx, "%s token usage: text=%d, image_in=%d (ratio=%.2f), output=%d (imageOutputRatio=%.2f), modelRatio=%.4f, old quota=%d, new quota=%d",
+					meta.ActualModelName, int(textTokens), int(imageTokens), imageInputRatio, int(outputTokens), imageOutputRatio, modelRatio, oldQuota, quota)
 
 				// 更新 defer 函数中的 token 变量，以便正确记录到日志表中
 				// promptTokens 记录的是等效的输入 tokens（文本 + 图片按比例换算）
@@ -1104,14 +1190,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 
-			// 处理配额消费
+			// 处理配额消费 - 使用精确计费
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-			modelRatio := common.GetModelRatio(meta.OriginModelName)
-			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
 			logger.Infof(ctx, "Gemini JSON promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 				promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -1168,10 +1253,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-			modelRatio := common.GetModelRatio(meta.OriginModelName)
-			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+			// 提取详细的 Token 信息
+			usageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				thinkingTokens,
+			)
+
+			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
 			logger.Infof(ctx, "Gemini JSON 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 				promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -1196,12 +1287,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-			// 提取 token 详情并构建 otherInfo
-			usageDetails := extractGeminiUsageDetails(
-				geminiResponse.UsageMetadata.PromptTokensDetails,
-				geminiResponse.UsageMetadata.CandidatesTokensDetails,
-				geminiResponse.UsageMetadata.ThoughtsTokenCount,
-			)
+			// 构建 otherInfo（usageDetails 已在上方计费时提取）
 			adminInfo := extractAdminInfoFromContext(c)
 			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
@@ -1272,14 +1358,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				rowDuration := time.Since(startTime).Seconds()
 				duration := math.Round(rowDuration*1000) / 1000
 
-				// 处理配额消费（即使失败也要扣费，因为已经消耗了token）
+				// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 				groupRatio := common.GetGroupRatio(meta.Group)
 				promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 				completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+				thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-				modelRatio := common.GetModelRatio(meta.OriginModelName)
-				completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-				actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+				// 提取详细的 Token 信息
+				errUsageDetails := extractGeminiUsageDetails(
+					geminiResponse.UsageMetadata.PromptTokensDetails,
+					geminiResponse.UsageMetadata.CandidatesTokensDetails,
+					thinkingTokens,
+				)
+
+				actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &errUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
 				logger.Infof(ctx, "Gemini JSON 错误响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 					promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -1423,14 +1515,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 
-			// 处理配额消费（即使失败也要扣费，因为已经消耗了token）
+			// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-			modelRatio := common.GetModelRatio(meta.OriginModelName)
-			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
 			logger.Infof(ctx, "Gemini JSON 无图片响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 				promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3229,14 +3320,20 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		rowDuration := time.Since(startTime).Seconds()
 		duration := math.Round(rowDuration*1000) / 1000
 
-		// 处理配额消费
+		// 处理配额消费 - 使用精确计费
 		groupRatio := common.GetGroupRatio(meta.Group)
 		promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 		completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+		thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-		modelRatio := common.GetModelRatio(meta.OriginModelName)
-		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-		actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+		// 提取详细的 Token 信息
+		blockUsageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			thinkingTokens,
+		)
+
+		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &blockUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
 		logger.Infof(ctx, "Gemini Form promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 			promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3293,12 +3390,18 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		groupRatio := common.GetGroupRatio(meta.Group)
 		promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 		completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+		thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-		modelRatio := common.GetModelRatio(meta.OriginModelName)
-		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-		actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+		// 提取详细的 Token 信息
+		usageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			thinkingTokens,
+		)
 
-		logger.Infof(ctx, "Gemini JSON 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
+		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
+
+		logger.Infof(ctx, "Gemini Form 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 			promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 		// 消费配额
@@ -3318,15 +3421,10 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		tokenName := c.GetString("token_name")
 		xRequestID := c.GetString("X-Request-ID")
 
-		logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
+		logContent := fmt.Sprintf("Gemini Form No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
 
-		// 提取 token 详情并构建 otherInfo
-		usageDetails := extractGeminiUsageDetails(
-			geminiResponse.UsageMetadata.PromptTokensDetails,
-			geminiResponse.UsageMetadata.CandidatesTokensDetails,
-			geminiResponse.UsageMetadata.ThoughtsTokenCount,
-		)
+		// 构建 otherInfo（usageDetails 已在上方计费时提取）
 		adminInfo := extractAdminInfoFromContext(c)
 		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
 
@@ -3397,14 +3495,20 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
 
-			// 处理配额消费（即使失败也要扣费，因为已经消耗了token）
+			// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-			modelRatio := common.GetModelRatio(meta.OriginModelName)
-			completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-			actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+			// 提取详细的 Token 信息
+			formErrUsageDetails := extractGeminiUsageDetails(
+				geminiResponse.UsageMetadata.PromptTokensDetails,
+				geminiResponse.UsageMetadata.CandidatesTokensDetails,
+				thinkingTokens,
+			)
+
+			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formErrUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
 			logger.Infof(ctx, "Gemini Form 错误响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 				promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3541,14 +3645,20 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		rowDuration := time.Since(startTime).Seconds()
 		duration := math.Round(rowDuration*1000) / 1000
 
-		// 处理配额消费（即使失败也要扣费，因为已经消耗了token）
+		// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 		groupRatio := common.GetGroupRatio(meta.Group)
 		promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 		completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+		thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-		modelRatio := common.GetModelRatio(meta.OriginModelName)
-		completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-		actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+		// 提取详细的 Token 信息
+		noImgUsageDetails := extractGeminiUsageDetails(
+			geminiResponse.UsageMetadata.PromptTokensDetails,
+			geminiResponse.UsageMetadata.CandidatesTokensDetails,
+			thinkingTokens,
+		)
+
+		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &noImgUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
 		logger.Infof(ctx, "Gemini Form 无图片响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 			promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3700,14 +3810,20 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	rowDuration := time.Since(startTime).Seconds()
 	duration := math.Round(rowDuration*1000) / 1000
 
-	// 使用统一的ModelRatio和CompletionRatio机制进行计费
+	// 使用精确计费机制
 	groupRatio := common.GetGroupRatio(meta.Group)
 	promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 	completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+	thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-	modelRatio := common.GetModelRatio(meta.OriginModelName)
-	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+	// 提取详细的 Token 信息
+	formUsageDetails := extractGeminiUsageDetails(
+		geminiResponse.UsageMetadata.PromptTokensDetails,
+		geminiResponse.UsageMetadata.CandidatesTokensDetails,
+		thinkingTokens,
+	)
+
+	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
 	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 		promptTokens, completionTokens, groupRatio, actualQuota, duration)
@@ -3828,13 +3944,14 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		return nil // 不返回错误，避免影响成功响应
 	}
 
-	// 使用统一的ModelRatio和CompletionRatio机制进行计费
+	// 使用精确计费机制
 	groupRatio := common.GetGroupRatio(meta.Group)
-	modelRatio := common.GetModelRatio(meta.OriginModelName)
-	completionRatio := common.GetCompletionRatio(meta.OriginModelName)
-	// 使用统一的 ModelRatio 和 CompletionRatio 机制进行计费
-	// modelRatio 已经是相对于基础价格 $0.002/1K tokens 的倍率，直接使用即可
-	actualQuota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio * groupRatio))
+	thinkingTokens := 0
+	if usageDetails != nil {
+		thinkingTokens = usageDetails.ReasoningTokens
+	}
+
+	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, usageDetails, promptTokens, completionTokens, thinkingTokens)
 
 	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
 		promptTokens, completionTokens, groupRatio, actualQuota, duration)
