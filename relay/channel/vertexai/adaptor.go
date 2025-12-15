@@ -5,20 +5,36 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/gemini"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
 type Adaptor struct {
-	RequestMode        int
 	AccountCredentials Credentials
+	IsAPIKeyMode       bool   // 是否使用 API Key 模式
+	APIKey             string // API Key（仅在 API Key 模式下使用）
 }
 
 // Init implements channel.Adaptor.
 func (a *Adaptor) Init(meta *util.RelayMeta) {
-	// 支持多密钥模式：优先从当前密钥解析凭证
+	// 检查认证模式
+	a.IsAPIKeyMode = meta.Config.VertexKeyType == dbmodel.VertexKeyTypeAPIKey
+
+	if a.IsAPIKeyMode {
+		// API Key 模式：直接使用 API Key
+		a.APIKey = meta.ActualAPIKey
+		return
+	}
+
+	// JSON 模式：解析服务账号凭证
 	keyIndex := 0
 	if meta.KeyIndex != nil {
 		keyIndex = *meta.KeyIndex
@@ -30,14 +46,13 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 	// 验证配置是否正确（跳过系统级调用的验证）
 	if meta.ChannelId != 0 {
 		if err := ValidateVertexAIConfig(meta, keyIndex); err != nil {
-			fmt.Printf("[Vertex AI] 配置验证失败: %v\n", err)
+			logger.SysError(fmt.Sprintf("[Vertex AI] 配置验证失败: %v", err))
 		}
 	}
 
 	// 尝试解析当前密钥的凭证
 	if credentials, err := parseCredentialsFromKey(meta, keyIndex); err == nil {
 		a.AccountCredentials = *credentials
-		fmt.Printf("[Vertex AI] 成功加载凭证 - 项目: %s\n", credentials.ProjectID)
 		return
 	}
 
@@ -46,14 +61,58 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 		var credentials Credentials
 		if err := json.Unmarshal([]byte(meta.Config.VertexAIADC), &credentials); err == nil {
 			a.AccountCredentials = credentials
-			fmt.Printf("[Vertex AI] 使用ADC配置 - 项目: %s\n", credentials.ProjectID)
+		} else {
+			logger.SysError(fmt.Sprintf("[Vertex AI] ADC配置解析失败: %v", err))
 		}
 	}
 }
 
 // GetRequestURL implements channel.Adaptor.
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
-	// 从Key字段提取项目ID，支持单密钥和多密钥模式
+	modelName := meta.OriginModelName
+	if modelName == "" {
+		modelName = "gemini-pro"
+	}
+
+	// 处理 thinking 适配参数后缀
+	// -thinking, -thinking-<budget>, -nothinking 只是适配参数，不是实际模型名的一部分
+	modelName = stripThinkingSuffix(modelName)
+
+	// 获取区域：优先使用模型专用区域，其次使用默认区域
+	region := a.getModelRegion(meta, modelName)
+
+	// 确定请求动作 - 优先从请求路径提取（支持 Gemini 原生格式）
+	suffix := a.extractActionFromPath(meta.RequestURLPath)
+	if suffix == "" {
+		// 回退到默认动作
+		suffix = "generateContent"
+		if meta.IsStream {
+			suffix = "streamGenerateContent?alt=sse"
+		}
+	}
+
+	if a.IsAPIKeyMode {
+		// API Key 模式：不需要 project ID，使用简化的 URL
+		var keyPrefix string
+		if strings.Contains(suffix, "?") {
+			keyPrefix = "&"
+		} else {
+			keyPrefix = "?"
+		}
+
+		if region == "global" {
+			return fmt.Sprintf(
+				"https://aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+				modelName, suffix, keyPrefix, a.APIKey,
+			), nil
+		}
+		return fmt.Sprintf(
+			"https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+			region, modelName, suffix, keyPrefix, a.APIKey,
+		), nil
+	}
+
+	// JSON 模式：需要 project ID
 	keyIndex := 0
 	if meta.KeyIndex != nil {
 		keyIndex = *meta.KeyIndex
@@ -65,45 +124,153 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	}
 
 	if projectID == "" {
-		return "", fmt.Errorf("Vertex AI project ID not found in Key field or credentials")
-	}
-
-	region := meta.Config.Region
-	if region == "" {
-		region = "global"
-	}
-
-	modelName := meta.OriginModelName
-	if modelName == "" {
-		modelName = "gemini-pro"
+		return "", fmt.Errorf("vertex AI project ID not found in Key field or credentials")
 	}
 
 	// 构建Vertex AI API URL
 	if region == "global" {
-		return fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predict", projectID, modelName), nil
-	} else {
-		return fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, modelName), nil
+		return fmt.Sprintf(
+			"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:%s",
+			projectID, modelName, suffix,
+		), nil
 	}
+	return fmt.Sprintf(
+		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s",
+		region, projectID, region, modelName, suffix,
+	), nil
+}
+
+// getModelRegion 获取模型的区域，支持模型专用区域配置
+func (a *Adaptor) getModelRegion(meta *util.RelayMeta, modelName string) string {
+	// 优先检查模型专用区域映射
+	if meta.Config.VertexModelRegion != nil {
+		if region, ok := meta.Config.VertexModelRegion[modelName]; ok && region != "" {
+			return region
+		}
+	}
+
+	// 使用默认区域
+	if meta.Config.Region != "" {
+		return meta.Config.Region
+	}
+
+	return "global"
+}
+
+// extractActionFromPath 从请求路径中提取动作名称
+// 例如: /v1beta/models/gemini-2.0-flash:generateContent -> generateContent
+// 例如: /v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse -> streamGenerateContent?alt=sse
+func (a *Adaptor) extractActionFromPath(path string) string {
+	if path == "" {
+		return ""
+	}
+
+	// 先分离查询参数
+	pathOnly := path
+	queryString := ""
+	if qIdx := strings.Index(path, "?"); qIdx != -1 {
+		pathOnly = path[:qIdx]
+		queryString = path[qIdx:] // 包含 ?
+	}
+
+	// 查找冒号后的动作部分
+	colonIdx := strings.LastIndex(pathOnly, ":")
+	if colonIdx == -1 {
+		return ""
+	}
+
+	action := pathOnly[colonIdx+1:]
+	// 去除前后空白
+	action = strings.TrimSpace(action)
+
+	// 如果原始请求有查询参数，保留它（但排除 key 参数）
+	if queryString != "" {
+		// 解析并过滤掉 key 参数（避免重复添加）
+		filteredQuery := filterQueryParams(queryString, "key")
+		if filteredQuery != "" {
+			action = action + filteredQuery
+		}
+	}
+
+	// 如果是流式请求且没有 alt=sse 参数，添加它
+	if action == "streamGenerateContent" {
+		action = "streamGenerateContent?alt=sse"
+	}
+
+	return action
+}
+
+// filterQueryParams 过滤掉指定的查询参数
+func filterQueryParams(queryString string, excludeParams ...string) string {
+	if queryString == "" {
+		return ""
+	}
+
+	// 移除开头的 ?
+	query := strings.TrimPrefix(queryString, "?")
+	if query == "" {
+		return ""
+	}
+
+	excludeSet := make(map[string]bool)
+	for _, p := range excludeParams {
+		excludeSet[p] = true
+	}
+
+	parts := strings.Split(query, "&")
+	var filtered []string
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		key := part
+		if eqIdx := strings.Index(part, "="); eqIdx != -1 {
+			key = part[:eqIdx]
+		}
+		if !excludeSet[key] {
+			filtered = append(filtered, part)
+		}
+	}
+
+	if len(filtered) == 0 {
+		return ""
+	}
+	return "?" + strings.Join(filtered, "&")
 }
 
 // SetupRequestHeader implements channel.Adaptor.
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
-	// 获取访问令牌并设置到请求头
+	req.Header.Set("Content-Type", "application/json")
+
+	// API Key 模式不需要 Authorization 头，key 已经在 URL 中
+	if a.IsAPIKeyMode {
+		return nil
+	}
+
+	// JSON 模式：获取访问令牌并设置到请求头
 	accessToken, err := GetAccessToken(a, meta)
 	if err != nil {
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
+
+	// 设置项目头（可选）
+	if a.AccountCredentials.ProjectID != "" {
+		req.Header.Set("x-goog-user-project", a.AccountCredentials.ProjectID)
+	}
+
 	return nil
 }
 
 // ConvertRequest implements channel.Adaptor.
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
-	// 将OpenAI格式的请求转换为VertexAI格式
-	// 对于不支持的模型，返回错误而不是panic
-	return nil, fmt.Errorf("model %s is not supported by VertexAI adapter", request.Model)
+	if request == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+	// 使用 Gemini 的转换函数将 OpenAI 格式转换为 Gemini 格式
+	// Vertex AI 使用与 Gemini 相同的请求格式
+	return gemini.ConvertRequest(*request)
 }
 
 // ConvertImageRequest implements channel.Adaptor.
@@ -132,8 +299,14 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to setup request headers: %w", err)
 	}
 
-	// 执行请求
-	client := &http.Client{}
+	// 执行请求（设置超时，流式请求使用较长超时）
+	timeout := 60 * time.Second
+	if meta.IsStream {
+		timeout = 5 * time.Minute
+	}
+	client := &http.Client{
+		Timeout: timeout,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
@@ -144,8 +317,16 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 
 // DoResponse implements channel.Adaptor.
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
-	// 处理响应并返回使用情况
-	return nil, nil
+	// 使用 Gemini 的响应处理函数
+	// Vertex AI 返回的响应格式与 Gemini 相同
+	if meta.IsStream {
+		var responseText string
+		err, responseText = gemini.StreamHandler(c, resp, meta.ActualModelName)
+		usage = openai.ResponseText2Usage(responseText, meta.ActualModelName, meta.PromptTokens)
+	} else {
+		err, usage = gemini.Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
+	}
+	return
 }
 
 // GetModelList implements channel.Adaptor.
@@ -209,4 +390,30 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 
 	// 对于其他错误，返回nil让通用处理器处理
 	return nil
+}
+
+// stripThinkingSuffix 移除模型名称中的 thinking 适配参数后缀
+// 支持的格式：
+//   - model-thinking: 移除 -thinking 后缀
+//   - model-thinking-<budget>: 移除 -thinking-<budget> 后缀（如 -thinking-1024）
+//   - model-nothinking: 移除 -nothinking 后缀
+//
+// 这些后缀只是用于触发 thinking 模式的适配参数，不是实际的 Vertex AI 模型名
+func stripThinkingSuffix(modelName string) string {
+	// 处理 -thinking-<budget> 格式（如 gemini-2.0-flash-thinking-1024）
+	if idx := strings.Index(modelName, "-thinking-"); idx != -1 {
+		return modelName[:idx]
+	}
+
+	// 处理 -thinking 后缀
+	if strings.HasSuffix(modelName, "-thinking") {
+		return strings.TrimSuffix(modelName, "-thinking")
+	}
+
+	// 处理 -nothinking 后缀
+	if strings.HasSuffix(modelName, "-nothinking") {
+		return strings.TrimSuffix(modelName, "-nothinking")
+	}
+
+	return modelName
 }
