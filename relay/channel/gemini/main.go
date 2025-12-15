@@ -112,13 +112,11 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 	}
 
 	if strings.HasSuffix(textRequest.Model, "-thinking") {
-		var budget int
+		budget := -1 // Enable dynamic thinking by default
 		if textRequest.ThinkingTokens > 0 {
 			budget = textRequest.ThinkingTokens
 		} else if textRequest.MaxTokens > 0 {
 			budget = int(float64(textRequest.MaxTokens) * 0.6)
-		} else {
-			budget = -1 // Enable dynamic thinking
 		}
 
 		// Clamp the budget based on the model's supported range
@@ -152,16 +150,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 			}
 		}
 		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
-			ThinkingBudget:  budget,
+			ThinkingBudget:  &budget,
 			IncludeThoughts: true,
 		}
 	} else if strings.HasSuffix(textRequest.Model, "-nothinking") {
+		// 禁用思考：设置 thinkingBudget = 0
+		// 注意：gemini-2.5-pro 不支持禁用思考，但我们仍然传递 0
 		budget := 0
-		if baseModel == "gemini-2.5-pro" {
-			budget = -1
-		}
 		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
-			ThinkingBudget: budget,
+			ThinkingBudget: &budget,
 		}
 	}
 	// 检测是否有system或developer消息，如果有则转换为system_instruction

@@ -55,7 +55,9 @@ type ImageConfig struct {
 }
 
 type ThinkingConfig struct {
-	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+	// 使用指针类型以区分"未设置"和"设置为0"
+	// 当设置为 0 时表示禁用思考，-1 表示动态思考
+	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
 	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 }
 

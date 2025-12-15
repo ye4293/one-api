@@ -56,11 +56,18 @@ func Distribute() func(c *gin.Context) {
 		userId := c.GetInt("id")
 		userGroup, _ := model.CacheGetUserGroup(userId)
 		c.Set("group", userGroup)
-		var requestModel string
+
 		var channel *model.Channel
-		var modelRequest ModelRequest
+		var err error
+
+		// 先统一解析模型名和设置 relay_mode（参考 new-api 的设计）
+		// 这样不管是否指定特定渠道，都会正确解析请求
+		modelRequest, shouldSelectChannel := getModelRequest(c)
+
+		// 检查是否指定了特定渠道
 		channelId, ok := c.Get("specific_channel_id")
 		if ok {
+			// 指定特定渠道：直接通过 ID 获取渠道
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
 				abortWithMessage(c, http.StatusBadRequest, "Invalid channel Id")
@@ -76,112 +83,15 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		} else {
-			shouldSelectChannel := true
-			// Select a channel for the user
-			// var modelRequest ModelRequest
-			var err error
-			if strings.HasPrefix(c.Request.URL.Path, "/mj") {
-				relayMode := relayconstant.Path2RelayModeMidjourney((c.Request.URL.Path))
-				if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||
-
-					relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||
-					relayMode == relayconstant.RelayModeMidjourneyNotify ||
-					relayMode == relayconstant.RelayModeMidjourneyTaskImageSeed {
-					shouldSelectChannel = false
-				} else {
-					midjourneyRequest := midjourney.MidjourneyRequest{}
-					err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
-					if err != nil {
-						abortWithMidjourneyMessage(c, http.StatusBadRequest, common.MjErrorUnknown, "无效的请求, "+err.Error())
-						return
-					}
-					midjourneyModel, mjErr, success := midjourney.GetMjRequestModel(relayMode, &midjourneyRequest)
-					if mjErr != nil {
-						abortWithMidjourneyMessage(c, http.StatusBadRequest, mjErr.Response.Code, mjErr.Response.Description)
-						return
-					}
-					if midjourneyModel == "" {
-						if !success {
-							abortWithMidjourneyMessage(c, http.StatusBadRequest, common.MjErrorUnknown, "无效的请求, 无法解析模型")
-							return
-						} else {
-							// task fetch, task fetch by condition, notify
-							shouldSelectChannel = false
-						}
-					}
-					modelRequest.Model = midjourneyModel
-				}
-				c.Set("relay_mode", relayMode)
-
-			} else if strings.HasPrefix(c.Request.URL.Path, "/v2beta") || strings.HasPrefix(c.Request.URL.Path, "/sd") { //sd的api开头
-				relayMode := relayconstant.Path2RelayModeSd((c.Request.URL.Path))
-				if relayMode == relayconstant.RelayModeUpscaleCreativeResult || relayMode == relayconstant.RelayModeVideoResult {
-					shouldSelectChannel = false
-				}
-				sdModel, err := stability.GetSdRequestModel(relayMode)
-				if err != nil {
-					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
-					return
-				}
-				modelRequest.Model = sdModel
-				c.Set("relay_mode", relayMode)
-			} else if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1/models/") || strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models/") {
-				// Gemini API 路径处理: /v1beta/models/gemini-2.0-flash:generateContent
-				//relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)
-				relayMode := relayconstant.Path2RelayModeGemini(c.Request.URL.Path)
-				if relayMode == relayconstant.RelayModeUnknown {
-					abortWithMessage(c, http.StatusBadRequest, "Invalid gemini request path: "+c.Request.URL.Path)
-					return
-				}
-				modelName := extractModelNameFromGeminiPath(c.Request.URL.Path)
-				if modelName == "" {
-					abortWithMessage(c, http.StatusBadRequest, "Invalid gemini request path: "+c.Request.URL.Path)
-					return
-				}
-				modelRequest.Model = modelName
-				c.Set("relay_mode", relayMode)
-			} else {
-
-				err = common.UnmarshalBodyReusable(c, &modelRequest)
-
-				if err != nil {
-
-					logger.SysLog(fmt.Sprintf("err:%+v", err))
-					abortWithMessage(c, http.StatusBadRequest, "Invalid request")
-					return
-				}
-			}
-			if strings.HasPrefix(c.Request.URL.Path, "/v1/moderations") {
-				if modelRequest.Model == "" {
-					modelRequest.Model = "text-moderation-stable"
-				}
-			}
-			if strings.HasSuffix(c.Request.URL.Path, "embeddings") {
-				if modelRequest.Model == "" {
-					modelRequest.Model = c.Param("model")
-				}
-			}
-			if strings.HasPrefix(c.Request.URL.Path, "/v1/images/generations") {
-				if modelRequest.Model == "" {
-					modelRequest.Model = "dall-e-2"
-				}
-			}
-			if strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") || strings.HasPrefix(c.Request.URL.Path, "/v1/audio/translations") {
-				if modelRequest.Model == "" {
-					modelRequest.Model = "whisper-1"
-				}
-			}
-
-			requestModel = modelRequest.Model
-			if requestModel == "" {
-				requestModel = modelRequest.ModelName
-			}
-			c.Set("model", requestModel)
-
+			// 正常流程：根据模型选择渠道
 			if shouldSelectChannel {
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, 0)
+				if modelRequest.Model == "" {
+					abortWithMessage(c, http.StatusBadRequest, "Model name is required")
+					return
+				}
+				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0)
 				if err != nil {
-					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", requestModel, userGroup)
+					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 					if channel != nil {
 						logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
 						message = "Database consistency has been violated, please contact the administrator"
@@ -189,11 +99,91 @@ func Distribute() func(c *gin.Context) {
 					abortWithMessage(c, http.StatusServiceUnavailable, message)
 					return
 				}
-				SetupContextForSelectedChannel(c, channel, requestModel)
 			}
+		}
+
+		// 统一设置上下文（不管是哪个分支都执行）
+		requestModel := modelRequest.Model
+		if requestModel == "" {
+			requestModel = modelRequest.ModelName
+		}
+		c.Set("model", requestModel)
+
+		if channel != nil {
+			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
 		c.Next()
 	}
+}
+
+// getModelRequest 从请求中解析模型名称并设置 relay_mode
+// 返回 modelRequest 和是否需要选择渠道
+func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
+	var modelRequest ModelRequest
+	shouldSelectChannel := true
+	path := c.Request.URL.Path
+
+	if strings.HasPrefix(path, "/mj") {
+		relayMode := relayconstant.Path2RelayModeMidjourney(path)
+		if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||
+			relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||
+			relayMode == relayconstant.RelayModeMidjourneyNotify ||
+			relayMode == relayconstant.RelayModeMidjourneyTaskImageSeed {
+			shouldSelectChannel = false
+		} else {
+			midjourneyRequest := midjourney.MidjourneyRequest{}
+			if err := common.UnmarshalBodyReusable(c, &midjourneyRequest); err == nil {
+				midjourneyModel, mjErr, success := midjourney.GetMjRequestModel(relayMode, &midjourneyRequest)
+				if mjErr == nil && midjourneyModel != "" {
+					modelRequest.Model = midjourneyModel
+				} else if !success {
+					shouldSelectChannel = false
+				}
+			}
+		}
+		c.Set("relay_mode", relayMode)
+
+	} else if strings.HasPrefix(path, "/v2beta") || strings.HasPrefix(path, "/sd") {
+		relayMode := relayconstant.Path2RelayModeSd(path)
+		if relayMode == relayconstant.RelayModeUpscaleCreativeResult || relayMode == relayconstant.RelayModeVideoResult {
+			shouldSelectChannel = false
+		}
+		if sdModel, err := stability.GetSdRequestModel(relayMode); err == nil {
+			modelRequest.Model = sdModel
+		}
+		c.Set("relay_mode", relayMode)
+
+	} else if strings.HasPrefix(path, "/v1beta/models/") || strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/v1alpha/models/") {
+		// Gemini API 路径处理
+		relayMode := relayconstant.Path2RelayModeGemini(path)
+		if relayMode != relayconstant.RelayModeUnknown {
+			modelName := extractModelNameFromGeminiPath(path)
+			if modelName != "" {
+				modelRequest.Model = modelName
+			}
+			c.Set("relay_mode", relayMode)
+		}
+
+	} else {
+		// OpenAI 格式请求
+		_ = common.UnmarshalBodyReusable(c, &modelRequest)
+	}
+
+	// 默认模型处理
+	if strings.HasPrefix(path, "/v1/moderations") && modelRequest.Model == "" {
+		modelRequest.Model = "text-moderation-stable"
+	}
+	if strings.HasSuffix(path, "embeddings") && modelRequest.Model == "" {
+		modelRequest.Model = c.Param("model")
+	}
+	if strings.HasPrefix(path, "/v1/images/generations") && modelRequest.Model == "" {
+		modelRequest.Model = "dall-e-2"
+	}
+	if (strings.HasPrefix(path, "/v1/audio/transcriptions") || strings.HasPrefix(path, "/v1/audio/translations")) && modelRequest.Model == "" {
+		modelRequest.Model = "whisper-1"
+	}
+
+	return &modelRequest, shouldSelectChannel
 }
 
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) {
