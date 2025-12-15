@@ -92,7 +92,13 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		meta.BaseURL = common.ChannelBaseURLs[meta.ChannelType]
 	}
 	if meta.Mode == constant.RelayModeGeminiGenerateContent || meta.Mode == constant.RelayModeGeminiStreamGenerateContent {
-		meta.ActualModelName = meta.OriginModelName 
+		// 应用模型映射：如果有映射规则，使用映射后的模型名称
+		meta.ActualModelName = meta.OriginModelName
+		if meta.ModelMapping != nil && len(meta.ModelMapping) > 0 {
+			if mappedModel, ok := meta.ModelMapping[meta.OriginModelName]; ok && mappedModel != "" {
+				meta.ActualModelName = mappedModel
+			}
+		}
 		if meta.Mode == constant.RelayModeGeminiStreamGenerateContent {
 			meta.IsStream = true
 		}

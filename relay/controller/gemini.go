@@ -18,10 +18,48 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
+
+// ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
+// Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
+// 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
+func ensureGeminiContentsRole(requestBody []byte) ([]byte, error) {
+	var request map[string]interface{}
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		return requestBody, err
+	}
+
+	contents, ok := request["contents"].([]interface{})
+	if !ok {
+		return requestBody, nil
+	}
+
+	modified := false
+	for i, content := range contents {
+		contentMap, ok := content.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 如果没有 role 字段或者 role 为空，设置默认值 "user"
+		if role, exists := contentMap["role"]; !exists || role == nil || role == "" {
+			contentMap["role"] = "user"
+			contents[i] = contentMap
+			modified = true
+		}
+	}
+
+	if modified {
+		request["contents"] = contents
+		return json.Marshal(request)
+	}
+
+	return requestBody, nil
+}
 
 // RelayGeminiNative 处理 Gemini 原生 API 请求
 func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
@@ -42,6 +80,23 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
 	meta := util.GetRelayMeta(c)
+
+	// 调试日志：输出 API 类型信息
+	logger.Infof(ctx, "[Gemini Native] ChannelType: %d, APIType: %d, VertexAI APIType: %d",
+		meta.ChannelType, meta.APIType, relayconstant.APITypeVertexAI)
+
+	// 如果是 Vertex AI 渠道，需要确保 contents 中的每个元素都有 role 字段
+	// Vertex AI API 要求必须指定 role（"user" 或 "model"），而 Gemini 原生 API 可以省略
+	if meta.APIType == relayconstant.APITypeVertexAI {
+		logger.Infof(ctx, "[Vertex AI] Processing request body to ensure role field")
+		processedBody, err := ensureGeminiContentsRole(originRequestBody)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to process request body for Vertex AI role field: %v", err)
+		} else {
+			originRequestBody = processedBody
+			logger.Infof(ctx, "[Vertex AI] Processed request body: %s", string(originRequestBody))
+		}
+	}
 
 	adaptor := helper.GetAdaptor(meta.APIType)
 	if adaptor == nil {
