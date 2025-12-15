@@ -154,8 +154,8 @@ type ChannelConfig struct {
 	VertexAIADC       string `json:"vertex_ai_adc,omitempty"`
 	GoogleStorage     string `json:"google_storage,omitempty"`
 	// Vertex AI 新增配置
-	VertexKeyType      VertexKeyType     `json:"vertex_key_type,omitempty"`      // 密钥类型: json 或 api_key
-	VertexModelRegion  map[string]string `json:"vertex_model_region,omitempty"`  // 模型专用区域映射，如 {"gemini-2.5-pro": "us-central1"}
+	VertexKeyType     VertexKeyType     `json:"vertex_key_type,omitempty"`     // 密钥类型: json 或 api_key
+	VertexModelRegion map[string]string `json:"vertex_model_region,omitempty"` // 模型专用区域映射，如 {"gemini-2.5-pro": "us-central1"}
 }
 
 func (channel *Channel) LoadConfig() (ChannelConfig, error) {

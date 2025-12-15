@@ -346,49 +346,9 @@ func (a *Adaptor) GetChannelName() string {
 	return "vertexai"
 }
 
-// HandleErrorResponse 处理Vertex AI特定的错误响应
+// HandleErrorResponse 处理Vertex AI错误响应
 func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
-	// 根据不同的HTTP状态码提供针对性的错误信息
-	switch resp.StatusCode {
-	case 401:
-		return &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error: model.Error{
-				Type:    "authentication_error",
-				Code:    "vertex_ai_unauthorized",
-				Message: "🔐 Vertex AI认证失败 (401) - 请检查Key字段中的service account JSON凭证是否有效，包括private_key和client_email字段",
-			},
-		}
-	case 403:
-		return &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error: model.Error{
-				Type:    "permission_error",
-				Code:    "vertex_ai_forbidden",
-				Message: "🚫 Vertex AI权限不足 (403) - 请确保service account具有Vertex AI API访问权限，并检查项目ID是否正确",
-			},
-		}
-	case 400:
-		return &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error: model.Error{
-				Type:    "invalid_request",
-				Code:    "vertex_ai_bad_request",
-				Message: "📝 Vertex AI请求参数错误 (400) - 请检查模型名称、区域设置和请求格式是否正确",
-			},
-		}
-	case 429:
-		return &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error: model.Error{
-				Type:    "rate_limit_exceeded",
-				Code:    "vertex_ai_rate_limit",
-				Message: "⏰ Vertex AI请求频率限制 (429) - 请稍后重试，或考虑启用多密钥模式分散负载",
-			},
-		}
-	}
-
-	// 对于其他错误，返回nil让通用处理器处理
+	// 返回nil让通用处理器处理，保留原始错误信息
 	return nil
 }
 
