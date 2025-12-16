@@ -75,7 +75,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	//获取原生requestbody
 	originRequestBody, err := common.GetRequestBody(c)
-	logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
+	// logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
