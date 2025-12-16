@@ -623,81 +623,41 @@ func GetModelPrice(name string, printErr bool) float64 {
 }
 
 // GetAudioInputRatio 获取音频输入token倍率
+// 如果找不到对应模型的音频输入倍率，返回 1.0（与基础输入倍率相同）
 func GetAudioInputRatio(name string) float64 {
 	if ratio, ok := AudioInputRatio[name]; ok {
 		return ratio
 	}
-	return 1.0 // 默认倍率为1（与文本token价格相同）
+	// 找不到时返回 1.0，表示音频输入与文本输入价格相同
+	return 1.0
 }
 
 // GetAudioOutputRatio 获取音频输出token倍率
+// 如果找不到对应模型的音频输出倍率，返回文字输出倍率（CompletionRatio）
 func GetAudioOutputRatio(name string) float64 {
 	if ratio, ok := AudioOutputRatio[name]; ok {
 		return ratio
 	}
-	return 1.0 // 默认倍率为1（与文本token价格相同）
+	// 找不到时返回文字输出倍率
+	return GetCompletionRatio(name)
 }
 
 // GetImageInputRatio 获取图片输入token倍率
+// 如果找不到对应模型的图片输入倍率，返回 1.0（与基础输入倍率相同）
 func GetImageInputRatio(name string) float64 {
 	if ratio, ok := ImageInputRatio[name]; ok {
 		return ratio
 	}
-	return 1.0 // 默认倍率为1（与文本token价格相同）
+	// 找不到时返回 1.0，表示图片输入与文本输入价格相同
+	return 1.0
 }
 
 // GetImageOutputRatio 获取图片输出token倍率
+// 如果找不到对应模型的图片输出倍率，返回文字输出倍率（CompletionRatio）
 func GetImageOutputRatio(name string) float64 {
 	if ratio, ok := ImageOutputRatio[name]; ok {
 		return ratio
 	}
-	return 1.0 // 默认倍率为1（与文本token价格相同）
+	// 找不到时返回文字输出倍率
+	return GetCompletionRatio(name)
 }
-
-// var levels = map[string]float64{
-// 	"Lv1": 1.0,
-// 	"Lv2": 0.95,
-// 	"Lv3": 0.90,
-// 	"Lv4": 0.85,
-// 	"Lv5": 0.80,
-// }
-
-// var openaiModelList = []string{
-// 	"gpt-3.5-turbo", "gpt-3.5-turbo-0301", "gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-3.5-turbo-0125",
-// 	"gpt-3.5-turbo-16k", "gpt-3.5-turbo-16k-0613",
-// 	"gpt-3.5-turbo-instruct",
-// 	"gpt-4", "gpt-4-0314", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4-0125-preview",
-// 	"gpt-4-32k", "gpt-4-32k-0314", "gpt-4-32k-0613",
-// 	"gpt-4-turbo-preview",
-// 	"gpt-4-vision-preview",
-// 	"gpt-4o", "gpt-4o-mini", "gpt-4o", "gpt-4o-mini-2024-07-18", "gpt-4o-2024-08-06",
-// 	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
-// 	"text-curie-001", "text-babbage-001", "text-ada-001", "text-davinci-002", "text-davinci-003",
-// 	"text-moderation-latest", "text-moderation-stable",
-// 	"text-davinci-edit-001",
-// 	"davinci-002", "babbage-002",
-// 	"dall-e-2", "dall-e-3",
-// 	"whisper-1",
-// 	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
-// }
-
-// func GetUserModelTypeRation(group string, model string) float64 {
-// 	// 首先检查模型是否在列表中
-// 	modelInList := false
-// 	for _, m := range openaiModelList {
-// 		if m == model {
-// 			modelInList = true
-// 			break
-// 		}
-// 	}
-
-// 	// 如果模型在列表中，返回对应 group 的值
-// 	if modelInList {
-// 		if ratio, exists := levels[group]; exists {
-// 			return ratio
-// 		}
-// 	}
-
-// 	// 如果模型不在列表中或 group 不存在，返回默认值 1.0
-// 	return 1.0
-// }
