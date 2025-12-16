@@ -17,6 +17,7 @@ var ModelList = []string{
 
 	// Gemini 3 系列
 	"gemini-3-pro-preview", "gemini-3-pro-preview-thinking", "gemini-3-pro-image-preview",
+	"gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "gemini-2.5-flash-tts", "gemini-2.5-pro-tts",
 }
 
 var ModelDetails = []model.APIModel{

@@ -69,6 +69,15 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/", controller.GetOptions)
 			optionRoute.PUT("/", controller.UpdateOption)
 		}
+
+		// 测试通知相关路由（需要管理员权限）
+		testRoute := apiRouter.Group("/test")
+		testRoute.Use(middleware.AdminAuth())
+		{
+			testRoute.POST("/smtp", controller.TestSMTP)
+			testRoute.POST("/feishu", controller.TestFeishuWebhook)
+		}
+
 		channelRoute := apiRouter.Group("/channel")
 		channelRoute.Use(middleware.AdminAuth())
 		{
