@@ -70,6 +70,16 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.PUT("/", controller.UpdateOption)
 		}
 
+		// 模型价格管理相关路由（需要管理员权限）
+		pricingRoute := apiRouter.Group("/pricing")
+		pricingRoute.Use(middleware.AdminAuth())
+		{
+			pricingRoute.GET("/models", controller.GetModelPrices)           // 获取所有模型价格信息
+			pricingRoute.GET("/unset", controller.GetUnsetRatioModels)       // 获取未设置倍率的模型
+			pricingRoute.PUT("/model", controller.UpdateModelRatio)          // 更新单个模型倍率
+			pricingRoute.PUT("/models/batch", controller.BatchUpdateModelRatio) // 批量更新模型倍率
+		}
+
 		// 测试通知相关路由（需要管理员权限）
 		testRoute := apiRouter.Group("/test")
 		testRoute.Use(middleware.AdminAuth())
