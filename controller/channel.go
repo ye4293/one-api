@@ -1403,6 +1403,73 @@ func DeleteDisabledKeys(c *gin.Context) {
 	})
 }
 
+// CopyChannel 复制渠道，复制后的渠道默认是禁用状态
+func CopyChannel(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Invalid channel id",
+		})
+		return
+	}
+
+	// 获取原渠道信息（包含密钥）
+	originChannel, err := model.GetChannelById(id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Channel not found: " + err.Error(),
+		})
+		return
+	}
+
+	// 创建新渠道（复制所有信息）
+	newChannel := *originChannel
+	newChannel.Id = 0 // 让数据库自动生成ID
+	newChannel.CreatedTime = helper.GetTimestamp()
+	newChannel.Name = originChannel.Name + "_复制"
+	newChannel.Status = common.ChannelStatusManuallyDisabled // 复制后默认禁用
+	newChannel.TestTime = 0
+	newChannel.ResponseTime = 0
+	newChannel.UsedQuota = 0
+	newChannel.Balance = 0
+	newChannel.BalanceUpdatedTime = 0
+
+	// 清除自动禁用相关信息
+	newChannel.AutoDisabledReason = nil
+	newChannel.AutoDisabledTime = nil
+	newChannel.AutoDisabledModel = nil
+
+	// 如果是多Key渠道，重置轮询索引
+	if newChannel.MultiKeyInfo.IsMultiKey {
+		newChannel.MultiKeyInfo.PollingIndex = 0
+	}
+
+	// 插入新渠道
+	err = newChannel.Insert()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Failed to copy channel: " + err.Error(),
+		})
+		return
+	}
+
+	logger.SysLog(fmt.Sprintf("Copied channel %d (%s) to new channel %d (%s)",
+		originChannel.Id, originChannel.Name, newChannel.Id, newChannel.Name))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "渠道复制成功",
+		"data": gin.H{
+			"id":   newChannel.Id,
+			"name": newChannel.Name,
+		},
+	})
+}
+
 // ClearChannelQuota 清空渠道使用配额
 func ClearChannelQuota(c *gin.Context) {
 	idStr := c.Param("id")
