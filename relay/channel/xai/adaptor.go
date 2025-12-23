@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -100,9 +99,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 // HandleErrorResponse 处理XAI特有的错误响应格式
 func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
-	log.Printf("[xAI] ===== 开始处理xAI错误响应 =====")
-
-	// ✅ 关键修复：defer必须在读取之前，确保一定会关闭
 	defer func() {
 		if resp.Body != nil {
 			_ = resp.Body.Close()
@@ -111,7 +107,6 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("[xAI] 读取错误响应体失败: %v", err)
 		return &model.ErrorWithStatusCode{
 			Error: model.Error{
 				Message: "failed to read error response body",
@@ -122,31 +117,14 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 		}
 	}
 
-	// 先打印原始错误响应
 	responseBodyStr := string(responseBody)
-	if len(responseBodyStr) > 1000 {
-		// 如果响应体过长，截取前后部分
-		log.Printf("[xAI] 原始错误响应 (truncated - too long): %s...%s",
-			responseBodyStr[:500],
-			responseBodyStr[len(responseBodyStr)-500:])
-		log.Printf("[xAI] 响应体长度: %d characters", len(responseBodyStr))
-	} else {
-		log.Printf("[xAI] 原始错误响应: %s", responseBodyStr)
-	}
-	log.Printf("[xAI] HTTP状态码: %d", resp.StatusCode)
 
 	// 尝试解析XAI错误格式
 	var xaiError map[string]interface{}
 	if unmarshalErr := json.Unmarshal(responseBody, &xaiError); unmarshalErr == nil {
-		log.Printf("[xAI] 解析后的错误结构: %+v", xaiError)
-
 		// 检查是否是XAI错误格式（包含code和error字段）
 		if code, hasCode := xaiError["code"]; hasCode {
 			if errorMsg, hasError := xaiError["error"]; hasError {
-				log.Printf("[xAI] 提取到错误代码: %v, 错误消息: %v", code, errorMsg)
-
-				// 转换为OpenAI错误格式
-				log.Printf("[xAI] 成功解析xAI错误格式，返回转换后的错误")
 				return &model.ErrorWithStatusCode{
 					Error: model.Error{
 						Message: fmt.Sprintf("%v", errorMsg),
@@ -161,8 +139,6 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 
 		// 检查其他可能的错误字段格式
 		if message, hasMessage := xaiError["message"]; hasMessage {
-			log.Printf("[xAI] 提取到错误消息字段: %v", message)
-			log.Printf("[xAI] 使用message字段构造错误响应")
 			return &model.ErrorWithStatusCode{
 				Error: model.Error{
 					Message: fmt.Sprintf("%v", message),
@@ -173,12 +149,9 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 				StatusCode: resp.StatusCode,
 			}
 		}
-	} else {
-		log.Printf("[xAI] JSON解析失败: %v", unmarshalErr)
 	}
 
 	// 如果没有匹配到特定格式，直接使用原始响应体作为错误消息
-	log.Printf("[xAI] 未识别为特定错误格式，使用原始响应作为错误消息")
 	return &model.ErrorWithStatusCode{
 		Error: model.Error{
 			Message: fmt.Sprintf("%s", responseBodyStr),
