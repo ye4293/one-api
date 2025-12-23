@@ -362,7 +362,6 @@ func GetModelRatio(name string) float64 {
 		ratio, ok = DefaultModelPrice[name]
 	}
 	if !ok {
-		logger.SysError("model ratio not found: " + name)
 		return 30
 	}
 	return ratio

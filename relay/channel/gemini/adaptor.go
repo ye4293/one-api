@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/logger"
 	channelhelper "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -64,8 +63,6 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	}
 
 	fullURL := fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, version, modelName, action)
-	logger.SysLog(fmt.Sprintf("[Gemini] RequestURLPath: %s, Version: %s, ModelName: %s, Action: %s, FullURL: %s",
-		meta.RequestURLPath, version, modelName, action, fullURL))
 	return fullURL, nil
 }
 

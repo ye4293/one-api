@@ -408,16 +408,6 @@ func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName 
 	imageOutputRatio := common.GetImageOutputRatio(modelName)
 	audioOutputRatio := common.GetAudioOutputRatio(modelName)
 
-	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[Gemini计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, ImageInputRatio=%.4f, AudioInputRatio=%.4f, ImageOutputRatio=%.4f, AudioOutputRatio=%.4f",
-		modelName, modelRatio, completionRatio, imageInputRatio, audioInputRatio, imageOutputRatio, audioOutputRatio))
-
-	// 打印 token 数量
-	logger.SysLog(fmt.Sprintf("[Gemini计费] Token数量: 输入文字=%d, 输入图片=%d, 输入音频=%d, 输出文字=%d, 输出图片=%d, 输出音频=%d, 思考=%d, 缓存=%d, 总计=%d",
-		cost.InputTextTokens, cost.InputImageTokens, cost.InputAudioTokens,
-		cost.OutputTextTokens, cost.OutputImageTokens, cost.OutputAudioTokens,
-		cost.ThinkingTokens, cost.CachedTokens, cost.TotalTokens))
-
 	// ========== 计算各部分的等效 ratio tokens ==========
 	// 输入部分：tokens × modelRatio × 相对倍率
 	inputTextQuota := float64(cost.InputTextTokens) * modelRatio
@@ -435,20 +425,6 @@ func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName 
 	// 思考 token：与输出文字相同的倍率
 	thinkingQuota := float64(cost.ThinkingTokens) * modelRatio * completionRatio
 
-	// 打印各部分配额计算
-	logger.SysLog(fmt.Sprintf("[Gemini计费] 各部分Ratio Tokens: 输入文字=%.2f (%d×%.4f), 输入图片=%.2f (%d×%.4f×%.4f), 输入音频=%.2f (%d×%.4f×%.4f)",
-		inputTextQuota, cost.InputTextTokens, modelRatio,
-		inputImageQuota, cost.InputImageTokens, modelRatio, imageInputRatio,
-		inputAudioQuota, cost.InputAudioTokens, modelRatio, audioInputRatio))
-
-	logger.SysLog(fmt.Sprintf("[Gemini计费] 各部分Ratio Tokens: 输出文字=%.2f (%d×%.4f×%.4f), 输出图片=%.2f (%d×%.4f×%.4f), 输出音频=%.2f (%d×%.4f×%.4f)",
-		outputTextQuota, cost.OutputTextTokens, modelRatio, completionRatio,
-		outputImageQuota, cost.OutputImageTokens, modelRatio, imageOutputRatio,
-		outputAudioQuota, cost.OutputAudioTokens, modelRatio, audioOutputRatio))
-
-	logger.SysLog(fmt.Sprintf("[Gemini计费] 思考Ratio Tokens: %.2f (%d×%.4f×%.4f)",
-		thinkingQuota, cost.ThinkingTokens, modelRatio, completionRatio))
-
 	// ========== 计算最终配额 ==========
 	// 公式: 总RatioTokens / 1000000 × 2 × groupRatio × QuotaPerUnit
 	// 乘以 2 是因为 ModelRatio = 官方价格 / 2，需要还原真实价格
@@ -456,10 +432,6 @@ func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName 
 		outputTextQuota + outputImageQuota + outputAudioQuota + thinkingQuota
 
 	quota := int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
-
-	// 打印最终配额计算
-	logger.SysLog(fmt.Sprintf("[Gemini计费] 最终计算: 总RatioTokens=%.2f, 公式=%.2f/1000000×2×%.4f×%.2f, 最终配额=%d",
-		totalRatioTokens, totalRatioTokens, groupRatio, config.QuotaPerUnit, quota))
 
 	return quota, cost
 }

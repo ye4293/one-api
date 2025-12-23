@@ -448,15 +448,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
 	}
 
-	// 打印转换后的geminiRequest为JSON格式（截断base64数据）
-	printableRequest := createPrintableRequest(geminiRequest)
-	requestJSON, err := json.MarshalIndent(printableRequest, "", "  ")
-	if err != nil {
-		logger.SysError("error marshalling gemini request: " + err.Error())
-	} else {
-		logger.SysLog("Converted Gemini Request: " + string(requestJSON))
-	}
-
 	return &geminiRequest, nil
 }
 
