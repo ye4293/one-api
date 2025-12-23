@@ -1,0 +1,54 @@
+version: '3.4'
+
+# 此文件仅启动依赖服务（MySQL 和 Redis）
+# one-api 服务需要手动编译运行
+
+services:
+  redis:
+    image: "${REGISTRY:-docker.io}/redis:latest"
+    container_name: one-api-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - one-api-network
+
+  db:
+    image: "${REGISTRY:-docker.io}/mysql:8.2.0"
+    restart: always
+    container_name: one-api-mysql
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    ports:
+      - '3306:3306'
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: 'OneAPI@justsong'
+      MYSQL_USER: oneapi
+      MYSQL_PASSWORD: '123456'
+      MYSQL_DATABASE: one-api
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pOneAPI@justsong"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - one-api-network
+
+networks:
+  one-api-network:
+    driver: bridge
+
+
