@@ -52,7 +52,7 @@ export PORT="${PORT:-3000}"
 check_dependencies() {
     log_info "检查依赖项..."
     
-    local deps=("docker" "docker-compose" "go")
+    local deps=("docker" "go")
     local missing_deps=()
     
     for cmd in "${deps[@]}"; do
@@ -177,7 +177,7 @@ start_docker_services() {
         exit 1
     fi
     
-    docker-compose -f docker-compose-deps.yml up -d
+    docker compose -f docker-compose-deps.yml up -d
     
     log_success "Docker 服务启动命令已执行"
 }
@@ -330,7 +330,7 @@ show_status() {
     # Docker 服务状态
     echo ""
     log_info "Docker 服务:"
-    docker-compose -f docker-compose-deps.yml ps
+    docker compose -f docker-compose-deps.yml ps
     
     # one-api 进程状态
     echo ""
@@ -374,7 +374,7 @@ stop_all() {
     # 停止 Docker 服务
     log_info "停止 Docker 服务..."
     cd "${PROJECT_DIR}"
-    docker-compose -f docker-compose-deps.yml down
+    docker compose -f docker-compose-deps.yml down
     
     log_success "所有服务已停止"
 }
