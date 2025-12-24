@@ -81,20 +81,14 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	meta := util.GetRelayMeta(c)
 
-	// 调试日志：输出 API 类型信息
-	logger.Infof(ctx, "[Gemini Native] ChannelType: %d, APIType: %d, VertexAI APIType: %d",
-		meta.ChannelType, meta.APIType, relayconstant.APITypeVertexAI)
-
 	// 如果是 Vertex AI 渠道，需要确保 contents 中的每个元素都有 role 字段
 	// Vertex AI API 要求必须指定 role（"user" 或 "model"），而 Gemini 原生 API 可以省略
 	if meta.APIType == relayconstant.APITypeVertexAI {
-		logger.Infof(ctx, "[Vertex AI] Processing request body to ensure role field")
 		processedBody, err := ensureGeminiContentsRole(originRequestBody)
 		if err != nil {
 			logger.Warnf(ctx, "Failed to process request body for Vertex AI role field: %v", err)
 		} else {
 			originRequestBody = processedBody
-			logger.Infof(ctx, "[Vertex AI] Processed request body: %s", string(originRequestBody))
 		}
 	}
 

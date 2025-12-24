@@ -312,7 +312,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 						writer.WriteField(key, imageRequest.Model)
 					} else if isGemini && key == "response_format" {
 						// Gemini 不支持 response_format 参数，跳过该参数
-						logger.Debugf(ctx, "Skipping response_format parameter for Gemini model (value: %s)", value)
 						continue
 					} else {
 						writer.WriteField(key, value)
@@ -399,7 +398,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					formData.Set(key, imageRequest.Model)
 				} else if isGemini && key == "response_format" {
 					// Gemini 不支持 response_format 参数，跳过该参数
-					logger.Debugf(ctx, "Skipping response_format parameter for Gemini model (value: %v)", values)
 					continue
 				} else {
 					for _, value := range values {
@@ -479,10 +477,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					convertedRatio := convertSizeToAspectRatio(sizeStr)
 					if convertedRatio != "" {
 						aspectRatio = convertedRatio
-						logger.Infof(ctx, "Gemini JSON request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
-					} else {
-						// 无法识别的格式
-						logger.Infof(ctx, "Gemini JSON request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
 					}
 				}
 			}
@@ -492,7 +486,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				if qualityStr, ok := qualityValue.(string); ok && qualityStr != "" {
 					// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
 					imageSize = strings.ToUpper(qualityStr)
-					logger.Infof(ctx, "Gemini JSON request: mapped quality '%s' to imageSize", imageSize)
 				}
 			}
 
@@ -529,15 +522,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				logger.Debugf(ctx, "Found %d image(s) from 'images' field", len(imageInputsFromImages))
 			}
 
-			logger.Infof(ctx, "Processing %d total image(s) for Gemini request", len(imageInputs))
-
 			// 并发处理所有找到的图片
-			imageParts, processedCount := processImagesConcurrently(ctx, imageInputs)
+			imageParts, _ := processImagesConcurrently(ctx, imageInputs)
 
 			// 将成功处理的图片添加到Gemini请求中
 			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, imageParts...)
-
-			logger.Infof(ctx, "Successfully processed %d out of %d images for Gemini request", processedCount, len(imageInputs))
 
 			// Convert to JSON
 			jsonStr, err := json.Marshal(geminiImageRequest)
@@ -608,7 +597,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			} else {
 				// 原有的Gemini官方API URL
 				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
-				logger.Infof(ctx, "Gemini API URL: %s", fullRequestURL)
 			}
 		}
 
@@ -779,7 +767,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		} else {
 			// For Gemini, set the API key in the x-goog-api-key header
 			req.Header.Set("x-goog-api-key", meta.APIKey)
-			logger.Infof(ctx, "Setting x-goog-api-key header for Gemini API request")
 		}
 	} else {
 		req.Header.Set("Authorization", token)
@@ -807,9 +794,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}()
 	var imageResponse openai.ImageResponse
 	var responseBody []byte
-
-	// 用于保存 Gemini token 信息
-	var geminiPromptTokens, geminiCompletionTokens int
 
 	// 定义 token 变量供 defer 函数使用
 	var promptTokens, completionTokens int
@@ -1030,7 +1014,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		logger.Errorf(ctx, "API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
 		return openai.ErrorWrapper(
 			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
 			"api_error",
@@ -1040,7 +1023,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// Handle Gemini response format conversion
 	if strings.HasPrefix(meta.OriginModelName, "gemini") {
-		logger.Infof(ctx, "处理 Gemini 响应，状态码: %d", resp.StatusCode)
 
 		// Check if response is an error
 		var geminiError struct {
@@ -1053,12 +1035,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		if err := json.Unmarshal(responseBody, &geminiError); err != nil {
-			logger.Errorf(ctx, "解析 Gemini 错误响应失败: %s", err.Error())
+			// ignore unmarshal error
 		} else if geminiError.Error.Message != "" {
-			logger.Errorf(ctx, "Gemini API 返回错误: 代码=%d, 消息=%s, 状态=%s",
-				geminiError.Error.Code,
-				geminiError.Error.Message,
-				geminiError.Error.Status)
 
 			if len(geminiError.Error.Details) > 0 {
 				detailsJson, _ := json.Marshal(geminiError.Error.Details)
@@ -1125,16 +1103,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		err = json.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
-			logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
-
-		// 保存 Gemini token 信息到全局变量，供 defer 函数使用
-		geminiPromptTokens = geminiResponse.UsageMetadata.PromptTokenCount
-		geminiCompletionTokens = geminiResponse.UsageMetadata.CandidatesTokenCount
-
-		logger.Infof(ctx, "Gemini token usage: prompt=%d, completion=%d, total=%d",
-			geminiPromptTokens, geminiCompletionTokens, geminiResponse.UsageMetadata.TotalTokenCount)
 
 		// 检查 promptFeedback 是否有阻止原因
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
@@ -1198,9 +1168,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-			logger.Infof(ctx, "Gemini JSON promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-				promptTokens, completionTokens, groupRatio, actualQuota, duration)
-
 			// 消费配额
 			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
 			if err != nil {
@@ -1238,14 +1205,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 检查是否有候选项
 		if len(geminiResponse.Candidates) == 0 {
-			logger.Errorf(ctx, "Gemini API 未返回任何候选项")
-			// 打印原始响应体用于调试（限制长度）
-			responseStr := string(responseBody)
-			if len(responseStr) > 1000 {
-				responseStr = responseStr[:1000] + "...[truncated]"
-			}
-			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
-
 			// 记录消费日志（即使没有候选项，也要记录请求消耗）
 			rowDuration := time.Since(startTime).Seconds()
 			duration := math.Round(rowDuration*1000) / 1000
@@ -1263,9 +1222,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			)
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
-
-			logger.Infof(ctx, "Gemini JSON 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-				promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 			// 消费配额
 			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -1313,18 +1269,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				var errorMessage string
 				if candidate.FinishMessage != "" {
 					errorMessage = fmt.Sprintf("Gemini API 错误: %s (原因: %s)", candidate.FinishMessage, candidate.FinishReason)
-					logger.Errorf(ctx, "Gemini API 返回非正常完成: FinishReason=%s, FinishMessage=%s", candidate.FinishReason, candidate.FinishMessage)
 				} else {
 					errorMessage = fmt.Sprintf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
-					logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
 				}
-
-				// 打印原始响应体用于调试（限制长度）
-				responseStr := string(responseBody)
-				if len(responseStr) > 1000 {
-					responseStr = responseStr[:1000] + "...[truncated]"
-				}
-				logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 				// Extract usage details for error response
 				usageDetails := extractGeminiUsageDetails(
@@ -1372,9 +1319,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				)
 
 				actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &errUsageDetails, promptTokens, completionTokens, thinkingTokens)
-
-				logger.Infof(ctx, "Gemini JSON 错误响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-					promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 				// 消费配额
 				err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -1437,13 +1381,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		if len(imageData) == 0 {
 			// 详细分析无图片的原因
 			var detailReason string
-			candidatesInfo := ""
 			if len(geminiResponse.Candidates) == 0 {
 				detailReason = "candidates 数组为空"
 			} else {
 				candidate := geminiResponse.Candidates[0]
-				candidatesInfo = fmt.Sprintf("finishReason=%s, partsCount=%d",
-					candidate.FinishReason, len(candidate.Content.Parts))
 
 				if len(candidate.Content.Parts) == 0 {
 					detailReason = "content.parts 数组为空"
@@ -1473,15 +1414,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					}
 				}
 			}
-
-			logger.Errorf(ctx, "Gemini API 未返回图片数据: %s (%s)", detailReason, candidatesInfo)
-
-			// 打印原始响应体用于调试（限制长度）
-			responseStr := string(responseBody)
-			if len(responseStr) > 1000 {
-				responseStr = responseStr[:1000] + "...[truncated]"
-			}
-			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 			// Extract usage details for error response
 			usageDetails := extractGeminiUsageDetails(
@@ -1522,9 +1454,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
-
-			logger.Infof(ctx, "Gemini JSON 无图片响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-				promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 			// 消费配额
 			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -1651,21 +1580,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 		}
 
-		// 记录 usage 信息
-		logger.Infof(ctx, "Gemini JSON 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, input_text=%d, input_image=%d, output_image=%d, reasoning=%d",
-			imageResponseWithUsage.Usage.TotalTokens,
-			imageResponseWithUsage.Usage.InputTokens,
-			imageResponseWithUsage.Usage.OutputTokens,
-			imageResponseWithUsage.Usage.InputTokensDetails.TextTokens,
-			imageResponseWithUsage.Usage.InputTokensDetails.ImageTokens,
-			imageResponseWithUsage.Usage.OutputTokensDetails.ImageTokens,
-			imageResponseWithUsage.Usage.OutputTokensDetails.ReasoningTokens)
-
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
-		err = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
-		if err != nil {
-			logger.Warnf(ctx, "Gemini token consumption failed: %v", err)
-		}
+		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {
@@ -1870,9 +1786,6 @@ func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName strin
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// 在记录日志时使用更安全的方式
-	logger.Infof(ctx, "Flux API response status: %d, body: %s", resp.StatusCode, string(responseBody))
-
 	// Check if the request was successful
 	if resp.StatusCode != http.StatusOK {
 		// Handle error response (status code 422 or others)
@@ -2067,8 +1980,6 @@ func handleKlingImageRequest(c *gin.Context, ctx context.Context, modelName stri
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// 在记录日志时使用更安全的方式
-	logger.Infof(ctx, "Kling API modified request: %s", string(responseBody))
 	// Parse the Kling API response
 	var klingImageResponse keling.KlingImageResponse
 
@@ -2231,8 +2142,6 @@ func handleAliImageRequest(c *gin.Context, ctx context.Context, modelName string
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
-
-	logger.Infof(ctx, "Ali Wan API response status: %d, body: %s", resp.StatusCode, string(responseBody))
 
 	// Parse response regardless of status code
 	var aliResponse struct {
@@ -2555,9 +2464,6 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			http.StatusInternalServerError,
 		)
 	}
-
-	// Log the original response body for debugging
-	logger.Infof(c.Request.Context(), "%s image result original response: %s", image.Provider, string(body))
 
 	if resp.StatusCode != http.StatusOK {
 		return openai.ErrorWrapper(
@@ -3040,10 +2946,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 			convertedRatio := convertSizeToAspectRatio(sizeStr)
 			if convertedRatio != "" {
 				aspectRatio = convertedRatio
-				logger.Infof(ctx, "Gemini Form request: converted size '%s' to aspectRatio '%s'", sizeStr, aspectRatio)
-			} else {
-				// 无法识别的格式
-				logger.Infof(ctx, "Gemini Form request: unrecognized size format '%s', using Gemini default behavior", sizeStr)
 			}
 		}
 	}
@@ -3054,7 +2956,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		if qualityStr != "" {
 			// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
 			imageSize = strings.ToUpper(qualityStr)
-			logger.Infof(ctx, "Gemini Form request: mapped quality '%s' to imageSize", imageSize)
 		}
 	}
 
@@ -3149,8 +3050,6 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	// 注意：不手动设置Content-Length，让Go的http.Client自动计算
-	logger.Debugf(ctx, "Gemini form-to-json body size: %d bytes", requestBuffer.Len())
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		// 为VertexAI使用Bearer token认证 - 创建新的adaptor实例（Form请求处理时没有预先创建的adaptor）
@@ -3188,12 +3087,8 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
-	// 记录原始响应（省略具体内容，避免 base64 数据占用日志）
-	logger.Infof(ctx, "Gemini Form API 响应已接收，状态码: %d", resp.StatusCode)
-
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		logger.Errorf(ctx, "Gemini API返回错误状态码: %d, 响应体: %s", resp.StatusCode, string(responseBody))
 
 		// 尝试解析错误响应
 		var geminiError struct {
@@ -3261,7 +3156,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	err = json.Unmarshal(responseBody, &geminiResponse)
 	if err != nil {
-		logger.Errorf(ctx, "解析 Gemini 成功响应失败: %s", err.Error())
 		return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 	}
 
@@ -3276,17 +3170,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			errorMessage = fmt.Sprintf("Gemini API 错误: 提示词被阻止 (原因: %s)",
 				geminiResponse.PromptFeedback.BlockReason)
 		}
-
-		logger.Errorf(ctx, "Gemini API promptFeedback 阻止: BlockReason=%s, Message=%s",
-			geminiResponse.PromptFeedback.BlockReason,
-			geminiResponse.PromptFeedback.BlockReasonMessage)
-
-		// 打印原始响应体用于调试
-		responseStr := string(responseBody)
-		if len(responseStr) > 1000 {
-			responseStr = responseStr[:1000] + "...[truncated]"
-		}
-		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 		// Extract usage details for error response
 		usageDetails := extractGeminiUsageDetails(
@@ -3335,9 +3218,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &blockUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-		logger.Infof(ctx, "Gemini Form promptFeedback 阻止定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-			promptTokens, completionTokens, groupRatio, actualQuota, duration)
-
 		// 消费配额
 		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
 		if err != nil {
@@ -3375,13 +3255,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	// 检查是否有候选项
 	if len(geminiResponse.Candidates) == 0 {
-		logger.Errorf(ctx, "Gemini API 未返回任何候选项")
-		// 打印原始响应体用于调试（限制长度）
-		responseStr := string(responseBody)
-		if len(responseStr) > 1000 {
-			responseStr = responseStr[:1000] + "...[truncated]"
-		}
-		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 		// 记录消费日志（即使没有候选项，也要记录请求消耗）
 		rowDuration := time.Since(startTime).Seconds()
@@ -3400,9 +3273,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		)
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
-
-		logger.Infof(ctx, "Gemini Form 空候选项定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-			promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 		// 消费配额
 		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -3450,18 +3320,9 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			var errorMessage string
 			if candidate.FinishMessage != "" {
 				errorMessage = fmt.Sprintf("Gemini API 错误: %s (原因: %s)", candidate.FinishMessage, candidate.FinishReason)
-				logger.Errorf(ctx, "Gemini API 返回非正常完成: FinishReason=%s, FinishMessage=%s", candidate.FinishReason, candidate.FinishMessage)
 			} else {
 				errorMessage = fmt.Sprintf("Gemini API 错误: 生成未正常完成 (原因: %s)", candidate.FinishReason)
-				logger.Errorf(ctx, "Gemini API 返回非正常完成原因: %s", candidate.FinishReason)
 			}
-
-			// 打印原始响应体用于调试（限制长度）
-			responseStr := string(responseBody)
-			if len(responseStr) > 1000 {
-				responseStr = responseStr[:1000] + "...[truncated]"
-			}
-			logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
 
 			// Extract usage details for error response
 			usageDetails := extractGeminiUsageDetails(
@@ -3509,9 +3370,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			)
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formErrUsageDetails, promptTokens, completionTokens, thinkingTokens)
-
-			logger.Infof(ctx, "Gemini Form 错误响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-				promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 			// 消费配额
 			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -3604,15 +3462,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 			}
 		}
 
-		logger.Errorf(ctx, "Gemini API 未返回图片数据: %s", detailReason)
-
-		// 打印原始响应体用于调试（限制长度）
-		responseStr := string(responseBody)
-		if len(responseStr) > 1000 {
-			responseStr = responseStr[:1000] + "...[truncated]"
-		}
-		logger.Errorf(ctx, "Gemini 原始响应体: %s", responseStr)
-
 		// Extract usage details for error response
 		usageDetails := extractGeminiUsageDetails(
 			geminiResponse.UsageMetadata.PromptTokensDetails,
@@ -3659,9 +3508,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		)
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &noImgUsageDetails, promptTokens, completionTokens, thinkingTokens)
-
-		logger.Infof(ctx, "Gemini Form 无图片响应定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-			promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 		// 消费配额
 		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -3789,20 +3635,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 	}
 
-	// 记录 usage 信息
-	logger.Infof(ctx, "Gemini Form 响应包含 usage 信息: total_tokens=%d, input_tokens=%d, output_tokens=%d, input_text=%d, input_image=%d, output_image=%d, reasoning=%d",
-		imageResponse.Usage.TotalTokens,
-		imageResponse.Usage.InputTokens,
-		imageResponse.Usage.OutputTokens,
-		imageResponse.Usage.InputTokensDetails.TextTokens,
-		imageResponse.Usage.InputTokensDetails.ImageTokens,
-		imageResponse.Usage.OutputTokensDetails.ImageTokens,
-		imageResponse.Usage.OutputTokensDetails.ReasoningTokens)
-
-	// 注意：不手动设置Content-Length，让Gin的c.JSON()自动处理
-	// 记录响应体大小用于调试
-	logger.Debugf(ctx, "Gemini form response body size: %d bytes", len(finalResponseBody))
-
 	// 使用c.Data()让Gin自动处理Content-Length
 	c.Data(http.StatusOK, "application/json", finalResponseBody)
 
@@ -3824,9 +3656,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	)
 
 	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formUsageDetails, promptTokens, completionTokens, thinkingTokens)
-
-	logger.Infof(ctx, "Gemini Form 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-		promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 	// 处理配额消费（使用重新计算的配额）
 	err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
@@ -3853,10 +3682,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	logContent := fmt.Sprintf("Gemini Form Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
 
-	// 记录详细的 token 使用情况
-	logger.Infof(ctx, "Gemini Form Token Usage - Prompt: %d, Candidates: %d, Total: %d, Duration: %.3fs",
-		promptTokens, completionTokens, geminiResponse.UsageMetadata.TotalTokenCount, duration)
-
 	// 构建包含 adminInfo 和 usageDetails 的 otherInfo
 	adminInfo := extractAdminInfoFromContext(c)
 	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
@@ -3877,7 +3702,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64, startTime time.Time) error {
 	// 检查是否已经记录过（通过检查是否已经设置了响应状态码）
 	if c.Writer.Status() == http.StatusBadRequest {
-		logger.Infof(ctx, "Gemini 请求已在错误处理中记录消费日志，跳过重复处理")
 		return nil
 	}
 
@@ -3925,7 +3749,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	}); ok {
 		// 检查是否有有效的 UsageMetadata
 		if respStruct.UsageMetadata.TotalTokenCount == 0 {
-			logger.Warnf(ctx, "Gemini 响应中 UsageMetadata 为空，可能已在错误处理中记录")
 			return nil
 		}
 
@@ -3940,7 +3763,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		)
 		usageDetails = &details
 	} else {
-		logger.Warnf(ctx, "无法从 Gemini 响应中提取 token 信息（可能已在错误处理中记录）")
 		return nil // 不返回错误，避免影响成功响应
 	}
 
@@ -3952,9 +3774,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 	}
 
 	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, usageDetails, promptTokens, completionTokens, thinkingTokens)
-
-	logger.Infof(ctx, "Gemini JSON 定价计算: 输入=%d tokens, 输出=%d tokens, 分组倍率=%.2f, 计算配额=%d, 耗时=%.3fs",
-		promptTokens, completionTokens, groupRatio, actualQuota, duration)
 
 	// 处理配额消费（使用重新计算的配额）
 	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
