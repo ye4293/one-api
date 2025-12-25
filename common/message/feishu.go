@@ -17,7 +17,7 @@ var feishuClient = &http.Client{Timeout: 10 * time.Second}
 // SendFeishuNotification 发送飞书通知
 // 支持多个 Webhook URL，用换行符分隔
 func SendFeishuNotification(title string, content string) error {
-	if config.FeiShuHookUrl == "" {
+	if config.FeishuWebhookUrls == "" {
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
@@ -29,7 +29,7 @@ func SendFeishuNotification(title string, content string) error {
 
 // SendFeishuChannelDisableNotification 发送渠道禁用通知到飞书
 func SendFeishuChannelDisableNotification(channelId int, channelName string, statusCode int, reason string, modelName string) error {
-	if config.FeiShuHookUrl == "" {
+	if config.FeishuWebhookUrls == "" {
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
@@ -57,7 +57,7 @@ func SendFeishuChannelDisableNotification(channelId int, channelName string, sta
 
 // SendFeishuKeyDisableNotification 发送 Key 禁用通知到飞书
 func SendFeishuKeyDisableNotification(channelId int, channelName string, keyIndex int, maskedKey string, statusCode int, reason string) error {
-	if config.FeiShuHookUrl == "" {
+	if config.FeishuWebhookUrls == "" {
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
@@ -86,7 +86,7 @@ func SendFeishuKeyDisableNotification(channelId int, channelName string, keyInde
 
 // SendFeishuChannelFullDisableNotification 发送多Key渠道完全禁用通知到飞书
 func SendFeishuChannelFullDisableNotification(channelId int, channelName string, reason string) error {
-	if config.FeiShuHookUrl == "" {
+	if config.FeishuWebhookUrls == "" {
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
@@ -111,12 +111,12 @@ func SendFeishuChannelFullDisableNotification(channelId int, channelName string,
 
 // sendToFeishuWebhooks 发送消息到所有配置的飞书 Webhook
 func sendToFeishuWebhooks(feishuMsg map[string]interface{}) error {
-	if config.FeiShuHookUrl == "" {
+	if config.FeishuWebhookUrls == "" {
 		return nil
 	}
 
 	// 支持多个 Webhook URL，用换行符分隔
-	webhookUrls := strings.Split(config.FeiShuHookUrl, "\n")
+	webhookUrls := strings.Split(config.FeishuWebhookUrls, "\n")
 
 	jsonData, err := json.Marshal(feishuMsg)
 	if err != nil {

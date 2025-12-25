@@ -13,7 +13,7 @@ import (
 
 func notifyRootUser(subject string, content string) {
 	// 发送飞书通知
-	if config.FeiShuHookUrl != "" {
+	if config.FeishuWebhookUrls != "" {
 		err := message.SendFeishuNotification(subject, content)
 		if err != nil {
 			logger.SysError(fmt.Sprintf("failed to send feishu notification: %s", err.Error()))
@@ -104,7 +104,7 @@ func disableChannelInternalWithStatusCode(channel *model.Channel, channelId int,
 	logger.SysLog(fmt.Sprintf("channel #%d has been disabled: %s", channelId, reason))
 
 	// 发送飞书通知（带详细信息）
-	if config.FeiShuHookUrl != "" {
+	if config.FeishuWebhookUrls != "" {
 		err := message.SendFeishuChannelDisableNotification(channelId, channelName, statusCode, reason, modelName)
 		if err != nil {
 			logger.SysError(fmt.Sprintf("failed to send feishu channel disable notification: %s", err.Error()))
@@ -195,7 +195,7 @@ func StartKeyNotificationListener() {
 	go func() {
 		for notification := range model.KeyDisableNotificationChan {
 			// 发送飞书通知（带详细信息）
-			if config.FeiShuHookUrl != "" {
+			if config.FeishuWebhookUrls != "" {
 				err := message.SendFeishuKeyDisableNotification(
 					notification.ChannelId,
 					notification.ChannelName,
@@ -233,7 +233,7 @@ func StartKeyNotificationListener() {
 	go func() {
 		for notification := range model.ChannelDisableNotificationChan {
 			// 发送飞书通知（带详细信息）
-			if config.FeiShuHookUrl != "" {
+			if config.FeishuWebhookUrls != "" {
 				err := message.SendFeishuChannelFullDisableNotification(
 					notification.ChannelId,
 					notification.ChannelName,

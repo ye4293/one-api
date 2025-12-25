@@ -103,7 +103,7 @@ func InitOptionMap() {
 	config.OptionMap["CfImageAccessKey"] = ""
 	config.OptionMap["CfImageSecretKey"] = ""
 	config.OptionMap["CfImageEndpoint"] = ""
-	config.OptionMap["FeiShuHookUrl"] = ""
+	config.OptionMap["FeishuWebhookUrls"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -332,8 +332,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.CfImageSecretKey = value
 	case "CfImageEndpoint":
 		config.CfImageEndpoint = value
-	case "FeiShuHookUrl":
-		config.FeiShuHookUrl = value
+	case "FeishuWebhookUrls":
+		config.FeishuWebhookUrls = value
 	case "PingIntervalSeconds":
 		config.PingIntervalSeconds,_ = strconv.Atoi(value)
 	}
