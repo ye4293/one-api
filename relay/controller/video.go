@@ -1532,21 +1532,6 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
 	}
 
-	// 添加请求详细日志
-	log.Printf("[VEO] Request URL: %s", fullRequestUrl)
-
-	// 处理请求体日志，避免过长的base64内容
-	requestBodyStr := string(jsonData)
-	if len(requestBodyStr) > 2000 {
-		// 如果请求体过长，截取前后部分
-		log.Printf("[VEO] Request Body (truncated - too long): %s...%s",
-			requestBodyStr[:1000],
-			requestBodyStr[len(requestBodyStr)-1000:])
-		log.Printf("[VEO] Request Body Length: %d characters", len(requestBodyStr))
-	} else {
-		log.Printf("[VEO] Request Body: %s", requestBodyStr)
-	}
-
 	// 发送请求并处理响应
 	return sendRequestAndHandleVeoResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName)
 }
@@ -4860,8 +4845,13 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				}
 			case "FAILED":
 				generalResponse.TaskStatus = "failed"
-				// 优先使用阿里云返回的详细错误信息
-				if aliResp.Code != "" && aliResp.Message != "" {
+				// 优先使用阿里云返回的详细错误信息（错误信息在output对象内部）
+				if aliResp.Output.Code != "" && aliResp.Output.Message != "" {
+					generalResponse.Message = fmt.Sprintf("视频生成失败: [%s] %s (request_id: %s)", aliResp.Output.Code, aliResp.Output.Message, aliResp.RequestID)
+				} else if aliResp.Output.Message != "" {
+					generalResponse.Message = fmt.Sprintf("视频生成失败: %s (request_id: %s)", aliResp.Output.Message, aliResp.RequestID)
+				} else if aliResp.Code != "" && aliResp.Message != "" {
+					// 兼容顶层错误信息
 					generalResponse.Message = fmt.Sprintf("视频生成失败: [%s] %s (request_id: %s)", aliResp.Code, aliResp.Message, aliResp.RequestID)
 				} else if aliResp.Message != "" {
 					generalResponse.Message = fmt.Sprintf("视频生成失败: %s (request_id: %s)", aliResp.Message, aliResp.RequestID)
@@ -4870,7 +4860,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				}
 			case "UNKNOWN":
 				generalResponse.TaskStatus = "failed"
-				if aliResp.Message != "" {
+				// 优先使用output内的错误信息
+				if aliResp.Output.Code != "" && aliResp.Output.Message != "" {
+					generalResponse.Message = fmt.Sprintf("任务已过期或未知: [%s] %s (request_id: %s)", aliResp.Output.Code, aliResp.Output.Message, aliResp.RequestID)
+				} else if aliResp.Output.Message != "" {
+					generalResponse.Message = fmt.Sprintf("任务已过期或未知: %s (request_id: %s)", aliResp.Output.Message, aliResp.RequestID)
+				} else if aliResp.Message != "" {
 					generalResponse.Message = fmt.Sprintf("任务已过期或未知: %s (request_id: %s)", aliResp.Message, aliResp.RequestID)
 				} else {
 					generalResponse.Message = fmt.Sprintf("任务已过期或未知 (request_id: %s)", aliResp.RequestID)
