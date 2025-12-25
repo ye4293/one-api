@@ -12,6 +12,20 @@ import (
 )
 
 func notifyRootUser(subject string, content string) {
+	// 发送飞书通知
+	if config.FeiShuHookUrl != "" {
+		err := message.SendFeishuNotification(subject, content)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("failed to send feishu notification: %s", err.Error()))
+		}
+	}
+
+	notifyRootUserWithoutFeishu(subject, content)
+}
+
+// notifyRootUserWithoutFeishu 发送通知（不包括飞书，用于避免重复发送）
+func notifyRootUserWithoutFeishu(subject string, content string) {
+	// 发送 MessagePusher 通知
 	if config.MessagePusherAddress != "" {
 		err := message.SendMessage(subject, content, content)
 		if err != nil {
@@ -20,6 +34,8 @@ func notifyRootUser(subject string, content string) {
 			return
 		}
 	}
+
+	// 发送邮件通知
 	if config.RootUserEmail == "" {
 		config.RootUserEmail = model.GetRootUserEmail()
 	}
@@ -43,26 +59,25 @@ func DisableChannelSafelyWithStatusCode(channelId int, channelName string, reaso
 		return
 	}
 
-	// 构建包含状态码的完整禁用原因
-	fullReason := reason
-	if statusCode > 0 {
-		fullReason = fmt.Sprintf("%s (状态码: %d)", reason, statusCode)
-	}
-
 	if channel.MultiKeyInfo.IsMultiKey {
 		// 对于多key渠道，不应该直接禁用整个渠道
 		// 记录警告信息，需要管理员手动处理
-		logger.SysLog(fmt.Sprintf("Multi-key channel #%d (%s) has external issues: %s. Not auto-disabling the entire channel as it may have working keys. Manual intervention may be required.",
-			channelId, channelName, fullReason))
+		logger.SysLog(fmt.Sprintf("Multi-key channel #%d (%s) has external issues: %s (状态码: %d). Not auto-disabling the entire channel as it may have working keys. Manual intervention may be required.",
+			channelId, channelName, reason, statusCode))
 		return
 	}
 
 	// 单key渠道使用内联逻辑，避免重复获取渠道信息
-	disableChannelInternal(channel, channelId, channelName, fullReason, modelName)
+	disableChannelInternalWithStatusCode(channel, channelId, channelName, reason, modelName, statusCode)
 }
 
 // disableChannelInternal 内部禁用函数，接受已获取的channel对象
 func disableChannelInternal(channel *model.Channel, channelId int, channelName string, reason string, modelName string) {
+	disableChannelInternalWithStatusCode(channel, channelId, channelName, reason, modelName, 0)
+}
+
+// disableChannelInternalWithStatusCode 内部禁用函数，包含状态码
+func disableChannelInternalWithStatusCode(channel *model.Channel, channelId int, channelName string, reason string, modelName string, statusCode int) {
 	if !channel.AutoDisabled {
 		logger.SysLog(fmt.Sprintf("channel #%d (%s) should be disabled but auto-disable is turned off, reason: %s", channelId, channelName, reason))
 		return
@@ -87,17 +102,29 @@ func disableChannelInternal(channel *model.Channel, channelId int, channelName s
 	}
 
 	logger.SysLog(fmt.Sprintf("channel #%d has been disabled: %s", channelId, reason))
+
+	// 发送飞书通知（带详细信息）
+	if config.FeiShuHookUrl != "" {
+		err := message.SendFeishuChannelDisableNotification(channelId, channelName, statusCode, reason, modelName)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("failed to send feishu channel disable notification: %s", err.Error()))
+		}
+	}
+
+	// 发送邮件和其他通知
 	subject := fmt.Sprintf("渠道「%s」（#%d）已被禁用", channelName, channelId)
 	content := fmt.Sprintf(`
 <h3>渠道自动禁用通知</h3>
 <p><strong>渠道名称：</strong>%s</p>
 <p><strong>渠道ID：</strong>#%d</p>
+<p><strong>触发模型：</strong>%s</p>
+<p><strong>状态码：</strong>%d</p>
 <p><strong>禁用原因：</strong>%s</p>
 <p><strong>禁用时间：</strong>%s</p>
 <hr>
 <p>该渠道因出现错误已被系统自动禁用，请检查渠道配置和密钥的有效性。</p>
-`, channelName, channelId, reason, time.Now().Format("2006-01-02 15:04:05"))
-	notifyRootUser(subject, content)
+`, channelName, channelId, modelName, statusCode, reason, time.Now().Format("2006-01-02 15:04:05"))
+	notifyRootUserWithoutFeishu(subject, content)
 }
 
 // DisableChannel disable & notify
@@ -114,13 +141,7 @@ func DisableChannelWithStatusCode(channelId int, channelName string, reason stri
 		return
 	}
 
-	// 构建包含状态码的完整禁用原因
-	fullReason := reason
-	if statusCode > 0 {
-		fullReason = fmt.Sprintf("%s (状态码: %d)", reason, statusCode)
-	}
-
-	disableChannelInternal(channel, channelId, channelName, fullReason, modelName)
+	disableChannelInternalWithStatusCode(channel, channelId, channelName, reason, modelName, statusCode)
 }
 
 func MetricDisableChannel(channelId int, successRate float64) {
@@ -173,6 +194,21 @@ func StartKeyNotificationListener() {
 	// 启动Key级别的禁用通知监听器
 	go func() {
 		for notification := range model.KeyDisableNotificationChan {
+			// 发送飞书通知（带详细信息）
+			if config.FeiShuHookUrl != "" {
+				err := message.SendFeishuKeyDisableNotification(
+					notification.ChannelId,
+					notification.ChannelName,
+					notification.KeyIndex,
+					notification.MaskedKey,
+					notification.StatusCode,
+					notification.ErrorMessage,
+				)
+				if err != nil {
+					logger.SysError(fmt.Sprintf("failed to send feishu key disable notification: %s", err.Error()))
+				}
+			}
+
 			// 构建邮件主题和内容
 			subject := fmt.Sprintf("多Key渠道「%s」（#%d）中的Key已被禁用", notification.ChannelName, notification.ChannelId)
 			content := fmt.Sprintf(`
@@ -188,14 +224,26 @@ func StartKeyNotificationListener() {
 `, notification.ChannelName, notification.ChannelId, notification.KeyIndex, notification.MaskedKey,
 				notification.ErrorMessage, notification.StatusCode, notification.DisabledTime.Format("2006-01-02 15:04:05"))
 
-			// 发送邮件通知
-			notifyRootUser(subject, content)
+			// 发送邮件和其他通知（不包括飞书，避免重复发送）
+			notifyRootUserWithoutFeishu(subject, content)
 		}
 	}()
 
 	// 启动渠道级别的禁用通知监听器
 	go func() {
 		for notification := range model.ChannelDisableNotificationChan {
+			// 发送飞书通知（带详细信息）
+			if config.FeiShuHookUrl != "" {
+				err := message.SendFeishuChannelFullDisableNotification(
+					notification.ChannelId,
+					notification.ChannelName,
+					notification.Reason,
+				)
+				if err != nil {
+					logger.SysError(fmt.Sprintf("failed to send feishu channel full disable notification: %s", err.Error()))
+				}
+			}
+
 			// 构建邮件主题和内容
 			subject := fmt.Sprintf("多Key渠道「%s」（#%d）已被完全禁用", notification.ChannelName, notification.ChannelId)
 			content := fmt.Sprintf(`
@@ -208,8 +256,8 @@ func StartKeyNotificationListener() {
 <p>该渠道的所有Key都已被禁用，因此整个渠道已被系统自动禁用。请检查并修复所有Key的问题后重新启用。</p>
 `, notification.ChannelName, notification.ChannelId, notification.Reason, notification.DisabledTime.Format("2006-01-02 15:04:05"))
 
-			// 发送邮件通知
-			notifyRootUser(subject, content)
+			// 发送邮件和其他通知（不包括飞书，避免重复发送）
+			notifyRootUserWithoutFeishu(subject, content)
 		}
 	}()
 }

@@ -463,6 +463,66 @@ func handleSoraRemixResponse(c *gin.Context, ctx context.Context, soraResponse o
 	return nil
 }
 
+// parseAliVideoResolution 根据 size 参数解析阿里云视频的分辨率档位
+// size 格式: "1280*720", "1920*1080" 等
+// 返回: "480P", "720P", "1080P"
+func parseAliVideoResolution(size string) string {
+	// 1080P 尺寸列表
+	sizes1080P := map[string]bool{
+		"1920*1080": true, "1080*1920": true,
+		"1440*1440": true,
+		"1632*1248": true, "1248*1632": true,
+	}
+
+	// 720P 尺寸列表
+	sizes720P := map[string]bool{
+		"1280*720": true, "720*1280": true,
+		"960*960":  true,
+		"1088*832": true, "832*1088": true,
+	}
+
+	// 480P 尺寸列表
+	sizes480P := map[string]bool{
+		"832*480": true, "480*832": true,
+		"624*624": true,
+	}
+
+	// 标准化 size 格式（支持 "1280x720" 和 "1280*720" 两种格式）
+	normalizedSize := strings.ReplaceAll(size, "x", "*")
+
+	if sizes1080P[normalizedSize] {
+		return "1080P"
+	}
+	if sizes720P[normalizedSize] {
+		return "720P"
+	}
+	if sizes480P[normalizedSize] {
+		return "480P"
+	}
+
+	// 如果不在列表中，根据像素数量判断
+	// 解析宽高
+	parts := strings.Split(normalizedSize, "*")
+	if len(parts) == 2 {
+		width, err1 := strconv.Atoi(parts[0])
+		height, err2 := strconv.Atoi(parts[1])
+		if err1 == nil && err2 == nil {
+			totalPixels := width * height
+			// 1080P 约 200万像素，720P 约 92万像素，480P 约 40万像素
+			if totalPixels >= 1500000 {
+				return "1080P"
+			} else if totalPixels >= 600000 {
+				return "720P"
+			} else {
+				return "480P"
+			}
+		}
+	}
+
+	// 默认返回 1080P
+	return "1080P"
+}
+
 func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	// 读取原始请求体
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -473,8 +533,6 @@ func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	// 恢复请求体
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	log.Printf("ali-video-request-body: %s", string(bodyBytes))
-
 	// 解析请求体获取duration字段
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
@@ -484,6 +542,16 @@ func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	// 提取duration字段，默认为5
 	var duration string = "5"       // 默认值
 	var resolution string = "1080P" // 默认值
+	var modelName string = ""       // 模型名称
+
+	// 提取模型名称（优先从请求体获取）
+	if model, ok := requestData["model"].(string); ok && model != "" {
+		modelName = model
+	}
+	// 如果请求体中没有，尝试从 meta 获取
+	if modelName == "" {
+		modelName = meta.ActualModelName
+	}
 
 	if parameters, ok := requestData["parameters"].(map[string]interface{}); ok {
 		// 提取duration
@@ -500,10 +568,20 @@ func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 			}
 		}
 
-		// 提取resolution
+		// 从 size 参数提取分辨率档位
+		// size 格式: "1280*720", "1920*1080" 等
+		// 480P: 832*480, 480*832, 624*624
+		// 720P: 1280*720, 720*1280, 960*960, 1088*832, 832*1088
+		// 1080P: 1920*1080, 1080*1920, 1440*1440, 1632*1248, 1248*1632
+		if sizeValue, exists := parameters["size"]; exists {
+			if size, ok := sizeValue.(string); ok {
+				resolution = parseAliVideoResolution(size)
+			}
+		}
+
+		// 也兼容直接传 resolution 参数
 		if resolutionValue, exists := parameters["resolution"]; exists {
 			if res, ok := resolutionValue.(string); ok {
-				// 验证resolution是否为有效值
 				if res == "480P" || res == "720P" || res == "1080P" {
 					resolution = res
 				}
@@ -511,10 +589,10 @@ func handleAliVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 		}
 	}
 
-	log.Printf("ali-video-duration: %s, resolution: %s", duration, resolution)
+	log.Printf("ali-video-duration: %s, resolution: %s, model: %s", duration, resolution, modelName)
 
 	// 直接透传请求体，发送请求并处理响应
-	return sendRequestAndHandleAliVideoResponse(c, ctx, bodyBytes, meta, meta.ActualModelName, duration, resolution)
+	return sendRequestAndHandleAliVideoResponse(c, ctx, bodyBytes, meta, modelName, duration, resolution)
 }
 
 func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, bodyBytes []byte, meta *util.RelayMeta, modelName string, duration string, resolution string) *model.ErrorWithStatusCode {
@@ -523,38 +601,16 @@ func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, b
 		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 	}
 
-	// 根据分辨率和时长进行精确计费
-	// 480P: 0.3元/秒, 720P: 0.6元/秒, 1080P: 1元/秒
-	var pricePerSecond float64
-	switch resolution {
-	case "480P":
-		pricePerSecond = 0.3
-	case "720P":
-		pricePerSecond = 0.6
-	case "1080P":
-		pricePerSecond = 1.0
-	default:
-		pricePerSecond = 1.0 // 默认按最高价格计费
+	// 使用灵活定价系统计算费用
+	// 参数: model, videoType, mode, duration, resolution
+	// 阿里云视频默认 type=image-to-video, mode=*
+	videoType := "image-to-video"
+	if strings.Contains(strings.ToLower(modelName), "t2v") {
+		videoType = "text-to-video"
 	}
-
-	// 转换duration为数值
-	durationInt, err := strconv.Atoi(duration)
-	if err != nil {
-		log.Printf("Failed to parse duration %s, using default 5", duration)
-		durationInt = 5
-	}
-
-	// 计算总费用（人民币）
-	prePayCNY := float64(durationInt) * pricePerSecond
-	prePayUSD, exchangeErr := convertCNYToUSD(prePayCNY)
-	if exchangeErr != nil {
-		// 如果汇率转换失败，使用固定汇率7.2作为备选方案
-		log.Printf("Failed to get exchange rate for Ali video pre-payment: %v, using fallback rate 7.2", exchangeErr)
-		prePayUSD = prePayCNY / 7.2
-	}
-	quota := int64(prePayUSD * config.QuotaPerUnit)
-	log.Printf("Ali video pre-payment: resolution=%s, duration=%s, pricePerSecond=%.1f, totalCNY=%.2f, usd=%.6f, quota=%d",
-		resolution, duration, pricePerSecond, prePayCNY, prePayUSD, quota)
+	quota := common.CalculateVideoQuota(modelName, videoType, "*", duration, resolution)
+	log.Printf("Ali video pre-payment (flexible pricing): model=%s, type=%s, duration=%s, resolution=%s, quota=%d",
+		modelName, videoType, duration, resolution, quota)
 
 	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
