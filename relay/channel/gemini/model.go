@@ -17,10 +17,24 @@ type InlineData struct {
 	Data     string `json:"data"`
 }
 
+// FunctionCall represents a function call in Gemini response
+type FunctionCall struct {
+	Name string         `json:"name"`
+	Args map[string]any `json:"args,omitempty"`
+}
+
+// FunctionResponse represents a function response in Gemini request
+type FunctionResponse struct {
+	Name     string `json:"name"`
+	Response any    `json:"response"`
+}
+
 type Part struct {
-	Text             string      `json:"text,omitempty"`
-	InlineData       *InlineData `json:"inlineData,omitempty"`
-	ThoughtSignature string      `json:"thoughtSignature,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	InlineData       *InlineData       `json:"inlineData,omitempty"`
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
+	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type ChatContent struct {
@@ -55,8 +69,11 @@ type ImageConfig struct {
 }
 
 type ThinkingConfig struct {
-	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
-	IncludeThoughts bool `json:"includeThoughts,omitempty"`
+	// 使用指针类型以区分"未设置"和"设置为0"
+	// 当设置为 0 时表示禁用思考，-1 表示动态思考
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"` // Gemini 3: "none", "minimal", "low", "medium", "high"
 }
 
 // type GeminiImageRequest struct {

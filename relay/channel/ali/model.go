@@ -159,6 +159,8 @@ type AliVideoQueryOutput struct {
 	OrigPrompt    string `json:"orig_prompt,omitempty"`
 	VideoURL      string `json:"video_url,omitempty"`     // 成功时的视频URL
 	ActualPrompt  string `json:"actual_prompt,omitempty"` // 实际使用的提示词
+	Code          string `json:"code,omitempty"`          // 失败时的错误码
+	Message       string `json:"message,omitempty"`       // 失败时的错误信息
 }
 
 type AliVideoUsage struct {

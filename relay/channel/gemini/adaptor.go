@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/logger"
 	channelhelper "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -31,10 +30,13 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	// 从请求路径中提取 API 版本（v1beta、v1alpha、v1）
 	// 默认使用 v1beta
 	version := "v1beta"
-	if meta.RequestURLPath != "" {
+
+	// 只有 Gemini 原生格式路径（包含 /models/）才从路径提取版本
+	// OpenAI 格式请求（如 /v1/chat/completions）应该使用默认的 v1beta
+	if meta.RequestURLPath != "" && strings.Contains(meta.RequestURLPath, "/models/") {
 		if strings.HasPrefix(meta.RequestURLPath, "/v1alpha/") {
 			version = "v1alpha"
-		} else if strings.HasPrefix(meta.RequestURLPath, "/v1/") {
+		} else if strings.HasPrefix(meta.RequestURLPath, "/v1/models/") {
 			version = "v1"
 		}
 		// v1beta 保持默认
@@ -61,8 +63,6 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	}
 
 	fullURL := fmt.Sprintf("%s/%s/models/%s:%s", meta.BaseURL, version, modelName, action)
-	logger.SysLog(fmt.Sprintf("[Gemini] RequestURLPath: %s, Version: %s, ModelName: %s, Action: %s, FullURL: %s", 
-		meta.RequestURLPath, version, modelName, action, fullURL))
 	return fullURL, nil
 }
 

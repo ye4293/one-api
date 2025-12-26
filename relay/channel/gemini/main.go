@@ -44,6 +44,7 @@ func createPrintableRequest(original ChatRequest) ChatRequest {
 		SafetySettings:    original.SafetySettings,
 		GenerationConfig:  original.GenerationConfig,
 		SystemInstruction: original.SystemInstruction,
+		Tools:             original.Tools,
 	}
 
 	// 深拷贝Contents并截断base64数据
@@ -55,7 +56,10 @@ func createPrintableRequest(original ChatRequest) ChatRequest {
 
 		for j, part := range content.Parts {
 			printableRequest.Contents[i].Parts[j] = Part{
-				Text: part.Text,
+				Text:             part.Text,
+				ThoughtSignature: part.ThoughtSignature,
+				FunctionCall:     part.FunctionCall,
+				FunctionResponse: part.FunctionResponse,
 			}
 
 			// 如果有InlineData，截断Data字段
@@ -68,6 +72,11 @@ func createPrintableRequest(original ChatRequest) ChatRequest {
 					MimeType: part.InlineData.MimeType,
 					Data:     data,
 				}
+			}
+
+			// 如果有ThoughtSignature，截断
+			if part.ThoughtSignature != "" && len(part.ThoughtSignature) > 100 {
+				printableRequest.Contents[i].Parts[j].ThoughtSignature = part.ThoughtSignature[:100] + "...[truncated]"
 			}
 		}
 	}
@@ -112,13 +121,11 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 	}
 
 	if strings.HasSuffix(textRequest.Model, "-thinking") {
-		var budget int
+		budget := -1 // Enable dynamic thinking by default
 		if textRequest.ThinkingTokens > 0 {
 			budget = textRequest.ThinkingTokens
 		} else if textRequest.MaxTokens > 0 {
 			budget = int(float64(textRequest.MaxTokens) * 0.6)
-		} else {
-			budget = -1 // Enable dynamic thinking
 		}
 
 		// Clamp the budget based on the model's supported range
@@ -152,18 +159,47 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 			}
 		}
 		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
-			ThinkingBudget:  budget,
+			ThinkingBudget:  &budget,
 			IncludeThoughts: true,
 		}
 	} else if strings.HasSuffix(textRequest.Model, "-nothinking") {
+		// 禁用思考：设置 thinkingBudget = 0
+		// 注意：gemini-2.5-pro 不支持禁用思考，但我们仍然传递 0
 		budget := 0
-		if baseModel == "gemini-2.5-pro" {
-			budget = -1
-		}
 		geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{
-			ThinkingBudget: budget,
+			ThinkingBudget: &budget,
 		}
 	}
+
+	// Handle reasoning_effort -> thinking_level mapping for Gemini 3
+	// Reference: https://ai.google.dev/gemini-api/docs/gemini-3?hl=zh_cn#thinking_level
+	// Gemini 3 thinking_level values: "none", "minimal", "low", "medium", "high"
+	// Note: OpenAI "medium" maps to Gemini "high" per Google's documentation
+	if textRequest.ReasoningEffort != "" {
+		thinkingLevel := ""
+		switch strings.ToLower(textRequest.ReasoningEffort) {
+		case "none":
+			thinkingLevel = "none"
+		case "minimal":
+			thinkingLevel = "minimal"
+		case "low":
+			thinkingLevel = "low"
+		case "medium":
+			// Per Gemini docs: reasoning_effort medium maps to thinking_level high
+			thinkingLevel = "high"
+		case "high":
+			thinkingLevel = "high"
+		}
+
+		if thinkingLevel != "" {
+			if geminiRequest.GenerationConfig.ThinkingConfig == nil {
+				geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{}
+			}
+			geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = thinkingLevel
+			logger.SysLog(fmt.Sprintf("Mapped reasoning_effort '%s' to thinking_level '%s'", textRequest.ReasoningEffort, thinkingLevel))
+		}
+	}
+
 	// 检测是否有system或developer消息，如果有则转换为system_instruction
 	var systemMessages []model.Message
 	var nonSystemMessages []model.Message
@@ -195,6 +231,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 	if textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
 		geminiRequest.GenerationConfig.ResponseModalities = []string{"TEXT", "IMAGE"}
 	}
+	// Handle functions (legacy format)
 	if textRequest.Functions != nil {
 		geminiRequest.Tools = []ChatTools{
 			{
@@ -202,7 +239,103 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 			},
 		}
 	}
+
+	// Handle tools (OpenAI format) - convert to Gemini FunctionDeclarations
+	if len(textRequest.Tools) > 0 {
+		var functionDeclarations []map[string]any
+		for _, tool := range textRequest.Tools {
+			if tool.Type == "function" {
+				funcDecl := map[string]any{
+					"name":        tool.Function.Name,
+					"description": tool.Function.Description,
+				}
+				if tool.Function.Parameters != nil {
+					funcDecl["parameters"] = tool.Function.Parameters
+				}
+				functionDeclarations = append(functionDeclarations, funcDecl)
+			}
+		}
+		if len(functionDeclarations) > 0 {
+			geminiRequest.Tools = []ChatTools{
+				{
+					FunctionDeclarations: functionDeclarations,
+				},
+			}
+		}
+	}
 	for _, message := range messages {
+		// Handle tool role messages (function responses)
+		if message.Role == "tool" {
+			// Parse the content as function response
+			var responseData any
+			contentStr := message.StringContent()
+			if err := json.Unmarshal([]byte(contentStr), &responseData); err != nil {
+				// If not valid JSON, use as string
+				responseData = contentStr
+			}
+
+			// Get function name from the message
+			funcName := ""
+			if message.Name != nil {
+				funcName = *message.Name
+			}
+
+			content := ChatContent{
+				Role: "user", // In Gemini, function responses are sent as user role
+				Parts: []Part{
+					{
+						FunctionResponse: &FunctionResponse{
+							Name:     funcName,
+							Response: responseData,
+						},
+					},
+				},
+			}
+			geminiRequest.Contents = append(geminiRequest.Contents, content)
+			continue
+		}
+
+		// Handle assistant/model messages with tool_calls
+		if len(message.ToolCalls) > 0 {
+			content := ChatContent{
+				Role:  "model",
+				Parts: []Part{},
+			}
+
+			// Convert each tool call to a FunctionCall part
+			for i, toolCall := range message.ToolCalls {
+				// Parse arguments from string to map
+				var args map[string]any
+				if toolCall.Function.Arguments != nil {
+					switch v := toolCall.Function.Arguments.(type) {
+					case string:
+						if err := json.Unmarshal([]byte(v), &args); err != nil {
+							logger.SysLog(fmt.Sprintf("Error parsing function arguments: %v", err))
+							args = make(map[string]any)
+						}
+					case map[string]any:
+						args = v
+					}
+				}
+
+				part := Part{
+					FunctionCall: &FunctionCall{
+						Name: toolCall.Function.Name,
+						Args: args,
+					},
+				}
+
+				// Add thought signature from extra_content (only on first function call per Gemini spec)
+				if i == 0 && toolCall.ExtraContent != nil && toolCall.ExtraContent.Google != nil {
+					part.ThoughtSignature = toolCall.ExtraContent.Google.ThoughtSignature
+				}
+
+				content.Parts = append(content.Parts, part)
+			}
+
+			geminiRequest.Contents = append(geminiRequest.Contents, content)
+			continue
+		}
 
 		content := ChatContent{
 			Role: message.Role,
@@ -298,7 +431,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		}
 		content.Parts = parts
 
-		// Add ThoughtSignature if present
+		// Add ThoughtSignature if present (for backward compatibility)
 		if message.ThoughtSignature != "" {
 			if len(content.Parts) > 0 {
 				content.Parts[0].ThoughtSignature = message.ThoughtSignature
@@ -315,15 +448,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		geminiRequest.Contents = append(geminiRequest.Contents, content)
 	}
 
-	// 打印转换后的geminiRequest为JSON格式（截断base64数据）
-	printableRequest := createPrintableRequest(geminiRequest)
-	requestJSON, err := json.MarshalIndent(printableRequest, "", "  ")
-	if err != nil {
-		logger.SysError("error marshalling gemini request: " + err.Error())
-	} else {
-		logger.SysLog("Converted Gemini Request: " + string(requestJSON))
-	}
-
 	return &geminiRequest, nil
 }
 
@@ -335,12 +459,12 @@ type ChatResponse struct {
 }
 
 type UsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
-	ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
-	ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount,omitempty"`
-	CachedContentTokenCount        int `json:"cachedContentTokenCount,omitempty"`
+	PromptTokenCount        int            `json:"promptTokenCount"`
+	CandidatesTokenCount    int            `json:"candidatesTokenCount"`
+	TotalTokenCount         int            `json:"totalTokenCount"`
+	ThoughtsTokenCount      int            `json:"thoughtsTokenCount,omitempty"`
+	ToolUsePromptTokenCount int            `json:"toolUsePromptTokenCount,omitempty"`
+	CachedContentTokenCount int            `json:"cachedContentTokenCount,omitempty"`
 	PromptTokensDetails     []TokenDetails `json:"promptTokensDetails,omitempty"`
 	CandidatesTokensDetails []TokenDetails `json:"candidatesTokensDetails,omitempty"`
 }
@@ -423,30 +547,85 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 			FinishReason: constant.StopFinishReason,
 		}
 
-		// 处理Parts，分离思考内容和实际回答内容
+		// 处理Parts，分离思考内容、实际回答内容和函数调用
 		var reasoningContent string
 		var actualContent string
 		var thoughtSignature string
+		var toolCalls []model.Tool
 
 		parts := candidate.Content.Parts
+
+		// First pass: collect thought signature
 		for _, part := range parts {
 			if part.ThoughtSignature != "" {
 				thoughtSignature = part.ThoughtSignature
 			}
 		}
 
-		if len(parts) == 2 {
-			// 当parts长度为2时，第一个是思考内容，第二个是实际回答
-			reasoningContent = parts[0].Text
-			actualContent = parts[1].Text
-		} else if len(parts) > 0 {
-			// 当parts长度为1时，直接使用第一个内容作为实际回答
-			actualContent = parts[0].Text
+		// Check if this is a function call response
+		hasFunctionCalls := false
+		for _, part := range parts {
+			if part.FunctionCall != nil {
+				hasFunctionCalls = true
+				break
+			}
 		}
 
-		choice.Message.Content = actualContent
-		choice.Message.ReasoningContent = reasoningContent
-		choice.Message.ThoughtSignature = thoughtSignature
+		if hasFunctionCalls {
+			// Process function calls
+			for idx, part := range parts {
+				if part.FunctionCall != nil {
+					// Convert args to JSON string
+					argsJSON, err := json.Marshal(part.FunctionCall.Args)
+					if err != nil {
+						argsJSON = []byte("{}")
+					}
+
+					tool := model.Tool{
+						Id:   fmt.Sprintf("function-call-%d", helper.GetTimestamp()+int64(idx)),
+						Type: "function",
+						Function: model.Function{
+							Name:      part.FunctionCall.Name,
+							Arguments: string(argsJSON),
+						},
+					}
+
+					// Add extra_content with thought_signature for the first function call
+					if idx == 0 && part.ThoughtSignature != "" {
+						tool.ExtraContent = &model.ExtraContent{
+							Google: &model.GoogleExtraContent{
+								ThoughtSignature: part.ThoughtSignature,
+							},
+						}
+					} else if idx == 0 && thoughtSignature != "" {
+						// Use the collected thought signature if not directly on this part
+						tool.ExtraContent = &model.ExtraContent{
+							Google: &model.GoogleExtraContent{
+								ThoughtSignature: thoughtSignature,
+							},
+						}
+					}
+
+					toolCalls = append(toolCalls, tool)
+				}
+			}
+			choice.Message.ToolCalls = toolCalls
+			choice.FinishReason = "tool_calls"
+		} else {
+			// Process text content
+			if len(parts) == 2 {
+				// 当parts长度为2时，第一个是思考内容，第二个是实际回答
+				reasoningContent = parts[0].Text
+				actualContent = parts[1].Text
+			} else if len(parts) > 0 {
+				// 当parts长度为1时，直接使用第一个内容作为实际回答
+				actualContent = parts[0].Text
+			}
+
+			choice.Message.Content = actualContent
+			choice.Message.ReasoningContent = reasoningContent
+			choice.Message.ThoughtSignature = thoughtSignature
+		}
 
 		fullTextResponse.Choices = append(fullTextResponse.Choices, choice)
 	}
@@ -455,14 +634,64 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 
 func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName string) *openai.ChatCompletionsStreamResponse {
 	var choice openai.ChatCompletionsStreamResponseChoice
-	choice.Delta.Content = geminiResponse.GetActualContent()
-	choice.Delta.ReasoningContent = geminiResponse.GetReasoningContent()
+
+	// Check if there are function calls in the response
+	hasFunctionCalls := false
+	var thoughtSignature string
+
 	if len(geminiResponse.Candidates) > 0 {
 		for _, part := range geminiResponse.Candidates[0].Content.Parts {
+			if part.FunctionCall != nil {
+				hasFunctionCalls = true
+			}
 			if part.ThoughtSignature != "" {
-				choice.Delta.ThoughtSignature = part.ThoughtSignature
+				thoughtSignature = part.ThoughtSignature
 			}
 		}
+	}
+
+	if hasFunctionCalls {
+		// Handle function calls in streaming
+		var toolCalls []model.Tool
+		for idx, part := range geminiResponse.Candidates[0].Content.Parts {
+			if part.FunctionCall != nil {
+				argsJSON, err := json.Marshal(part.FunctionCall.Args)
+				if err != nil {
+					argsJSON = []byte("{}")
+				}
+
+				tool := model.Tool{
+					Id:   fmt.Sprintf("function-call-%d", helper.GetTimestamp()+int64(idx)),
+					Type: "function",
+					Function: model.Function{
+						Name:      part.FunctionCall.Name,
+						Arguments: string(argsJSON),
+					},
+				}
+
+				// Add thought signature for the first function call
+				if idx == 0 && part.ThoughtSignature != "" {
+					tool.ExtraContent = &model.ExtraContent{
+						Google: &model.GoogleExtraContent{
+							ThoughtSignature: part.ThoughtSignature,
+						},
+					}
+				} else if idx == 0 && thoughtSignature != "" {
+					tool.ExtraContent = &model.ExtraContent{
+						Google: &model.GoogleExtraContent{
+							ThoughtSignature: thoughtSignature,
+						},
+					}
+				}
+
+				toolCalls = append(toolCalls, tool)
+			}
+		}
+		choice.Delta.ToolCalls = toolCalls
+	} else {
+		choice.Delta.Content = geminiResponse.GetActualContent()
+		choice.Delta.ReasoningContent = geminiResponse.GetReasoningContent()
+		choice.Delta.ThoughtSignature = thoughtSignature
 	}
 
 	var response openai.ChatCompletionsStreamResponse
