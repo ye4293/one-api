@@ -3,7 +3,9 @@ package keling
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -118,6 +120,64 @@ func ValidateKelingCredentials(credentials *KelingCredentials) error {
 	}
 
 	return nil
+}
+
+// GenerateJWTToken 为 Kling API 生成 JWT Token
+func GenerateJWTToken(ak, sk string) (string, error) {
+	if ak == "" || sk == "" {
+		return "", fmt.Errorf("AK or SK is empty")
+	}
+
+	claims := jwt.MapClaims{
+		"iss": ak,
+		"exp": time.Now().Add(30 * time.Minute).Unix(),
+		"nbf": time.Now().Add(-5 * time.Second).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(sk))
+	if err != nil {
+		return "", fmt.Errorf("生成 JWT token 失败: %w", err)
+	}
+
+	return tokenString, nil
+}
+
+// GetCredentialsAndGenerateToken 统一处理凭证获取、验证和 Token 生成
+// 这是一个便捷方法，封装了完整的认证流程
+func GetCredentialsAndGenerateToken(channel *model.Channel, keyIndex int) (string, error) {
+	// 1. 加载渠道配置
+	cfg, err := channel.LoadConfig()
+	if err != nil {
+		return "", fmt.Errorf("加载渠道配置失败: %w", err)
+	}
+
+	// 2. 获取凭证
+	credentials, err := GetKelingCredentialsFromConfig(cfg, channel, keyIndex)
+	if err != nil {
+		// 尝试直接从 Key 字段解析 AK|SK 格式
+		parts := strings.Split(channel.Key, "|")
+		if len(parts) != 2 {
+			return "", fmt.Errorf("无效的 Kling 密钥格式 (期望 AK|SK): %w", err)
+		}
+		credentials = &KelingCredentials{
+			AK: strings.TrimSpace(parts[0]),
+			SK: strings.TrimSpace(parts[1]),
+		}
+	}
+
+	// 3. 验证凭证
+	if err := ValidateKelingCredentials(credentials); err != nil {
+		return "", fmt.Errorf("凭证验证失败: %w", err)
+	}
+
+	// 4. 生成 JWT Token
+	token, err := GenerateJWTToken(credentials.AK, credentials.SK)
+	if err != nil {
+		return "", err
+	}
+
+	return token, nil
 }
 
 // min 辅助函数
