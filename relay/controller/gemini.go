@@ -75,7 +75,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	//获取原生requestbody
 	originRequestBody, err := common.GetRequestBody(c)
-	logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
+	//logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
@@ -497,39 +497,6 @@ func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
-
-	// 提取 usage 信息
-	// usage = &model.Usage{
-	// 	PromptTokens:     geminiResponse.UsageMetadata.PromptTokenCount,
-	// 	CompletionTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
-	// 	TotalTokens:      geminiResponse.UsageMetadata.TotalTokenCount,
-	// }
-
-	// 如果响应中有 usageMetadata，使用真实数据
-	// Gemini 原生响应可能在不同位置包含 usage 信息
-	// 这里需要手动解析 JSON 来获取
-	// var rawResponse map[string]interface{}
-	// if json.Unmarshal(responseBody, &rawResponse) == nil {
-	// 	if usageMetadata, ok := rawResponse["usageMetadata"].(map[string]interface{}); ok {  //输入token
-	// 		if promptTokens, ok := usageMetadata["promptTokenCount"].(float64); ok {
-	// 			usage.PromptTokens = int(promptTokens)
-	// 		}
-	// 		if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {  //补全token
-	// 			usage.CompletionTokens = int(candidatesTokens)
-	// 		}
-	// 		if totalTokens, ok := usageMetadata["totalTokenCount"].(float64); ok {
-	// 			usage.TotalTokens = int(totalTokens)
-	// 		}
-	// 	}
-	// }
-	// for _, detail := range geminiResponse.UsageMetadata.PromptTokensDetails {
-	// 	if detail.Modality == "AUDIO" {
-	// 		usage.PromptTokensDetails.AudioTokens = detail.TokenCount
-	// 	} else if detail.Modality == "TEXT" {
-	// 		usage.PromptTokensDetails.TextTokens = detail.TokenCount
-	// 	}
-	// }
-
 	// 直接返回原生 Gemini 响应格式
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	return geminiResponse.UsageMetadata, nil
@@ -556,7 +523,7 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		}
 	}
 	// 设置 SSE 响应头
-	common.SetEventStreamHeaders(c)
+	//common.SetEventStreamHeaders(c)
 	// 用于保存最后的 UsageMetadata
 	var lastUsageMetadata = &gemini.UsageMetadata{}
 

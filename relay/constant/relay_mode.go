@@ -44,12 +44,13 @@ const (
 	RelayMode3D
 	RelayModeGeminiGenerateContent
 	RelayModeGeminiStreamGenerateContent
+	RelayModeClaude
 )
 
 func Path2RelayMode(path string) int {
 	relayMode := RelayModeUnknown
 	// Gemini API 路径判断: /v1beta/models/{model}:{action} 或 /v1/models/{model}:{action}
-	if strings.HasPrefix(path, "/v1beta/models/") || strings.HasPrefix(path, "/v1/models/") {
+	if strings.HasPrefix(path, "/v1beta/models/") || strings.HasPrefix(path, "/v1/models/") || strings.HasPrefix(path, "/v1alpha/models/") {
 		if strings.Contains(path, ":generateContent") {
 			relayMode = RelayModeGeminiGenerateContent
 		} else if strings.Contains(path, ":streamGenerateContent") {
@@ -75,6 +76,8 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeAudioTranscription
 	} else if strings.HasPrefix(path, "/v1/audio/translations") {
 		relayMode = RelayModeAudioTranslation
+	}else if strings.HasPrefix(path, "/v1/messages") {
+		relayMode = RelayModeClaude
 	}
 	return relayMode
 }

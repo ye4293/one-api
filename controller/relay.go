@@ -2449,3 +2449,109 @@ func RelayGemini(c *gin.Context) {
 		})
 	}
 }
+func RelayClaude(c *gin.Context) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	//relayMode := c.GetInt("relay_mode")
+	originalModel := c.GetString("original_model")
+	originalChannelId := c.GetInt("channel_id")
+	originalChannelName := c.GetString("channel_name")
+	originalKeyIndex := c.GetInt("key_index")
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	// 记录使用的渠道历史，用于添加到日志中
+	// 在调用前就初始化并设置，确保成功时也能记录
+	channelHistory := []int{originalChannelId}
+	c.Set("admin_channel_history", channelHistory)
+	
+	relayError := controller.RelayClaudeNative(c)
+	if relayError == nil {
+		return
+	}
+	
+	lastFailedChannelId := channelId
+	group := c.GetString("group")
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
+		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
+		retryTimes = 0
+	}
+	for i := retryTimes; i > 0; i-- {
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+
+		// 跳过上次失败的渠道
+		if channel.Id == lastFailedChannelId {
+			continue
+		}
+
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := relayError.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
+
+		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
+		if historyInterface, exists := c.Get("admin_channel_history"); exists {
+			if history, ok := historyInterface.([]int); ok {
+				history = append(history, channel.Id)
+				c.Set("admin_channel_history", history)
+			}
+		}
+
+		logger.Infof(ctx, "Using channel #%d to retry Claude request (remain times %d)", channel.Id, i)
+
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		requestBody, _ := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		relayError = controller.RelayClaudeNative(c)
+		if relayError == nil {
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName := c.GetString("channel_name")
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+	}
+
+	if relayError != nil {
+		// 从上下文中获取渠道历史用于记录失败日志
+		var failedChannelHistory []int
+		if historyInterface, exists := c.Get("admin_channel_history"); exists {
+			if history, ok := historyInterface.([]int); ok {
+				failedChannelHistory = history
+			}
+		}
+		// 记录gemin失败请求的日志
+		recordFailedRequestLog(ctx, c, relayError, failedChannelHistory)
+		//转换成claude 的错误格式
+		c.JSON(relayError.StatusCode, gin.H{
+			"type":  "error",
+			"error": model.ClaudeError{
+				Type:    relayError.Error.Type,
+				Message: relayError.Error.Message,
+			},
+		})
+	}
+}

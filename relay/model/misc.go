@@ -32,3 +32,7 @@ type ErrorWithStatusCode struct {
 	Error
 	StatusCode int `json:"status_code"`
 }
+type ClaudeError struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+}
