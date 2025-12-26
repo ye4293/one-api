@@ -244,8 +244,8 @@ type ToolChoice struct {
 // Request Claude API 请求结构
 type Request struct {
 	Model         string      `json:"model"`                    // 模型名称
-	Messages      []Message   `json:"messages,omitempty"`                 // 消息列表
-	System        string      `json:"system,omitempty"`         // 系统提示
+	Messages      []Message   `json:"messages,omitempty"`       // 消息列表
+	System        interface{} `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
 	MaxTokens     int         `json:"max_tokens"`               // 最大输出token数
 	StopSequences []string    `json:"stop_sequences,omitempty"` // 停止序列
 	Stream        bool        `json:"stream,omitempty"`         // 是否流式输出

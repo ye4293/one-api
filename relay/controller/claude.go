@@ -117,13 +117,21 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	totalTokens := usageMetadata.InputTokens + usageMetadata.OutputTokens
 	//cachedTokens := usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
 
-	go recordClaudeConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata)
+	// 获取首字延迟（从 context 中获取，流式响应时会设置）
+	var firstWordLatency float64
+	if latency, exists := c.Get("first_word_latency"); exists {
+		if latencyFloat, ok := latency.(float64); ok {
+			firstWordLatency = latencyFloat
+		}
+	}
+
+	go recordClaudeConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
 
 	return nil
 }
 
 // recordClaudeConsumption 记录 Claude 消费日志
-func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *anthropic.Usage) {
+func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *anthropic.Usage, firstWordLatency float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -143,21 +151,31 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 	title := c.Request.Header.Get("X-Title")
 
 	// 提取用量详情并格式化为统一格式
-	//usageDetails := extractClaudeNativeUsageDetails(usageMetadata)
-	//adminInfo := extractAdminInfoFromContext(c)
-	//other := buildOtherInfoWithUsageDetails(adminInfo, nil)
-	//logger.Infof(ctx, "usageMetadata: %+v", usageMetadata)
-	var other string
 	usageDetails := extractClaudeNativeUsageDetails(usageMetadata)
+	// 提取渠道历史信息 (adminInfo)
+	adminInfo := extractAdminInfoFromContext(c)
+	// 构建 other 字段，包含 adminInfo 和 usageDetails
+	other := buildClaudeOtherInfoWithUsageDetails(adminInfo, usageDetails)
+
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0)
+}
+
+// buildClaudeOtherInfoWithUsageDetails 构建包含 adminInfo 和 Claude usageDetails 的 otherInfo 字符串
+func buildClaudeOtherInfoWithUsageDetails(adminInfo string, usageDetails *ClaudeUsageDetails) string {
+	var parts []string
+
+	if adminInfo != "" {
+		parts = append(parts, adminInfo)
+	}
 
 	if usageDetails != nil {
-		if otherBytes, err := json.Marshal(usageDetails); err == nil {
-			other = string(otherBytes)
-
+		if detailsBytes, err := json.Marshal(usageDetails); err == nil {
+			parts = append(parts, fmt.Sprintf("usageDetails:%s", string(detailsBytes)))
 		}
 	}
-	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, 0, other, c.GetHeader("X-Request-ID"), 0)
+
+	return strings.Join(parts, ";")
 }
 
 // ClaudeUsageDetails 用于存储从 Claude Usage 提取的详细使用信息
@@ -178,12 +196,16 @@ func extractClaudeNativeUsageDetails(usageMetadata *anthropic.Usage) *ClaudeUsag
 	}
 
 	details := &ClaudeUsageDetails{
-		InputTokens:                 usageMetadata.InputTokens,
-		OutputTokens:                usageMetadata.OutputTokens,
-		CacheCreationInputTokens:    usageMetadata.CacheCreationInputTokens,
-		CacheReadInputTokens:        usageMetadata.CacheReadInputTokens,
-		ClaudeCacheCreation5mTokens: usageMetadata.ClaudeCacheCreation5mTokens,
-		ClaudeCacheCreation1hTokens: usageMetadata.ClaudeCacheCreation1hTokens,
+		InputTokens:              usageMetadata.InputTokens,
+		OutputTokens:             usageMetadata.OutputTokens,
+		CacheCreationInputTokens: usageMetadata.CacheCreationInputTokens,
+		CacheReadInputTokens:     usageMetadata.CacheReadInputTokens,
+	}
+
+	// 从 CacheCreation 对象中提取5分钟和1小时缓存的详细信息
+	if usageMetadata.CacheCreation != nil {
+		details.ClaudeCacheCreation5mTokens = usageMetadata.CacheCreation.Ephemeral5mInputTokens
+		details.ClaudeCacheCreation1hTokens = usageMetadata.CacheCreation.Ephemeral1hInputTokens
 	}
 
 	if usageMetadata.ServerToolUse != nil {
@@ -197,224 +219,18 @@ func CalculateClaudeQuotaFromRequest(requestBody []byte, modelName string, ratio
 	return 0, 0, nil
 }
 
-// countTextTokens 简单的 token 计数（粗略估算）
-// 中文: 1个字 ≈ 1.5 tokens
-// 英文: 1个词 ≈ 1.3 tokens
-// 这里简化为: 每4个字符 ≈ 1 token
-
-// ClaudeModelPricing Claude 模型的价格结构
-// 价格单位: 美元/百万tokens
-type ClaudeModelPricing struct {
-	BaseInputPrice         float64 // 基础输入价格
-	OutputPrice            float64 // 输出价格
-	CacheWrite5MinPrice    float64 // 5分钟缓存写入价格（1.25x 基础输入价格）
-	CacheWrite1HourPrice   float64 // 1小时缓存写入价格（2x 基础输入价格）
-	CacheReadPrice         float64 // 缓存读取价格（0.1x 基础输入价格）
-	LongContextInputPrice  float64 // 长上下文输入价格（>200K tokens）
-	LongContextOutputPrice float64 // 长上下文输出价格（>200K tokens）
-	LongContextThreshold   int     // 长上下文阈值（200K tokens）
-	BatchInputPrice        float64 // 批量处理输入价格（50%折扣）
-	BatchOutputPrice       float64 // 批量处理输出价格（50%折扣）
-}
-
-// ClaudePricingTable Claude 模型价格表
-// 参考: https://platform.claude.com/docs/en/about-claude/pricing
-var ClaudePricingTable = map[string]ClaudeModelPricing{
-	// Claude Opus 4.5
-	"claude-3-5-sonnet-20241022": {
-		BaseInputPrice: 3.0, OutputPrice: 15.0,
-		CacheWrite5MinPrice: 3.75, CacheWrite1HourPrice: 6.0, CacheReadPrice: 0.30,
-		LongContextInputPrice: 6.0, LongContextOutputPrice: 22.50, LongContextThreshold: 200000,
-		BatchInputPrice: 1.50, BatchOutputPrice: 7.50,
-	},
-	"claude-3-5-sonnet": {
-		BaseInputPrice: 3.0, OutputPrice: 15.0,
-		CacheWrite5MinPrice: 3.75, CacheWrite1HourPrice: 6.0, CacheReadPrice: 0.30,
-		LongContextInputPrice: 6.0, LongContextOutputPrice: 22.50, LongContextThreshold: 200000,
-		BatchInputPrice: 1.50, BatchOutputPrice: 7.50,
-	},
-
-	// Claude Sonnet 4
-	"claude-sonnet-4-20250514": {
-		BaseInputPrice: 3.0, OutputPrice: 15.0,
-		CacheWrite5MinPrice: 3.75, CacheWrite1HourPrice: 6.0, CacheReadPrice: 0.30,
-		LongContextInputPrice: 6.0, LongContextOutputPrice: 22.50, LongContextThreshold: 200000,
-		BatchInputPrice: 1.50, BatchOutputPrice: 7.50,
-	},
-
-	// Claude Haiku 4.5
-	"claude-3-5-haiku-20241022": {
-		BaseInputPrice: 1.0, OutputPrice: 5.0,
-		CacheWrite5MinPrice: 1.25, CacheWrite1HourPrice: 2.0, CacheReadPrice: 0.10,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0, // Haiku 不支持长上下文
-		BatchInputPrice: 0.50, BatchOutputPrice: 2.50,
-	},
-	"claude-3-5-haiku": {
-		BaseInputPrice: 1.0, OutputPrice: 5.0,
-		CacheWrite5MinPrice: 1.25, CacheWrite1HourPrice: 2.0, CacheReadPrice: 0.10,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0,
-		BatchInputPrice: 0.50, BatchOutputPrice: 2.50,
-	},
-
-	// Claude Haiku 3.5
-	"claude-3-haiku-20240307": {
-		BaseInputPrice: 0.80, OutputPrice: 4.0,
-		CacheWrite5MinPrice: 1.0, CacheWrite1HourPrice: 1.6, CacheReadPrice: 0.08,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0,
-		BatchInputPrice: 0.40, BatchOutputPrice: 2.0,
-	},
-
-	// Claude Sonnet 3.7 (deprecated)
-	"claude-3-7-sonnet-20250219": {
-		BaseInputPrice: 3.0, OutputPrice: 15.0,
-		CacheWrite5MinPrice: 3.75, CacheWrite1HourPrice: 6.0, CacheReadPrice: 0.30,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0,
-		BatchInputPrice: 1.50, BatchOutputPrice: 7.50,
-	},
-
-	// Claude Opus 4 (deprecated)
-	"claude-opus-4-20250514": {
-		BaseInputPrice: 15.0, OutputPrice: 75.0,
-		CacheWrite5MinPrice: 18.75, CacheWrite1HourPrice: 30.0, CacheReadPrice: 1.50,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0,
-		BatchInputPrice: 7.50, BatchOutputPrice: 37.50,
-	},
-
-	// Claude Haiku 3 (deprecated)
-	"claude-3-haiku": {
-		BaseInputPrice: 0.25, OutputPrice: 1.25,
-		CacheWrite5MinPrice: 0.30, CacheWrite1HourPrice: 0.50, CacheReadPrice: 0.03,
-		LongContextInputPrice: 0, LongContextOutputPrice: 0, LongContextThreshold: 0,
-		BatchInputPrice: 0.125, BatchOutputPrice: 0.625,
-	},
-}
-
-// ClaudeTokenCost Claude API 的费用明细
+// ClaudeTokenCost Claude API 的费用明细（使用动态倍率计算）
 type ClaudeTokenCost struct {
 	// 输入部分 token 数量
-	InputTextTokens  int // 输入文字 token 数量
-	InputImageTokens int // 输入图片 token 数量
-	InputAudioTokens int // 输入音频 token 数量
+	InputTextTokens int // 输入文字 token 数量
 	// 输出部分 token 数量
-	OutputTextTokens  int // 输出文字 token 数量
-	OutputImageTokens int // 输出图片 token 数量
-	OutputAudioTokens int // 输出音频 token 数量
-	ThinkingTokens    int // 思考 token 数量
-	CachedTokens      int // 缓存 token 数量
-	TotalTokens       int // 总 token 数量
-	// 费用明细
-	InputCost      float64 // 输入费用 (美元)
-	OutputCost     float64 // 输出费用 (美元)
-	CacheWriteCost float64 // 缓存写入费用 (美元)
-	CacheReadCost  float64 // 缓存读取费用 (美元)
-	ToolCost       float64 // 工具使用费用 (美元)
-	TotalCost      float64 // 总费用 (美元)
-	ModelName      string  // 模型名称
-	IsBatch        bool    // 是否为批量处理
-	IsLongContext  bool    // 是否为长上下文
-}
-
-// CalculateClaudeTokenCost 根据 Claude API 响应计算详细费用
-// 支持：缓存定价、批量处理折扣、长上下文定价、工具使用费用
-func CalculateClaudeTokenCost(usageMetadata *anthropic.Usage, modelName string, isBatch bool) ClaudeTokenCost {
-	result := ClaudeTokenCost{
-		ModelName: modelName,
-		IsBatch:   isBatch,
-	}
-
-	if usageMetadata == nil {
-		return result
-	}
-
-	// 提取 token 数量
-	result.InputTextTokens = usageMetadata.InputTokens
-	result.OutputTextTokens = usageMetadata.OutputTokens
-	result.CachedTokens = usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
-	result.TotalTokens = usageMetadata.InputTokens + usageMetadata.OutputTokens +
-		usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
-
-	// 获取模型价格配置
-	pricing, found := getClaudePricing(modelName)
-	if !found {
-		// 默认使用 Claude 3.5 Sonnet 的价格
-		pricing = ClaudePricingTable["claude-3-5-sonnet"]
-	}
-
-	// 判断是否为长上下文（总输入tokens > 200K）
-	totalInputTokens := usageMetadata.InputTokens + usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
-	isLongContext := pricing.LongContextThreshold > 0 && totalInputTokens > pricing.LongContextThreshold
-	result.IsLongContext = isLongContext
-
-	// 计算费用
-	if isBatch {
-		// 批量处理使用50%折扣价格
-		result.InputCost = float64(usageMetadata.InputTokens) / 1000000.0 * pricing.BatchInputPrice
-		result.OutputCost = float64(usageMetadata.OutputTokens) / 1000000.0 * pricing.BatchOutputPrice
-	} else if isLongContext {
-		// 长上下文使用更高价格
-		result.InputCost = float64(usageMetadata.InputTokens) / 1000000.0 * pricing.LongContextInputPrice
-		result.OutputCost = float64(usageMetadata.OutputTokens) / 1000000.0 * pricing.LongContextOutputPrice
-	} else {
-		// 标准定价
-		result.InputCost = float64(usageMetadata.InputTokens) / 1000000.0 * pricing.BaseInputPrice
-		result.OutputCost = float64(usageMetadata.OutputTokens) / 1000000.0 * pricing.OutputPrice
-	}
-
-	// 计算缓存费用
-	if usageMetadata.CacheCreationInputTokens > 0 {
-		// 根据缓存持续时间选择价格（这里假设使用5分钟缓存）
-		cacheWritePrice := pricing.CacheWrite5MinPrice
-		if usageMetadata.CacheCreation != nil {
-			// 如果有更具体的缓存信息，可以根据TTL调整价格
-			// 这里简化处理，使用5分钟价格
-		}
-		result.CacheWriteCost = float64(usageMetadata.CacheCreationInputTokens) / 1000000.0 * cacheWritePrice
-	}
-
-	if usageMetadata.CacheReadInputTokens > 0 {
-		result.CacheReadCost = float64(usageMetadata.CacheReadInputTokens) / 1000000.0 * pricing.CacheReadPrice
-	}
-
-	// 计算工具使用费用
-	if usageMetadata.ServerToolUse != nil {
-		if usageMetadata.ServerToolUse.WebSearchRequests > 0 {
-			// 网络搜索：每1000次搜索 $10
-			result.ToolCost = float64(usageMetadata.ServerToolUse.WebSearchRequests) / 1000.0 * 10.0
-		}
-	}
-
-	// 计算总费用
-	result.TotalCost = result.InputCost + result.OutputCost + result.CacheWriteCost + result.CacheReadCost + result.ToolCost
-
-	return result
-}
-
-// getClaudePricing 根据模型名称获取价格配置
-func getClaudePricing(modelName string) (ClaudeModelPricing, bool) {
-	// 直接匹配
-	if pricing, ok := ClaudePricingTable[modelName]; ok {
-		return pricing, true
-	}
-
-	// 模糊匹配：去掉版本号等
-	normalizedName := strings.ToLower(modelName)
-
-	// 移除日期后缀 (如 -20241022, -20240307)
-	for i := len(normalizedName) - 1; i >= 0; i-- {
-		if normalizedName[i] == '-' {
-			suffix := normalizedName[i+1:]
-			if len(suffix) == 8 && strings.Contains(suffix, "20") { // 日期格式如 20241022
-				normalizedName = normalizedName[:i]
-				break
-			}
-		}
-	}
-
-	if pricing, ok := ClaudePricingTable[normalizedName]; ok {
-		return pricing, true
-	}
-
-	return ClaudeModelPricing{}, false
+	OutputTextTokens int // 输出文字 token 数量
+	// 缓存相关 token 数量
+	CacheCreation5mTokens int // 5分钟缓存创建 token 数量
+	CacheCreation1hTokens int // 1小时缓存创建 token 数量
+	CacheReadTokens       int // 缓存读取 token 数量
+	TotalTokens           int // 总 token 数量
+	ModelName             string
 }
 
 // CalculateClaudeQuotaByRatio 使用动态倍率计算 Claude API 的配额消耗
@@ -422,8 +238,7 @@ func getClaudePricing(modelName string) (ClaudeModelPricing, bool) {
 // ==================== 计费原理说明 ====================
 //
 // 【背景】
-// 之前的计费方式是硬编码各模型的价格，新增模型需要修改代码。
-// 新方案通过前端配置的倍率动态计算，支持灵活配置新模型价格。
+// 通过前端配置的倍率动态计算，支持灵活配置新模型价格。
 //
 // 【倍率定义规则】（在前端"价格设置"页面配置）
 //
@@ -433,60 +248,102 @@ func getClaudePricing(modelName string) (ClaudeModelPricing, bool) {
 //   - CompletionRatio（输出token价格倍率）= 官方输出价格 / 官方输入价格
 //     例如: Claude 3.5 Sonnet 输出 $15, 输入 $3 → CompletionRatio = 15 / 3 = 5
 //
-//   - ImageInputRatio（图片输入倍率）= 图片输入价格 / 文字输入价格
-//     如果模型图片输入价格与文字相同，则设为 1.0
-//
-//   - ImageOutputRatio（图片输出倍率）= 图片输出价格 / 文字输入价格
-//     注意：这是相对于"输入"的倍率，不是相对于"输出文字"的倍率
-//     例如: 图片输出 $6/1M, 文字输入 $0.10/1M → ImageOutputRatio = 60
-//
-//   - AudioInputRatio / AudioOutputRatio 同理
+// 【缓存计费规则】
+//   - 5分钟缓存创建：输入价格 × 1.25
+//   - 1小时缓存创建：输入价格 × 2.0
+//   - 缓存读取：输入价格 × 0.1
 //
 // 【配额计算公式】
-//   - 输入文字配额 = inputTextTokens × ModelRatio
-//   - 输入图片配额 = inputImageTokens × ModelRatio × ImageInputRatio
-//   - 输入音频配额 = inputAudioTokens × ModelRatio × AudioInputRatio
-//   - 输出文字配额 = outputTextTokens × ModelRatio × CompletionRatio
-//   - 输出图片配额 = outputImageTokens × ModelRatio × ImageOutputRatio
-//     ⚠️ 注意：输出图片不乘 CompletionRatio，因为 ImageOutputRatio 已经是相对于输入的完整倍率
-//   - 输出音频配额 = outputAudioTokens × ModelRatio × AudioOutputRatio（同上）
-//   - 思考配额 = thinkingTokens × ModelRatio × CompletionRatio
+//   - 输入配额 = inputTokens × ModelRatio
+//   - 输出配额 = outputTokens × ModelRatio × CompletionRatio
+//   - 5分钟缓存创建配额 = cache5mTokens × ModelRatio × 1.25
+//   - 1小时缓存创建配额 = cache1hTokens × ModelRatio × 2.0
+//   - 缓存读取配额 = cacheReadTokens × ModelRatio × 0.1
 //
 // 【最终配额】
 //
 //	总配额 = (各部分之和) / 1000000 × 2 × groupRatio × QuotaPerUnit
-//	- 除以 1000000：因为倍率是基于每百万 token 的价格
-//	- 乘以 2：因为 ModelRatio = 官方价格 / 2，需要还原真实价格
-//	- groupRatio：用户分组的价格倍率
-//	- QuotaPerUnit：系统配额单位（如 500000 表示 $1 = 500000 配额）
-//
-// 【计算示例】Gemini 2.5 Flash, 1000输入+500输出, groupRatio=1.0, QuotaPerUnit=500000
-//
-//	输入配额 = 1000 × 0.15 = 150
-//	输出配额 = 500 × 0.15 × 8.33 = 624.75
-//	总配额 = (150 + 624.75) / 1000000 × 2 × 1.0 × 500000 ≈ 775
 func CalculateClaudeQuotaByRatio(usageMetadata *anthropic.Usage, modelName string, groupRatio float64) (int64, ClaudeTokenCost) {
-	if usageMetadata == nil {
-		return 0, ClaudeTokenCost{}
+	cost := ClaudeTokenCost{
+		ModelName: modelName,
 	}
 
-	// 检测是否为批量处理
-	isBatch := false
+	if usageMetadata == nil {
+		return 0, cost
+	}
 
-	// 计算详细费用
-	cost := CalculateClaudeTokenCost(usageMetadata, modelName, isBatch)
+	// 提取 token 数量
+	cost.InputTextTokens = usageMetadata.InputTokens
+	cost.OutputTextTokens = usageMetadata.OutputTokens
+	cost.CacheReadTokens = usageMetadata.CacheReadInputTokens
 
-	// 将美元费用转换为系统配额单位
-	// 假设 1 美元 = QuotaPerUnit * 500 配额单位
-	//quotaPerDollar := float64(config.QuotaPerUnit) * 500
+	// 提取缓存创建详情（5分钟和1小时）
+	if usageMetadata.CacheCreation != nil {
+		cost.CacheCreation5mTokens = usageMetadata.CacheCreation.Ephemeral5mInputTokens
+		cost.CacheCreation1hTokens = usageMetadata.CacheCreation.Ephemeral1hInputTokens
+	} else if usageMetadata.CacheCreationInputTokens > 0 {
+		// 没有详细信息，默认全部算作5分钟缓存
+		cost.CacheCreation5mTokens = usageMetadata.CacheCreationInputTokens
+	}
 
-	// 计算配额（包含groupRatio）
-	quota := int64(cost.TotalCost * config.QuotaPerUnit * groupRatio)
+	cost.TotalTokens = usageMetadata.InputTokens + usageMetadata.OutputTokens +
+		usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
+
+	// ========== 获取各类型的倍率 ==========
+	modelRatio := common.GetModelRatio(modelName)
+	completionRatio := common.GetCompletionRatio(modelName)
+
+	// 打印倍率信息
+	logger.SysLog(fmt.Sprintf("[Claude计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f",
+		modelName, modelRatio, completionRatio))
+
+	// 打印 token 数量
+	logger.SysLog(fmt.Sprintf("[Claude计费] Token数量: 输入=%d, 输出=%d, 5分钟缓存创建=%d, 1小时缓存创建=%d, 缓存读取=%d, 总计=%d",
+		cost.InputTextTokens, cost.OutputTextTokens,
+		cost.CacheCreation5mTokens, cost.CacheCreation1hTokens,
+		cost.CacheReadTokens, cost.TotalTokens))
+
+	// ========== 计算各部分的等效 ratio tokens ==========
+	// 输入部分：tokens × modelRatio
+	inputQuota := float64(cost.InputTextTokens) * modelRatio
+
+	// 输出部分：tokens × modelRatio × completionRatio
+	outputQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
+
+	// 缓存创建部分
+	// 5分钟缓存：tokens × modelRatio × 1.25
+	cache5mQuota := float64(cost.CacheCreation5mTokens) * modelRatio * 1.25
+	// 1小时缓存：tokens × modelRatio × 2.0
+	cache1hQuota := float64(cost.CacheCreation1hTokens) * modelRatio * 2.0
+
+	// 缓存读取部分：tokens × modelRatio × 0.1
+	cacheReadQuota := float64(cost.CacheReadTokens) * modelRatio * 0.1
+
+	// 打印各部分配额计算
+	logger.SysLog(fmt.Sprintf("[Claude计费] 各部分Ratio Tokens: 输入=%.2f (%d×%.4f), 输出=%.2f (%d×%.4f×%.4f)",
+		inputQuota, cost.InputTextTokens, modelRatio,
+		outputQuota, cost.OutputTextTokens, modelRatio, completionRatio))
+
+	logger.SysLog(fmt.Sprintf("[Claude计费] 缓存Ratio Tokens: 5分钟创建=%.2f (%d×%.4f×1.25), 1小时创建=%.2f (%d×%.4f×2.0), 读取=%.2f (%d×%.4f×0.1)",
+		cache5mQuota, cost.CacheCreation5mTokens, modelRatio,
+		cache1hQuota, cost.CacheCreation1hTokens, modelRatio,
+		cacheReadQuota, cost.CacheReadTokens, modelRatio))
+
+	// ========== 计算最终配额 ==========
+	// 公式: 总RatioTokens / 1000000 × 2 × groupRatio × QuotaPerUnit
+	// 乘以 2 是因为 ModelRatio = 官方价格 / 2，需要还原真实价格
+	totalRatioTokens := inputQuota + outputQuota + cache5mQuota + cache1hQuota + cacheReadQuota
+
+	quota := int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+
+	// 打印最终配额计算
+	logger.SysLog(fmt.Sprintf("[Claude计费] 最终计算: 总RatioTokens=%.2f, 公式=%.2f/1000000×2×%.4f×%.2f, 最终配额=%d",
+		totalRatioTokens, totalRatioTokens, groupRatio, config.QuotaPerUnit, quota))
 
 	return quota, cost
 }
 
-// CalculateGeminiQuotaFromUsageMetadata 根据 UsageMetadata 计算配额
+// CalculateClaudeQuotaFromUsageMetadata 根据 UsageMetadata 计算配额
 // 使用动态倍率计算各类型 token 的费用
 func CalculateClaudeQuotaFromUsageMetadata(usageMetadata *anthropic.Usage, modelName string, groupRatio float64) (int64, ClaudeTokenCost) {
 	return CalculateClaudeQuotaByRatio(usageMetadata, modelName, groupRatio)
@@ -538,6 +395,10 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 	var lastUsageMetadata = &anthropic.Usage{}
 	var openaiErr *model.ErrorWithStatusCode
 
+	// 记录开始时间，用于计算首字延迟
+	startTime := time.Now()
+	var firstWordTime *time.Time
+
 	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
 		var claudeResponse anthropic.StreamResponse
 		err := json.Unmarshal([]byte(data), &claudeResponse)
@@ -556,39 +417,51 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		if claudeResponse.Type == "message_start" {
 			lastUsageMetadata = claudeResponse.Message.Usage
 		} else if claudeResponse.Type == "content_block_delta" {
+			// 记录首字时间：当收到第一个 content_block_delta 时
+			if firstWordTime == nil {
+				// 检查是否有实际内容
+				if claudeResponse.Delta != nil && claudeResponse.Delta.Text != "" {
+					now := time.Now()
+					firstWordTime = &now
+				}
+			}
 		} else if claudeResponse.Type == "message_delta" {
 			// 最终的usage获取
-			if claudeResponse.Usage.InputTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.InputTokens = claudeResponse.Usage.InputTokens
-			}
-			if claudeResponse.Usage.InputTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.InputTokens = claudeResponse.Usage.InputTokens
-			}
-			if claudeResponse.Usage.OutputTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.OutputTokens = claudeResponse.Usage.OutputTokens
-			}
-			if claudeResponse.Usage.CacheCreationInputTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.CacheCreationInputTokens = claudeResponse.Usage.CacheCreationInputTokens
-			}
-			if claudeResponse.Usage.CacheReadInputTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.CacheReadInputTokens = claudeResponse.Usage.CacheReadInputTokens
-			}
-			if claudeResponse.Usage.ClaudeCacheCreation5mTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.ClaudeCacheCreation5mTokens = claudeResponse.Usage.ClaudeCacheCreation5mTokens
-			}
-			if claudeResponse.Usage.ClaudeCacheCreation1hTokens > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.ClaudeCacheCreation1hTokens = claudeResponse.Usage.ClaudeCacheCreation1hTokens
-			}
-			if claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
-				// 不叠加，只取最新的
-				lastUsageMetadata.ServerToolUse.WebSearchRequests = claudeResponse.Usage.ServerToolUse.WebSearchRequests
+			if claudeResponse.Usage != nil {
+				if claudeResponse.Usage.InputTokens > 0 {
+					// 不叠加，只取最新的
+					lastUsageMetadata.InputTokens = claudeResponse.Usage.InputTokens
+				}
+				if claudeResponse.Usage.OutputTokens > 0 {
+					// 不叠加，只取最新的
+					lastUsageMetadata.OutputTokens = claudeResponse.Usage.OutputTokens
+				}
+				if claudeResponse.Usage.CacheCreationInputTokens > 0 {
+					// 不叠加，只取最新的
+					lastUsageMetadata.CacheCreationInputTokens = claudeResponse.Usage.CacheCreationInputTokens
+				}
+				if claudeResponse.Usage.CacheReadInputTokens > 0 {
+					// 不叠加，只取最新的
+					lastUsageMetadata.CacheReadInputTokens = claudeResponse.Usage.CacheReadInputTokens
+				}
+				// 提取缓存创建详情（5分钟和1小时缓存）
+				if claudeResponse.Usage.CacheCreation != nil {
+					if lastUsageMetadata.CacheCreation == nil {
+						lastUsageMetadata.CacheCreation = &anthropic.CacheCreation{}
+					}
+					if claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+						lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens = claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens
+					}
+					if claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+						lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens = claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens
+					}
+				}
+				if claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
+					if lastUsageMetadata.ServerToolUse == nil {
+						lastUsageMetadata.ServerToolUse = &anthropic.ServerToolUsage{}
+					}
+					lastUsageMetadata.ServerToolUse.WebSearchRequests = claudeResponse.Usage.ServerToolUse.WebSearchRequests
+				}
 			}
 		} else if claudeResponse.Type == "content_block_start" {
 		} else {
@@ -600,111 +473,11 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		return nil, openaiErr
 	}
 
+	// 计算并设置首字延迟
+	if firstWordTime != nil {
+		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
+		c.Set("first_word_latency", firstWordLatency)
+	}
+
 	return lastUsageMetadata, nil
 }
-
-// FormatClaudeCost 格式化输出 Claude 费用明细（用于日志或调试）
-func FormatClaudeCost(cost ClaudeTokenCost) string {
-	var builder strings.Builder
-
-	builder.WriteString(fmt.Sprintf("Model: %s", cost.ModelName))
-
-	// 特殊标识
-	if cost.IsBatch {
-		builder.WriteString(" [BATCH]")
-	}
-	if cost.IsLongContext {
-		builder.WriteString(" [LONG_CONTEXT]")
-	}
-	builder.WriteString(" | ")
-
-	// 输入费用明细
-	builder.WriteString(fmt.Sprintf("Input: %d tokens ($%.6f)",
-		cost.InputTextTokens, cost.InputCost))
-
-	// 输出费用明细
-	builder.WriteString(fmt.Sprintf(" | Output: %d tokens ($%.6f)",
-		cost.OutputTextTokens, cost.OutputCost))
-
-	// 缓存费用明细
-	if cost.CacheWriteCost > 0 || cost.CacheReadCost > 0 {
-		builder.WriteString(fmt.Sprintf(" | Cache: W$%.6f R$%.6f",
-			cost.CacheWriteCost, cost.CacheReadCost))
-	}
-
-	// 工具费用明细
-	if cost.ToolCost > 0 {
-		builder.WriteString(fmt.Sprintf(" | Tools: $%.6f", cost.ToolCost))
-	}
-
-	// 总费用
-	builder.WriteString(fmt.Sprintf(" | Total: %d tokens ($%.6f)",
-		cost.TotalTokens, cost.TotalCost))
-
-	return builder.String()
-}
-
-// ExampleCalculateClaudeCost 示例：如何计算 Claude API 的费用
-// 此函数展示了完整的费用计算流程，包括缓存、批量处理、长上下文等场景
-// func ExampleCalculateClaudeCost() {
-// 	// 示例 1: 标准请求（Claude 3.5 Sonnet）
-// 	fmt.Println("=== 示例 1: 标准请求 ===")
-// 	usage1 := &anthropic.Usage{
-// 		InputTokens:  10000,
-// 		OutputTokens: 5000,
-// 	}
-// 	cost1 := CalculateClaudeTokenCost(usage1, "claude-3-5-sonnet", false)
-// 	fmt.Printf("费用明细: %s\n", FormatClaudeCost(cost1))
-// 	quota1, _ := CalculateClaudeQuotaByRatio(usage1, "claude-3-5-sonnet", 1.0)
-// 	fmt.Printf("应计配额: %d\n\n", quota1)
-
-// 	// 示例 2: 带缓存的请求
-// 	fmt.Println("=== 示例 2: 带缓存的请求 ===")
-// 	usage2 := &anthropic.Usage{
-// 		InputTokens:              8000,
-// 		OutputTokens:             3000,
-// 		CacheCreationInputTokens: 2000, // 5分钟缓存写入
-// 		CacheReadInputTokens:     1000, // 缓存读取
-// 	}
-// 	cost2 := CalculateClaudeTokenCost(usage2, "claude-3-5-sonnet", false)
-// 	fmt.Printf("费用明细: %s\n", FormatClaudeCost(cost2))
-// 	quota2, _ := CalculateClaudeQuotaByRatio(usage2, "claude-3-5-sonnet", 1.0)
-// 	fmt.Printf("应计配额: %d\n\n", quota2)
-
-// 	// 示例 3: 批量处理请求
-// 	fmt.Println("=== 示例 3: 批量处理请求 ===")
-// 	usage3 := &anthropic.Usage{
-// 		InputTokens:  50000,
-// 		OutputTokens: 25000,
-// 		ServiceTier:  "batch", // 批量处理
-// 	}
-// 	cost3 := CalculateClaudeTokenCost(usage3, "claude-3-5-sonnet", true)
-// 	fmt.Printf("费用明细: %s\n", FormatClaudeCost(cost3))
-// 	quota3, _ := CalculateClaudeQuotaByRatio(usage3, "claude-3-5-sonnet", 1.0)
-// 	fmt.Printf("应计配额: %d\n\n", quota3)
-
-// 	// 示例 4: 长上下文请求（超过200K tokens）
-// 	fmt.Println("=== 示例 4: 长上下文请求 ===")
-// 	usage4 := &anthropic.Usage{
-// 		InputTokens:  250000, // 超过200K阈值
-// 		OutputTokens: 10000,
-// 	}
-// 	cost4 := CalculateClaudeTokenCost(usage4, "claude-3-5-sonnet", false)
-// 	fmt.Printf("费用明细: %s\n", FormatClaudeCost(cost4))
-// 	quota4, _ := CalculateClaudeQuotaByRatio(usage4, "claude-3-5-sonnet", 1.0)
-// 	fmt.Printf("应计配额: %d\n\n", quota4)
-
-// 	// 示例 5: 带工具使用的请求（网络搜索）
-// 	fmt.Println("=== 示例 5: 带网络搜索工具的请求 ===")
-// 	usage5 := &anthropic.Usage{
-// 		InputTokens:  5000,
-// 		OutputTokens: 2000,
-// 		ServerToolUse: &anthropic.ServerToolUsage{
-// 			WebSearchRequests: 2, // 2次网络搜索
-// 		},
-// 	}
-// 	cost5 := CalculateClaudeTokenCost(usage5, "claude-3-5-sonnet", false)
-// 	fmt.Printf("费用明细: %s\n", FormatClaudeCost(cost5))
-// 	quota5, _ := CalculateClaudeQuotaByRatio(usage5, "claude-3-5-sonnet", 1.0)
-// 	fmt.Printf("应计配额: %d\n", quota5)
-// }
