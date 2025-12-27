@@ -89,7 +89,7 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 	// 尝试解析Anthropic错误格式
 	var claudeResponse Response
 	if unmarshalErr := json.Unmarshal(responseBody, &claudeResponse); unmarshalErr == nil {
-		if claudeResponse.Error.Type != "" {
+		if claudeResponse.Error != nil && claudeResponse.Error.Type != "" {
 			return &model.ErrorWithStatusCode{
 				Error: model.Error{
 					Message: claudeResponse.Error.Message,

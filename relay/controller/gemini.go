@@ -150,12 +150,25 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	totalTokens := usageMetadata.TotalTokenCount
 	cachedTokens := usageMetadata.CachedContentTokenCount
 
-	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata)
+	// 计算首字延迟：优先使用总请求开始时间（包含重试），否则使用 meta 中的时间
+	var firstWordLatency float64
+	if totalStartTime, exists := c.Get("total_request_start_time"); exists {
+		if startTime, ok := totalStartTime.(time.Time); ok && !meta.FirstResponseTime.IsZero() {
+			// 使用总请求开始时间到首字响应时间的间隔
+			firstWordLatency = meta.FirstResponseTime.Sub(startTime).Seconds()
+		} else {
+			firstWordLatency = meta.GetFirstWordLatency()
+		}
+	} else {
+		firstWordLatency = meta.GetFirstWordLatency()
+	}
+
+	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
 	return nil
 }
 
 // recordGeminiConsumption 记录 Gemini 消费日志
-func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata) {
+func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata, firstWordLatency float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -180,7 +193,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 	other := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, 0, other, c.GetHeader("X-Request-ID"), cachedTokens)
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), cachedTokens)
 }
 
 // extractGeminiNativeUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息（用于 native 接口）

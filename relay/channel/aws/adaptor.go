@@ -22,6 +22,7 @@ type Adaptor struct {
 	awsAdapter utils.AwsAdapter
 	Meta       *util.RelayMeta
 	AwsClient  *bedrockruntime.Client
+	Region     string // AWS 区域，用于跨区域推理
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -49,6 +50,7 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 		return
 	}
 
+	a.Region = region
 	a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
 		Region:      region,
 		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
@@ -75,9 +77,24 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
-	if a.awsAdapter == nil {
-		return nil, utils.WrapErr(errors.New("awsAdapter is nil"))
+	// 检查 AWS client 是否初始化成功
+	if a.AwsClient == nil {
+		return nil, utils.WrapErr(errors.New("AWS credentials not provided or invalid"))
 	}
+
+	// 如果 awsAdapter 未设置（例如 RelayClaudeNative 没有调用 ConvertRequest），则根据模型获取
+	if a.awsAdapter == nil {
+		modelName := meta.OriginModelName
+		if meta.ActualModelName != "" {
+			modelName = meta.ActualModelName
+		}
+		a.awsAdapter = GetAdaptor(modelName)
+		if a.awsAdapter == nil {
+			return nil, utils.WrapErr(errors.New("adaptor not found for model: " + modelName))
+		}
+	}
+	// 将 region 传递到 context 中，供跨区域推理使用
+	c.Set("aws_region", a.Region)
 	return a.awsAdapter.DoResponse(c, a.AwsClient, meta)
 }
 

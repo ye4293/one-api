@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-
-	//"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,8 +17,6 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
-
-	//relayconstant "github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -50,7 +46,7 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	meta := util.GetRelayMeta(c)
 	meta.ActualModelName = meta.OriginModelName
-	if meta.ModelMapping != nil && len(meta.ModelMapping) > 0 {
+	if len(meta.ModelMapping) > 0 {
 		if mappedModel, ok := meta.ModelMapping[meta.OriginModelName]; ok && mappedModel != "" {
 			meta.ActualModelName = mappedModel
 		}
@@ -96,10 +92,26 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	var usageMetadata *anthropic.Usage
 	var openaiErr *model.ErrorWithStatusCode
 
-	if meta.IsStream {
-		usageMetadata, openaiErr = doNativeClaudeStreamResponse(c, resp, meta)
+	// AWS adaptor 的 DoRequest 返回 nil, nil，因为 AWS SDK 直接处理请求
+	// 这种情况下应该使用 DoResponse 来处理
+	if resp == nil {
+		usage, doRespErr := adaptor.DoResponse(c, resp, meta)
+		if doRespErr != nil {
+			return doRespErr
+		}
+		// 从 usage 构建 anthropic.Usage
+		if usage != nil {
+			usageMetadata = &anthropic.Usage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+			}
+		}
 	} else {
-		usageMetadata, openaiErr = doNativeClaudeResponse(c, resp, meta)
+		if meta.IsStream {
+			usageMetadata, openaiErr = doNativeClaudeStreamResponse(c, resp, meta)
+		} else {
+			usageMetadata, openaiErr = doNativeClaudeResponse(c, resp, meta)
+		}
 	}
 
 	if openaiErr != nil {
@@ -108,7 +120,6 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	actualQuota, _ := CalculateClaudeQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
 
-	//logger.Infof(ctx, "Gemini actual quota: %d, total tokens: %d", actualQuota, usage.TotalTokens)
 	// 记录消费日志
 	duration := time.Since(startTime).Seconds()
 	tokenName := c.GetString("token_name")
@@ -117,12 +128,17 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	totalTokens := usageMetadata.InputTokens + usageMetadata.OutputTokens
 	//cachedTokens := usageMetadata.CacheCreationInputTokens + usageMetadata.CacheReadInputTokens
 
-	// 获取首字延迟（从 context 中获取，流式响应时会设置）
+	// 计算首字延迟：优先使用总请求开始时间（包含重试），否则使用 meta 中的时间
 	var firstWordLatency float64
-	if latency, exists := c.Get("first_word_latency"); exists {
-		if latencyFloat, ok := latency.(float64); ok {
-			firstWordLatency = latencyFloat
+	if totalStartTime, exists := c.Get("total_request_start_time"); exists {
+		if startTime, ok := totalStartTime.(time.Time); ok && !meta.FirstResponseTime.IsZero() {
+			// 使用总请求开始时间到首字响应时间的间隔
+			firstWordLatency = meta.FirstResponseTime.Sub(startTime).Seconds()
+		} else {
+			firstWordLatency = meta.GetFirstWordLatency()
 		}
+	} else {
+		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
 	go recordClaudeConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
@@ -350,6 +366,48 @@ func CalculateClaudeQuotaFromUsageMetadata(usageMetadata *anthropic.Usage, model
 }
 
 // doNativeGeminiResponse 处理 Gemini 非流式响应
+// parseUpstreamErrorMessage 解析上游错误响应，提取具体的错误消息
+// 支持多种格式：{"error":{"message":"..."}} 或 {"message":"..."} 或纯文本
+func parseUpstreamErrorMessage(responseBody []byte, requestID string) (message string, errType string) {
+	// 尝试解析为 JSON
+	var errorResp struct {
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	}
+
+	if err := json.Unmarshal(responseBody, &errorResp); err == nil {
+		// 成功解析 JSON
+		if errorResp.Error != nil && errorResp.Error.Message != "" {
+			message = errorResp.Error.Message
+			errType = errorResp.Error.Type
+		} else if errorResp.Message != "" {
+			message = errorResp.Message
+			errType = errorResp.Type
+		}
+	}
+
+	// 如果没有解析到消息，使用原始响应
+	if message == "" {
+		message = string(responseBody)
+	}
+
+	// 添加系统内部的 requestID
+	if requestID != "" {
+		message = fmt.Sprintf("%s [System RequestID: %s]", message, requestID)
+	}
+
+	if errType == "" {
+		errType = "upstream_error"
+	}
+
+	return message, errType
+}
+
 func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
 	defer util.CloseResponseBodyGracefully(resp)
 
@@ -361,10 +419,13 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 
 	// 检查响应状态码
 	if resp.StatusCode != http.StatusOK {
+		// 获取系统内部的 requestID
+		requestID := c.GetHeader("X-Request-ID")
+		message, errType := parseUpstreamErrorMessage(responseBody, requestID)
 		return nil, &model.ErrorWithStatusCode{
 			Error: model.Error{
-				Message: string(responseBody),
-				Type:    "claude_api_error",
+				Message: message,
+				Type:    errType,
 				Code:    fmt.Sprintf("status_%d", resp.StatusCode),
 			},
 			StatusCode: resp.StatusCode,
@@ -387,17 +448,29 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 // claude 流式响应格式为 SSE，每行以 "data: " 开头，后跟 JSON 对象
 func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
 	defer util.CloseResponseBodyGracefully(resp)
-	// 检查响应状态码
 
-	// 设置 SSE 响应头
-	//common.SetEventStreamHeaders(c)
+	// 检查响应状态码 - 如果不是200，读取错误信息并返回
+	if resp.StatusCode != http.StatusOK {
+		responseBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, openai.ErrorWrapper(readErr, "read_error_response_failed", http.StatusInternalServerError)
+		}
+		// 获取系统内部的 requestID
+		requestID := c.GetHeader("X-Request-ID")
+		message, errType := parseUpstreamErrorMessage(responseBody, requestID)
+		return nil, &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: message,
+				Type:    errType,
+				Code:    fmt.Sprintf("status_%d", resp.StatusCode),
+			},
+			StatusCode: resp.StatusCode,
+		}
+	}
+
 	// 用于保存最后的 UsageMetadata
 	var lastUsageMetadata = &anthropic.Usage{}
 	var openaiErr *model.ErrorWithStatusCode
-
-	// 记录开始时间，用于计算首字延迟
-	startTime := time.Now()
-	var firstWordTime *time.Time
 
 	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
 		var claudeResponse anthropic.StreamResponse
@@ -417,14 +490,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		if claudeResponse.Type == "message_start" {
 			lastUsageMetadata = claudeResponse.Message.Usage
 		} else if claudeResponse.Type == "content_block_delta" {
-			// 记录首字时间：当收到第一个 content_block_delta 时
-			if firstWordTime == nil {
-				// 检查是否有实际内容
-				if claudeResponse.Delta != nil && claudeResponse.Delta.Text != "" {
-					now := time.Now()
-					firstWordTime = &now
-				}
-			}
+			// 首字时间由 StreamScannerHandler 统一设置，这里不需要处理
 		} else if claudeResponse.Type == "message_delta" {
 			// 最终的usage获取
 			if claudeResponse.Usage != nil {
@@ -471,12 +537,6 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 
 	if openaiErr != nil {
 		return nil, openaiErr
-	}
-
-	// 计算并设置首字延迟
-	if firstWordTime != nil {
-		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
-		c.Set("first_word_latency", firstWordLatency)
 	}
 
 	return lastUsageMetadata, nil

@@ -9,9 +9,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/songquanpeng/one-api/common/config"
 )
 
@@ -281,4 +283,18 @@ func MaskSensitiveInfo(str string) string {
 	str = ipPattern.ReplaceAllString(str, "***.***.***.***")
 
 	return str
+}
+
+// GenerateRequestID 生成请求ID
+// 格式: 时间戳(YYYYMMDDHHmmss) + 8位UUID
+// 例如: 20251227143052a1b2c3d4
+func GenerateRequestID() string {
+	timestamp := time.Now().Format("20060102150405")
+	uuidStr := uuid.New().String()
+	// 移除UUID中的连字符并取前8位
+	uuidStr = strings.Replace(uuidStr, "-", "", -1)
+	if len(uuidStr) > 8 {
+		uuidStr = uuidStr[:8]
+	}
+	return timestamp + uuidStr
 }

@@ -200,44 +200,44 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 			if len(data) < 6 {
 				continue
 			}
-			if data[:5] != "data:" && data[:6] != "[DONE]" {
-				continue
-			}
-			data = data[5:]
-			data = strings.TrimLeft(data, " ")
-			data = strings.TrimSuffix(data, "\r")
-			if !strings.HasPrefix(data, "[DONE]") {
-				//info.SetFirstResponseTime()
-	
-				// 使用超时机制防止写操作阻塞
-				done := make(chan bool, 1)
-				go func() {
-					writeMutex.Lock()
-					defer writeMutex.Unlock()
-					done <- dataHandler(data)
-				}()
-	
-				select {
-				case success := <-done:
-					if !success {
-						return
-					}
-				case <-time.After(10 * time.Second):
-					logger.Error(c, "data handler timeout")
-					return
-				case <-ctx.Done():
-					return
-				case <-stopChan:
+		if data[:5] != "data:" && data[:6] != "[DONE]" {
+			continue
+		}
+		data = data[5:]
+		data = strings.TrimLeft(data, " ")
+		data = strings.TrimSuffix(data, "\r")
+		if !strings.HasPrefix(data, "[DONE]") {
+			info.SetFirstResponseTime()
+
+			// 使用超时机制防止写操作阻塞
+			done := make(chan bool, 1)
+			go func() {
+				writeMutex.Lock()
+				defer writeMutex.Unlock()
+				done <- dataHandler(data)
+			}()
+
+			select {
+			case success := <-done:
+				if !success {
 					return
 				}
-			} else {
-				// done, 处理完成标志，直接退出停止读取剩余数据防止出错
-				if config.DebugEnabled {
-					println("received [DONE], stopping scanner")
-				}
+			case <-time.After(10 * time.Second):
+				logger.Error(c, "data handler timeout")
+				return
+			case <-ctx.Done():
+				return
+			case <-stopChan:
 				return
 			}
+		} else {
+			// done, 处理完成标志，直接退出停止读取剩余数据防止出错
+			if config.DebugEnabled {
+				println("received [DONE], stopping scanner")
+			}
+			return
 		}
+	}
 	
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {

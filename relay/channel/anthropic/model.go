@@ -327,8 +327,9 @@ type ContentBlockSourceContent struct {
 
 // Delta 流式响应中的增量内容
 type Delta struct {
-	Type         string  `json:"type,omitempty"`          // "text_delta", "input_json_delta"
+	Type         string  `json:"type,omitempty"`          // "text_delta", "input_json_delta", "thinking_delta"
 	Text         string  `json:"text,omitempty"`          // 文本增量
+	Thinking     string  `json:"thinking,omitempty"`      // 思考增量（thinking模式）
 	PartialJson  string  `json:"partial_json,omitempty"`  // 部分JSON（工具调用时）
 	StopReason   *string `json:"stop_reason,omitempty"`   // 停止原因
 	StopSequence *string `json:"stop_sequence,omitempty"` // 停止序列

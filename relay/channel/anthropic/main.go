@@ -14,7 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/helper"
-	//"github.com/songquanpeng/one-api/common/image"
+	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -39,120 +39,140 @@ func stopReasonClaude2OpenAI(reason *string) string {
 }
 
 func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
-	// claudeTools := make([]Tool, 0, len(textRequest.Tools))
+	claudeTools := make([]Tool, 0, len(textRequest.Tools))
 
-	// for _, tool := range textRequest.Tools {
-	// 	if params, ok := tool.Function.Parameters.(map[string]any); ok {
-	// 		claudeTools = append(claudeTools, Tool{
-	// 			Name:        tool.Function.Name,
-	// 			Description: tool.Function.Description,
-	// 			InputSchema: InputSchema{
-	// 				Type:       params["type"].(string),
-	// 				Properties: params["properties"],
-	// 				Required:   params["required"],
-	// 			},
-	// 		})
-	// 	}
-	// }
+	for _, tool := range textRequest.Tools {
+		if params, ok := tool.Function.Parameters.(map[string]any); ok {
+			var required []string
+			if reqVal, ok := params["required"]; ok {
+				if reqArr, ok := reqVal.([]interface{}); ok {
+					for _, r := range reqArr {
+						if s, ok := r.(string); ok {
+							required = append(required, s)
+						}
+					}
+				} else if reqStrArr, ok := reqVal.([]string); ok {
+					required = reqStrArr
+				}
+			}
+			typeStr := "object"
+			if t, ok := params["type"].(string); ok {
+				typeStr = t
+			}
+			claudeTools = append(claudeTools, Tool{
+				Name:        tool.Function.Name,
+				Description: tool.Function.Description,
+				InputSchema: InputSchema{
+					Type:       typeStr,
+					Properties: params["properties"],
+					Required:   required,
+				},
+			})
+		}
+	}
 
-	// claudeRequest := Request{
-	// 	Model:       textRequest.Model,
-	// 	MaxTokens:   textRequest.MaxTokens,
-	// 	Temperature: textRequest.Temperature,
-	// 	TopP:        textRequest.TopP,
-	// 	TopK:        textRequest.TopK,
-	// 	Stream:      textRequest.Stream,
-	// 	Tools:       claudeTools,
-	// }
-	// if stop, ok := textRequest.Stop.(string); ok && stop != "" {
-	// 	claudeRequest.StopSequences = []string{stop}
-	// }
-	// if len(claudeTools) > 0 {
-	// 	claudeToolChoice := struct {
-	// 		Type string `json:"type"`
-	// 		Name string `json:"name,omitempty"`
-	// 	}{Type: "auto"} // default value https://docs.anthropic.com/en/docs/build-with-claude/tool-use#controlling-claudes-output
-	// 	if choice, ok := textRequest.ToolChoice.(map[string]any); ok {
-	// 		if function, ok := choice["function"].(map[string]any); ok {
-	// 			claudeToolChoice.Type = "tool"
-	// 			claudeToolChoice.Name = function["name"].(string)
-	// 		}
-	// 	} else if toolChoiceType, ok := textRequest.ToolChoice.(string); ok {
-	// 		if toolChoiceType == "any" {
-	// 			claudeToolChoice.Type = toolChoiceType
-	// 		}
-	// 	}
-	// 	claudeRequest.ToolChoice = claudeToolChoice
-	// }
-	// if claudeRequest.MaxTokens == 0 {
-	// 	claudeRequest.MaxTokens = 4096
-	// }
-	// // legacy model name mapping
-	// if claudeRequest.Model == "claude-instant-1" {
-	// 	claudeRequest.Model = "claude-instant-1.1"
-	// } else if claudeRequest.Model == "claude-2" {
-	// 	claudeRequest.Model = "claude-2.1"
-	// }
-	// for _, message := range textRequest.Messages {
-	// 	if message.Role == "system" && claudeRequest.System == "" {
-	// 		claudeRequest.System = message.StringContent()
-	// 		continue
-	// 	}
-	// 	claudeMessage := Message{
-	// 		Role: message.Role,
-	// 	}
-	// 	var content Content
-	// 	if message.IsStringContent() {
-	// 		content.Type = "text"
-	// 		content.Text = message.StringContent()
-	// 		if message.Role == "tool" {
-	// 			claudeMessage.Role = "user"
-	// 			content.Type = "tool_result"
-	// 			content.Content = content.Text
-	// 			content.Text = ""
-	// 			content.ToolUseId = message.ToolCallId
-	// 		}
-	// 		claudeMessage.Content = append(claudeMessage.Content, content)
-	// 		for i := range message.ToolCalls {
-	// 			inputParam := make(map[string]any)
-	// 			_ = json.Unmarshal([]byte(message.ToolCalls[i].Function.Arguments.(string)), &inputParam)
-	// 			claudeMessage.Content = append(claudeMessage.Content, Content{
-	// 				Type:  "tool_use",
-	// 				Id:    message.ToolCalls[i].Id,
-	// 				Name:  message.ToolCalls[i].Function.Name,
-	// 				Input: inputParam,
-	// 			})
-	// 		}
-	// 		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
-	// 		continue
-	// 	}
-	// 	var contents []Content
-	// 	openaiContent := message.ParseContent()
-	// 	for _, part := range openaiContent {
-	// 		var content Content
-	// 		if part.Type == model.ContentTypeText {
-	// 			content.Type = "text"
-	// 			content.Text = part.Text
-	// 		} else if part.Type == model.ContentTypeImageURL {
-	// 			content.Type = "image"
-	// 			content.Source = &ImageSource{
-	// 				Type: "base64",
-	// 			}
-	// 			mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
-	// 			if err != nil {
-	// 				logger.SysLog(fmt.Sprintf("Error in GetImageFromUrl: %v", err))
-	// 				return &claudeRequest
-	// 			}
-	// 			content.Source.MediaType = mimeType
-	// 			content.Source.Data = data
-	// 		}
-	// 		contents = append(contents, content)
-	// 	}
-	// 	claudeMessage.Content = contents
-	// 	claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
-	// }
-	//return &claudeRequest
-	return nil
+	claudeRequest := Request{
+		Model:       textRequest.Model,
+		MaxTokens:   textRequest.MaxTokens,
+		Temperature: textRequest.Temperature,
+		TopP:        textRequest.TopP,
+		TopK:        textRequest.TopK,
+		Stream:      textRequest.Stream,
+		Tools:       claudeTools,
+	}
+	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
+		claudeRequest.StopSequences = []string{stop}
+	}
+	if len(claudeTools) > 0 {
+		claudeToolChoice := &ToolChoice{Type: "auto"} // default value https://docs.anthropic.com/en/docs/build-with-claude/tool-use#controlling-claudes-output
+		if choice, ok := textRequest.ToolChoice.(map[string]any); ok {
+			if function, ok := choice["function"].(map[string]any); ok {
+				claudeToolChoice.Type = "tool"
+				if name, ok := function["name"].(string); ok {
+					claudeToolChoice.Name = name
+				}
+			}
+		} else if toolChoiceType, ok := textRequest.ToolChoice.(string); ok {
+			if toolChoiceType == "any" {
+				claudeToolChoice.Type = toolChoiceType
+			}
+		}
+		claudeRequest.ToolChoice = claudeToolChoice
+	}
+	if claudeRequest.MaxTokens == 0 {
+		claudeRequest.MaxTokens = 4096
+	}
+	// legacy model name mapping
+	if claudeRequest.Model == "claude-instant-1" {
+		claudeRequest.Model = "claude-instant-1.1"
+	} else if claudeRequest.Model == "claude-2" {
+		claudeRequest.Model = "claude-2.1"
+	}
+	for _, message := range textRequest.Messages {
+		if message.Role == "system" && claudeRequest.System == nil {
+			claudeRequest.System = message.StringContent()
+			continue
+		}
+		claudeMessage := Message{
+			Role: message.Role,
+		}
+		if message.IsStringContent() {
+			var contentBlocks []ContentBlockParam
+			content := ContentBlockParam{
+				Type: "text",
+				Text: message.StringContent(),
+			}
+			if message.Role == "tool" {
+				claudeMessage.Role = "user"
+				content = ContentBlockParam{
+					Type:      "tool_result",
+					ToolUseID: message.ToolCallId,
+					Content:   message.StringContent(),
+				}
+			}
+			contentBlocks = append(contentBlocks, content)
+			for i := range message.ToolCalls {
+				inputParam := make(map[string]any)
+				if args, ok := message.ToolCalls[i].Function.Arguments.(string); ok {
+					_ = json.Unmarshal([]byte(args), &inputParam)
+				}
+				contentBlocks = append(contentBlocks, ContentBlockParam{
+					Type:  "tool_use",
+					Id:    message.ToolCalls[i].Id,
+					Name:  message.ToolCalls[i].Function.Name,
+					Input: inputParam,
+				})
+			}
+			claudeMessage.Content = contentBlocks
+			claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
+			continue
+		}
+		var contents []ContentBlockParam
+		openaiContent := message.ParseContent()
+		for _, part := range openaiContent {
+			var content ContentBlockParam
+			if part.Type == model.ContentTypeText {
+				content.Type = "text"
+				content.Text = part.Text
+			} else if part.Type == model.ContentTypeImageURL {
+				content.Type = "image"
+				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
+				if err != nil {
+					logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
+					continue
+				}
+				content.Source = Base64ImageSource{
+					Type:      "base64",
+					MediaType: mimeType,
+					Data:      data,
+				}
+			}
+			contents = append(contents, content)
+		}
+		claudeMessage.Content = contents
+		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
+	}
+	return &claudeRequest
 }
 
 // https://docs.anthropic.com/claude/reference/messages-streaming
@@ -396,7 +416,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
 	}
-	if claudeResponse.Error.Type != "" {
+	if claudeResponse.Error != nil && claudeResponse.Error.Type != "" {
 		return &model.ErrorWithStatusCode{
 			Error: model.Error{
 				Message: claudeResponse.Error.Message,
