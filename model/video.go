@@ -20,7 +20,7 @@ type Video struct {
 	Duration    string `json:"duration"`
 	Resolution  string `json:"resolution"` // 视频分辨率
 	Username    string `json:"username"`
-	ChannelId   int    `json:"channel_id" gorm:"index:idx_channel_id"` // 添加渠道索引
+	ChannelId   int    `json:"channel_id"` // 添加渠道索引
 	UserId      int    `json:"user_id" gorm:"index:idx_user_id"`       // 添加用户索引
 	Model       string `json:"model"`
 	Status      string `json:"status" gorm:"index:idx_status"` // 添加状态索引
@@ -29,8 +29,8 @@ type Video struct {
 	StoreUrl    string `json:"store_url"`                          // 直接存储JSON化的URL数组字符串
 	Quota       int64  `json:"quota"`
 	N           int    `json:"n"`
-	Credentials string `json:"credentials"`                // 保存任务创建时使用的完整JSON凭证
-	JsonData    string `json:"json_data" gorm:"type:text"` // 保存 Kling 回调的完整 JSON 数据
+	Credentials string `json:"credentials"`             // 保存任务创建时使用的完整JSON凭证
+	Result      string `json:"result" gorm:"type:text"` // 保存 Kling 回调的完整 JSON 数据
 }
 
 func (video *Video) Insert() error {

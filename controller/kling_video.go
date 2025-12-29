@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/songquanpeng/one-api/common/config"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/kling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -100,9 +100,12 @@ func RelayKlingVideo(c *gin.Context) {
 
 	// 构建回调URL
 	var callbackURL string
-	if meta.BaseURL != "" {
-		callbackURL = fmt.Sprintf("%s/kling/internal/callback", meta.BaseURL)
+	if config.ServerAddress == "" {
+		errResp := openai.ErrorWrapper(nil, "invalid_server_address", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
 	}
+	callbackURL = fmt.Sprintf("%s/kling/internal/callback", config.ServerAddress)
 
 	// 调用 Kling API
 	adaptor := &kling.Adaptor{RequestType: requestType}
@@ -155,7 +158,7 @@ func RelayKlingVideo(c *gin.Context) {
 	c.JSON(http.StatusOK, klingResp)
 }
 
-// RelayKlingVideoResult 查询任务结果（每次都请求 Kling API）
+// RelayKlingVideoResult 查询任务结果（从数据库读取）
 func RelayKlingVideoResult(c *gin.Context) {
 	taskID := c.Param("id")
 	if taskID == "" {
@@ -163,62 +166,59 @@ func RelayKlingVideoResult(c *gin.Context) {
 		return
 	}
 
-	// 从数据库获取任务信息（用于验证权限和获取渠道信息）
+	// 从数据库获取任务信息
 	video, err := dbmodel.GetVideoTaskById(taskID)
 	if err != nil {
-		// 如果任务不存在，也尝试查询 Kling API（可能是直接使用 Kling task_id）
-		logger.SysLog(fmt.Sprintf("任务在数据库中不存在，尝试直接查询 Kling API: task_id=%s", taskID))
-	}
-
-	// 获取渠道信息（优先从 video 记录，否则从请求上下文）
-	var channel *dbmodel.Channel
-	if video != nil {
-		channel, err = dbmodel.GetChannelById(video.ChannelId, true)
-	} else {
-		// 如果没有 video 记录，从上下文获取（需要认证）
-		meta := util.GetRelayMeta(c)
-		channel, err = dbmodel.GetChannelById(meta.ChannelId, true)
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取渠道信息失败"})
+		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "任务不存在",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	// 生成 JWT Token
-	jwtToken, err := keling.GetCredentialsAndGenerateToken(channel, 0)
-	if err != nil {
-		logger.SysError(fmt.Sprintf("生成 Kling token 失败: channel_id=%d, error=%v", channel.Id, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "渠道认证失败: " + err.Error()})
+	// 如果 result 字段为空，返回基本状态信息
+	if video.Result == "" {
+		// 构建基本的查询响应（任务尚未完成回调）
+		response := kling.QueryTaskResponse{
+			Code:      0,
+			Message:   "success",
+			RequestID: fmt.Sprintf("query-%s", taskID),
+			Data: kling.TaskData{
+				TaskID:        video.TaskId,
+				TaskStatus:    video.Status,
+				TaskStatusMsg: video.FailReason,
+				CreatedAt:     video.CreatedAt,
+				UpdatedAt:     video.UpdatedAt,
+				TaskResult: kling.TaskResult{
+					Videos: []kling.Video{},
+				},
+			},
+		}
+		c.JSON(http.StatusOK, response)
 		return
 	}
 
-	meta := &util.RelayMeta{
-		APIKey: jwtToken,
-	}
-	if channel.BaseURL != nil {
-		meta.BaseURL = *channel.BaseURL
-	}
-
-	// 每次都请求 Kling API 获取最新状态
-	adaptor := &kling.Adaptor{}
-	result, err := adaptor.QueryTaskStatus(taskID, meta)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败: " + err.Error()})
+	// 从 result 字段解析查询响应数据
+	var queryResponse kling.QueryTaskResponse
+	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
+		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "解析查询结果失败",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	// 更新数据库（如果记录存在）
-	if video != nil {
-		updateVideoFromKlingResult(video, result)
-	}
-
-	// 透传 Kling 原始响应
-	c.JSON(http.StatusOK, result)
+	// 返回查询响应
+	c.JSON(http.StatusOK, queryResponse)
 }
 
 // HandleKlingCallback 处理 Kling 回调通知
 func HandleKlingCallback(c *gin.Context) {
-	// 读取原始body用于保存完整JSON
+	// 读取原始body
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
 		logger.SysError(fmt.Sprintf("Kling callback read body error: %v", err))
@@ -271,8 +271,29 @@ func HandleKlingCallback(c *gin.Context) {
 		return
 	}
 
-	// 保存完整的回调 JSON 数据
-	video.JsonData = string(bodyBytes)
+	// 将回调数据转换成查询数据格式（QueryTaskResponse）
+	queryResponse := kling.QueryTaskResponse{
+		Code:      0,
+		Message:   "success",
+		RequestID: fmt.Sprintf("callback-%s", taskID),
+		Data: kling.TaskData{
+			TaskID:        notification.TaskID,
+			TaskStatus:    notification.TaskStatus,
+			TaskStatusMsg: notification.TaskStatusMsg,
+			CreatedAt:     notification.CreatedAt,
+			UpdatedAt:     notification.UpdatedAt,
+			TaskResult:    notification.TaskResult,
+		},
+	}
+
+	// 将转换后的查询格式保存到 result 字段
+	queryResponseBytes, err := json.Marshal(queryResponse)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling callback marshal query response error: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	video.Result = string(queryResponseBytes)
 
 	// 处理回调结果
 	if notification.TaskStatus == kling.TaskStatusSucceed {

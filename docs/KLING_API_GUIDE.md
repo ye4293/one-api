@@ -423,3 +423,65 @@ grep "task_id=kling_abc123" logs/oneapi.log
 - **2025-12-25**: 初始版本，支持四种视频生成模式
 - 后续更新请关注系统发布说明
 
+## 回调返回数据格式
+```json
+{
+  "task_id": "string", //任务ID，系统生成
+  "task_status": "string", //任务状态，枚举值：submitted（已提交）、processing（处理中）、succeed（成功）、failed（失败）
+  "task_status_msg": "string", //任务状态信息，当任务失败时展示失败原因（如触发平台的内容风控等）
+  "task_info":{ //任务创建时的参数信息
+    "parent_video": {
+      "id": "string", //续写前的视频ID；全局唯一
+      "url": "string", //续写前视频的URL（请注意，为保障信息安全，生成的图片/视频会在30天后被清理，请及时转存）
+      "duration": "string" //续写前的视频总时长，单位s
+    },
+    "external_task_id": "string"//客户自定义任务ID
+  }, //任务创建时用户填写的详细信息
+  "created_at": 1722769557708, //任务创建时间，Unix时间戳、单位ms
+  "updated_at": 1722769557708, //任务更新时间，Unix时间戳、单位ms
+  "task_result":{
+  	"images":[ //图片类任务的结果
+      {
+        "index": int, //图片编号
+        "url": "string" //生成图片的URL，例如：https://h1.inkwai.com/bs2/upload-ylab-stunt/1fa0ac67d8ce6cd55b50d68b967b3a59.png（请注意，为保障信息安全，生成的图片/视频会在30天后被清理，请及时转存）
+      }
+    ],
+    "videos":[ //视频类任务的结果
+  		{
+        "id": "string", //视频ID；全局唯一
+        "url": "string", //视频的URL（请注意，为保障信息安全，生成的图片/视频会在30天后被清理，请及时转存）
+        "duration": "string" //视频总时长，单位s
+      }
+  	]
+  }
+}
+```
+
+查询数据返回格式
+```json
+{
+  "code": 0, //错误码；具体定义见错误码
+  "message": "string", //错误信息
+  "request_id": "string", //请求ID，系统生成，用于跟踪请求、排查问题
+  "data":{
+  	"task_id": "string", //任务ID，系统生成 
+    "task_status": "string", //任务状态，枚举值：submitted（已提交）、processing（处理中）、succeed（成功）、failed（失败）
+    "task_status_msg": "string", //任务状态信息，当任务失败时展示失败原因（如触发平台的内容风控等）
+    "task_info": { //任务创建时的参数信息
+      "external_task_id": "string"//客户自定义任务ID
+    },
+    "task_result":{
+      "videos":[
+        {
+        	"id": "string", //生成的视频ID；全局唯一
+      		"url": "string", //生成视频的URL，防盗链格式（请注意，为保障信息安全，生成的图片/视频会在30天后被清理，请及时转存）
+      		"duration": "string" //视频总时长，单位s
+        }
+      ]
+    },
+    "created_at": 1722769557708, //任务创建时间，Unix时间戳、单位ms
+    "updated_at": 1722769557708 //任务更新时间，Unix时间戳、单位ms
+  }
+}
+
+```
