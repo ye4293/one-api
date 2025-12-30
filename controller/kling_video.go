@@ -87,7 +87,7 @@ func RelayKlingVideo(c *gin.Context) {
 		Model:     kling.GetModelNameFromRequest(requestParams),
 		Provider:  "kling",
 		Type:      requestType,
-		Status:    kling.TaskStatusPending,
+		Status:    "",
 		Quota:     quota,
 		Prompt:    kling.GetPromptFromRequest(requestParams),
 		Duration:  fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams)),
@@ -144,13 +144,13 @@ func RelayKlingVideo(c *gin.Context) {
 	// 更新 Video 记录（使用 Kling 返回的 task_id）
 	video.TaskId = klingResp.Data.TaskID
 	video.Status = klingResp.Data.TaskStatus
-	video.CreatedAt = klingResp.Data.CreatedAt
-	video.UpdatedAt = klingResp.Data.UpdatedAt
+	//video.CreatedAt = klingResp.Data.CreatedAt
+	//video.UpdatedAt = klingResp.Data.UpdatedAt
 	video.VideoId = klingResp.Data.TaskID
 	if err := video.Update(); err != nil {
 		logger.SysError(fmt.Sprintf("更新视频任务失败: id=%d, task_id=%s, error=%v", video.Id, video.TaskId, err))
 	}
-
+	logger.SysLog(fmt.Sprintf("video: id=+%v, ", video))
 	logger.SysLog(fmt.Sprintf("Kling video task submitted: id=%d, task_id=%s, external_task_id=%d, user_id=%d, channel_id=%d, quota=%d",
 		video.Id, klingResp.Data.TaskID, video.Id, meta.UserId, meta.ChannelId, quota))
 

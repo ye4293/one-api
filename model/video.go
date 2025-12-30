@@ -9,8 +9,8 @@ import (
 )
 
 type Video struct {
-	Id          int64  `json:"id" gorm:"primaryKey;autoIncrement"`                                          // 自增主键,用于高效范围查询和排序
-	TaskId      string `json:"task_id" gorm:"type:varchar(200);uniqueIndex:idx_task_id,length:40;not null"` // 唯一索引,用于业务查询
+	Id          int64  `json:"id" gorm:"primaryKey;autoIncrement"`                           // 自增主键,用于高效范围查询和排序
+	TaskId      string `json:"task_id" gorm:"type:varchar(200);index:idx_task_id,length:40"` // 唯一索引,用于业务查询
 	Prompt      string `json:"prompt"`
 	CreatedAt   int64  `json:"created_at"` // 创建时间戳
 	UpdatedAt   int64  `json:"updated_at"` // 更新时间戳
@@ -20,8 +20,8 @@ type Video struct {
 	Duration    string `json:"duration"`
 	Resolution  string `json:"resolution"` // 视频分辨率
 	Username    string `json:"username"`
-	ChannelId   int    `json:"channel_id"` // 添加渠道索引
-	UserId      int    `json:"user_id" gorm:"index:idx_user_id"`       // 添加用户索引
+	ChannelId   int    `json:"channel_id"`                       // 添加渠道索引
+	UserId      int    `json:"user_id" gorm:"index:idx_user_id"` // 添加用户索引
 	Model       string `json:"model"`
 	Status      string `json:"status" gorm:"index:idx_status"` // 添加状态索引
 	FailReason  string `json:"fail_reason"`
@@ -38,17 +38,18 @@ func (video *Video) Insert() error {
 	if video.CreatedAt == 0 {
 		video.CreatedAt = now
 	}
+	video.CreatedAt = now
 	video.UpdatedAt = now
 	return DB.Create(video).Error
 }
 
 func (video *Video) Update() error {
-	if video.TaskId == "" {
-		return fmt.Errorf("TaskId must be provided for update")
-	}
+	//if video.TaskId == "" {
+	//	return fmt.Errorf("TaskId must be provided for update")
+	//}
 	// 自动更新 updated_at 字段
 	video.UpdatedAt = time.Now().Unix()
-	return DB.Model(&Video{}).Where("task_id = ?", video.TaskId).Updates(video).Error
+	return DB.Model(&Video{}).Where("id = ?", video.Id).Updates(video).Error
 }
 
 func GetVideoTaskById(taskId string) (*Video, error) {
