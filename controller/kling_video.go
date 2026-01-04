@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"net/http"
 
@@ -41,9 +42,12 @@ func RelayKlingVideo(c *gin.Context) {
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
 	}
-
+	model := kling.GetModelNameFromRequest(requestParams)
+	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
+	mode := kling.GetModeFromRequest(requestParams)
 	// 计算预估费用
-	quota := kling.CalculateQuota(requestParams, requestType)
+	//quota := kling.CalculateQuota(requestParams, requestType)
+	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
 
 	// 检查用户余额（后扣费模式：仅验证余额，不实际扣费）
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
@@ -84,13 +88,14 @@ func RelayKlingVideo(c *gin.Context) {
 		UserId:    meta.UserId,
 		Username:  user.Username,
 		ChannelId: meta.ChannelId,
-		Model:     kling.GetModelNameFromRequest(requestParams),
+		Model:     model,
 		Provider:  "kling",
 		Type:      requestType,
 		Status:    "",
 		Quota:     quota,
+		Mode:      mode,
 		Prompt:    kling.GetPromptFromRequest(requestParams),
-		Duration:  fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams)),
+		Duration:  duration,
 	}
 	if err := video.Insert(); err != nil {
 		errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
