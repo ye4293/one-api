@@ -63,3 +63,16 @@ func GetModelNameFromRequest(params map[string]interface{}) string {
 	return ""
 }
 
+// GetModeFromRequest 从请求参数中提取生成模式
+// std: 标准模式（性价比高）
+// pro: 专家模式（高品质）
+func GetModeFromRequest(params map[string]interface{}) string {
+	if mode, ok := params["mode"].(string); ok {
+		// 验证是否为有效值
+		if mode == "std" || mode == "pro" {
+			return mode
+		}
+	}
+	return "std" // 默认标准模式
+}
+
