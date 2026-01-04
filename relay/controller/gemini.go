@@ -75,7 +75,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	//获取原生requestbody
 	originRequestBody, err := common.GetRequestBody(c)
-	// logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
+	//logger.Infof(ctx, "originRequestBody: %s", string(originRequestBody))
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
@@ -150,12 +150,25 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	totalTokens := usageMetadata.TotalTokenCount
 	cachedTokens := usageMetadata.CachedContentTokenCount
 
-	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata)
+	// 计算首字延迟：优先使用总请求开始时间（包含重试），否则使用 meta 中的时间
+	var firstWordLatency float64
+	if totalStartTime, exists := c.Get("total_request_start_time"); exists {
+		if startTime, ok := totalStartTime.(time.Time); ok && !meta.FirstResponseTime.IsZero() {
+			// 使用总请求开始时间到首字响应时间的间隔
+			firstWordLatency = meta.FirstResponseTime.Sub(startTime).Seconds()
+		} else {
+			firstWordLatency = meta.GetFirstWordLatency()
+		}
+	} else {
+		firstWordLatency = meta.GetFirstWordLatency()
+	}
+
+	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
 	return nil
 }
 
 // recordGeminiConsumption 记录 Gemini 消费日志
-func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata) {
+func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata, firstWordLatency float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -180,7 +193,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 	other := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, 0, other, c.GetHeader("X-Request-ID"), cachedTokens)
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), cachedTokens)
 }
 
 // extractGeminiNativeUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息（用于 native 接口）
@@ -463,39 +476,6 @@ func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
-
-	// 提取 usage 信息
-	// usage = &model.Usage{
-	// 	PromptTokens:     geminiResponse.UsageMetadata.PromptTokenCount,
-	// 	CompletionTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
-	// 	TotalTokens:      geminiResponse.UsageMetadata.TotalTokenCount,
-	// }
-
-	// 如果响应中有 usageMetadata，使用真实数据
-	// Gemini 原生响应可能在不同位置包含 usage 信息
-	// 这里需要手动解析 JSON 来获取
-	// var rawResponse map[string]interface{}
-	// if json.Unmarshal(responseBody, &rawResponse) == nil {
-	// 	if usageMetadata, ok := rawResponse["usageMetadata"].(map[string]interface{}); ok {  //输入token
-	// 		if promptTokens, ok := usageMetadata["promptTokenCount"].(float64); ok {
-	// 			usage.PromptTokens = int(promptTokens)
-	// 		}
-	// 		if candidatesTokens, ok := usageMetadata["candidatesTokenCount"].(float64); ok {  //补全token
-	// 			usage.CompletionTokens = int(candidatesTokens)
-	// 		}
-	// 		if totalTokens, ok := usageMetadata["totalTokenCount"].(float64); ok {
-	// 			usage.TotalTokens = int(totalTokens)
-	// 		}
-	// 	}
-	// }
-	// for _, detail := range geminiResponse.UsageMetadata.PromptTokensDetails {
-	// 	if detail.Modality == "AUDIO" {
-	// 		usage.PromptTokensDetails.AudioTokens = detail.TokenCount
-	// 	} else if detail.Modality == "TEXT" {
-	// 		usage.PromptTokensDetails.TextTokens = detail.TokenCount
-	// 	}
-	// }
-
 	// 直接返回原生 Gemini 响应格式
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	return geminiResponse.UsageMetadata, nil
@@ -522,7 +502,7 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		}
 	}
 	// 设置 SSE 响应头
-	common.SetEventStreamHeaders(c)
+	//common.SetEventStreamHeaders(c)
 	// 用于保存最后的 UsageMetadata
 	var lastUsageMetadata = &gemini.UsageMetadata{}
 

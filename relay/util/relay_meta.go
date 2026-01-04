@@ -3,6 +3,7 @@ package util
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -35,13 +36,33 @@ type RelayMeta struct {
 	UserChannelTypeRatio    float64
 	UserChannelTypeRatioMap string
 	// 用于计算首字延迟
-	FirstWordLatency float64
+	FirstWordLatency  float64
+	StartTime         time.Time // 请求开始时间
+	FirstResponseTime time.Time // 首字响应时间
+	isFirstResponse   bool      // 标记是否是第一个响应
 	// 多Key相关信息
 	ActualAPIKey string
 	KeyIndex     *int // 使用指针以支持nil值
 	IsMultiKey   bool
 	Keys         []string // 存储所有解析的密钥
-	DisablePing bool
+	DisablePing  bool
+}
+
+// SetFirstResponseTime 设置首字响应时间（只设置一次）
+func (m *RelayMeta) SetFirstResponseTime() {
+	if m.isFirstResponse {
+		m.FirstResponseTime = time.Now()
+		m.isFirstResponse = false
+		// 计算首字延迟（秒）
+		if !m.StartTime.IsZero() {
+			m.FirstWordLatency = m.FirstResponseTime.Sub(m.StartTime).Seconds()
+		}
+	}
+}
+
+// GetFirstWordLatency 获取首字延迟（秒）
+func (m *RelayMeta) GetFirstWordLatency() float64 {
+	return m.FirstWordLatency
 }
 
 func GetRelayMeta(c *gin.Context) *RelayMeta {
@@ -67,6 +88,8 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		UserChannelTypeRatio:    GetChannelTypeRatio(c.GetString("user_channel_type_ratio_map"), c.GetInt("channel")),
 		ActualAPIKey:            c.GetString("actual_key"),
 		IsMultiKey:              c.GetBool("is_multi_key"),
+		StartTime:               time.Now(), // 记录请求开始时间
+		isFirstResponse:         true,       // 初始化为 true，等待第一个响应
 	}
 
 	// 处理多密钥索引

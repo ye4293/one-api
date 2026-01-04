@@ -248,7 +248,7 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, excludeChannelIds ...[]int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -256,20 +256,33 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 		trueVal = "true"
 	}
 
+	// 解析排除的渠道ID列表
+	var excludeIds []int
+	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
+		excludeIds = excludeChannelIds[0]
+	}
+
+	// 构建基础查询条件
+	baseQuery := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled)
+
+	// 如果有需要排除的渠道ID，添加排除条件
+	if len(excludeIds) > 0 {
+		baseQuery = baseQuery.Where("channels.id NOT IN ?", excludeIds)
+	}
+
 	// 查询所有有可用渠道的优先级（确保abilities和channels状态一致）
 	var priorities []int
-	err := DB.Table("abilities").
-		Joins("JOIN channels ON abilities.channel_id = channels.id").
-		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled).
-		Pluck("DISTINCT abilities.priority", &priorities).Error
+	err := baseQuery.Pluck("DISTINCT abilities.priority", &priorities).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
 	}
 
-	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v", group, model, priorities)) // 调试用，生产环境可注释
+	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v, excludeIds=%v", group, model, priorities, excludeIds)) // 调试用，生产环境可注释
 
 	if len(priorities) == 0 {
-		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s", group, model))
+		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s, excludeIds=%v", group, model, excludeIds))
 		return nil, errors.New("no priorities available")
 	}
 
@@ -288,38 +301,49 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	priorityToUse = priorities[selectedPriorityIndex]
 
 	// 验证选择的优先级是否有可用渠道
-	// logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, ignoreFirstPriority=%v", priorityToUse, group, model, ignoreFirstPriority)) // 调试用，生产环境可注释
+	// logger.SysLog(fmt.Sprintf("Selected priority %d for group=%s, model=%s, excludeIds=%v", priorityToUse, group, model, excludeIds)) // 调试用，生产环境可注释
 
 	// 获取符合条件的所有渠道及其权重
 	var channels []Channel
-	err = DB.Table("channels").
+	channelQuery := DB.Table("channels").
 		Joins("JOIN abilities ON channels.id = abilities.channel_id").
-		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled).
-		Find(&channels).Error
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled)
+
+	// 如果有需要排除的渠道ID，添加排除条件
+	if len(excludeIds) > 0 {
+		channelQuery = channelQuery.Where("channels.id NOT IN ?", excludeIds)
+	}
+
+	err = channelQuery.Find(&channels).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch channels: %w", err)
 	}
 
 	if len(channels) == 0 {
-		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d", group, model, priorityToUse, skipPriorityLevels))
+		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d, excludeIds=%v", group, model, priorityToUse, skipPriorityLevels, excludeIds))
 
-		// 回退机制：如果当前优先级没有可用渠道，尝试使用其他优先级
-		if skipPriorityLevels > 0 && len(priorities) > 1 {
-			// 尝试使用最高优先级作为回退
-			logger.SysLog(fmt.Sprintf("Fallback: trying highest priority %d instead", priorities[0]))
-			priorityToUse = priorities[0]
+		// 回退机制：如果当前优先级没有可用渠道，尝试下一个优先级
+		for idx := selectedPriorityIndex + 1; idx < len(priorities); idx++ {
+			priorityToUse = priorities[idx]
+			logger.SysLog(fmt.Sprintf("Fallback: trying priority %d (index %d)", priorityToUse, idx))
 
-			// 重新查询
-			err = DB.Table("channels").
+			// 重新构建查询
+			fallbackQuery := DB.Table("channels").
 				Joins("JOIN abilities ON channels.id = abilities.channel_id").
-				Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled).
-				Find(&channels).Error
+				Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?", group, model, trueVal, priorityToUse, common.ChannelStatusEnabled)
+
+			if len(excludeIds) > 0 {
+				fallbackQuery = fallbackQuery.Where("channels.id NOT IN ?", excludeIds)
+			}
+
+			err = fallbackQuery.Find(&channels).Error
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch channels in fallback: %w", err)
 			}
 
 			if len(channels) > 0 {
 				logger.SysLog(fmt.Sprintf("Fallback successful: found %d channels with priority %d", len(channels), priorityToUse))
+				break
 			}
 		}
 

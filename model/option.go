@@ -79,6 +79,7 @@ func InitOptionMap() {
 	config.OptionMap["ImageInputRatio"] = common.ImageInputRatio2JSONString()
 	config.OptionMap["ImageOutputRatio"] = common.ImageOutputRatio2JSONString()
 	config.OptionMap["PerCallPricing"] = common.ModelPrice2JSONString()
+	config.OptionMap["VideoPricingRules"] = common.VideoPricingRules2JSONString()
 	config.OptionMap["TopUpLink"] = config.TopUpLink
 	config.OptionMap["ChatLink"] = config.ChatLink
 	config.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(config.QuotaPerUnit, 'f', -1, 64)
@@ -102,7 +103,7 @@ func InitOptionMap() {
 	config.OptionMap["CfImageAccessKey"] = ""
 	config.OptionMap["CfImageSecretKey"] = ""
 	config.OptionMap["CfImageEndpoint"] = ""
-	config.OptionMap["FeiShuHookUrl"] = ""
+	config.OptionMap["FeishuWebhookUrls"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -130,6 +131,9 @@ func loadOptionsFromDatabase() {
 		}
 		if option.Key == "ImageOutputRatio" {
 			option.Value = common.AddNewMissingImageOutputRatio(option.Value)
+		}
+		if option.Key == "VideoPricingRules" {
+			option.Value = common.AddNewMissingVideoPricingRules(option.Value)
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
@@ -288,6 +292,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateImageOutputRatioByJSONString(value)
 	case "PerCallPricing":
 		err = common.UpdateModelPriceByJSONString(value)
+	case "VideoPricingRules":
+		err = common.UpdateVideoPricingRulesByJSONString(value)
 	case "TopUpLink":
 		config.TopUpLink = value
 	case "ChatLink":
@@ -326,8 +332,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.CfImageSecretKey = value
 	case "CfImageEndpoint":
 		config.CfImageEndpoint = value
-	case "FeiShuHookUrl":
-		config.FeiShuHookUrl = value
+	case "FeishuWebhookUrls":
+		config.FeishuWebhookUrls = value
 	case "PingIntervalSeconds":
 		config.PingIntervalSeconds,_ = strconv.Atoi(value)
 	}

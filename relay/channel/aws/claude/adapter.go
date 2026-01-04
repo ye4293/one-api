@@ -28,10 +28,32 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
-	if meta.IsStream {
-		err, usage = StreamHandler(c, awsCli)
+	// 确保 RequestModel 被设置（RelayClaudeNative 可能没有调用 ConvertRequest）
+	if c.GetString(ctxkey.RequestModel) == "" {
+		modelName := meta.OriginModelName
+		if meta.ActualModelName != "" {
+			modelName = meta.ActualModelName
+		}
+		c.Set(ctxkey.RequestModel, modelName)
+	}
+
+	// 检查是否是 Claude Native 请求（没有 ConvertedRequest 说明是原生请求）
+	_, isOpenAIFormat := c.Get(ctxkey.ConvertedRequest)
+
+	if isOpenAIFormat {
+		// OpenAI 格式请求，返回 OpenAI 兼容格式
+		if meta.IsStream {
+			err, usage = StreamHandler(c, awsCli, meta)
+		} else {
+			err, usage = Handler(c, awsCli, meta)
+		}
 	} else {
-		err, usage = Handler(c, awsCli, meta.ActualModelName)
+		// Claude Native 请求，返回 Claude 原生格式
+		if meta.IsStream {
+			err, usage = NativeStreamHandler(c, awsCli, meta)
+		} else {
+			err, usage = NativeHandler(c, awsCli, meta)
+		}
 	}
 	return
 }

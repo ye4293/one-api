@@ -90,6 +90,15 @@ func RootAuth() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		// Claude API 从 x-api-key header 中获取 key
+		// 支持 /v1/messages 路径
+		if strings.HasPrefix(c.Request.URL.Path, "/v1/messages") {
+			xApiKey := c.Request.Header.Get("x-api-key")
+			if xApiKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+xApiKey)
+			}
+		}
+
 		// Gemini API 从 query 参数或 x-goog-api-key header 中获取 key
 		// 支持 v1beta、v1alpha、v1 等版本路径
 		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||

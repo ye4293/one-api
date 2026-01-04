@@ -43,13 +43,29 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 
 	for _, tool := range textRequest.Tools {
 		if params, ok := tool.Function.Parameters.(map[string]any); ok {
+			var required []string
+			if reqVal, ok := params["required"]; ok {
+				if reqArr, ok := reqVal.([]interface{}); ok {
+					for _, r := range reqArr {
+						if s, ok := r.(string); ok {
+							required = append(required, s)
+						}
+					}
+				} else if reqStrArr, ok := reqVal.([]string); ok {
+					required = reqStrArr
+				}
+			}
+			typeStr := "object"
+			if t, ok := params["type"].(string); ok {
+				typeStr = t
+			}
 			claudeTools = append(claudeTools, Tool{
 				Name:        tool.Function.Name,
 				Description: tool.Function.Description,
 				InputSchema: InputSchema{
-					Type:       params["type"].(string),
+					Type:       typeStr,
 					Properties: params["properties"],
-					Required:   params["required"],
+					Required:   required,
 				},
 			})
 		}
@@ -68,14 +84,13 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		claudeRequest.StopSequences = []string{stop}
 	}
 	if len(claudeTools) > 0 {
-		claudeToolChoice := struct {
-			Type string `json:"type"`
-			Name string `json:"name,omitempty"`
-		}{Type: "auto"} // default value https://docs.anthropic.com/en/docs/build-with-claude/tool-use#controlling-claudes-output
+		claudeToolChoice := &ToolChoice{Type: "auto"} // default value https://docs.anthropic.com/en/docs/build-with-claude/tool-use#controlling-claudes-output
 		if choice, ok := textRequest.ToolChoice.(map[string]any); ok {
 			if function, ok := choice["function"].(map[string]any); ok {
 				claudeToolChoice.Type = "tool"
-				claudeToolChoice.Name = function["name"].(string)
+				if name, ok := function["name"].(string); ok {
+					claudeToolChoice.Name = name
+				}
 			}
 		} else if toolChoiceType, ok := textRequest.ToolChoice.(string); ok {
 			if toolChoiceType == "any" {
@@ -94,57 +109,63 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		claudeRequest.Model = "claude-2.1"
 	}
 	for _, message := range textRequest.Messages {
-		if message.Role == "system" && claudeRequest.System == "" {
+		if message.Role == "system" && claudeRequest.System == nil {
 			claudeRequest.System = message.StringContent()
 			continue
 		}
 		claudeMessage := Message{
 			Role: message.Role,
 		}
-		var content Content
 		if message.IsStringContent() {
-			content.Type = "text"
-			content.Text = message.StringContent()
+			var contentBlocks []ContentBlockParam
+			content := ContentBlockParam{
+				Type: "text",
+				Text: message.StringContent(),
+			}
 			if message.Role == "tool" {
 				claudeMessage.Role = "user"
-				content.Type = "tool_result"
-				content.Content = content.Text
-				content.Text = ""
-				content.ToolUseId = message.ToolCallId
+				content = ContentBlockParam{
+					Type:      "tool_result",
+					ToolUseID: message.ToolCallId,
+					Content:   message.StringContent(),
+				}
 			}
-			claudeMessage.Content = append(claudeMessage.Content, content)
+			contentBlocks = append(contentBlocks, content)
 			for i := range message.ToolCalls {
 				inputParam := make(map[string]any)
-				_ = json.Unmarshal([]byte(message.ToolCalls[i].Function.Arguments.(string)), &inputParam)
-				claudeMessage.Content = append(claudeMessage.Content, Content{
+				if args, ok := message.ToolCalls[i].Function.Arguments.(string); ok {
+					_ = json.Unmarshal([]byte(args), &inputParam)
+				}
+				contentBlocks = append(contentBlocks, ContentBlockParam{
 					Type:  "tool_use",
 					Id:    message.ToolCalls[i].Id,
 					Name:  message.ToolCalls[i].Function.Name,
 					Input: inputParam,
 				})
 			}
+			claudeMessage.Content = contentBlocks
 			claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
 			continue
 		}
-		var contents []Content
+		var contents []ContentBlockParam
 		openaiContent := message.ParseContent()
 		for _, part := range openaiContent {
-			var content Content
+			var content ContentBlockParam
 			if part.Type == model.ContentTypeText {
 				content.Type = "text"
 				content.Text = part.Text
 			} else if part.Type == model.ContentTypeImageURL {
 				content.Type = "image"
-				content.Source = &ImageSource{
-					Type: "base64",
-				}
 				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
 				if err != nil {
-					logger.SysLog(fmt.Sprintf("Error in GetImageFromUrl: %v", err))
-					return &claudeRequest
+					logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
+					continue
 				}
-				content.Source.MediaType = mimeType
-				content.Source.Data = data
+				content.Source = Base64ImageSource{
+					Type:      "base64",
+					MediaType: mimeType,
+					Data:      data,
+				}
 			}
 			contents = append(contents, content)
 		}
@@ -190,9 +211,9 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 			}
 		}
 	case "message_delta":
-		if claudeResponse.Usage != nil {
+		if claudeResponse.Delta != nil {
 			response = &Response{
-				Usage: *claudeResponse.Usage,
+				Usage: claudeResponse.Usage,
 			}
 		}
 		if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
@@ -395,7 +416,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
 	}
-	if claudeResponse.Error.Type != "" {
+	if claudeResponse.Error != nil && claudeResponse.Error.Type != "" {
 		return &model.ErrorWithStatusCode{
 			Error: model.Error{
 				Message: claudeResponse.Error.Message,

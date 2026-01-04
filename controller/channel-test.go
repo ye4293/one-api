@@ -112,9 +112,12 @@ func testChannel(channel *model.Channel, specifiedModel string) (err error, open
 	if err != nil {
 		return err, nil, modelName, keyIndex
 	}
-	if resp.StatusCode != http.StatusOK {
-		err := util.RelayErrorHandler(resp)
-		return fmt.Errorf("status code %d: %s", resp.StatusCode, err.Error.Message), &err.Error, modelName, keyIndex
+	// 处理 resp 为 nil 的情况（如 AWS SDK 直接处理请求，不返回 HTTP 响应）
+	if resp != nil {
+		if resp.StatusCode != http.StatusOK {
+			err := util.RelayErrorHandler(resp)
+			return fmt.Errorf("status code %d: %s", resp.StatusCode, err.Error.Message), &err.Error, modelName, keyIndex
+		}
 	}
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {

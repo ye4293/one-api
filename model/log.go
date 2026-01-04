@@ -121,6 +121,30 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	}
 }
 
+// RecordErrorLogWithRequestID 记录错误日志（Type 为 LogTypeError）
+// 用于记录重试失败、请求错误等情况，方便后续筛选查看
+func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int, modelName string, tokenName string, content string, duration float64, other string, xRequestID string) {
+	logger.Info(ctx, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, content=%s, xRequestID=%s", userId, channelId, modelName, content, xRequestID))
+
+	log := &Log{
+		UserId:     userId,
+		Username:   GetUsernameById(userId),
+		CreatedAt:  helper.GetTimestamp(),
+		Type:       LogTypeError,
+		Content:    content,
+		TokenName:  tokenName,
+		ModelName:  modelName,
+		ChannelId:  channelId,
+		Duration:   duration,
+		Other:      other,
+		XRequestID: xRequestID,
+	}
+	err := LOG_DB.Create(log).Error
+	if err != nil {
+		logger.Error(ctx, "failed to record error log: "+err.Error())
+	}
+}
+
 func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, xRequestId string, xResponseId string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
