@@ -152,4 +152,4 @@ const (
 	ConfigKeyPlugin     = ConfigKeyPrefix + "plugin"
 )
 
-const CacheClaudeRsID = "claude_id_%d"
+const CacheClaudeRsID = "claude_cache_response_id_%s"

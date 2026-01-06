@@ -457,7 +457,7 @@ func SetClaudeCacheIdToRedis(id string, channel string, expire time.Duration) (b
 	if channel == "" {
 		return false, errors.New("empty channel")
 	}
-	cacheKey := fmt.Sprintf("claude_cache_%s", id)
+	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
 	err := common.RedisSet(cacheKey, channel, expire)
 	return err == nil, err
 }
@@ -469,7 +469,7 @@ func GetClaudeCacheIdFromRedis(id string) (string, error) {
 	if id == "" {
 		return "", errors.New("empty id")
 	}
-	cacheKey := fmt.Sprintf("claude_cache_%s", id)
+	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
 	channel, err := common.RedisGet(cacheKey)
 	if err != nil {
 		return "", err
