@@ -151,3 +151,5 @@ const (
 	ConfigKeyLibraryID  = ConfigKeyPrefix + "library_id"
 	ConfigKeyPlugin     = ConfigKeyPrefix + "plugin"
 )
+
+const CacheClaudeRsID = "claude_id_%d"

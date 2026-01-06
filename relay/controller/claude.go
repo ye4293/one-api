@@ -440,6 +440,34 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
 		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
 	}
+
+	// 判断是否创建或读取了缓存，并记录到 redis 中
+	if claudeResponse.Usage != nil {
+
+		// 检查是否创建了新的缓存
+		cacheInfo := make(map[string]interface{})
+		if claudeResponse.Usage.CacheCreation != nil {
+			responseID := claudeResponse.Id
+			expireTime := 5 * time.Minute
+			if claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+				cacheInfo["cache_5m_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens
+				expireTime = 5 * time.Minute
+			}
+			if claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+				cacheInfo["cache_1h_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens
+				expireTime = 60 * time.Minute
+			}
+
+			// 如果创建了缓存，记录到 Redis 中
+			if len(cacheInfo) > 0 {
+				// 记录到 redis 中
+				reqBool, _ := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
+				logger.SysLog(fmt.Sprintf("[Claude Cache] Non-Stream RequestID: %s, Cache cacheInfo: %v, Set Claude Cache: %v",
+					responseID, cacheInfo, reqBool))
+			}
+		}
+	}
+
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	return claudeResponse.Usage, nil
 }
@@ -489,6 +517,30 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		// 更新使用量统计
 		if claudeResponse.Type == "message_start" {
 			lastUsageMetadata = claudeResponse.Message.Usage
+			// 判断是否创建或读取了缓存，并记录到 redis 中
+			if lastUsageMetadata != nil {
+				cacheInfo := make(map[string]interface{})
+				if lastUsageMetadata.CacheCreation != nil {
+					responseID := claudeResponse.Message.Id
+					expireTime := 5 * time.Minute
+					if lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens > 0 {
+						cacheInfo["cache_5m_tokens"] = lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens
+						expireTime = 5 * time.Minute
+					}
+					if lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens > 0 {
+						cacheInfo["cache_1h_tokens"] = lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens
+						expireTime = 60 * time.Minute
+					}
+
+					// 记录ID+日志以便追踪
+					c.Header("X-Response-ID", responseID)
+					//记录到redis中
+					reqBool, _ := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
+					logger.SysLog(fmt.Sprintf("[Claude Cache] RequestID: %s, Cache cacheInfo: %v Set Claude Cache:%v",
+						responseID, cacheInfo, reqBool))
+				}
+			}
+
 		} else if claudeResponse.Type == "content_block_delta" {
 			// 首字时间由 StreamScannerHandler 统一设置，这里不需要处理
 		} else if claudeResponse.Type == "message_delta" {

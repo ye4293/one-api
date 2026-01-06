@@ -21,7 +21,7 @@
 #### 1.2 数据库优化
 - ✅ **双主键方案**: 添加自增 `id` 作为主键，`task_id` 作为唯一索引
 - ✅ 新增 `updated_at` 字段自动更新时间戳
-- ✅ 新增 `json_data` 字段保存 Kling 回调完整 JSON
+- ✅ 新增 `result` 字段保存 Kling 回调完整 JSON
 - ✅ 优化索引：user_id, channel_id, status, video_id
 
 #### 1.3 回调关联机制
