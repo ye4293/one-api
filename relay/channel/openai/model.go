@@ -194,3 +194,262 @@ type SoraVideoResponse struct {
 	} `json:"error,omitempty"`
 	StatusCode int `json:"status_code,omitempty"` // HTTP status code
 }
+
+// OpeanaiResaponseReques OpenAI Responses API 请求体
+// docs: https://platform.openai.com/docs/api-reference/responses/create
+type OpeanaiResaponseRequest struct {
+	Background        bool           `json:"background,omitempty"`          // 是否后台运行
+	Conversation      interface{}    `json:"conversation,omitempty"`        // 对话上下文
+	FrequencyPenalty  float64        `json:"frequency_penalty,omitempty"`   // 频率惩罚
+	Include           []string       `json:"include,omitempty"`             // 包含的字段
+	Input             interface{}    `json:"input,omitempty"`               // 输入内容（可以是字符串或消息数组）
+	Instructions      string         `json:"instructions,omitempty"`        // 系统指令
+	LogitBias         map[string]int `json:"logit_bias,omitempty"`          // Logit 偏置
+	MaxOutputTokens   int            `json:"max_output_tokens,omitempty"`   // 最大输出 token 数
+	MaxToolCalls      int            `json:"max_tool_calls,omitempty"`      // 最大工具调用次数
+	Metadata          interface{}    `json:"metadata,omitempty"`            // 元数据
+	Modalities        []string       `json:"modalities,omitempty"`          // 模态（text, audio）
+	Model             string         `json:"model,omitempty"`               // 模型名称
+	ParallelToolCalls bool           `json:"parallel_tool_calls,omitempty"` // 是否并行调用工具
+	PresencePenalty   float64        `json:"presence_penalty,omitempty"`    // 存在惩罚
+	Reasoning         interface{}    `json:"reasoning,omitempty"`           // 推理配置
+	ResponseFormat    interface{}    `json:"response_format,omitempty"`     // 响应格式
+	Seed              int            `json:"seed,omitempty"`                // 随机种子
+	Stop              interface{}    `json:"stop,omitempty"`                // 停止序列
+	Store             bool           `json:"store,omitempty"`               // 是否存储
+	Stream            bool           `json:"stream,omitempty"`              // 是否流式返回
+	StreamOptions     interface{}    `json:"stream_options,omitempty"`      // 流式选项
+	Temperature       float64        `json:"temperature,omitempty"`         // 温度参数
+	ToolChoice        interface{}    `json:"tool_choice,omitempty"`         // 工具选择策略
+	Tools             []interface{}  `json:"tools,omitempty"`               // 可用工具列表
+	TopP              float64        `json:"top_p,omitempty"`               // Top-p 采样参数
+	User              string         `json:"user,omitempty"`                // 用户标识
+
+	// Audio 相关字段
+	Audio *AudioConfig `json:"audio,omitempty"` // 音频配置
+}
+
+// AudioConfig 音频配置
+type AudioConfig struct {
+	Voice  string `json:"voice,omitempty"`  // 语音类型 (alloy, echo, fable, onyx, nova, shimmer)
+	Format string `json:"format,omitempty"` // 音频格式 (wav, mp3, flac, opus, pcm16)
+}
+
+// OpeanaiResaponseResponse OpenAI Responses API 响应对象
+// docs: https://platform.openai.com/docs/api-reference/responses/object
+type OpenaiResaponseResponse struct {
+	ID                string                 `json:"id"`                           // 响应的唯一标识符
+	Object            string                 `json:"object"`                       // 对象类型，值为 "response"
+	Status            string                 `json:"status"`                       // 响应状态 (in_progress, completed, failed, cancelled, expired, incomplete)
+	StatusDetails     interface{}            `json:"status_details,omitempty"`     // 状态详情
+	Output            []ResponsesOutput      `json:"output,omitempty"`             // 响应输出内容
+	ConversationID    string                 `json:"conversation_id,omitempty"`    // 对话ID
+	CreatedAt         int64                  `json:"created_at"`                   // 创建时间（Unix时间戳）
+	CompletedAt       int64                  `json:"completed_at,omitempty"`       // 完成时间（Unix时间戳）
+	FailedAt          int64                  `json:"failed_at,omitempty"`          // 失败时间（Unix时间戳）
+	CancelledAt       int64                  `json:"cancelled_at,omitempty"`       // 取消时间（Unix时间戳）
+	IncompleteAt      int64                  `json:"incomplete_at,omitempty"`      // 未完成时间（Unix时间戳）
+	ExpiresAt         int64                  `json:"expires_at,omitempty"`         // 过期时间（Unix时间戳）
+	IncompleteDetails *IncompleteDetails     `json:"incomplete_details,omitempty"` // 未完成详情
+	Metadata          map[string]interface{} `json:"metadata,omitempty"`           // 元数据
+	Model             string                 `json:"model,omitempty"`              // 使用的模型
+	Instructions      string                 `json:"instructions,omitempty"`       // 系统指令
+	Usage             *ResponseUsage         `json:"usage,omitempty"`              // Token 使用情况
+}
+
+// IncompleteDetails 未完成响应的详细信息
+type IncompleteDetails struct {
+	Reason string `json:"reason,omitempty"` // 未完成的原因 (max_output_tokens, max_tool_calls)
+}
+
+// ResponseUsage 响应的 token 使用统计
+type ResponseUsage struct {
+	InputTokens         int                  `json:"input_tokens"`                    // 输入 token 数
+	OutputTokens        int                  `json:"output_tokens"`                   // 输出 token 数
+	TotalTokens         int                  `json:"total_tokens"`                    // 总 token 数
+	InputTokensDetails  *InputTokensDetails  `json:"input_tokens_details,omitempty"`  // 输入 token 详情
+	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"` // 输出 token 详情
+}
+
+// InputTokensDetails 输入 token 详细信息
+type InputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens,omitempty"` // 缓存的 token 数
+	TextTokens   int `json:"text_tokens,omitempty"`   // 文本 token 数
+	AudioTokens  int `json:"audio_tokens,omitempty"`  // 音频 token 数
+	ImageTokens  int `json:"image_tokens,omitempty"`  // 图像 token 数
+}
+
+// OutputTokensDetails 输出 token 详细信息
+type OutputTokensDetails struct {
+	TextTokens      int `json:"text_tokens,omitempty"`      // 文本 token 数
+	AudioTokens     int `json:"audio_tokens,omitempty"`     // 音频 token 数
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"` // 推理 token 数
+}
+
+// OpenaiResponseStreamEvent OpenAI Responses API 流式事件（SSE格式）
+// docs: https://platform.openai.com/docs/api-reference/responses-streaming
+type OpenaiResponseStreamEvent struct {
+	Event string `json:"event"` // 事件类型
+	Data  string `json:"data"`  // JSON 编码的事件数据
+}
+
+// ResponseStreamResponse 响应相关的流式事件数据
+type OpenaiResponseStreamResponse struct {
+	Type     string                   `json:"type"`     // 事件类型：response.created, response.done, response.failed, response.incomplete, response.cancelled
+	Response *OpenaiResaponseResponse `json:"response"` // 响应对象
+	Delta    string                   `json:"delta,omitempty"`
+	Item     *ResponsesOutput         `json:"item,omitempty"`
+}
+type ResponsesOutput struct {
+	Type    string                   `json:"type"`
+	ID      string                   `json:"id"`
+	Status  string                   `json:"status"`
+	Role    string                   `json:"role"`
+	Content []ResponsesOutputContent `json:"content"`
+	Quality string                   `json:"quality"`
+	Size    string                   `json:"size"`
+}
+type ResponsesOutputContent struct {
+	Type        string        `json:"type"`
+	Text        string        `json:"text"`
+	Annotations []interface{} `json:"annotations"`
+}
+
+// ResponseStreamOutputItem 输出项相关的流式事件数据
+type ResponseStreamOutputItem struct {
+	Type         string      `json:"type"`           // 事件类型：output_item.added, output_item.done
+	ResponseID   string      `json:"response_id"`    // 响应ID
+	OutputItemID string      `json:"output_item_id"` // 输出项ID
+	OutputItem   interface{} `json:"output_item"`    // 输出项数据
+}
+
+// ResponseStreamContentPart 内容部分相关的流式事件数据
+type ResponseStreamContentPart struct {
+	Type          string      `json:"type"`            // 事件类型：content_part.added, content_part.done
+	ResponseID    string      `json:"response_id"`     // 响应ID
+	OutputItemID  string      `json:"output_item_id"`  // 输出项ID
+	ContentPartID string      `json:"content_part_id"` // 内容部分ID
+	ContentPart   interface{} `json:"content_part"`    // 内容部分数据
+}
+
+// ResponseStreamTextDelta 文本增量事件数据
+type ResponseStreamTextDelta struct {
+	Type          string `json:"type"`            // 事件类型：text.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 文本增量
+}
+
+// ResponseStreamTextDone 文本完成事件数据
+type ResponseStreamTextDone struct {
+	Type          string `json:"type"`            // 事件类型：text.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Text          string `json:"text"`            // 完整文本
+}
+
+// ResponseStreamAudioTranscriptDelta 音频转录增量事件数据
+type ResponseStreamAudioTranscriptDelta struct {
+	Type          string `json:"type"`            // 事件类型：audio_transcript.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 音频转录增量
+}
+
+// ResponseStreamAudioTranscriptDone 音频转录完成事件数据
+type ResponseStreamAudioTranscriptDone struct {
+	Type          string `json:"type"`            // 事件类型：audio_transcript.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Transcript    string `json:"transcript"`      // 完整音频转录
+}
+
+// ResponseStreamAudioDelta 音频数据增量事件
+type ResponseStreamAudioDelta struct {
+	Type          string `json:"type"`            // 事件类型：audio.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 音频数据增量（base64编码）
+}
+
+// ResponseStreamAudioDone 音频数据完成事件
+type ResponseStreamAudioDone struct {
+	Type          string `json:"type"`            // 事件类型：audio.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+}
+
+// ResponseStreamRefusalDelta 拒绝增量事件数据
+type ResponseStreamRefusalDelta struct {
+	Type          string `json:"type"`            // 事件类型：refusal.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 拒绝内容增量
+}
+
+// ResponseStreamRefusalDone 拒绝完成事件数据
+type ResponseStreamRefusalDone struct {
+	Type          string `json:"type"`            // 事件类型：refusal.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Refusal       string `json:"refusal"`         // 完整拒绝内容
+}
+
+// ResponseStreamFunctionCallArgumentsDelta 函数调用参数增量事件
+type ResponseStreamFunctionCallArgumentsDelta struct {
+	Type          string `json:"type"`            // 事件类型：function_call_arguments.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 函数参数增量
+}
+
+// ResponseStreamFunctionCallArgumentsDone 函数调用参数完成事件
+type ResponseStreamFunctionCallArgumentsDone struct {
+	Type          string `json:"type"`            // 事件类型：function_call_arguments.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Arguments     string `json:"arguments"`       // 完整函数参数
+}
+
+// ResponseStreamToolCallEvent 工具调用事件（文件搜索、网络搜索、代码解释器等）
+type ResponseStreamToolCallEvent struct {
+	Type          string      `json:"type"`                // 事件类型
+	ResponseID    string      `json:"response_id"`         // 响应ID
+	OutputItemID  string      `json:"output_item_id"`      // 输出项ID
+	ContentPartID string      `json:"content_part_id"`     // 内容部分ID
+	ToolCall      interface{} `json:"tool_call,omitempty"` // 工具调用结果（仅在 done 事件中）
+}
+
+// ResponseStreamReasoningDelta 推理增量事件数据
+type ResponseStreamReasoningDelta struct {
+	Type          string `json:"type"`            // 事件类型：reasoning.delta
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Delta         string `json:"delta"`           // 推理内容增量
+}
+
+// ResponseStreamReasoningDone 推理完成事件数据
+type ResponseStreamReasoningDone struct {
+	Type          string `json:"type"`            // 事件类型：reasoning.done
+	ResponseID    string `json:"response_id"`     // 响应ID
+	OutputItemID  string `json:"output_item_id"`  // 输出项ID
+	ContentPartID string `json:"content_part_id"` // 内容部分ID
+	Reasoning     string `json:"reasoning"`       // 完整推理内容
+}
+
+// ResponseStreamError 错误事件数据
+type ResponseStreamError struct {
+	Type  string      `json:"type"`  // 事件类型：error
+	Error interface{} `json:"error"` // 错误信息
+}
