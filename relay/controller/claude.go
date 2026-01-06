@@ -201,16 +201,22 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	// AWS adaptor 的 DoRequest 返回 nil, nil，因为 AWS SDK 直接处理请求
 	// 这种情况下应该使用 DoResponse 来处理
 	if resp == nil {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] adaptor.DoRequest返回resp=nil(可能为AWS路径) - IsStream=%v, APIType=%d, RequestID=%s",
+			meta.IsStream, meta.APIType, c.GetString("request_id")))
 		usage, doRespErr := adaptor.DoResponse(c, resp, meta)
 		if doRespErr != nil {
 			return doRespErr
 		}
 		// 从 usage 构建 anthropic.Usage
 		if usage != nil {
+			logger.SysLog(fmt.Sprintf("[Claude Cache Debug] adaptor.DoResponse返回usage - PromptTokens=%d, CompletionTokens=%d",
+				usage.PromptTokens, usage.CompletionTokens))
 			usageMetadata = &anthropic.Usage{
 				InputTokens:  usage.PromptTokens,
 				OutputTokens: usage.CompletionTokens,
 			}
+		} else {
+			logger.SysLog("[Claude Cache Debug] adaptor.DoResponse返回usage=nil")
 		}
 	} else {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
