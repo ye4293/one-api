@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,56 @@ import (
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
 // Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
 // 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
+
+// handleClaudeCache 处理 Claude 缓存信息并记录到 Redis
+// responseID: Claude 响应 ID
+// usage: Claude Usage 信息
+// c: gin context
+func handleClaudeCache(c *gin.Context, responseID string, usage *anthropic.Usage) {
+	if usage == nil {
+		return
+	}
+
+	cacheInfo := make(map[string]interface{})
+	expireTime := int64(5) // 默认5分钟
+
+	// 根据缓存类型设置过期时间
+	if usage.CacheCreation != nil {
+		if usage.CacheCreation.Ephemeral5mInputTokens > 0 {
+			cacheInfo["cache_5m_tokens"] = usage.CacheCreation.Ephemeral5mInputTokens
+			expireTime = 5
+		}
+		if usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			cacheInfo["cache_1h_tokens"] = usage.CacheCreation.Ephemeral1hInputTokens
+			expireTime = 60
+		}
+	}
+
+	// 非流式响应需要检查缓存读取情况
+	if usage.CacheReadInputTokens > 0 {
+		cacheInfo["cache_read_tokens"] = usage.CacheReadInputTokens
+		expireTime = 5
+		//TODO: 读取缓存CacheClaudeLength获取上次的缓存时长,来设置本次的时长expireTime
+		oldResponseID := c.GetHeader("X-Response-ID")
+		cacheLength, err := common.RedisGet(fmt.Sprintf(common.CacheClaudeLength, oldResponseID))
+		if err != nil {
+			logger.Error(c.Request.Context(), fmt.Sprintf("[Claude Cache] Failed to get cache length: %s", err.Error()))
+		} else {
+			expireTime1, _ := strconv.Atoi(cacheLength)
+			expireTime = int64(expireTime1)
+			logger.SysLog(fmt.Sprintf("[Claude Cache] CacheLength: %s, ExpireTime: %d ,oldResponseID: %s,newResponseID: %s", cacheLength, expireTime, oldResponseID, responseID))
+		}
+	}
+
+	// 记录到 Redis
+	channelId := strconv.Itoa(c.GetInt("channel_id"))
+	if err := dbmodel.SetClaudeCacheIdToRedis(responseID, channelId, expireTime); err != nil {
+		logger.Error(c.Request.Context(), fmt.Sprintf("[Claude Cache] Failed to set cache to redis: %s", err.Error()))
+	} else {
+		logger.SysLog(fmt.Sprintf("[Claude Cache] RequestID: %s, CacheInfo: %v, ChannelID: %s, Expire: %dm",
+			responseID, cacheInfo, channelId, expireTime))
+	}
+}
 
 // RelayGeminiNative 处理 Gemini 原生 API 请求
 func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
@@ -443,35 +494,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 
 	// 判断是否创建或读取了缓存，并记录到 redis 中
 	if claudeResponse.Usage != nil {
-
-		// 检查是否创建了新的缓存
-		cacheInfo := make(map[string]interface{})
-		if claudeResponse.Usage.CacheCreation != nil {
-			responseID := claudeResponse.Id
-			expireTime := 5 * time.Minute
-			logger.SysLog("doNativeClaudeResponse 开始记录redis")
-			if claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
-				cacheInfo["cache_5m_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens
-				expireTime = 5 * time.Minute
-			}
-			if claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
-				cacheInfo["cache_1h_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens
-				expireTime = 60 * time.Minute
-			}
-			if claudeResponse.Usage.CacheReadInputTokens > 0 {
-				expireTime = 5 * time.Minute
-			}
-			if expireTime > 0 {
-				// 如果创建了缓存，记录到 Redis 中
-				reqBool, errs := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
-				if errs != nil {
-					logger.Error(c.Request.Context(), "error setting claude cache id to redis: "+errs.Error())
-				}
-				logger.SysLog(fmt.Sprintf("[Claude Cache] Non-Stream RequestID: %s, Cache cacheInfo: %v, Set Claude Cache: %v,ChannelID : %s",
-					responseID, cacheInfo, reqBool, c.GetString("channel_id")))
-			}
-
-		}
+		handleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	}
 
 	util.IOCopyBytesGracefully(c, resp, responseBody)
@@ -525,26 +548,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			lastUsageMetadata = claudeResponse.Message.Usage
 			// 判断是否创建或读取了缓存，并记录到 redis 中
 			if lastUsageMetadata != nil {
-				cacheInfo := make(map[string]interface{})
-				if lastUsageMetadata.CacheCreation != nil {
-					responseID := claudeResponse.Message.Id
-					expireTime := 5 * time.Minute
-					if lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens > 0 {
-						cacheInfo["cache_5m_tokens"] = lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens
-						expireTime = 5 * time.Minute
-					}
-					if lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens > 0 {
-						cacheInfo["cache_1h_tokens"] = lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens
-						expireTime = 60 * time.Minute
-					}
-
-					// 记录ID+日志以便追踪
-					c.Header("X-Response-ID", responseID)
-					//记录到redis中
-					reqBool, _ := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
-					logger.SysLog(fmt.Sprintf("[Claude Cache] RequestID: %s, Cache cacheInfo: %v Set Claude Cache:%v",
-						responseID, cacheInfo, reqBool))
-				}
+				handleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
 			}
 
 		} else if claudeResponse.Type == "content_block_delta" {
