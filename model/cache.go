@@ -451,16 +451,39 @@ func CacheGetChannel(id int) (*Channel, error) {
 	return c, nil
 }
 
-func SetClaudeCacheIdToRedis(id string, channel string, expire time.Duration) (bool, error) {
+// SetClaudeCacheIdToRedis 将 Claude 缓存信息存储到 Redis
+// id: Claude 响应 ID
+// channel: 渠道 ID
+// expire: 过期时间（分钟）
+func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
 	if !common.RedisEnabled {
-		return false, errors.New("redis disabled")
+		return errors.New("redis disabled")
 	}
 	if channel == "" {
-		return false, errors.New("empty channel")
+		return errors.New("empty channel")
 	}
+	if id == "" {
+		return errors.New("empty id")
+	}
+	if expire <= 0 {
+		return errors.New("invalid expire time")
+	}
+
 	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
-	err := common.RedisSet(cacheKey, channel, expire)
-	return err == nil, err
+	cacheLength := fmt.Sprintf(common.CacheClaudeLength, id)
+	expireDuration := time.Duration(expire) * time.Minute
+
+	// 原子性设置两个 key，使用 Pipeline 提高性能并保证一致性
+	pipe := common.RDB.Pipeline()
+	pipe.Set(context.Background(), cacheKey, channel, expireDuration)
+	pipe.Set(context.Background(), cacheLength, expire, expireDuration)
+
+	_, err := pipe.Exec(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to set claude cache to redis: %w", err)
+	}
+
+	return nil
 }
 
 func GetClaudeCacheIdFromRedis(id string) (string, error) {
