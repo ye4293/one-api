@@ -448,7 +448,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		cacheInfo := make(map[string]interface{})
 		if claudeResponse.Usage.CacheCreation != nil {
 			responseID := claudeResponse.Id
-			var expireTime time.Duration
+			expireTime := 5 * time.Minute
 			logger.SysLog("doNativeClaudeResponse 开始记录redis")
 			if claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens > 0 {
 				cacheInfo["cache_5m_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral5mInputTokens
@@ -458,11 +458,17 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 				cacheInfo["cache_1h_tokens"] = claudeResponse.Usage.CacheCreation.Ephemeral1hInputTokens
 				expireTime = 60 * time.Minute
 			}
+			if claudeResponse.Usage.CacheReadInputTokens > 0 {
+				expireTime = 5 * time.Minute
+			}
 			if expireTime > 0 {
 				// 如果创建了缓存，记录到 Redis 中
-				reqBool, _ := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
-				logger.SysLog(fmt.Sprintf("[Claude Cache] Non-Stream RequestID: %s, Cache cacheInfo: %v, Set Claude Cache: %v",
-					responseID, cacheInfo, reqBool))
+				reqBool, errs := dbmodel.SetClaudeCacheIdToRedis(responseID, c.GetString("channel_id"), expireTime)
+				if errs != nil {
+					logger.Error(c.Request.Context(), "error setting claude cache id to redis: "+errs.Error())
+				}
+				logger.SysLog(fmt.Sprintf("[Claude Cache] Non-Stream RequestID: %s, Cache cacheInfo: %v, Set Claude Cache: %v,ChannelID : %s",
+					responseID, cacheInfo, reqBool, c.GetString("channel_id")))
 			}
 
 		}
