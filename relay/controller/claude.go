@@ -212,12 +212,12 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 			}
 		}
 	} else {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
+		logger.Infof(c, fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
 		if meta.IsStream {
-			logger.SysLog("[Claude Cache Debug] 进入流式响应处理")
+			logger.Infof(c, "[Claude Cache Debug] 进入流式响应处理")
 			usageMetadata, openaiErr = doNativeClaudeStreamResponse(c, resp, meta)
 		} else {
-			logger.SysLog("[Claude Cache Debug] 进入非流式响应处理")
+			logger.Infof(c, "[Claude Cache Debug] 进入非流式响应处理")
 			usageMetadata, openaiErr = doNativeClaudeResponse(c, resp, meta)
 		}
 	}
@@ -517,7 +517,7 @@ func parseUpstreamErrorMessage(responseBody []byte, requestID string) (message s
 }
 
 func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 开始处理非流式响应 - StatusCode: %d", resp.StatusCode))
+	logger.Infof(c, fmt.Sprintf("[Claude Cache Debug] 开始处理非流式响应 - StatusCode: %d", resp.StatusCode))
 	defer util.CloseResponseBodyGracefully(resp)
 
 	// 读取响应体
@@ -551,15 +551,15 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	}
 
 	// 判断是否创建或读取了缓存，并记录到 redis 中
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 非流式响应处理 - ResponseID: %s, Usage是否为空: %v",
+	logger.Infof(c, fmt.Sprintf("[Claude Cache Debug] 非流式响应处理 - ResponseID: %s, Usage是否为空: %v",
 		claudeResponse.Id, claudeResponse.Usage == nil))
 
 	if claudeResponse.Usage != nil {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
+		logger.Infof(c, fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
 		handleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
+		logger.Infof(c, fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
 
 	util.IOCopyBytesGracefully(c, resp, responseBody)
