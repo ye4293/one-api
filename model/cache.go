@@ -263,6 +263,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	}
 	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
 	if skipPriorityLevels == 0 && responseID != "" {
+		logger.SysLog("尝试从缓存中获取 channel skipping cache use response id " + responseID)
 		// 从 Redis 中获取缓存的 channel ID
 		cachedChannelID, err := GetClaudeCacheIdFromRedis(responseID)
 		if err == nil && cachedChannelID != "" {
