@@ -144,7 +144,15 @@ func Relay(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, cumulativeDuration, bizErr.Error.Message, channelName, channelHistory)
+	
+	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
+	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
+		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
+		recordXAIContentViolationCharge(ctx, c, channelHistory)
+	} else {
+		// 普通失败：记录失败日志
+		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, cumulativeDuration, bizErr.Error.Message, channelName, channelHistory)
+	}
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
@@ -211,7 +219,16 @@ func Relay(c *gin.Context) {
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = append(failedChannelIds, channelId)
 
-		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
+		// 检查是否是xAI内容违规错误
+		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
+			// xAI内容违规：记录扣费日志并立即停止重试
+			recordXAIContentViolationCharge(ctx, c, channelHistory)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+			// 跳出重试循环，直接返回错误
+			break
+		}
+
+		// 普通失败：记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, bizErr.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
@@ -222,10 +239,7 @@ func Relay(c *gin.Context) {
 		// 记录渠道历史到上下文中，供后续使用
 		c.Set("admin_channel_history", channelHistory)
 
-		// 检查是否是xAI内容违规错误，如果是则记录费用
-		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
-			recordXAIContentViolationCharge(ctx, c, channelHistory)
-		}
+		// 注意：xAI内容违规的扣费已在上面处理，不再重复检查
 		// 注意：不再调用 recordFailedRequestLog，因为每次失败已经单独记录了
 
 		if bizErr.StatusCode == http.StatusTooManyRequests {
