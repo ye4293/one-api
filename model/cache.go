@@ -263,9 +263,11 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	}
 	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
 	if skipPriorityLevels == 0 && responseID != "" {
-		logger.SysLog("尝试从缓存中获取 channel skipping cache use response id " + responseID)
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 尝试从Redis获取缓存的Channel - ResponseID: %s", responseID))
 		// 从 Redis 中获取缓存的 channel ID
 		cachedChannelID, err := GetClaudeCacheIdFromRedis(responseID)
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis查询结果 - ResponseID: %s, CachedChannelID: %s, Error: %v",
+			responseID, cachedChannelID, err))
 		if err == nil && cachedChannelID != "" {
 			// 将 channel ID 字符串转换为整数
 			channelID, parseErr := strconv.Atoi(cachedChannelID)
@@ -488,15 +490,20 @@ func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
 
 func GetClaudeCacheIdFromRedis(id string) (string, error) {
 	if !common.RedisEnabled {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis未启用 - ResponseID: %s", id))
 		return "", errors.New("redis disabled")
 	}
 	if id == "" {
+		logger.SysLog("[Claude Cache Debug] ResponseID为空")
 		return "", errors.New("empty id")
 	}
 	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
+	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 从Redis读取 - Key: %s, ResponseID: %s", cacheKey, id))
 	channel, err := common.RedisGet(cacheKey)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取失败 - Key: %s, Error: %v", cacheKey, err))
 		return "", err
 	}
+	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取成功 - Key: %s, ChannelID: %s", cacheKey, channel))
 	return channel, nil
 }
