@@ -135,6 +135,7 @@ func handleClaudeCache(c *gin.Context, responseID string, usage *anthropic.Usage
 func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now()
+	fmt.Println(1111)
 
 	// 获取基本信息
 	tokenId := c.GetInt("token_id")
