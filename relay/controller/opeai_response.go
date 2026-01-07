@@ -221,10 +221,10 @@ type OpenaiResponseTokenCost struct {
 	// 输出部分 token 数量
 	OutputTextTokens int // 输出文字 token 数量
 	// 缓存相关 token 数量
-	CacheTokens           int // 缓存token 数量（总计）
-	ReasoningTokens       int // 推理token 数量
-	TotalTokens           int // 总 token 数量
-	ModelName             string
+	CacheTokens     int // 缓存token 数量（总计）
+	ReasoningTokens int // 推理token 数量
+	TotalTokens     int // 总 token 数量
+	ModelName       string
 }
 
 // CalculateOpenaiResponseQuotaByRatio 使用动态倍率计算 Openai Response API 的配额消耗
@@ -282,10 +282,11 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	// ========== 获取各类型的倍率 ==========
 	modelRatio := common.GetModelRatio(modelName)
 	completionRatio := common.GetCompletionRatio(modelName)
+	cacheRatio := common.GetCacheRatio(modelName)
 
 	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[Claude计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f",
-		modelName, modelRatio, completionRatio))
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f",
+		modelName, modelRatio, completionRatio, cacheRatio))
 
 	// 打印 token 数量
 	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存=%d, 推理缓存=%d, 总计=%d",
@@ -293,23 +294,30 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 		cost.CacheTokens, cost.ReasoningTokens,
 		cost.TotalTokens))
 
-	
-
 	// ========== 计算各部分的等效 ratio tokens ==========
-	// 输入部分：tokens × modelRatio
-	inputTextQuota := float64(cost.InputTextTokens) * modelRatio
+	// 真正的输入 token = 总输入 token - 缓存 token
+	realInputTokens := cost.InputTextTokens - cost.CacheTokens
+	if realInputTokens < 0 {
+		realInputTokens = cost.InputTextTokens
+	}
+
+	// 输入部分（非缓存）：tokens × modelRatio
+	inputTextQuota := float64(realInputTokens) * modelRatio
+
+	// 缓存部分：cacheTokens × modelRatio × cacheRatio
+	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio
 
 	// 输出部分：tokens × modelRatio × completionRatio
 	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
-    
-	//图片部分计费
+
+	// 图片部分计费
 	imageGenerationCallQuota := float64(0)
-	
+
 	// websearchtoolcall计费
-     webSearchToolCallQuota := float64(0)
-	
+	webSearchToolCallQuota := float64(0)
+
 	// 计算最终配额
-	quota := int64((inputTextQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+	quota := int64((inputTextQuota + cacheQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 
 	return quota, cost
 }
@@ -423,7 +431,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				}
 			}
 		}
-	    return true
+		return true
 	})
 	if lastUsageMetadata.OutputTokens == 0 {
 		// 计算输出文本的 token 数量
