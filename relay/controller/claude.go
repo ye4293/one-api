@@ -27,11 +27,11 @@ import (
 // Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
 // 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
 
-// handleClaudeCache 处理 Claude 缓存信息并记录到 Redis
+// HandleClaudeCache 处理 Claude 缓存信息并记录到 Redis
 // responseID: Claude 响应 ID
 // usage: Claude Usage 信息
 // c: gin context
-func handleClaudeCache(c *gin.Context, responseID string, usage *anthropic.Usage) {
+func HandleClaudeCache(c *gin.Context, responseID string, usage *anthropic.Usage) {
 	channelId := strconv.Itoa(c.GetInt("channel_id"))
 
 	// 调试日志：函数入口
@@ -557,7 +557,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if claudeResponse.Usage != nil {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
-		handleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
+		HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
@@ -619,7 +619,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			if lastUsageMetadata != nil {
 				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 					claudeResponse.Message.Id, lastUsageMetadata.InputTokens, lastUsageMetadata.OutputTokens))
-				handleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
+				HandleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
 			} else {
 				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理(流式) - ResponseID: %s", claudeResponse.Message.Id))
 			}
