@@ -5367,6 +5367,9 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 		videoTask.FailReason = failreason
 	}
 
+	// 计算总耗时（秒）
+	videoTask.TotalDuration = time.Now().Unix() - videoTask.CreatedAt
+
 	// 尝试更新数据库
 	err = videoTask.Update()
 	if err != nil {
@@ -5375,7 +5378,8 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 		// 如果Update失败，尝试直接使用SQL更新作为回退方案
 		log.Printf("Attempting direct SQL update for task %s", taskid)
 		updateFields := map[string]interface{}{
-			"status": status,
+			"status":         status,
+			"total_duration": time.Now().Unix() - videoTask.CreatedAt,
 		}
 		if failreason != "" {
 			updateFields["fail_reason"] = failreason
