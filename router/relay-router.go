@@ -118,6 +118,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/styles", controller.RelayRecraft)
 		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/messages", controller.RelayClaude)
+		relayV1Router.POST("/responses", controller.RelayResponse)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {

@@ -11,6 +11,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
 )
 
 func FlushWriter(c *gin.Context) error {
@@ -59,6 +60,11 @@ func ClaudeChunkData(c *gin.Context, resp anthropic.StreamResponse, data string)
 }
 
 func ResponseChunkData(c *gin.Context, resp anthropic.StreamResponse, data string) {
+	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
+	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
+	_ = FlushWriter(c)
+}
+func OpenaiResponseChunkData(c *gin.Context, resp openai.OpenaiResponseStreamResponse, data string) {
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("event: %s\n", resp.Type)})
 	c.Render(-1, common.CustomEvent{Data: fmt.Sprintf("data: %s", data)})
 	_ = FlushWriter(c)
