@@ -144,7 +144,15 @@ func Relay(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, cumulativeDuration, bizErr.Error.Message, channelName, channelHistory)
+	
+	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
+	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
+		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
+		recordXAIContentViolationCharge(ctx, c, channelHistory)
+	} else {
+		// 普通失败：记录失败日志
+		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, cumulativeDuration, bizErr.Error.Message, channelName, channelHistory)
+	}
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
@@ -214,7 +222,16 @@ func Relay(c *gin.Context) {
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = append(failedChannelIds, channelId)
 
-		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
+		// 检查是否是xAI内容违规错误
+		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
+			// xAI内容违规：记录扣费日志并立即停止重试
+			recordXAIContentViolationCharge(ctx, c, channelHistory)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+			// 跳出重试循环，直接返回错误
+			break
+		}
+
+		// 普通失败：记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, bizErr.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
@@ -225,10 +242,7 @@ func Relay(c *gin.Context) {
 		// 记录渠道历史到上下文中，供后续使用
 		c.Set("admin_channel_history", channelHistory)
 
-		// 检查是否是xAI内容违规错误，如果是则记录费用
-		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
-			recordXAIContentViolationCharge(ctx, c, channelHistory)
-		}
+		// 注意：xAI内容违规的扣费已在上面处理，不再重复检查
 		// 注意：不再调用 recordFailedRequestLog，因为每次失败已经单独记录了
 
 		if bizErr.StatusCode == http.StatusTooManyRequests {
@@ -2703,6 +2717,138 @@ func RelayClaude(c *gin.Context) {
 			"error": model.ClaudeError{
 				Type:    relayError.Error.Type,
 				Message: relayError.Error.Message,
+			},
+		})
+	}
+}
+func RelayResponse(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// 记录整个请求的开始时间，用于计算总耗时和首字时长
+	totalStartTime := time.Now()
+	// 将总请求开始时间设置到 context 中，供 RelayClaudeNative 使用计算真正的首字时长
+	c.Set("total_request_start_time", totalStartTime)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	//relayMode := c.GetInt("relay_mode")
+	originalModel := c.GetString("original_model")
+	originalChannelId := c.GetInt("channel_id")
+	originalChannelName := c.GetString("channel_name")
+	originalKeyIndex := c.GetInt("key_index")
+	tokenName := c.GetString("token_name")
+
+	// 获取或生成 X-Request-ID
+	// 如果客户端没有传递，则自动生成：时间戳(YYYYMMDDHHmmss) + 8位UUID
+	requestID := c.GetHeader("X-Request-ID")
+	if requestID == "" {
+		requestID = common.GenerateRequestID()
+	}
+	c.Set("X-Request-ID", requestID)
+	// 同时设置到 Header 中，确保后续处理可以通过 GetHeader 获取
+	c.Request.Header.Set("X-Request-ID", requestID)
+
+	// 记录使用的渠道历史，用于添加到日志中
+	// 在调用前就初始化并设置，确保成功时也能记录
+	channelHistory := []int{originalChannelId}
+	c.Set("admin_channel_history", channelHistory)
+
+	relayError := controller.RelayOpenaiResponseNative(c)
+	if relayError == nil {
+		return
+	}
+
+	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
+	cumulativeDuration := time.Since(totalStartTime).Seconds()
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, cumulativeDuration, relayError.Error.Message, originalChannelName, channelHistory)
+
+	// 处理首次失败的渠道错误（包括自动禁用逻辑）
+	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
+
+	lastFailedChannelId := channelId
+	group := c.GetString("group")
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
+		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
+		retryTimes = 0
+	}
+	for i := retryTimes; i > 0; i-- {
+		skipPriorityLevels := retryTimes - i
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			break
+		}
+
+		// 跳过上次失败的渠道
+		if channel.Id == lastFailedChannelId {
+			continue
+		}
+
+		// 获取重试原因 - 直接使用原始错误消息
+		retryReason := relayError.Error.Message
+
+		// 获取新渠道的key信息
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		// 生成详细的重试日志
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+
+		logger.Infof(ctx, retryLog)
+
+		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
+		if historyInterface, exists := c.Get("admin_channel_history"); exists {
+			if history, ok := historyInterface.([]int); ok {
+				history = append(history, channel.Id)
+				c.Set("admin_channel_history", history)
+				channelHistory = history
+			}
+		}
+
+		logger.Infof(ctx, "Using channel #%d to retry Claude request (remain times %d)", channel.Id, i)
+
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
+		requestBody, _ := common.GetRequestBody(c)
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		relayError = controller.RelayOpenaiResponseNative(c)
+		if relayError == nil {
+			// 重试成功，直接返回（无需记录错误日志）
+			return
+		}
+
+		// 计算累计耗时（从请求开始到当前失败的时间）
+		cumulativeDuration = time.Since(totalStartTime).Seconds()
+		currentAttempt := retryTimes - i + 1
+
+		channelId = c.GetInt("channel_id")
+		lastFailedChannelId = channelId
+		channelName := c.GetString("channel_name")
+		keyIndex := c.GetInt("key_index")
+
+		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)
+
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+	}
+
+	if relayError != nil {
+		// 记录渠道历史到上下文中
+		c.Set("admin_channel_history", channelHistory)
+		// 注意：不再调用 recordFailedRequestLog，因为每次失败已经单独记录了
+		//转换成claude 的错误格式
+		c.JSON(relayError.StatusCode, gin.H{
+			"error": gin.H{
+				"message": relayError.Error.Message,
+				"code":    relayError.Error.Code,
+				"status":  relayError.Error.Status,
 			},
 		})
 	}
