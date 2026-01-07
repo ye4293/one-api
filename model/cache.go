@@ -273,7 +273,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 			channelID, parseErr := strconv.Atoi(cachedChannelID)
 			if parseErr == nil {
 				// 尝试获取该 channel
-				channel, getErr := CacheGetChannel(channelID)
+				channel, getErr := GetChannelById(channelID, true)
 				if getErr == nil && channel != nil {
 					// 验证该 channel 是否满足条件（group、model、状态）
 					if channel.Status == common.ChannelStatusEnabled {
