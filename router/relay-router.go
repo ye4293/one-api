@@ -246,6 +246,29 @@ func SetRelayRouter(router *gin.Engine) {
 		runwayResultRouter.GET("/tasks/:taskId", controller.RelayRunwayResult)
 	}
 
+	// Kling AI 视频生成路由组
+	klingRouter := router.Group("/kling/v1/videos")
+	klingRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		klingRouter.POST("/text2video", controller.RelayKlingVideo)
+		klingRouter.POST("/omni-video", controller.RelayKlingVideo)
+		klingRouter.POST("/image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/multi-image2video", controller.RelayKlingVideo)
+	}
+
+	// Kling 查询路由（不需要 Distribute 中间件）
+	klingResultRouter := router.Group("/kling/v1/videos")
+	klingResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		klingResultRouter.GET("/:id", controller.RelayKlingVideoResult)
+	}
+
+	// Kling 回调路由（不需要认证）
+	klingCallbackRouter := router.Group("/kling/internal")
+	{
+		klingCallbackRouter.POST("/callback", controller.HandleKlingCallback)
+	}
+
 	// // Gemini 原生API透传路由组 - 支持完整的Gemini官方API格式
 	// geminiNativeRouter := router.Group("/gemini/v1beta")
 	// geminiNativeRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())

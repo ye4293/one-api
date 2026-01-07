@@ -6,14 +6,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	"github.com/songquanpeng/one-api/relay/channel/stability"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
-
-	"github.com/gin-gonic/gin"
 )
 
 type ModelRequest struct {
@@ -164,6 +164,19 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			c.Set("relay_mode", relayMode)
 		}
 
+	} else if strings.HasPrefix(path, "/kling/v1/videos/") {
+		// Kling API 路径处理
+		// 判断是查询接口还是生成接口
+		// 查询接口格式: /kling/v1/videos/{task_id} (GET)
+		// 生成接口格式: /kling/v1/videos/text2video 等 (POST)
+		if c.Request.Method == "GET" {
+			// GET 请求是查询接口，不需要选择渠道
+			shouldSelectChannel = false
+		} else {
+			// POST 请求是视频生成接口，解析请求体中的 model 字段
+			_ = common.UnmarshalBodyReusable(c, &modelRequest)
+		}
+
 	} else {
 		// OpenAI 格式请求
 		_ = common.UnmarshalBodyReusable(c, &modelRequest)
@@ -245,6 +258,20 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		c.Set(common.ConfigKeyLibraryID, channel.Other)
 	case common.ChannelTypeAli:
 		c.Set(common.ConfigKeyPlugin, channel.Other)
+	case common.ChannelTypeKeling:
+		// 使用统一方法处理 Kling 凭证和 Token 生成
+		token, err := keling.GetCredentialsAndGenerateToken(channel, keyIndex)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to generate Kling token for channel %d: %s", channel.Id, err.Error()))
+			// 使用原始 key 作为降级方案
+			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
+			c.Set("Config", cfg)
+			return
+		}
+
+		// 设置 Authorization header
+		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+		logger.SysLog(fmt.Sprintf("Kling JWT token generated for channel %d", channel.Id))
 	}
 	c.Set("Config", cfg)
 }

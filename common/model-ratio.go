@@ -635,8 +635,13 @@ var DefaultModelPrice = map[string]float64{
 	"sd3-large-turbo":            0.04,
 	"cogvideox":                  0.1,
 	"video-01":                   0.45,
+	// Kling 视频模型定价（临时占位值，待官方确认）
 	"kling-v1":                   0.14,
 	"kling-v1-5":                 0.28,
+	"kling-v1-5-std":             50,    // Kling 1.5 标准版
+	"kling-v1-5-pro":             100,   // Kling 1.5 专业版
+	"kling-v1-6-std":             60,    // Kling 1.6 标准版
+	"kling-v1-6-pro":             120,   // Kling 1.6 专业版
 	"gen3a_turbo":                0.25,
 	"luma":                       0.4,
 	"dall-e-3":                   0.04,
