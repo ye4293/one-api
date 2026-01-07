@@ -57,13 +57,13 @@ jobs:
           context: .
           platforms: linux/amd64    # 测试环境只构建 amd64，速度快
           push: true
-          no-cache: true    # 强制不使用缓存，确保代码最新
-          pull: true    # 每次都拉取最新的基础镜像
           tags: |
             ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.timestamp }}
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.timestamp }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
       - name: 输出构建信息
         run: |
@@ -77,16 +77,16 @@ jobs:
           echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.timestamp }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 测试服务器部署命令" >> $GITHUB_STEP_SUMMARY
-          echo "#### 方式1：拉取 latest 版本" >> $GITHUB_STEP_SUMMARY
+          echo "### 测试服务器拉取命令" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取 latest（可能有缓存）" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull --no-cache ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo "docker-compose down && docker-compose up -d one-api" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "#### 方式2：拉取指定时间戳版本（推荐）" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取指定时间戳版本（确保最新）" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.timestamp }}" >> $GITHUB_STEP_SUMMARY
           echo "docker tag ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.timestamp }} ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
-          echo "docker-compose down && docker-compose up -d one-api" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
