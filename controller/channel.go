@@ -22,6 +22,7 @@ func GetAllChannels(c *gin.Context) {
 	}
 	pagesize, _ := strconv.Atoi(c.Query("pagesize"))
 	currentPage := page
+
 	channels, total, err := model.GetChannelsAndCount(page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -67,7 +68,7 @@ func SearchChannels(c *gin.Context) {
 	}
 
 	currentPage := page
-	channels, total, err := model.SearchChannelsAndCount(keyword, status, page, pagesize) // 将status作为参数传递
+	channels, total, err := model.SearchChannelsAndCount(keyword, status, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -96,7 +97,8 @@ func GetChannel(c *gin.Context) {
 		})
 		return
 	}
-	channel, err := model.GetChannelById(id, false)
+
+	channel, err := model.GetChannelById(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

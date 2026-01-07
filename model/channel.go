@@ -178,19 +178,10 @@ func GetChannelsAndCount(page int, pageSize int) (channels []*Channel, total int
 	}
 
 	// 计算起始索引，基于page和pageSize。第一页的起始索引为0。
-
 	offset := (page - 1) * pageSize
 
-	// 定义需要选择的字段列表，确保所有必要信息都被包含
-	selectFields := []string{
-		"id", "type", "status", "name", "weight", "created_time", "test_time",
-		"response_time", "base_url", "other", "balance", "balance_updated_time",
-		"models", "`group`", "used_quota", "model_mapping", "priority", "config",
-		"channel_ratio", "auto_disabled", "multi_key_info", "auto_disabled_reason", "auto_disabled_time", "auto_disabled_model",
-	}
-
-	// 使用明确的 Select 来获取当前页面的频道列表，替代 Omit("key")
-	err = DB.Select(selectFields).Order("id desc").Limit(pageSize).Offset(offset).Find(&channels).Error
+	// 获取当前页面的频道列表（包含所有字段，因为只有管理员可以访问）
+	err = DB.Order("id desc").Limit(pageSize).Offset(offset).Find(&channels).Error
 	if err != nil {
 		return nil, total, err
 	}
@@ -323,17 +314,8 @@ func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int)
 	// 计算分页的偏移量
 	offset := (page - 1) * pageSize
 
-	// 定义需要选择的字段列表
-	selectFields := []string{
-		"id", "type", "status", "name", "weight", "created_time", "test_time",
-		"response_time", "base_url", "other", "balance", "balance_updated_time",
-		"models", "`group`", "used_quota", "model_mapping", "priority", "config",
-		"channel_ratio", "auto_disabled", "multi_key_info", "auto_disabled_reason", "auto_disabled_time", "auto_disabled_model",
-	}
-
-	// 获取满足条件的频道列表的子集，并应用分页参数
-	// 明确选择所有需要的字段，除了`key`
-	err = baseQuery.Select(selectFields).Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
+	// 获取满足条件的频道列表（包含所有字段，因为只有管理员可以访问）
+	err = baseQuery.Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
 	if err != nil {
 		return nil, total, err
 	}
