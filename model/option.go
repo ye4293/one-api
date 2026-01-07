@@ -78,6 +78,7 @@ func InitOptionMap() {
 	config.OptionMap["AudioOutputRatio"] = common.AudioOutputRatio2JSONString()
 	config.OptionMap["ImageInputRatio"] = common.ImageInputRatio2JSONString()
 	config.OptionMap["ImageOutputRatio"] = common.ImageOutputRatio2JSONString()
+	config.OptionMap["CacheRatio"] = common.CacheRatio2JSONString()
 	config.OptionMap["PerCallPricing"] = common.ModelPrice2JSONString()
 	config.OptionMap["VideoPricingRules"] = common.VideoPricingRules2JSONString()
 	config.OptionMap["TopUpLink"] = config.TopUpLink
@@ -131,6 +132,9 @@ func loadOptionsFromDatabase() {
 		}
 		if option.Key == "ImageOutputRatio" {
 			option.Value = common.AddNewMissingImageOutputRatio(option.Value)
+		}
+		if option.Key == "CacheRatio" {
+			option.Value = common.AddNewMissingCacheRatio(option.Value)
 		}
 		if option.Key == "VideoPricingRules" {
 			option.Value = common.AddNewMissingVideoPricingRules(option.Value)
@@ -290,6 +294,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateImageInputRatioByJSONString(value)
 	case "ImageOutputRatio":
 		err = common.UpdateImageOutputRatioByJSONString(value)
+	case "CacheRatio":
+		err = common.UpdateCacheRatioByJSONString(value)
 	case "PerCallPricing":
 		err = common.UpdateModelPriceByJSONString(value)
 	case "VideoPricingRules":
