@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -319,15 +321,26 @@ func HandleKlingCallback(c *gin.Context) {
 			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, quota=%d, task_id=%s", video.UserId, video.Quota, taskID))
 		}
 
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
+
 		video.Update()
 	} else if notification.TaskStatus == kling.TaskStatusFailed {
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = notification.TaskStatusMsg
+
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
+
 		video.Update()
 		logger.SysLog(fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
 	} else {
 		// 其他状态（processing等），更新状态但不扣费
 		video.Status = notification.TaskStatus
+
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
+
 		video.Update()
 	}
 
