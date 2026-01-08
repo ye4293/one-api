@@ -23,6 +23,8 @@ const (
 
 var setupLogLock sync.Mutex
 var setupLogWorking bool
+var generalLogFile *os.File
+var errorLogFile *os.File
 
 func SetupLogger() {
 	if LogDir != "" {
@@ -35,13 +37,38 @@ func SetupLogger() {
 			setupLogLock.Unlock()
 			setupLogWorking = false
 		}()
-		logPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102")))
-		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		
+		dateStr := time.Now().Format("20060102")
+		
+		// Open general log file (for INFO/WARN/DEBUG)
+		generalLogPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-%s.log", dateStr))
+		fd, err := os.OpenFile(generalLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Fatal("failed to open log file")
+			log.Fatal("failed to open general log file")
 		}
-		gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
-		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
+		
+		// Open error log file (for ERROR only)
+		errorLogPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-error-%s.log", dateStr))
+		errFd, err := os.OpenFile(errorLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal("failed to open error log file")
+		}
+		
+		// Close previous file handles if they exist
+		if generalLogFile != nil {
+			generalLogFile.Close()
+		}
+		if errorLogFile != nil {
+			errorLogFile.Close()
+		}
+		
+		generalLogFile = fd
+		errorLogFile = errFd
+		
+		// INFO/WARN/DEBUG go to stdout + general log file
+		gin.DefaultWriter = io.MultiWriter(os.Stdout, generalLogFile)
+		// ERROR go to stderr + error log file
+		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, errorLogFile)
 	}
 }
 
@@ -90,9 +117,11 @@ func Errorf(ctx context.Context, format string, a ...any) {
 }
 
 func logHelper(ctx context.Context, level string, msg string) {
-	writer := gin.DefaultErrorWriter
-	if level == loggerINFO {
-		writer = gin.DefaultWriter
+	// ERROR goes to DefaultErrorWriter (stderr + error log file)
+	// INFO/WARN/DEBUG go to DefaultWriter (stdout + general log file)
+	writer := gin.DefaultWriter
+	if level == loggerError {
+		writer = gin.DefaultErrorWriter
 	}
 	id := ctx.Value(RequestIdKey)
 	if id == nil {

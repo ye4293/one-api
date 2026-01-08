@@ -114,6 +114,7 @@ var AutomaticEnableChannelEnabled = false
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
+
 // 自动禁用关键词配置（一行一个关键词）
 var AutoDisableKeywords = `api key not valid
 invalid_api_key
@@ -196,5 +197,12 @@ var MetricQueueSize = env.Int("METRIC_QUEUE_SIZE", 10)
 var MetricSuccessRateThreshold = env.Float64("METRIC_SUCCESS_RATE_THRESHOLD", 0.8)
 var MetricSuccessChanSize = env.Int("METRIC_SUCCESS_CHAN_SIZE", 1024)
 var MetricFailChanSize = env.Int("METRIC_FAIL_CHAN_SIZE", 128)
+
+// CloudWatch 配置
+var CloudWatchEnabled = env.Bool("CLOUDWATCH_ENABLED", false)
+var CloudWatchNamespace = env.String("CLOUDWATCH_NAMESPACE", "OneAPI")
+var CloudWatchRegion = env.String("CLOUDWATCH_REGION", "us-east-1")
+var CloudWatchFlushInterval = env.Int("CLOUDWATCH_FLUSH_INTERVAL", 60)   // 指标发送间隔（秒）
+var CloudWatchSampleInterval = env.Int("CLOUDWATCH_SAMPLE_INTERVAL", 10) // 饱和度采样间隔（秒）
 
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")

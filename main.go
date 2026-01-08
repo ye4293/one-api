@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -128,7 +129,7 @@ func main() {
 	}
 	if config.MemoryCacheEnabled {
 		logger.SysLog("memory cache enabled")
-		logger.SysError(fmt.Sprintf("sync frequency: %d seconds", config.SyncFrequency))
+		logger.SysLog(fmt.Sprintf("sync frequency: %d seconds", config.SyncFrequency))
 		model.InitChannelCache()
 	}
 
@@ -169,6 +170,16 @@ func main() {
 	monitor.StartKeyNotificationListener()
 	logger.SysLog("key disable notification listener started")
 
+	// 启动 CloudWatch Reporter
+	if config.CloudWatchEnabled {
+		ctx := context.Background()
+		err = monitor.StartCloudWatchReporter(ctx)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("failed to start CloudWatch reporter: %s", err.Error()))
+		}
+		logger.SysLog("CloudWatch reporter started")
+	}
+
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 
@@ -178,6 +189,13 @@ func main() {
 	// This will cause SSE not to work!!!
 	//server.Use(gzip.Gzip(gzip.DefaultCompression))
 	server.Use(middleware.RequestId())
+
+	// 添加 CloudWatch Metrics 中间件（在 logger 之前，以便记录所有请求）
+	if config.CloudWatchEnabled {
+		server.Use(middleware.CloudWatchMetrics())
+		logger.SysLog("CloudWatch metrics middleware added")
+	}
+
 	middleware.SetUpLogger(server)
 	// Initialize session store
 	store := cookie.NewStore([]byte(config.SessionSecret))
