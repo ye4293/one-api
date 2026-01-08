@@ -73,6 +73,7 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          CURRENT_TAG: ${{ steps.version.outputs.timestamp }}
         run: |
           set -euo pipefail
           NAMESPACE="${{ env.DOCKER_REGISTRY }}"
@@ -82,6 +83,11 @@ jobs:
           if [[ -z "${DOCKERHUB_USERNAME:-}" || -z "${DOCKERHUB_TOKEN:-}" ]]; then
             echo "Docker Hub 凭证缺失，跳过清理"
             exit 0
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
           fi
 
           echo "获取 Docker Hub JWT..."
@@ -95,28 +101,46 @@ jobs:
             exit 0
           fi
 
-          echo "获取 tag 列表（按更新时间排序）..."
-          TAGS=$(curl -fsSL -H "Authorization: JWT ${JWT}" \
-            "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags?page_size=100&ordering=-last_updated" \
-            | jq -r '.results[].name')
+          echo "获取 tag 列表并按 last_updated 排序（不依赖 ordering 参数，避免误删）..."
+          URL="https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags?page_size=100"
+          LINES=""
 
-          # 过滤出时间戳格式的 tag（排除 latest 和 buildcache）
-          TIMESTAMP_TAGS=$(echo "$TAGS" | grep -E '^[0-9]{8}-[0-9]{6}$' || true)
-          
-          # 计算需要删除的 tag
-          DELETE_TAGS=$(echo "$TIMESTAMP_TAGS" | tail -n +$((KEEP + 1)))
-          
-          if [[ -z "$DELETE_TAGS" ]]; then
+          while [[ -n "${URL}" && "${URL}" != "null" ]]; do
+            RESP=$(curl -fsSL -H "Authorization: JWT ${JWT}" "${URL}")
+            URL=$(echo "${RESP}" | jq -r '.next')
+            PAGE_LINES=$(echo "${RESP}" | jq -r '.results[] | "\(.last_updated) \(.name)"')
+            LINES="${LINES}"$'\n'"${PAGE_LINES}"
+          done
+
+          # 过滤出时间戳格式的 tag，并按 last_updated 倒序
+          # 同时：永远不删除本次构建的 CURRENT_TAG
+          TIMESTAMP_TAGS_SORTED=$(echo "${LINES}" \
+            | awk 'NF>=2 {print}' \
+            | sort -r \
+            | awk '{print $2}' \
+            | grep -E '^[0-9]{8}-[0-9]{6}$' || true)
+
+          # 需要保留的 tag：最新 KEEP 个 + CURRENT_TAG（即使排序异常也保护本次构建 tag）
+          KEEP_TAGS=$( (echo "${TIMESTAMP_TAGS_SORTED}" | head -n "${KEEP}"; echo "${CURRENT_TAG}") \
+            | sed '/^$/d' | sort -u )
+
+          # 计算需要删除的 tag（timestamp tags 中不在 KEEP_TAGS 的）
+          DELETE_TAGS=$(comm -23 \
+            <(echo "${TIMESTAMP_TAGS_SORTED}" | sed '/^$/d' | sort -u) \
+            <(echo "${KEEP_TAGS}" | sort -u) || true)
+
+          if [[ -z "${DELETE_TAGS}" ]]; then
             echo "没有需要删除的旧 tag"
           else
             echo "将删除以下旧 tag："
-            echo "$DELETE_TAGS"
-            for TAG in $DELETE_TAGS; do
+            echo "${DELETE_TAGS}"
+            while IFS= read -r TAG; do
+              [[ -z "${TAG}" ]] && continue
               echo "删除 ${NAMESPACE}/${REPO}:${TAG}"
               curl -fsSL -X DELETE \
                 -H "Authorization: JWT ${JWT}" \
                 "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/" || true
-            done
+            done <<< "${DELETE_TAGS}"
           fi
           echo "Docker Hub 清理完成"
 
