@@ -125,3 +125,47 @@ type QueryTaskResponse struct {
 	RequestID string   `json:"request_id"`
 	Data      TaskData `json:"data"`
 }
+
+// 人脸识别请求
+type IdentifyFaceRequest struct {
+	VideoID  string `json:"video_id,omitempty"`  // 可灵视频ID
+	VideoURL string `json:"video_url,omitempty"` // 视频URL
+}
+
+// 人脸识别响应
+type IdentifyFaceResponse struct {
+	Code      int              `json:"code"`
+	Message   string           `json:"message"`
+	RequestID string           `json:"request_id"`
+	Data      IdentifyFaceData `json:"data"`
+}
+
+type IdentifyFaceData struct {
+	SessionID string     `json:"session_id"`
+	FaceData  []FaceInfo `json:"face_data"`
+}
+
+type FaceInfo struct {
+	FaceID    string `json:"face_id"`
+	FaceImage string `json:"face_image"`
+	StartTime int64  `json:"start_time"`
+	EndTime   int64  `json:"end_time"`
+}
+
+// 对口型请求
+type AdvancedLipSyncRequest struct {
+	KlingBaseRequest
+	SessionID  string       `json:"session_id"`
+	FaceChoose []FaceChoose `json:"face_choose"`
+}
+
+type FaceChoose struct {
+	FaceID              string  `json:"face_id"`
+	AudioID             string  `json:"audio_id,omitempty"`
+	SoundFile           string  `json:"sound_file,omitempty"`
+	SoundStartTime      int64   `json:"sound_start_time"`
+	SoundEndTime        int64   `json:"sound_end_time"`
+	SoundInsertTime     int64   `json:"sound_insert_time"`
+	SoundVolume         float64 `json:"sound_volume,omitempty"`
+	OriginalAudioVolume float64 `json:"original_audio_volume,omitempty"`
+}

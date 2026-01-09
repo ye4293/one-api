@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/songquanpeng/one-api/relay/controller"
 	"net/http"
 	"time"
 
@@ -372,4 +373,12 @@ func updateVideoFromKlingResult(video *dbmodel.Video, result *kling.QueryTaskRes
 	}
 
 	video.Update()
+}
+
+func DoIdentifyFace(c *gin.Context) {
+	controller.DoIdentifyFace(c)
+}
+
+func DoAdvancedLipSync(c *gin.Context) {
+	controller.DoAdvancedLipSync(c)
 }

@@ -254,6 +254,8 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/omni-video", controller.RelayKlingVideo)
 		klingRouter.POST("/image2video", controller.RelayKlingVideo)
 		klingRouter.POST("/multi-image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/identify-face", controller.DoIdentifyFace)
+		klingRouter.POST("/advanced-lip-sync", controller.DoAdvancedLipSync)
 	}
 
 	// Kling 查询路由（不需要 Distribute 中间件）
