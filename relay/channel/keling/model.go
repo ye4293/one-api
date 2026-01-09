@@ -6,11 +6,13 @@ type TextToVideoRequest struct {
 	Prompt         string         `json:"prompt"`
 	NegativePrompt string         `json:"negative_prompt,omitempty"`
 	CfgScale       float64        `json:"cfg_scale,omitempty"`
-	Mode           string         `json:"mode,omitempty"`
-	CameraControl  *CameraControl `json:"camera_control,omitempty"`
-	AspectRatio    string         `json:"aspect_ratio,omitempty"`
-	Duration       interface{}    `json:"duration,omitempty"`
+	Mode           string         `json:"mode,omitempty"`           // 生成模式: std(标准), pro(专业)
+	CameraControl  *CameraControl `json:"camera_control,omitempty"` // 运镜控制
+	AspectRatio    string         `json:"aspect_ratio,omitempty"`   // 宽高比: 16:9, 9:16, 1:1
+	Duration       interface{}    `json:"duration,omitempty"`       // 视频时长(秒): 5, 10
+	Sound          string         `json:"sound,omitempty"`          // 生成声音: on, off (仅V2.6+)
 	CallbackURL    string         `json:"callback_url,omitempty"`
+	ExternalTaskID string         `json:"external_task_id,omitempty"` // 客户自定义任务ID
 }
 
 type CameraControl struct {
@@ -19,25 +21,43 @@ type CameraControl struct {
 }
 
 type CameraConfig struct {
-	Horizontal float64 `json:"horizontal,omitempty"`
-	Vertical   float64 `json:"vertical,omitempty"`
-	Pan        float64 `json:"pan,omitempty"`
-	Tilt       float64 `json:"tilt,omitempty"`
-	Roll       float64 `json:"roll,omitempty"`
-	Zoom       float64 `json:"zoom,omitempty"`
+	Horizontal float64 `json:"horizontal,omitempty"` // 水平运镜
+	Vertical   float64 `json:"vertical,omitempty"`   // 垂直运镜
+	Pan        float64 `json:"pan,omitempty"`        // 左右摇移
+	Tilt       float64 `json:"tilt,omitempty"`       // 上下摇移
+	Roll       float64 `json:"roll,omitempty"`       // 旋转
+	Zoom       float64 `json:"zoom,omitempty"`       // 缩放
+}
+
+// DynamicMask 动态遮罩
+type DynamicMask struct {
+	Mask         string  `json:"mask"`                   // 遮罩图像(URL或Base64)
+	Trajectories []Point `json:"trajectories,omitempty"` // 运动轨迹点列表
+}
+
+// Point 轨迹点
+type Point struct {
+	X float64 `json:"x"` // X坐标 (0-1)
+	Y float64 `json:"y"` // Y坐标 (0-1)
 }
 
 type ImageToVideoRequest struct {
-	Model          string      `json:"model,omitempty"`
-	ModelName      string      `json:"model_name,omitempty"`
-	Image          string      `json:"image"`
-	ImageTail      string      `json:"image_tail,omitempty"`
-	Prompt         string      `json:"prompt,omitempty"`
-	NegativePrompt string      `json:"negative_prompt,omitempty"`
-	CfgScale       float64     `json:"cfg_scale,omitempty"`
-	Mode           string      `json:"mode,omitempty"`
-	Duration       interface{} `json:"duration,omitempty"`
-	CallbackURL    string      `json:"callback_url,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	ModelName      string         `json:"model_name,omitempty"`
+	Image          string         `json:"image"`                      // 首帧图像(URL或Base64)
+	ImageTail      string         `json:"image_tail,omitempty"`       // 尾帧图像(URL或Base64)
+	Prompt         string         `json:"prompt,omitempty"`           // 提示词
+	NegativePrompt string         `json:"negative_prompt,omitempty"`  // 负向提示词
+	CfgScale       float64        `json:"cfg_scale,omitempty"`        // 提示词影响程度: 0-1
+	Mode           string         `json:"mode,omitempty"`             // 生成模式: std(标准), pro(专业)
+	AspectRatio    string         `json:"aspect_ratio,omitempty"`     // 宽高比: 16:9, 9:16, 1:1
+	Duration       interface{}    `json:"duration,omitempty"`         // 视频时长(秒): 5, 10
+	CameraControl  *CameraControl `json:"camera_control,omitempty"`   // 运镜控制
+	StaticMask     string         `json:"static_mask,omitempty"`      // 静态遮罩(URL或Base64)
+	DynamicMasks   []DynamicMask  `json:"dynamic_masks,omitempty"`    // 动态遮罩列表
+	Sound          string         `json:"sound,omitempty"`            // 是否生成声音: on, off (仅V2.6+)
+	CallbackURL    string         `json:"callback_url,omitempty"`     // 回调通知地址
+	ExternalTaskID string         `json:"external_task_id,omitempty"` // 客户自定义任务ID
 }
 
 // Video 表示单个视频的信息
@@ -141,6 +161,7 @@ type MultiImageToVideoRequest struct {
 	Mode           string      `json:"mode,omitempty"`
 	Duration       interface{} `json:"duration,omitempty"`
 	AspectRatio    string      `json:"aspect_ratio,omitempty"`
+	Sound          string      `json:"sound,omitempty"` // 生成声音: on, off (仅V2.6+)
 	CallbackURL    string      `json:"callback_url,omitempty"`
 	ExternalTaskID string      `json:"external_task_id,omitempty"`
 }
