@@ -24,6 +24,10 @@ func DetermineRequestType(path string) string {
 		return RequestTypeImage2Video
 	} else if strings.Contains(path, "/multi-image2video") {
 		return RequestTypeMultiImage2Video
+	} else if strings.Contains(path, "/identify-face") {
+		return RequestTypeIdentifyFace
+	} else if strings.Contains(path, "/advanced-lip-sync") {
+		return RequestTypeAdvancedLipSync
 	}
 	return ""
 }
