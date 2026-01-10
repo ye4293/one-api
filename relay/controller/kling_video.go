@@ -17,7 +17,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-// DoIdentifyFace 处理人脸识别请求（同步接口，不计费）
+// DoIdentifyFace 处理人脸识别请求（同步接口，成功后立即计费）
 func DoIdentifyFace(c *gin.Context) {
 	meta := util.GetRelayMeta(c)
 
@@ -121,10 +121,70 @@ func DoIdentifyFace(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Kling identify-face: session_id=%s, faces=%d, user_id=%d",
-		klingResp.Data.SessionID, len(klingResp.Data.FaceData), meta.UserId))
+	// 获取模型信息用于计费
+	model := kling.GetModelNameFromRequest(request)
+	if model == "" {
+		model = "kling-v1" // 默认模型
+	}
 
-	// 直接返回 Kling 响应（不保存到数据库，不计费）
+	// 计算费用（identify-face 固定 mode=std，不记录 duration）
+	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "")
+
+	// 获取用户信息
+	user, err := dbmodel.GetUserById(meta.UserId, false)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling identify-face get user error: user_id=%d, error=%v", meta.UserId, err))
+		user = &dbmodel.User{Username: ""}
+	}
+
+	// 创建 Video 记录（使用 session_id 作为 task_id）
+	video := &dbmodel.Video{
+		TaskId:    klingResp.Data.SessionID, // session_id 作为 task_id
+		UserId:    meta.UserId,
+		Username:  user.Username,
+		ChannelId: meta.ChannelId,
+		Model:     model,
+		Provider:  "kling",
+		Type:      kling.RequestTypeIdentifyFace,
+		Status:    kling.TaskStatusSucceed, // 同步接口，立即成功
+		Quota:     quota,
+		Mode:      "std", // 固定值
+		Duration:  "",    // 不记录时长
+		VideoId:   klingResp.Data.SessionID,
+	}
+
+	// 保存完整响应到 Result 字段
+	resultBytes, err := json.Marshal(klingResp)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling identify-face marshal result error: user_id=%d, error=%v", meta.UserId, err))
+	} else {
+		video.Result = string(resultBytes)
+	}
+
+	// 插入数据库
+	if err := video.Insert(); err != nil {
+		logger.SysError(fmt.Sprintf("Kling identify-face insert video record error: user_id=%d, session_id=%s, error=%v",
+			meta.UserId, klingResp.Data.SessionID, err))
+		// 数据库错误不影响返回结果
+	}
+
+	// 立即扣费
+	if quota > 0 {
+		err := dbmodel.DecreaseUserQuota(meta.UserId, quota)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Kling identify-face billing failed: user_id=%d, quota=%d, error=%v",
+				meta.UserId, quota, err))
+			// 扣费失败记录日志，但不影响返回结果
+		} else {
+			logger.SysLog(fmt.Sprintf("Kling identify-face billing success: user_id=%d, quota=%d, session_id=%s, faces=%d",
+				meta.UserId, quota, klingResp.Data.SessionID, len(klingResp.Data.FaceData)))
+		}
+	}
+
+	logger.SysLog(fmt.Sprintf("Kling identify-face success: session_id=%s, faces=%d, user_id=%d, video_id=%d",
+		klingResp.Data.SessionID, len(klingResp.Data.FaceData), meta.UserId, video.Id))
+
+	// 返回 Kling 响应
 	c.JSON(http.StatusOK, klingResp)
 }
 
