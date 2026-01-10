@@ -2519,7 +2519,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 
 	// 确定请求类型和URL
 	var requestType string
-	var requestBody interface{}
+	var requestBody any
 	var videoType string
 	var videoId string
 	var mode string
@@ -2534,13 +2534,21 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 		requestBody = lipRequest
 		videoId = lipRequest.Input.VideoId
+	} else if meta.OriginModelName == "kling-identify-face" {
+		// 人脸识别请求 - 使用独立的处理逻辑
+		DoIdentifyFace(c)
+		return nil
+	} else if meta.OriginModelName == "kling-advanced-lip-sync" {
+		// 对口型任务请求 - 使用独立的处理逻辑
+		DoAdvancedLipSync(c)
+		return nil
 	} else {
 		// 检查是否为多图生视频请求或单图生视频请求
 		var imageCheck struct {
-			Image     string      `json:"image,omitempty"`
-			Mode      string      `json:"mode,omitempty"`
-			Duration  interface{} `json:"duration,omitempty"`
-			ImageTail string      `json:"image_tail,omitempty"`
+			Image     string `json:"image,omitempty"`
+			Mode      string `json:"mode,omitempty"`
+			Duration  any    `json:"duration,omitempty"`
+			ImageTail string `json:"image_tail,omitempty"`
 			ImageList []struct {
 				Image string `json:"image"`
 			} `json:"image_list,omitempty"`
