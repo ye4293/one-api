@@ -86,12 +86,13 @@ type KlingResponse struct {
 
 // 任务数据
 type TaskData struct {
-	TaskID        string     `json:"task_id"`
-	TaskStatus    string     `json:"task_status"` // submitted/processing/succeed/failed
-	TaskStatusMsg string     `json:"task_status_msg,omitempty"`
-	CreatedAt     int64      `json:"created_at"`
-	UpdatedAt     int64      `json:"updated_at"`
-	TaskResult    TaskResult `json:"task_result,omitempty"`
+	TaskID        string                 `json:"task_id"`
+	TaskStatus    string                 `json:"task_status"` // submitted/processing/succeed/failed
+	TaskStatusMsg string                 `json:"task_status_msg,omitempty"`
+	TaskInfo      map[string]interface{} `json:"task_info,omitempty"` // 任务创建时的参数信息（如 parent_video）
+	CreatedAt     int64                  `json:"created_at"`
+	UpdatedAt     int64                  `json:"updated_at"`
+	TaskResult    TaskResult             `json:"task_result,omitempty"`
 }
 
 // 任务结果

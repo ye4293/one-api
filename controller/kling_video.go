@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/songquanpeng/one-api/relay/controller"
 	"net/http"
 	"time"
+
+	"github.com/songquanpeng/one-api/relay/controller"
 
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -288,6 +289,7 @@ func HandleKlingCallback(c *gin.Context) {
 			TaskID:        notification.TaskID,
 			TaskStatus:    notification.TaskStatus,
 			TaskStatusMsg: notification.TaskStatusMsg,
+			TaskInfo:      notification.TaskInfo, // 保存 task_info（包含 parent_video 等信息）
 			CreatedAt:     notification.CreatedAt,
 			UpdatedAt:     notification.UpdatedAt,
 			TaskResult:    notification.TaskResult,
@@ -307,19 +309,37 @@ func HandleKlingCallback(c *gin.Context) {
 	if notification.TaskStatus == kling.TaskStatusSucceed {
 		video.Status = kling.TaskStatusSucceed
 
-		// 提取视频URL和时长
+		// 提取实际视频时长
+		var actualDuration string
 		if len(notification.TaskResult.Videos) > 0 {
 			video.StoreUrl = notification.TaskResult.Videos[0].URL
-			video.Duration = notification.TaskResult.Videos[0].Duration
+			actualDuration = notification.TaskResult.Videos[0].Duration
+			video.Duration = actualDuration
 			video.VideoId = notification.TaskResult.Videos[0].ID
 		}
 
-		// 后扣费模式：在成功时才扣费
-		err := dbmodel.DecreaseUserQuota(video.UserId, video.Quota)
+		// 保存旧的 quota 用于日志
+		oldQuota := video.Quota
+
+		// 根据实际 duration 重新计算费用
+		newQuota := common.CalculateVideoQuota(
+			video.Model,
+			video.Type,
+			video.Mode,
+			actualDuration,
+			video.Resolution,
+		)
+
+		// 更新 quota 字段
+		video.Quota = newQuota
+
+		// 后扣费模式：在成功时根据实际 duration 扣费
+		err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, video.Quota, err))
+			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 		} else {
-			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, quota=%d, task_id=%s", video.UserId, video.Quota, taskID))
+			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
+				video.UserId, oldQuota, newQuota, actualDuration, taskID))
 		}
 
 		// 计算总耗时（秒）
