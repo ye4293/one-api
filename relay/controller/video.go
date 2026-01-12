@@ -3670,6 +3670,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	case "minimax":
 		fullRequestUrl = fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
 	case "kling":
+		// 对于 kling-advanced-lip-sync 和 identify-face 类型，直接从数据库返回结果
+		if videoTask.Type == "advanced-lip-sync" || videoTask.Type == "identify-face" {
+			GetKlingVideoResult(c, taskId)
+			return nil
+		}
+
 		if videoTask.Type == "text-to-video" {
 			if channel.Type == 41 {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/text2video/%s", *channel.BaseURL, taskId)
@@ -3695,6 +3701,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
 			}
 		}
+
 	case "runway":
 		if channel.Type != 42 {
 			fullRequestUrl = fmt.Sprintf("%s/runwayml/v1/tasks/%s", *channel.BaseURL, taskId)
@@ -3917,7 +3924,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 					return string(credBytes)
 				}
 				return ""
-			}(), // 使用保存的凭证
+			}(),               // 使用保存的凭证
 			IsMultiKey: false, // 单个凭证，不是多密钥模式
 		}
 

@@ -168,61 +168,10 @@ func RelayKlingVideo(c *gin.Context) {
 }
 
 // RelayKlingVideoResult 查询任务结果（从数据库读取）
+// 统一入口，调用 relay/controller 中的实现
 func RelayKlingVideoResult(c *gin.Context) {
 	taskID := c.Param("id")
-	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id 参数缺失"})
-		return
-	}
-
-	// 从数据库获取任务信息
-	video, err := dbmodel.GetVideoTaskById(taskID)
-	if err != nil {
-		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
-		c.JSON(http.StatusNotFound, gin.H{
-			"code":    404,
-			"message": "任务不存在",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	// 如果 result 字段为空，返回基本状态信息
-	if video.Result == "" {
-		// 构建基本的查询响应（任务尚未完成回调）
-		response := kling.QueryTaskResponse{
-			Code:      0,
-			Message:   "success",
-			RequestID: fmt.Sprintf("query-%s", taskID),
-			Data: kling.TaskData{
-				TaskID:        video.TaskId,
-				TaskStatus:    video.Status,
-				TaskStatusMsg: video.FailReason,
-				CreatedAt:     video.CreatedAt,
-				UpdatedAt:     video.UpdatedAt,
-				TaskResult: kling.TaskResult{
-					Videos: []kling.Video{},
-				},
-			},
-		}
-		c.JSON(http.StatusOK, response)
-		return
-	}
-
-	// 从 result 字段解析查询响应数据
-	var queryResponse kling.QueryTaskResponse
-	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
-		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "解析查询结果失败",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	// 返回查询响应
-	c.JSON(http.StatusOK, queryResponse)
+	controller.GetKlingVideoResult(c, taskID)
 }
 
 // HandleKlingCallback 处理 Kling 回调通知
