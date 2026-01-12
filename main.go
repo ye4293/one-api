@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/controller"
+	_ "github.com/songquanpeng/one-api/docs"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
@@ -24,6 +25,26 @@ import (
 
 //go:embed web/build/*
 var buildFS embed.FS
+
+// @title One API
+// @version 1.0
+// @description One API 是一个统一的 AI 接口管理平台,支持多种 AI 服务提供商,包括 OpenAI、Anthropic、Google、Kling 等
+// @termsOfService https://github.com/songquanpeng/one-api
+
+// @contact.name API Support
+// @contact.url https://github.com/songquanpeng/one-api/issues
+
+// @license.name MIT
+// @license.url https://github.com/songquanpeng/one-api/blob/main/LICENSE
+
+// @host localhost:3000
+// @BasePath /
+// @schemes http https
+
+// @securityDefinitions.apikey Bearer
+// @in header
+// @name Authorization
+// @description 在请求头中添加 Bearer Token: Authorization: Bearer {token}
 
 // monitorGoroutines 定期监控 goroutine 数量
 func monitorGoroutines() {

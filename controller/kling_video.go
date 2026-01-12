@@ -21,6 +21,34 @@ import (
 )
 
 // RelayKlingVideo 处理 Kling 视频生成请求
+// @Summary Kling 视频生成（多端点）
+// @Description 使用 Kling AI 生成视频，支持多种模式：
+// @Description - text2video: 文本描述生成视频
+// @Description - omni-video: 文本+图片混合生成，支持镜头控制
+// @Description - image2video: 单张或首尾帧图片生成视频
+// @Description - multi-image2video: 多张图片生成连贯视频
+// @Description
+// @Description **通用参数**: model(必填), mode(可选: std/pro), duration(可选: 5/10秒), aspect_ratio(可选: 16:9/9:16/1:1), cfg_scale(可选: 0-1), negative_prompt(可选)
+// @Description
+// @Description **text2video特有**: prompt(必填)
+// @Description **omni-video特有**: prompt(必填), image(可选-首帧), image_tail(可选-尾帧), camera_control(可选-镜头控制)
+// @Description **image2video特有**: image(必填-首帧), image_tail(可选-尾帧), prompt(可选)
+// @Description **multi-image2video特有**: image_list(必填-图片数组), prompt(必填)
+// @Tags Kling视频生成
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer Token" default(Bearer sk-xxxxx)
+// @Param request body object true "视频生成请求参数（JSON格式，参数因端点而异）示例见文档"
+// @Success 200 {object} object{code=int,message=string,request_id=string,data=object{task_id=string,task_status=string,created_at=int,updated_at=int}} "任务已创建，返回 task_id 用于查询结果"
+// @Failure 400 {object} object{error=object{message=string,type=string,code=string}} "请求参数错误"
+// @Failure 401 {object} object{error=object{message=string,type=string,code=string}} "认证失败"
+// @Failure 402 {object} object{error=object{message=string,type=string,code=string}} "余额不足"
+// @Failure 500 {object} object{error=object{message=string,type=string,code=string}} "服务器错误"
+// @Router /kling/v1/videos/text2video [post]
+// @Router /kling/v1/videos/omni-video [post]
+// @Router /kling/v1/videos/image2video [post]
+// @Router /kling/v1/videos/multi-image2video [post]
+// @Security Bearer
 func RelayKlingVideo(c *gin.Context) {
 	meta := util.GetRelayMeta(c)
 
@@ -168,6 +196,28 @@ func RelayKlingVideo(c *gin.Context) {
 }
 
 // RelayKlingVideoResult 查询任务结果（从数据库读取）
+// @Summary 查询 Kling 视频生成结果
+// @Description 根据任务 ID 查询视频生成任务的执行状态和结果
+// @Description
+// @Description **任务状态说明**:
+// @Description - submitted: 已提交，等待处理
+// @Description - processing: 处理中
+// @Description - succeed: 成功，可获取视频 URL
+// @Description - failed: 失败，查看 task_status_msg 了解原因
+// @Description
+// @Description **使用流程**: 创建任务后获得 task_id，使用此接口轮询查询，直到状态为 succeed 或 failed
+// @Tags Kling视频生成
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer Token" default(Bearer sk-xxxxx)
+// @Param id path string true "任务ID（创建任务时返回的 task_id）"
+// @Success 200 {object} object{code=int,message=string,request_id=string,data=object{task_id=string,task_status=string,task_status_msg=string,created_at=int,updated_at=int,task_result=object{videos=[]object{id=string,url=string,duration=string}}}} "任务状态和结果，succeed 时包含视频 URL"
+// @Failure 400 {object} object{code=int,message=string,error=string} "请求参数错误"
+// @Failure 401 {object} object{error=object{message=string,type=string}} "认证失败"
+// @Failure 404 {object} object{code=int,message=string,error=string} "任务不存在"
+// @Failure 500 {object} object{code=int,message=string,error=string} "服务器错误"
+// @Router /kling/v1/videos/{id} [get]
+// @Security Bearer
 func RelayKlingVideoResult(c *gin.Context) {
 	taskID := c.Param("id")
 	if taskID == "" {
@@ -226,6 +276,24 @@ func RelayKlingVideoResult(c *gin.Context) {
 }
 
 // HandleKlingCallback 处理 Kling 回调通知
+// @Summary Kling 回调处理（内部接口）
+// @Description 接收 Kling 平台的异步回调通知，自动更新视频生成任务状态和结果
+// @Description
+// @Description **注意事项**:
+// @Description - 此接口由 Kling 平台自动调用，无需手动请求
+// @Description - 不需要 Authorization 认证
+// @Description - 回调成功后会自动完成计费
+// @Description - 需要在系统配置中设置 ServerAddress 为公网可访问地址
+// @Description
+// @Description **回调时机**: 任务完成（成功或失败）时触发
+// @Tags Kling视频生成
+// @Accept json
+// @Produce json
+// @Param request body object true "Kling 回调数据（由 Kling 平台发送）"
+// @Success 200 {object} object{message=string} "回调处理成功"
+// @Failure 400 {object} object{error=string} "请求参数错误"
+// @Failure 500 {object} object{error=string} "服务器错误"
+// @Router /kling/internal/callback [post]
 func HandleKlingCallback(c *gin.Context) {
 	// 读取原始body
 	bodyBytes, err := c.GetRawData()
@@ -395,10 +463,71 @@ func updateVideoFromKlingResult(video *dbmodel.Video, result *kling.QueryTaskRes
 	video.Update()
 }
 
+// DoIdentifyFace 人脸识别
+// @Summary Kling 人脸识别（同步接口）
+// @Description 从视频中识别人脸信息，获取 session_id 和 face_id，用于高级对口型功能
+// @Description
+// @Description **参数说明**:
+// @Description - video_id: Kling 视频任务 ID（与 video_url 二选一）
+// @Description - video_url: 视频文件 URL（与 video_id 二选一）
+// @Description
+// @Description **返回数据**:
+// @Description - session_id: 会话 ID，用于对口型接口
+// @Description - face_data: 人脸数据数组，每个包含 face_id、face_image、start_time、end_time
+// @Description
+// @Description **计费说明**: 请求成功立即计费（按次）
+// @Description
+// @Description **使用场景**: 在使用高级对口型功能前，需要先调用此接口识别视频中的人脸
+// @Tags Kling视频生成
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer Token" default(Bearer sk-xxxxx)
+// @Param request body object{video_id=string,video_url=string} true "人脸识别请求参数（video_id 或 video_url 二选一）"
+// @Success 200 {object} object{code=int,message=string,request_id=string,data=object{session_id=string,face_data=[]object{face_id=string,face_image=string,start_time=int,end_time=int}}} "人脸识别成功，返回 session_id 和人脸数据"
+// @Failure 400 {object} object{error=object{message=string,type=string,code=string}} "参数错误（如未提供 video_id 或 video_url）"
+// @Failure 401 {object} object{error=object{message=string,type=string}} "认证失败"
+// @Failure 500 {object} object{error=object{message=string,type=string}} "服务器错误"
+// @Router /kling/v1/videos/identify-face [post]
+// @Security Bearer
 func DoIdentifyFace(c *gin.Context) {
 	controller.DoIdentifyFace(c)
 }
 
+// DoAdvancedLipSync 高级唇形同步
+// @Summary Kling 高级对口型（异步接口）
+// @Description 为视频中的人脸添加对口型效果，使人物口型与音频同步
+// @Description
+// @Description **前置要求**: 必须先调用人脸识别接口获取 session_id 和 face_id
+// @Description
+// @Description **参数说明**:
+// @Description - model: 模型名称（必填）如 "kling-v1"
+// @Description - session_id: 人脸识别返回的会话 ID（必填）
+// @Description - face_choose: 人脸选择数组（必填）
+// @Description
+// @Description **face_choose 参数**:
+// @Description - face_id: 人脸 ID（必填，从人脸识别接口获取）
+// @Description - audio_id 或 sound_file: 音频 ID 或音频文件 URL（二选一必填）
+// @Description - sound_start_time: 音频开始时间，毫秒（必填）
+// @Description - sound_end_time: 音频结束时间，毫秒（必填）
+// @Description - sound_insert_time: 音频插入到视频的时间点，毫秒（必填）
+// @Description - sound_volume: 音频音量 0-1（可选，默认 1.0）
+// @Description - original_audio_volume: 原始音频音量 0-1（可选，默认 1.0）
+// @Description
+// @Description **计费说明**: 任务成功后通过回调结束时根据视频时长计费（后扣费）
+// @Description
+// @Description **使用流程**: 1. 人脸识别 → 2. 创建对口型任务 → 3. 查询任务结果或等待回调
+// @Tags Kling视频生成
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer Token" default(Bearer sk-xxxxx)
+// @Param request body object{model=string,session_id=string,face_choose=[]object{face_id=string,audio_id=string,sound_file=string,sound_start_time=int,sound_end_time=int,sound_insert_time=int,sound_volume=number,original_audio_volume=number}} true "对口型请求参数"
+// @Success 200 {object} object{code=int,message=string,request_id=string,data=object{task_id=string,task_status=string,created_at=int,updated_at=int}} "对口型任务已创建，返回 task_id"
+// @Failure 400 {object} object{error=object{message=string,type=string,code=string}} "请求参数错误"
+// @Failure 401 {object} object{error=object{message=string,type=string}} "认证失败"
+// @Failure 402 {object} object{error=object{message=string,type=string}} "余额不足"
+// @Failure 500 {object} object{error=object{message=string,type=string}} "服务器错误"
+// @Router /kling/v1/videos/advanced-lip-sync [post]
+// @Security Bearer
 func DoAdvancedLipSync(c *gin.Context) {
 	controller.DoAdvancedLipSync(c)
 }

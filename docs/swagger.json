@@ -1,0 +1,1385 @@
+{
+    "schemes": [
+        "http",
+        "https"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "One API 是一个统一的 AI 接口管理平台,支持多种 AI 服务提供商,包括 OpenAI、Anthropic、Google、Kling 等",
+        "title": "One API",
+        "termsOfService": "https://github.com/songquanpeng/one-api",
+        "contact": {
+            "name": "API Support",
+            "url": "https://github.com/songquanpeng/one-api/issues"
+        },
+        "license": {
+            "name": "MIT",
+            "url": "https://github.com/songquanpeng/one-api/blob/main/LICENSE"
+        },
+        "version": "1.0"
+    },
+    "host": "localhost:3000",
+    "basePath": "/",
+    "paths": {
+        "/kling/internal/callback": {
+            "post": {
+                "description": "接收 Kling 平台的异步回调通知，自动更新视频生成任务状态和结果\n\n**注意事项**:\n- 此接口由 Kling 平台自动调用，无需手动请求\n- 不需要 Authorization 认证\n- 回调成功后会自动完成计费\n- 需要在系统配置中设置 ServerAddress 为公网可访问地址\n\n**回调时机**: 任务完成（成功或失败）时触发",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 回调处理（内部接口）",
+                "parameters": [
+                    {
+                        "description": "Kling 回调数据（由 Kling 平台发送）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "回调处理成功",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/advanced-lip-sync": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "为视频中的人脸添加对口型效果，使人物口型与音频同步\n\n**前置要求**: 必须先调用人脸识别接口获取 session_id 和 face_id\n\n**参数说明**:\n- model: 模型名称（必填）如 \"kling-v1\"\n- session_id: 人脸识别返回的会话 ID（必填）\n- face_choose: 人脸选择数组（必填）\n\n**face_choose 参数**:\n- face_id: 人脸 ID（必填，从人脸识别接口获取）\n- audio_id 或 sound_file: 音频 ID 或音频文件 URL（二选一必填）\n- sound_start_time: 音频开始时间，毫秒（必填）\n- sound_end_time: 音频结束时间，毫秒（必填）\n- sound_insert_time: 音频插入到视频的时间点，毫秒（必填）\n- sound_volume: 音频音量 0-1（可选，默认 1.0）\n- original_audio_volume: 原始音频音量 0-1（可选，默认 1.0）\n\n**计费说明**: 任务成功后通过回调结束时根据视频时长计费（后扣费）\n\n**使用流程**: 1. 人脸识别 → 2. 创建对口型任务 → 3. 查询任务结果或等待回调",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 高级对口型（异步接口）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "对口型请求参数",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "face_choose": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "audio_id": {
+                                                "type": "string"
+                                            },
+                                            "face_id": {
+                                                "type": "string"
+                                            },
+                                            "original_audio_volume": {
+                                                "type": "number"
+                                            },
+                                            "sound_end_time": {
+                                                "type": "integer"
+                                            },
+                                            "sound_file": {
+                                                "type": "string"
+                                            },
+                                            "sound_insert_time": {
+                                                "type": "integer"
+                                            },
+                                            "sound_start_time": {
+                                                "type": "integer"
+                                            },
+                                            "sound_volume": {
+                                                "type": "number"
+                                            }
+                                        }
+                                    }
+                                },
+                                "model": {
+                                    "type": "string"
+                                },
+                                "session_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "对口型任务已创建，返回 task_id",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/identify-face": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "从视频中识别人脸信息，获取 session_id 和 face_id，用于高级对口型功能\n\n**参数说明**:\n- video_id: Kling 视频任务 ID（与 video_url 二选一）\n- video_url: 视频文件 URL（与 video_id 二选一）\n\n**返回数据**:\n- session_id: 会话 ID，用于对口型接口\n- face_data: 人脸数据数组，每个包含 face_id、face_image、start_time、end_time\n\n**计费说明**: 请求成功立即计费（按次）\n\n**使用场景**: 在使用高级对口型功能前，需要先调用此接口识别视频中的人脸",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 人脸识别（同步接口）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "人脸识别请求参数（video_id 或 video_url 二选一）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "video_id": {
+                                    "type": "string"
+                                },
+                                "video_url": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "人脸识别成功，返回 session_id 和人脸数据",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "face_data": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "end_time": {
+                                                        "type": "integer"
+                                                    },
+                                                    "face_id": {
+                                                        "type": "string"
+                                                    },
+                                                    "face_image": {
+                                                        "type": "string"
+                                                    },
+                                                    "start_time": {
+                                                        "type": "integer"
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "session_id": {
+                                            "type": "string"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误（如未提供 video_id 或 video_url）",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/image2video": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "使用 Kling AI 生成视频，支持多种模式：\n- text2video: 文本描述生成视频\n- omni-video: 文本+图片混合生成，支持镜头控制\n- image2video: 单张或首尾帧图片生成视频\n- multi-image2video: 多张图片生成连贯视频\n\n**通用参数**: model(必填), mode(可选: std/pro), duration(可选: 5/10秒), aspect_ratio(可选: 16:9/9:16/1:1), cfg_scale(可选: 0-1), negative_prompt(可选)\n\n**text2video特有**: prompt(必填)\n**omni-video特有**: prompt(必填), image(可选-首帧), image_tail(可选-尾帧), camera_control(可选-镜头控制)\n**image2video特有**: image(必填-首帧), image_tail(可选-尾帧), prompt(可选)\n**multi-image2video特有**: image_list(必填-图片数组), prompt(必填)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 视频生成（多端点）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "视频生成请求参数（JSON格式，参数因端点而异）示例见文档",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "任务已创建，返回 task_id 用于查询结果",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/multi-image2video": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "使用 Kling AI 生成视频，支持多种模式：\n- text2video: 文本描述生成视频\n- omni-video: 文本+图片混合生成，支持镜头控制\n- image2video: 单张或首尾帧图片生成视频\n- multi-image2video: 多张图片生成连贯视频\n\n**通用参数**: model(必填), mode(可选: std/pro), duration(可选: 5/10秒), aspect_ratio(可选: 16:9/9:16/1:1), cfg_scale(可选: 0-1), negative_prompt(可选)\n\n**text2video特有**: prompt(必填)\n**omni-video特有**: prompt(必填), image(可选-首帧), image_tail(可选-尾帧), camera_control(可选-镜头控制)\n**image2video特有**: image(必填-首帧), image_tail(可选-尾帧), prompt(可选)\n**multi-image2video特有**: image_list(必填-图片数组), prompt(必填)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 视频生成（多端点）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "视频生成请求参数（JSON格式，参数因端点而异）示例见文档",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "任务已创建，返回 task_id 用于查询结果",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/omni-video": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "使用 Kling AI 生成视频，支持多种模式：\n- text2video: 文本描述生成视频\n- omni-video: 文本+图片混合生成，支持镜头控制\n- image2video: 单张或首尾帧图片生成视频\n- multi-image2video: 多张图片生成连贯视频\n\n**通用参数**: model(必填), mode(可选: std/pro), duration(可选: 5/10秒), aspect_ratio(可选: 16:9/9:16/1:1), cfg_scale(可选: 0-1), negative_prompt(可选)\n\n**text2video特有**: prompt(必填)\n**omni-video特有**: prompt(必填), image(可选-首帧), image_tail(可选-尾帧), camera_control(可选-镜头控制)\n**image2video特有**: image(必填-首帧), image_tail(可选-尾帧), prompt(可选)\n**multi-image2video特有**: image_list(必填-图片数组), prompt(必填)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 视频生成（多端点）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "视频生成请求参数（JSON格式，参数因端点而异）示例见文档",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "任务已创建，返回 task_id 用于查询结果",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/text2video": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "使用 Kling AI 生成视频，支持多种模式：\n- text2video: 文本描述生成视频\n- omni-video: 文本+图片混合生成，支持镜头控制\n- image2video: 单张或首尾帧图片生成视频\n- multi-image2video: 多张图片生成连贯视频\n\n**通用参数**: model(必填), mode(可选: std/pro), duration(可选: 5/10秒), aspect_ratio(可选: 16:9/9:16/1:1), cfg_scale(可选: 0-1), negative_prompt(可选)\n\n**text2video特有**: prompt(必填)\n**omni-video特有**: prompt(必填), image(可选-首帧), image_tail(可选-尾帧), camera_control(可选-镜头控制)\n**image2video特有**: image(必填-首帧), image_tail(可选-尾帧), prompt(可选)\n**multi-image2video特有**: image_list(必填-图片数组), prompt(必填)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "Kling 视频生成（多端点）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "视频生成请求参数（JSON格式，参数因端点而异）示例见文档",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "任务已创建，返回 task_id 用于查询结果",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {
+                                            "type": "string"
+                                        },
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/kling/v1/videos/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "根据任务 ID 查询视频生成任务的执行状态和结果\n\n**任务状态说明**:\n- submitted: 已提交，等待处理\n- processing: 处理中\n- succeed: 成功，可获取视频 URL\n- failed: 失败，查看 task_status_msg 了解原因\n\n**使用流程**: 创建任务后获得 task_id，使用此接口轮询查询，直到状态为 succeed 或 failed",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Kling视频生成"
+                ],
+                "summary": "查询 Kling 视频生成结果",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "任务ID（创建任务时返回的 task_id）",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "任务状态和结果，succeed 时包含视频 URL",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "created_at": {
+                                            "type": "integer"
+                                        },
+                                        "task_id": {
+                                            "type": "string"
+                                        },
+                                        "task_result": {
+                                            "type": "object",
+                                            "properties": {
+                                                "videos": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "duration": {
+                                                                "type": "string"
+                                                            },
+                                                            "id": {
+                                                                "type": "string"
+                                                            },
+                                                            "url": {
+                                                                "type": "string"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "task_status": {
+                                            "type": "string"
+                                        },
+                                        "task_status_msg": {
+                                            "type": "string"
+                                        },
+                                        "updated_at": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                },
+                                "message": {
+                                    "type": "string"
+                                },
+                                "request_id": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "error": {
+                                    "type": "string"
+                                },
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "任务不存在",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "error": {
+                                    "type": "string"
+                                },
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "code": {
+                                    "type": "integer"
+                                },
+                                "error": {
+                                    "type": "string"
+                                },
+                                "message": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/video/generations": {
+            "post": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "统一的视频生成接口，采用 OpenAI 兼容的请求格式，支持多种视频生成模型\n\n**支持的模型**: 根据系统配置的渠道支持不同的视频生成模型\n\n**请求格式**: 遵循 OpenAI API 格式规范\n\n**自动重试**: 支持智能重试机制，失败时自动切换可用渠道\n\n**计费方式**: 根据模型和视频时长计费",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "视频生成"
+                ],
+                "summary": "通用视频生成（OpenAI 兼容格式）",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "default": "Bearer sk-xxxxx",
+                        "description": "Bearer Token",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "视频生成请求参数（格式因模型而异）",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "视频生成任务信息或结果",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "认证失败",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "402": {
+                        "description": "余额不足",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "服务器错误",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "object",
+                                    "properties": {
+                                        "message": {
+                                            "type": "string"
+                                        },
+                                        "type": {
+                                            "type": "string"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "Bearer": {
+            "description": "在请求头中添加 Bearer Token: Authorization: Bearer {token}",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

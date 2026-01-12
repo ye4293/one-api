@@ -144,7 +144,7 @@ func Relay(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	
+
 	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
 	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
 		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
@@ -1056,6 +1056,29 @@ func RelayNotFound(c *gin.Context) {
 	})
 }
 
+// RelayVideoGenerate 通用视频生成接口
+// @Summary 通用视频生成（OpenAI 兼容格式）
+// @Description 统一的视频生成接口，采用 OpenAI 兼容的请求格式，支持多种视频生成模型
+// @Description
+// @Description **支持的模型**: 根据系统配置的渠道支持不同的视频生成模型
+// @Description
+// @Description **请求格式**: 遵循 OpenAI API 格式规范
+// @Description
+// @Description **自动重试**: 支持智能重试机制，失败时自动切换可用渠道
+// @Description
+// @Description **计费方式**: 根据模型和视频时长计费
+// @Tags 视频生成
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer Token" default(Bearer sk-xxxxx)
+// @Param request body object true "视频生成请求参数（格式因模型而异）"
+// @Success 200 {object} object "视频生成任务信息或结果"
+// @Failure 400 {object} object{error=object{message=string,type=string}} "请求参数错误"
+// @Failure 401 {object} object{error=object{message=string,type=string}} "认证失败"
+// @Failure 402 {object} object{error=object{message=string,type=string}} "余额不足"
+// @Failure 500 {object} object{error=object{message=string,type=string}} "服务器错误"
+// @Router /v1/video/generations [post]
+// @Security Bearer
 func RelayVideoGenerate(c *gin.Context) {
 	ctx := c.Request.Context()
 	requestID := c.GetHeader("X-Request-ID")
