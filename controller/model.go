@@ -107,17 +107,6 @@ func init() {
 			Parent:     nil,
 		})
 	}
-	for modelName, _ := range common.SdModel2Action {
-		openAIModels = append(openAIModels, OpenAIModels{
-			Id:         modelName,
-			Object:     "model",
-			Created:    1626777600,
-			OwnedBy:    "Stability",
-			Permission: permission,
-			Root:       modelName,
-			Parent:     nil,
-		})
-	}
 	openAIModelsMap = make(map[string]OpenAIModels)
 	for _, model := range openAIModels {
 		openAIModelsMap[model.Id] = model
