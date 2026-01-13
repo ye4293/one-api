@@ -23,7 +23,7 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	baseURL := meta.BaseURL
 	if baseURL == "" {
-		baseURL = "https://api.klingai.com"
+		baseURL = "https://api-beijing.klingai.com"
 	}
 	return fmt.Sprintf("%s/v1/videos/%s", baseURL, a.RequestType), nil
 }
@@ -110,7 +110,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 func (a *Adaptor) QueryTaskStatus(taskID string, meta *util.RelayMeta) (*QueryTaskResponse, error) {
 	baseURL := meta.BaseURL
 	if baseURL == "" {
-		baseURL = "https://api.klingai.com"
+		baseURL = "https://api-beijing.klingai.com"
 	}
 
 	url := fmt.Sprintf("%s/v1/videos/%s", baseURL, taskID)

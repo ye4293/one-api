@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/songquanpeng/one-api/relay/controller"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -164,61 +168,10 @@ func RelayKlingVideo(c *gin.Context) {
 }
 
 // RelayKlingVideoResult 查询任务结果（从数据库读取）
+// 统一入口，调用 relay/controller 中的实现
 func RelayKlingVideoResult(c *gin.Context) {
 	taskID := c.Param("id")
-	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id 参数缺失"})
-		return
-	}
-
-	// 从数据库获取任务信息
-	video, err := dbmodel.GetVideoTaskById(taskID)
-	if err != nil {
-		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
-		c.JSON(http.StatusNotFound, gin.H{
-			"code":    404,
-			"message": "任务不存在",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	// 如果 result 字段为空，返回基本状态信息
-	if video.Result == "" {
-		// 构建基本的查询响应（任务尚未完成回调）
-		response := kling.QueryTaskResponse{
-			Code:      0,
-			Message:   "success",
-			RequestID: fmt.Sprintf("query-%s", taskID),
-			Data: kling.TaskData{
-				TaskID:        video.TaskId,
-				TaskStatus:    video.Status,
-				TaskStatusMsg: video.FailReason,
-				CreatedAt:     video.CreatedAt,
-				UpdatedAt:     video.UpdatedAt,
-				TaskResult: kling.TaskResult{
-					Videos: []kling.Video{},
-				},
-			},
-		}
-		c.JSON(http.StatusOK, response)
-		return
-	}
-
-	// 从 result 字段解析查询响应数据
-	var queryResponse kling.QueryTaskResponse
-	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
-		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "解析查询结果失败",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	// 返回查询响应
-	c.JSON(http.StatusOK, queryResponse)
+	controller.GetKlingVideoResult(c, taskID)
 }
 
 // HandleKlingCallback 处理 Kling 回调通知
@@ -285,6 +238,7 @@ func HandleKlingCallback(c *gin.Context) {
 			TaskID:        notification.TaskID,
 			TaskStatus:    notification.TaskStatus,
 			TaskStatusMsg: notification.TaskStatusMsg,
+			TaskInfo:      notification.TaskInfo, // 保存 task_info（包含 parent_video 等信息）
 			CreatedAt:     notification.CreatedAt,
 			UpdatedAt:     notification.UpdatedAt,
 			TaskResult:    notification.TaskResult,
@@ -304,30 +258,59 @@ func HandleKlingCallback(c *gin.Context) {
 	if notification.TaskStatus == kling.TaskStatusSucceed {
 		video.Status = kling.TaskStatusSucceed
 
-		// 提取视频URL和时长
+		// 提取实际视频时长
+		var actualDuration string
 		if len(notification.TaskResult.Videos) > 0 {
 			video.StoreUrl = notification.TaskResult.Videos[0].URL
-			video.Duration = notification.TaskResult.Videos[0].Duration
+			actualDuration = notification.TaskResult.Videos[0].Duration
+			video.Duration = actualDuration
 			video.VideoId = notification.TaskResult.Videos[0].ID
 		}
 
-		// 后扣费模式：在成功时才扣费
-		err := dbmodel.DecreaseUserQuota(video.UserId, video.Quota)
+		// 保存旧的 quota 用于日志
+		oldQuota := video.Quota
+
+		// 根据实际 duration 重新计算费用
+		newQuota := common.CalculateVideoQuota(
+			video.Model,
+			video.Type,
+			video.Mode,
+			actualDuration,
+			video.Resolution,
+		)
+
+		// 更新 quota 字段
+		video.Quota = newQuota
+
+		// 后扣费模式：在成功时根据实际 duration 扣费
+		err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, video.Quota, err))
+			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 		} else {
-			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, quota=%d, task_id=%s", video.UserId, video.Quota, taskID))
+			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
+				video.UserId, oldQuota, newQuota, actualDuration, taskID))
 		}
+
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
 
 		video.Update()
 	} else if notification.TaskStatus == kling.TaskStatusFailed {
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = notification.TaskStatusMsg
+
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
+
 		video.Update()
 		logger.SysLog(fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
 	} else {
 		// 其他状态（processing等），更新状态但不扣费
 		video.Status = notification.TaskStatus
+
+		// 计算总耗时（秒）
+		video.TotalDuration = time.Now().Unix() - video.CreatedAt
+
 		video.Update()
 	}
 
@@ -359,4 +342,12 @@ func updateVideoFromKlingResult(video *dbmodel.Video, result *kling.QueryTaskRes
 	}
 
 	video.Update()
+}
+
+func DoIdentifyFace(c *gin.Context) {
+	controller.DoIdentifyFace(c)
+}
+
+func DoAdvancedLipSync(c *gin.Context) {
+	controller.DoAdvancedLipSync(c)
 }

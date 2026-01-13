@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,7 +33,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/vertexai"
-	"github.com/songquanpeng/one-api/relay/channel/viggle"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -131,17 +129,11 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
 	}
 
-	if modelName == "video-01" ||
-		modelName == "video-01-live2d" ||
-		modelName == "S2V-01" ||
-		modelName == "T2V-01" ||
-		modelName == "I2V-01" ||
-		modelName == "T2V-01-Director" ||
-		modelName == "I2V-01-Director" ||
-		modelName == "I2V-01-live" ||
-		modelName == "MiniMax-Hailuo-02" ||
-		modelName == "MiniMax-Hailuo-2.3" ||
-		modelName == "MiniMax-Hailuo-2.3-Fast" {
+	if strings.HasPrefix(modelName, "video-01") ||
+		strings.HasPrefix(modelName, "S2V-01") ||
+		strings.HasPrefix(modelName, "T2V-01") ||
+		strings.HasPrefix(modelName, "I2V-01") ||
+		strings.HasPrefix(strings.ToLower(modelName), "minimax") {
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
@@ -151,8 +143,6 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "luma") {
 		return handleLumaVideoRequest(c, ctx, videoRequest, meta)
-	} else if modelName == "viggle" {
-		return handleViggleVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "doubao") {
@@ -1500,89 +1490,39 @@ func handleVeoVideoRequest(c *gin.Context, ctx context.Context, videoRequest mod
 	// 读取原始请求体
 	var reqBody map[string]interface{}
 	if err := common.UnmarshalBodyReusable(c, &reqBody); err != nil {
-		// 提供更详细的JSON格式错误信息
-		log.Printf("[VEO] JSON解析失败: %v", err)
-		if strings.Contains(err.Error(), "invalid character") {
-			return openai.ErrorWrapper(
-				fmt.Errorf("JSON格式错误: %v。请检查请求体中是否有多余的逗号或其他语法错误", err),
-				"invalid_json_format",
-				http.StatusBadRequest,
-			)
-		}
 		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-	}
-
-	// 验证instances数组存在（符合Google Vertex AI VEO格式）
-	instances, ok := reqBody["instances"]
-	if !ok {
-		return openai.ErrorWrapper(
-			fmt.Errorf("缺少instances数组。VEO模型需要使用Google Vertex AI标准格式：{\"instances\": [...], \"parameters\": {...}}"),
-			"missing_instances",
-			http.StatusBadRequest,
-		)
-	}
-
-	// 验证instances是数组
-	if _, ok := instances.([]interface{}); !ok {
-		return openai.ErrorWrapper(
-			fmt.Errorf("instances必须是数组格式"),
-			"invalid_instances_format",
-			http.StatusBadRequest,
-		)
 	}
 
 	// 删除model参数（如果存在）
 	delete(reqBody, "model")
 
-	// 检查parameters字段
-	params, ok := reqBody["parameters"].(map[string]interface{})
-	if !ok {
+	// 读取parameters字段
+	params, _ := reqBody["parameters"].(map[string]interface{})
+	if params == nil {
 		params = make(map[string]interface{})
 	}
 
-	// 处理generateAudio，默认为true
+	// 读取generateAudio（默认true）
 	generateAudio := true
-	if val, ok := params["generateAudio"]; ok {
-		if boolVal, ok := val.(bool); ok {
-			generateAudio = boolVal
-		}
+	if val, ok := params["generateAudio"].(bool); ok {
+		generateAudio = val
 	}
 	c.Set("generateAudio", generateAudio)
 
-	// sampleCount 参数已支持，不再删除
-	// if _, ok := params["sampleCount"]; ok { //暂时处理只支持一个视频结果
-	//	delete(params, "sampleCount")
-	// }
-
-	// 处理durationSeconds
+	// 读取durationSeconds（默认8）
 	duration := 8
-	if v, ok := params["durationSeconds"]; ok {
-		// 允许int/float64/string三种类型
-		switch val := v.(type) {
-		case float64:
-			duration = int(val)
-		case int:
-			duration = val
-		case string:
-			if d, err := strconv.Atoi(val); err == nil {
-				duration = d
-			}
-		}
-	} else {
-		params["durationSeconds"] = duration
+	if val, ok := params["durationSeconds"].(float64); ok {
+		duration = int(val)
 	}
 	c.Set("durationSeconds", duration)
 
-	// 添加storageUri参数（从渠道配置中读取GoogleStorage）
+	// 添加storageUri参数（从渠道配置中读取）
 	if meta.Config.GoogleStorage != "" {
 		params["storageUri"] = meta.Config.GoogleStorage
-		log.Printf("[VEO] Added storageUri to parameters: %s", meta.Config.GoogleStorage)
 	}
-
-	// 更新parameters
 	reqBody["parameters"] = params
 
-	// 重新序列化
+	// 序列化请求体
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
 		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
@@ -1648,22 +1588,6 @@ func sendRequestAndHandleVeoResponse(c *gin.Context, ctx context.Context, fullRe
 		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
 	}
 
-	// 添加详细的响应日志
-	log.Printf("[VEO] Response Status: %d", resp.StatusCode)
-	log.Printf("[VEO] Response Headers: %+v", resp.Header)
-
-	// 处理响应体日志，避免过长的base64内容
-	responseBodyStr := string(body)
-	if len(responseBodyStr) > 1000 {
-		// 如果响应体过长，截取前后部分
-		log.Printf("[VEO] Response Body (truncated - too long): %s...%s",
-			responseBodyStr[:500],
-			responseBodyStr[len(responseBodyStr)-500:])
-		log.Printf("[VEO] Response Body Length: %d characters", len(responseBodyStr))
-	} else {
-		log.Printf("[VEO] Response Body: %s", responseBodyStr)
-	}
-
 	// 解析响应
 	var veoResponse map[string]interface{}
 	err = json.Unmarshal(body, &veoResponse)
@@ -1701,8 +1625,8 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 			videoMode = "NoAudioVideo"
 		}
 
-		// 计算配额 - 这里需要根据generateAudio和durationSeconds来计算
-		quota := calculateVeoQuota(meta, modelName, generateAudio, durationSeconds)
+		// 计算配额 - 使用通用视频计费函数
+		quota := common.CalculateVideoQuota(modelName, "", videoMode, strconv.Itoa(durationSeconds), "")
 
 		// 创建视频日志
 		err := CreateVideoLog("vertexai", taskId, meta, videoMode, strconv.Itoa(durationSeconds), "", "", quota)
@@ -1816,48 +1740,6 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 			statusCode,
 		)
 	}
-}
-
-// 计算Veo配额的函数
-func calculateVeoQuota(meta *util.RelayMeta, modelName string, generateAudio interface{}, durationSeconds int) int64 {
-	// 基础价格：根据模型类型设置
-	var basePrice float64
-	switch modelName {
-	case "veo-3.0-generate-preview":
-		basePrice = 0.75 // Veo 3版本带音频的价格
-	case "veo-3.0-fast-generate-preview":
-		basePrice = 0.40 // Veo 3 Fast版本带音频的价格
-	case "veo-2.0-generate-001":
-		basePrice = 0.50 // Veo 2版本价格
-	default:
-		basePrice = 0.50
-	}
-
-	// 如果有音频生成，价格可能不同
-	if generateAudio != nil {
-		if hasAudio, ok := generateAudio.(bool); ok && hasAudio {
-			// 如果是veo-3.0-generate-preview模型且生成音频，使用带音频价格
-			if modelName == "veo-3.0-generate-preview" {
-				basePrice = 0.75
-			} else if modelName == "veo-3.0-fast-generate-preview" {
-				basePrice = 0.40
-			}
-		} else {
-			// 如果是veo-3.0但不生成音频，使用不带音频价格
-			if modelName == "veo-3.0-generate-preview" {
-				basePrice = 0.50
-			} else if modelName == "veo-3.0-fast-generate-preview" {
-				basePrice = 0.25
-			}
-		}
-	}
-
-	// 按秒计费，直接按实际秒数计算
-	finalPrice := basePrice * float64(durationSeconds)
-	// quota := int64(finalPrice * config.QuotaPerUnit * meta.ChannelRatio * meta.UserChannelTypeRatio)
-	quota := int64(finalPrice * config.QuotaPerUnit)
-
-	return quota
 }
 
 func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
@@ -2184,143 +2066,6 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 	}
 }
 
-func handleViggleVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	// 使用map定义URL映射关系
-	urlMap := map[string]string{
-		"mix":   "/api/video/gen",
-		"multi": "/api/video/gen/multi",
-		"move":  "/api/video/gen/move",
-	}
-
-	// 获取type参数，默认为"mix"
-	typeValue := c.DefaultPostForm("type", "mix")
-
-	// 获取对应的URL路径
-	path, exists := urlMap[typeValue]
-	if !exists {
-		return openai.ErrorWrapper(errors.New("invalid type"), "invalid_type", http.StatusBadRequest)
-	}
-
-	fullRequestUrl := meta.BaseURL + path
-
-	// 直接转发原始请求
-	return sendRequestAndHandleViggleResponse(c, ctx, fullRequestUrl, meta, "viggle")
-}
-
-func sendRequestAndHandleViggleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
-	// 预扣费检查 - 预扣0.2，后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
-	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
-	}
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
-	}
-
-	// 先读取请求体
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return openai.ErrorWrapper(err, "read_request_error", http.StatusInternalServerError)
-	}
-
-	// 打印完整请求体
-	// log.Printf("Original request body: %s", string(bodyBytes))
-
-	// 重新设置请求体，因为读取后需要重置
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// 创建新请求时使用保存的请求体
-	req, err := http.NewRequest(c.Request.Method, fullRequestUrl, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
-	}
-
-	// // 打印请求的详细信息
-	// log.Printf("Request Method: %s", req.Method)
-	// log.Printf("Request URL: %s", fullRequestUrl)
-	// log.Printf("Request Headers: %+v", req.Header)
-
-	// 复制原始请求头
-	req.Header.Set("Access-Token", meta.APIKey)
-	// 确保设置正确的 Content-Type
-	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-
-	// 发送请求
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
-	}
-	defer resp.Body.Close()
-
-	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
-	}
-
-	log.Printf("Raw response body: %s", string(respBody))
-
-	// 解析响应
-	var viggleResponse viggle.ViggleResponse
-	if err := json.Unmarshal(respBody, &viggleResponse); err != nil {
-		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
-	}
-
-	viggleResponse.StatusCode = resp.StatusCode
-	return handleViggleVideoResponse(c, ctx, viggleResponse, respBody, meta, "")
-}
-
-func handleViggleVideoResponse(c *gin.Context, ctx context.Context, viggleResponse viggle.ViggleResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	if viggleResponse.Code == 0 && viggleResponse.Message == "成功" {
-		// 先计算quota
-		quota := calculateQuota(meta, "viggle", "", strconv.Itoa(viggleResponse.Data.SubtractScore), c)
-
-		err := CreateVideoLog("viggle", viggleResponse.Data.TaskID, meta, "", strconv.Itoa(viggleResponse.Data.SubtractScore), "", "", quota)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("API error: %s", err),
-				"api_error",
-				http.StatusBadRequest,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralVideoResponse{
-			TaskId:     viggleResponse.Data.TaskID,
-			Message:    viggleResponse.Message,
-			TaskStatus: "succeed",
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
-
-		if viggleResponse.Data.SubtractScore == 2 {
-			return handleSuccessfulResponseWithQuota(c, ctx, meta, "viggle", "", "2", quota)
-		} else {
-			return handleSuccessfulResponseWithQuota(c, ctx, meta, "viggle", "", "1", quota)
-		}
-
-	} else {
-		return openai.ErrorWrapper(
-			fmt.Errorf("error: %s", viggleResponse.Message),
-			"internal_error",
-			http.StatusInternalServerError,
-		)
-	}
-}
-
 func handleLumaVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	baseUrl := meta.BaseURL
 	var fullRequestUrl string
@@ -2519,7 +2264,7 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 
 	// 确定请求类型和URL
 	var requestType string
-	var requestBody interface{}
+	var requestBody any
 	var videoType string
 	var videoId string
 	var mode string
@@ -2534,13 +2279,21 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		}
 		requestBody = lipRequest
 		videoId = lipRequest.Input.VideoId
+	} else if meta.OriginModelName == "kling-identify-face" {
+		// 人脸识别请求 - 使用独立的处理逻辑
+		DoIdentifyFace(c)
+		return nil
+	} else if meta.OriginModelName == "kling-advanced-lip-sync" {
+		// 对口型任务请求 - 使用独立的处理逻辑
+		DoAdvancedLipSync(c)
+		return nil
 	} else {
 		// 检查是否为多图生视频请求或单图生视频请求
 		var imageCheck struct {
-			Image     string      `json:"image,omitempty"`
-			Mode      string      `json:"mode,omitempty"`
-			Duration  interface{} `json:"duration,omitempty"`
-			ImageTail string      `json:"image_tail,omitempty"`
+			Image     string `json:"image,omitempty"`
+			Mode      string `json:"mode,omitempty"`
+			Duration  any    `json:"duration,omitempty"`
+			ImageTail string `json:"image_tail,omitempty"`
 			ImageList []struct {
 				Image string `json:"image"`
 			} `json:"image_list,omitempty"`
@@ -3338,10 +3091,6 @@ func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duratio
 		quota = int64(float64(quota) * multiplier)
 	}
 
-	if modelName == "viggle" && duration == "2" {
-		quota = quota * 2
-	}
-
 	// 特殊处理 MiniMax-Hailuo 视频模型（基于 duration 和 resolution 计费）
 	if modelName == "MiniMax-Hailuo-2.3-Fast" || modelName == "MiniMax-Hailuo-2.3" || modelName == "MiniMax-Hailuo-02" {
 		// 从 context 中获取 duration 和 resolution
@@ -3662,6 +3411,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	case "minimax":
 		fullRequestUrl = fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
 	case "kling":
+		// 对于 kling-advanced-lip-sync 和 identify-face 类型，直接从数据库返回结果
+		if videoTask.Type == "advanced-lip-sync" || videoTask.Type == "identify-face" {
+			GetKlingVideoResult(c, taskId)
+			return nil
+		}
+
 		if videoTask.Type == "text-to-video" {
 			if channel.Type == 41 {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/text2video/%s", *channel.BaseURL, taskId)
@@ -3687,6 +3442,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
 			}
 		}
+
 	case "runway":
 		if channel.Type != 42 {
 			fullRequestUrl = fmt.Sprintf("%s/runwayml/v1/tasks/%s", *channel.BaseURL, taskId)
@@ -3701,8 +3457,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			fullRequestUrl = fmt.Sprintf("%s/luma/dream-machine/v1/generations/%s", *channel.BaseURL, taskId)
 		}
 
-	case "viggle":
-		fullRequestUrl = fmt.Sprintf("%s/api/video/task?task_id=%s", *channel.BaseURL, taskId)
 	case "pixverse":
 		fullRequestUrl = fmt.Sprintf("%s/openapi/v2/video/result/%s", *channel.BaseURL, taskId)
 	case "doubao":
@@ -3862,8 +3616,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Runway-Version", "2024-11-06")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
-	} else if videoTask.Provider == "viggle" {
-		req.Header.Set("Access-Token", channel.Key)
 	} else if videoTask.Provider == "pixverse" {
 		req.Header.Set("API-KEY", channel.Key)
 		req.Header.Set("Ai-trace-id", "aaaaa")
@@ -4284,96 +4036,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			if lumaResp.FailureReason != nil {
 				failReason = *lumaResp.FailureReason
 			} else {
-				failReason = "Task failed"
-			}
-		}
-		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
-		if needRefund {
-			log.Printf("Task %s failed, compensating user", taskId)
-			CompensateVideoTask(taskId)
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 直接使用上游返回的状态码
-		c.Data(resp.StatusCode, "application/json", jsonResponse)
-		return nil
-	} else if videoTask.Provider == "viggle" {
-		// ✅ defer 位置正确（在 ReadAll 之前）
-		defer func() {
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-		}()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to read response body: %v", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 解析JSON响应
-		var viggleResp viggle.ViggleFinalResponse
-		if err := json.Unmarshal(body, &viggleResp); err != nil {
-			log.Printf("Failed to parse response: %v, body: %s", err, string(body))
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to parse response JSON: %v", err),
-				"json_parse_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralFinalVideoResponse{
-			TaskId:      taskId,
-			TaskStatus:  "",
-			Message:     viggleResp.Message, // 添加错误信息
-			VideoResult: "",
-			Duration:    videoTask.Duration,
-		}
-
-		// 首先检查 Data 切片是否为空
-		if len(viggleResp.Data.Data) == 0 {
-			generalResponse.TaskStatus = "failed"
-		} else {
-			// 处理不同状态的情况
-			if viggleResp.Data.Code == 0 {
-				if viggleResp.Data.Data[0].Result == "" {
-					generalResponse.TaskStatus = "processing"
-				} else {
-					generalResponse.TaskStatus = "succeed"
-					generalResponse.VideoResult = viggleResp.Data.Data[0].Result
-					// 同时设置 VideoResults
-					generalResponse.VideoResults = []model.VideoResultItem{
-						{Url: viggleResp.Data.Data[0].Result},
-					}
-				}
-			} else {
-				// code 不为 0 的情况都视为失败
-				generalResponse.TaskStatus = "failed"
-				// 如果有错误信息，可以更新 Message
-				if viggleResp.Data.Message != "" {
-					generalResponse.Message = viggleResp.Data.Message
-				}
-			}
-		}
-
-		// 更新任务状态并检查是否需要退款
-		failReason := ""
-		if generalResponse.TaskStatus == "failed" {
-			failReason = generalResponse.Message
-			if failReason == "" {
 				failReason = "Task failed"
 			}
 		}
@@ -5367,6 +5029,9 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 		videoTask.FailReason = failreason
 	}
 
+	// 计算总耗时（秒）
+	videoTask.TotalDuration = time.Now().Unix() - videoTask.CreatedAt
+
 	// 尝试更新数据库
 	err = videoTask.Update()
 	if err != nil {
@@ -5375,7 +5040,8 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 		// 如果Update失败，尝试直接使用SQL更新作为回退方案
 		log.Printf("Attempting direct SQL update for task %s", taskid)
 		updateFields := map[string]interface{}{
-			"status": status,
+			"status":         status,
+			"total_duration": time.Now().Unix() - videoTask.CreatedAt,
 		}
 		if failreason != "" {
 			updateFields["fail_reason"] = failreason
