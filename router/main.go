@@ -19,9 +19,25 @@ func SetRouter(router *gin.Engine, buildFS embed.FS) {
 	SetDashboardRouter(router)
 	SetRelayRouter(router)
 
-	// Swagger 路由配置
-	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
-	logger.SysLog("Swagger UI enabled at /swagger/index.html")
+	// 获取 Swagger 文档 URL（优先使用环境变量，否则使用 S3 默认地址）
+	swaggerURL := os.Getenv("SWAGGER_JSON_URL")
+	if swaggerURL == "" {
+		// 默认使用 S3 托管的文档
+		swaggerURL = "https://oneapi-doc.s3.us-west-1.amazonaws.com/oneapi/swagger.json"
+	}
+
+	// Swagger UI 路由配置
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(
+		swaggerFiles.Handler,
+		ginSwagger.URL(swaggerURL),
+	))
+	logger.SysLog(fmt.Sprintf("Swagger UI enabled at /swagger/index.html (doc: %s)", swaggerURL))
+
+	// 为了兼容性，也提供 /swagger/doc.json 端点（可选，用于本地开发）
+	if os.Getenv("SWAGGER_LOCAL_FILE") == "true" {
+		router.StaticFile("/swagger/doc.json", "./docs/swagger.json")
+		logger.SysLog("Local swagger.json enabled at /swagger/doc.json")
+	}
 
 	// Scalar API 文档路由
 	router.StaticFile("/docs", "./static/api-docs.html")

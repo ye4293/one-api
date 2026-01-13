@@ -8,3 +8,11 @@ build
 logs
 data
 /web/node_modules
+
+# Swagger 文档（本地生成，不提交）
+docs/swagger.json
+docs/swagger.yaml
+docs/docs.go
+
+# 环境变量配置
+.env
