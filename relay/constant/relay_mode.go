@@ -26,22 +26,6 @@ const (
 	RelayModeMidjourneyModal
 	RelayModeMidjourneyShorten
 	RelayModeSwapFace
-	RelayModelGenerateCore
-	RelayModelGenerateSd3
-	RelayModelGenerateUltra
-	RelayModeUpscaleConservative
-	RelayModeUpscaleCreative
-	RelayModeUpscaleCreativeResult
-	RelayModeEditErase
-	RelayModeEditInpaint
-	RelayModeEditOutpaint
-	RelayModeEditSR //Search and Replace 搜索和替换
-	RelayModeEditRB //Remove Background 删除背景
-	RelayModeControlSketch
-	RelayModeControlStructure
-	RelayModeImageToVideo
-	RelayModeVideoResult
-	RelayMode3D
 	RelayModeGeminiGenerateContent
 	RelayModeGeminiStreamGenerateContent
 	RelayModeClaude
@@ -128,48 +112,6 @@ func removeModePrefix(path string) string {
 		}
 	}
 	return path
-}
-
-func Path2RelayModeSd(path string) int {
-	// 如果路径以 /sd/v2beta 开头，将其转换为 /v2beta 开头的路径
-	path = strings.Replace(path, "/sd/v2beta", "/v2beta", 1)
-
-	relayMode := RelayModeUnknown
-	if strings.HasPrefix(path, "/v2beta/stable-image/generate/core") {
-		relayMode = RelayModelGenerateCore
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/ultra") {
-		relayMode = RelayModelGenerateUltra
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/generate/sd3") {
-		relayMode = RelayModelGenerateSd3
-	} else if path == "/v2beta/stable-image/upscale/conservative" {
-		relayMode = RelayModeUpscaleConservative
-	} else if path == "/v2beta/stable-image/upscale/creative" {
-		relayMode = RelayModeUpscaleCreative
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/upscale/creative/result") {
-		relayMode = RelayModeUpscaleCreativeResult
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/erase") {
-		relayMode = RelayModeEditErase
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/inpaint") {
-		relayMode = RelayModeEditInpaint
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/outpaint") {
-		relayMode = RelayModeEditOutpaint
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/search-and-replace") {
-		relayMode = RelayModeEditSR
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/edit/remove-background") {
-		relayMode = RelayModeEditRB
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/control/sketch") {
-		relayMode = RelayModeControlSketch
-	} else if strings.HasPrefix(path, "/v2beta/stable-image/control/structure") {
-		relayMode = RelayModeControlStructure
-	} else if strings.HasPrefix(path, "/v2beta/image-to-video/result") {
-		relayMode = RelayModeVideoResult
-	} else if strings.HasPrefix(path, "/v2beta/image-to-video") {
-		relayMode = RelayModeImageToVideo
-	} else if strings.HasPrefix(path, "/v2beta/3d/stable-fast-3d") {
-		relayMode = RelayMode3D
-	}
-
-	return relayMode
 }
 
 func Path2RelayModeGemini(path string) int {
