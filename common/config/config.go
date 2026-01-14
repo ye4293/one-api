@@ -206,3 +206,15 @@ var CloudWatchFlushInterval = env.Int("CLOUDWATCH_FLUSH_INTERVAL", 60)   // 指�
 var CloudWatchSampleInterval = env.Int("CLOUDWATCH_SAMPLE_INTERVAL", 10) // 饱和度采样间隔（秒）
 
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
+
+// 日志配置（用于 Loki 维度筛选）
+var ServiceName = env.String("SERVICE_NAME", "one-api")
+var InstanceId = env.String("INSTANCE_ID", getHostname())
+
+func getHostname() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return hostname
+}

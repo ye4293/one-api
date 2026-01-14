@@ -1,0 +1,103 @@
+# Promtail 配置文件（Docker 环境）
+# 用于采集 one-api 容器日志并发送到 Loki
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  # Loki 地址 - 可通过环境变量 LOKI_URL 覆盖
+  - url: ${LOKI_URL:-http://host.docker.internal:3100/loki/api/v1/push}
+    # Docker 内访问宿主机: host.docker.internal
+    # K8s 或同网络: http://loki:3100/loki/api/v1/push
+    # 外部服务: http://your-loki-host:3100/loki/api/v1/push
+
+scrape_configs:
+  # 普通日志（INFO/WARN/DEBUG）
+  - job_name: oneapi-general
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: oneapi
+          stream: general
+          __path__: /var/log/oneapi/oneapi-*.log
+    pipeline_stages:
+      # 解析 JSON
+      - json:
+          expressions:
+            ts: ts
+            level: level
+            request_id: request_id
+            msg: msg
+            service: service
+            instance: instance
+            # Access log 特有字段
+            status: status
+            latency_ms: latency_ms
+            client_ip: client_ip
+            method: method
+            path: path
+      
+      # 将低基数字段提取为 labels（用于快速筛选）
+      - labels:
+          level:
+          service:
+          instance:
+          method:
+          # 可选：如果你的 path 是固定路由模板（低基数），可以启用
+          # path:
+          # status:
+      
+      # 设置时间戳（使用日志中的 ts 字段）
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+      
+      # 输出完整 JSON 作为日志内容
+      - output:
+          source: msg
+
+  # 错误日志（ERROR）
+  - job_name: oneapi-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: oneapi
+          stream: error
+          __path__: /var/log/oneapi/oneapi-error-*.log
+    pipeline_stages:
+      # 解析 JSON
+      - json:
+          expressions:
+            ts: ts
+            level: level
+            request_id: request_id
+            msg: msg
+            service: service
+            instance: instance
+            status: status
+            latency_ms: latency_ms
+            client_ip: client_ip
+            method: method
+            path: path
+      
+      # 将低基数字段提取为 labels
+      - labels:
+          level:
+          service:
+          instance:
+          method:
+      
+      # 设置时间戳
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+      
+      # 输出完整 JSON 作为日志内容
+      - output:
+          source: msg

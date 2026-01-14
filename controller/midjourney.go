@@ -80,7 +80,7 @@ func UpdateMidjourneyTaskBulk() {
 		ctx := context.Background()
 		iterationStartTime := time.Now()
 
-		logger.Info(ctx, "Waiting for 10 seconds before next iteration")
+		// logger.Info(ctx, "Waiting for 10 seconds before next iteration")
 		time.Sleep(time.Duration(10) * time.Second)
 
 		tasks, err := fetchUnfinishedTasks(ctx)
@@ -111,14 +111,14 @@ func UpdateMidjourneyTaskBulk() {
 }
 
 func fetchUnfinishedTasks(ctx context.Context) ([]*model.Midjourney, error) {
-	startTime := time.Now()
-	logger.Info(ctx, "Fetching unfinished tasks")
+	// startTime := time.Now()
+	// logger.Info(ctx, "Fetching unfinished tasks")
 	tasks, err := safeGetAllUnFinishTasks()
 	if err != nil {
 		logger.Error(ctx, fmt.Sprintf("Error getting unfinished tasks: %v", err))
 		return nil, err
 	}
-	logger.Info(ctx, fmt.Sprintf("Fetched %d unfinished tasks in %v", len(tasks), time.Since(startTime)))
+	// logger.Info(ctx, fmt.Sprintf("Fetched %d unfinished tasks in %v", len(tasks), time.Since(startTime)))
 	return tasks, nil
 }
 

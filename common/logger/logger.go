@@ -2,24 +2,36 @@ package logger
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/helper"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
 )
 
 const (
-	loggerDEBUG = "DEBUG"
-	loggerINFO  = "INFO"
-	loggerWarn  = "WARN"
-	loggerError = "ERR"
+	loggerDEBUG = "debug"
+	loggerINFO  = "info"
+	loggerWarn  = "warn"
+	loggerError = "error"
 )
+
+// LogEntry JSON 日志结构
+type LogEntry struct {
+	Ts        string `json:"ts"`
+	Level     string `json:"level"`
+	RequestId string `json:"request_id,omitempty"`
+	Msg       string `json:"msg"`
+	Service   string `json:"service"`
+	Instance  string `json:"instance"`
+}
 
 var setupLogLock sync.Mutex
 var setupLogWorking bool
@@ -37,23 +49,23 @@ func SetupLogger() {
 			setupLogLock.Unlock()
 			setupLogWorking = false
 		}()
-		
+
 		dateStr := time.Now().Format("20060102")
-		
+
 		// Open general log file (for INFO/WARN/DEBUG)
 		generalLogPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-%s.log", dateStr))
 		fd, err := os.OpenFile(generalLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Fatal("failed to open general log file")
 		}
-		
+
 		// Open error log file (for ERROR only)
 		errorLogPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-error-%s.log", dateStr))
 		errFd, err := os.OpenFile(errorLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Fatal("failed to open error log file")
 		}
-		
+
 		// Close previous file handles if they exist
 		if generalLogFile != nil {
 			generalLogFile.Close()
@@ -61,10 +73,10 @@ func SetupLogger() {
 		if errorLogFile != nil {
 			errorLogFile.Close()
 		}
-		
+
 		generalLogFile = fd
 		errorLogFile = errFd
-		
+
 		// INFO/WARN/DEBUG go to stdout + general log file
 		gin.DefaultWriter = io.MultiWriter(os.Stdout, generalLogFile)
 		// ERROR go to stderr + error log file
@@ -72,14 +84,32 @@ func SetupLogger() {
 	}
 }
 
+// writeJSONLog 写入 JSON 格式日志
+func writeJSONLog(writer io.Writer, level, requestId, msg string) {
+	entry := LogEntry{
+		Ts:        time.Now().Format(time.RFC3339Nano),
+		Level:     level,
+		RequestId: requestId,
+		Msg:       msg,
+		Service:   config.ServiceName,
+		Instance:  config.InstanceId,
+	}
+	jsonBytes, err := json.Marshal(entry)
+	if err != nil {
+		// Fallback to plain text if JSON marshal fails
+		_, _ = fmt.Fprintf(writer, `{"ts":"%s","level":"%s","msg":"json marshal error","service":"%s","instance":"%s"}`+"\n",
+			entry.Ts, level, config.ServiceName, config.InstanceId)
+		return
+	}
+	_, _ = writer.Write(append(jsonBytes, '\n'))
+}
+
 func SysLog(s string) {
-	t := time.Now()
-	_, _ = fmt.Fprintf(gin.DefaultWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), s)
+	writeJSONLog(gin.DefaultWriter, loggerINFO, "", s)
 }
 
 func SysError(s string) {
-	t := time.Now()
-	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[SYS] %v | %s \n", t.Format("2006/01/02 - 15:04:05"), s)
+	writeJSONLog(gin.DefaultErrorWriter, loggerError, "", s)
 }
 
 func Debug(ctx context.Context, msg string) {
@@ -123,12 +153,20 @@ func logHelper(ctx context.Context, level string, msg string) {
 	if level == loggerError {
 		writer = gin.DefaultErrorWriter
 	}
-	id := ctx.Value(RequestIdKey)
-	if id == nil {
+
+	// Get request ID from context
+	id := ""
+	if ctx != nil {
+		if v := ctx.Value(RequestIdKey); v != nil {
+			id = fmt.Sprintf("%v", v)
+		}
+	}
+	if id == "" {
 		id = helper.GenRequestID()
 	}
-	now := time.Now()
-	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
+
+	writeJSONLog(writer, level, id, msg)
+
 	if !setupLogWorking {
 		setupLogWorking = true
 		go func() {
@@ -138,7 +176,7 @@ func logHelper(ctx context.Context, level string, msg string) {
 }
 
 func FatalLog(v ...any) {
-	t := time.Now()
-	_, _ = fmt.Fprintf(gin.DefaultErrorWriter, "[FATAL] %v | %v \n", t.Format("2006/01/02 - 15:04:05"), v)
+	msg := fmt.Sprintf("%v", v)
+	writeJSONLog(gin.DefaultErrorWriter, "fatal", "", msg)
 	os.Exit(1)
 }
