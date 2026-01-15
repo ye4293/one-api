@@ -85,8 +85,8 @@ func HandleFluxCallback(c *gin.Context) {
 	}
 
 	// 【调试日志】打印解析后的结构体（包含所有字段的值）
-	logger.Debugf(c, "Flux callback parsed notification: ID=%s, Status=%s, Cost=%.4f, InputMP=%.2f, OutputMP=%.2f, Error=%s, PollingURL=%s, Result=%+v",
-		notification.ID, notification.Status, notification.Cost, notification.InputMP, notification.OutputMP, notification.Error, notification.PollingURL, notification.Result)
+	logger.Debugf(c, "Flux callback parsed notification: TaskId=%s, Status=%s, Progress=%d, Cost=%.4f, InputMP=%.2f, OutputMP=%.2f, Error=%s, PollingURL=%s, Result=%+v",
+		notification.TaskId, notification.Status, notification.Progress, notification.Cost, notification.InputMP, notification.OutputMP, notification.Error, notification.PollingURL, notification.Result)
 
 	// 调用业务逻辑处理回调
 	success, statusCode, message := flux.HandleCallback(c, notification)
