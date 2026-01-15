@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 
@@ -828,15 +829,82 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	// 复制所有表单字段
+	// 复制所有表单字段（跳过 input_reference，稍后特殊处理）
 	for key, values := range c.Request.MultipartForm.Value {
+		if key == "input_reference" {
+			continue // 跳过，稍后处理
+		}
 		for _, value := range values {
 			writer.WriteField(key, value)
 		}
 	}
 
-	// 复制所有文件（如 input_reference）
+	// 处理 input_reference 字段：支持 URL 和文件两种方式
+	inputReferenceHandled := false
+
+	// 1. 检查是否有 input_reference 作为 URL（普通字段）
+	if urlValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(urlValues) > 0 {
+		imageUrl := urlValues[0]
+		if imageUrl != "" {
+			logger.Debugf(ctx, "检测到 input_reference URL: %s，开始下载", imageUrl)
+
+			// 下载图片并添加为文件字段
+			if err := downloadAndAddImageFile(ctx, writer, imageUrl); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "下载 input_reference 图片失败: " + err.Error()})
+				return
+			}
+			inputReferenceHandled = true
+			logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
+		}
+	}
+
+	// 2. 如果没有处理过，检查是否有 input_reference 作为文件
+	if !inputReferenceHandled {
+		if fileHeaders, exists := c.Request.MultipartForm.File["input_reference"]; exists && len(fileHeaders) > 0 {
+			logger.Debugf(ctx, "检测到 input_reference 文件上传")
+			// 按现有逻辑处理文件
+			for _, fileHeader := range fileHeaders {
+				// 打开原始文件
+				file, err := fileHeader.Open()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "读取 input_reference 文件失败: " + err.Error()})
+					return
+				}
+				defer file.Close()
+
+				// 获取并验证文件的Content-Type
+				contentType, err := detectFileContentType(file, fileHeader)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "input_reference 文件类型检测失败: " + err.Error()})
+					return
+				}
+
+				// 手动创建multipart header并设置正确的Content-Type
+				h := make(textproto.MIMEHeader)
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, fileHeader.Filename))
+				h.Set("Content-Type", contentType)
+
+				part, err := writer.CreatePart(h)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 input_reference 表单文件失败: " + err.Error()})
+					return
+				}
+
+				// 复制文件内容
+				if _, err := io.Copy(part, file); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "复制 input_reference 文件内容失败: " + err.Error()})
+					return
+				}
+			}
+			inputReferenceHandled = true
+		}
+	}
+
+	// 复制其他所有文件字段（排除 input_reference，已处理）
 	for key, fileHeaders := range c.Request.MultipartForm.File {
+		if key == "input_reference" {
+			continue // 已经处理过了
+		}
 		for _, fileHeader := range fileHeaders {
 			// 打开原始文件
 			file, err := fileHeader.Open()
@@ -1655,6 +1723,130 @@ func compensateSoraVideoTask(videoId string) {
 	} else {
 		fmt.Printf("成功补偿渠道 %d 配额，任务 %s\n", task.ChannelId, videoId)
 	}
+}
+
+// ========================================
+// 文件下载和处理函数
+// ========================================
+
+// downloadAndAddImageFile 从 URL 下载图片并添加为 multipart 文件字段
+// 参数：
+//   - ctx: 上下文
+//   - writer: multipart writer
+//   - imageUrl: 图片的 URL
+//
+// 返回：
+//   - error: 下载或处理失败时返回错误
+func downloadAndAddImageFile(ctx context.Context, writer *multipart.Writer, imageUrl string) error {
+	// 创建 HTTP 客户端，设置 30 秒超时
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	// 发起下载请求
+	resp, err := client.Get(imageUrl)
+	if err != nil {
+		return fmt.Errorf("下载图片请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查 HTTP 状态码
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载图片失败，HTTP 状态码: %d", resp.StatusCode)
+	}
+
+	// 检查 Content-Length（如果存在）
+	if resp.ContentLength > 100*1024*1024 { // 100MB
+		return fmt.Errorf("图片文件过大: %d bytes，最大支持 100MB", resp.ContentLength)
+	}
+
+	// 读取图片内容（限制大小）
+	limitReader := io.LimitReader(resp.Body, 100*1024*1024+1) // 100MB + 1 byte
+	imageData, err := io.ReadAll(limitReader)
+	if err != nil {
+		return fmt.Errorf("读取图片内容失败: %v", err)
+	}
+
+	// 检查是否超过大小限制
+	if len(imageData) > 100*1024*1024 {
+		return fmt.Errorf("图片文件过大: 超过 100MB")
+	}
+
+	// 验证文件类型（基于内容）
+	detectedType := http.DetectContentType(imageData)
+
+	// 支持的图片类型
+	supportedImageTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/webp": true,
+	}
+
+	// 特殊处理 WebP 格式
+	if len(imageData) >= 12 &&
+		string(imageData[0:4]) == "RIFF" &&
+		string(imageData[8:12]) == "WEBP" {
+		detectedType = "image/webp"
+	}
+
+	// 验证类型
+	if !supportedImageTypes[detectedType] {
+		return fmt.Errorf("不支持的图片类型: %s，仅支持 jpeg, png, webp", detectedType)
+	}
+
+	// 从 URL 中提取文件名
+	filename := extractFilenameFromURL(imageUrl, detectedType)
+
+	logger.Debugf(ctx, "下载图片成功: URL=%s, 大小=%d bytes, 类型=%s, 文件名=%s",
+		imageUrl, len(imageData), detectedType, filename)
+
+	// 创建 multipart 文件字段
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, filename))
+	h.Set("Content-Type", detectedType)
+
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("创建 multipart 文件字段失败: %v", err)
+	}
+
+	// 写入图片数据
+	if _, err := part.Write(imageData); err != nil {
+		return fmt.Errorf("写入图片数据失败: %v", err)
+	}
+
+	return nil
+}
+
+// extractFilenameFromURL 从 URL 中提取文件名
+// 如果 URL 中没有文件名，则根据文件类型生成默认文件名
+func extractFilenameFromURL(urlStr string, contentType string) string {
+	// 解析 URL
+	parsedURL, err := url.Parse(urlStr)
+	if err == nil && parsedURL.Path != "" {
+		// 从路径中提取文件名
+		parts := strings.Split(parsedURL.Path, "/")
+		if len(parts) > 0 {
+			filename := parts[len(parts)-1]
+			// 如果文件名不为空且包含扩展名
+			if filename != "" && strings.Contains(filename, ".") {
+				return filename
+			}
+		}
+	}
+
+	// 如果无法从 URL 提取，根据内容类型生成文件名
+	ext := ".jpg"
+	switch contentType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "image/webp":
+		ext = ".webp"
+	}
+
+	return "input_reference" + ext
 }
 
 // ========================================
