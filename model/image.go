@@ -1,29 +1,39 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type Image struct {
-	TaskId     string `json:"task_id"`
-	Username   string `json:"username"`
-	ChannelId  int    `json:"channel_id"`
-	UserId     int    `json:"user_id"`
-	Model      string `json:"model"`
-	Status     string `json:"status"`
-	FailReason string `json:"fail_reason"`
-	ImageId    string `json:"image_id"`
-	StoreUrl   string `json:"store_url"`
-	Provider   string `json:"provider"`
-	CreatedAt  int64  `json:"created_at"`
-	Mode       string `json:"mode"`
-	N          int    `json:"n"`
-	Quota      int64  `json:"quota"`
-	Detail     string `json:"detail"`
+	Id            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskId        string `gorm:"index:idx_task_id" json:"task_id"`
+	Username      string `json:"username"`
+	ChannelId     int    `json:"channel_id"`
+	UserId        int    `json:"user_id"`
+	Model         string `json:"model"`
+	Status        string `json:"status"`
+	FailReason    string `json:"fail_reason"`
+	ImageId       string `json:"image_id"`
+	StoreUrl      string `json:"store_url"`
+	Provider      string `json:"provider"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `gorm:"autoUpdateTime" json:"updated_at"`
+	Mode          string `json:"mode"`
+	N             int    `json:"n"`
+	Quota         int64  `json:"quota"`
+	Detail        string `json:"detail"`
+	TotalDuration int    `json:"total_duration"` // 总时长（秒）
+	Result        string `gorm:"type:text" json:"result"` // API 响应结果（JSON 格式）
 }
 
 func (image *Image) Insert() error {
 	var err error
 	err = DB.Create(image).Error
 	return err
+}
+
+func (image *Image) Update() error {
+	return DB.Save(image).Error
 }
 
 func GetImageByTaskId(taskId string) (*Image, error) {

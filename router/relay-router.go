@@ -173,9 +173,27 @@ func SetRelayRouter(router *gin.Engine) {
 	modeMjRouter := router.Group("/mj-:mode/mj", mjModeMiddleware())
 	setupMJRoutes(modeMjRouter)
 
+	// Flux 图像生成路由组 - 回调模式
 	relayFluxRouter := router.Group("/flux")
+	relayFluxRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
+		relayFluxRouter.POST("/v1/flux-2-pro", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-2-flex", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-kontext-pro", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-kontext-max", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.1", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-dev", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.1-ultra", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.0-fill", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.0-expand", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-2-max", controller.RelayFlux)
 		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
+	}
+
+	// Flux 回调路由组 - 接收 Flux API 回调通知
+	fluxCallbackRouter := router.Group("/flux/internal")
+	{
+		fluxCallbackRouter.POST("/callback", controller.HandleFluxCallback)
 	}
 	// 豆包API兼容路由组 - 支持原始豆包API路径格式
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")
