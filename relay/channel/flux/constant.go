@@ -33,6 +33,6 @@ const (
 	TaskStatusPending    = "pending"
 	TaskStatusSubmitted  = "submitted"
 	TaskStatusProcessing = "processing"
-	TaskStatusSucceed    = "Ready"
+	TaskStatusSucceed    = "success"
 	TaskStatusFailed     = "failed"
 )

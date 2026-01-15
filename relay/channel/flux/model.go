@@ -38,11 +38,17 @@ type FluxPollingResponse struct {
 
 // Result 表示生成结果
 type Result struct {
-	Sample string `json:"sample,omitempty"` // 图片URL
-	Prompt string `json:"prompt,omitempty"` // 使用的提示词
-	Seed   int64  `json:"seed,omitempty"`   // 使用的种子
-	Width  int    `json:"width,omitempty"`  // 图片宽度
-	Height int    `json:"height,omitempty"` // 图片高度
+	TaskId         string   `json:"task_id,omitempty"`         // 任务ID
+	Sample         string   `json:"sample,omitempty"`          // 图片URL
+	Prompt         string   `json:"prompt,omitempty"`          // 使用的提示词
+	Seed           int64    `json:"seed,omitempty"`            // 使用的种子
+	Width          int      `json:"width,omitempty"`           // 图片宽度
+	Height         int      `json:"height,omitempty"`          // 图片高度
+	StartTime      float64  `json:"start_time,omitempty"`      // 开始时间（Unix时间戳）
+	GenerationTime float64  `json:"generation_time,omitempty"` // 生成耗时（秒）
+	Config         string   `json:"config,omitempty"`          // 配置名称
+	ScorerScores   []string `json:"scorer_scores,omitempty"`   // 评分
+	PreFiltered    bool     `json:"pre_filtered,omitempty"`    // 是否预过滤
 }
 
 // ErrorResponse 表示 Flux API 的错误响应
@@ -53,12 +59,13 @@ type ErrorResponse struct {
 
 // FluxCallbackNotification 表示 Flux API 的回调通知
 type FluxCallbackNotification struct {
-	ID         string  `json:"id"`          // 任务ID
-	Status     string  `json:"status"`      // 任务状态：pending, processing, succeed, failed
-	Result     *Result `json:"result,omitempty"` // 生成结果（succeed 时有值）
-	PollingURL string  `json:"polling_url,omitempty"` // 轮询URL
-	Cost       float64 `json:"cost,omitempty"`        // 费用（美分）
-	InputMP    float64 `json:"input_mp,omitempty"`    // 输入兆像素
-	OutputMP   float64 `json:"output_mp,omitempty"`   // 输出兆像素
-	Error      string  `json:"error,omitempty"`       // 错误信息
+	TaskId     string  `json:"task_id"`                   // 任务ID（注意：Flux 使用 task_id 而不是 id）
+	Status     string  `json:"status"`                    // 任务状态：processing, SUCCESS, FAILED（注意大小写）
+	Progress   int     `json:"progress,omitempty"`        // 进度（0-100）
+	Result     *Result `json:"result,omitempty"`          // 生成结果（SUCCESS 时有值）
+	PollingURL string  `json:"polling_url,omitempty"`     // 轮询URL
+	Cost       float64 `json:"cost,omitempty"`            // 费用（美分）
+	InputMP    float64 `json:"input_mp,omitempty"`        // 输入兆像素
+	OutputMP   float64 `json:"output_mp,omitempty"`       // 输出兆像素
+	Error      string  `json:"error,omitempty"`           // 错误信息
 }

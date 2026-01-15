@@ -247,13 +247,41 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 			logger.Errorf(c, "更新 Flux 记录失败: %v", err)
 			// 继续处理，不因数据库错误而中断
 		} else {
-			logger.Infof(c, "Flux 请求成功: task_id=%s, cost=%.4f cents, quota=%d, duration=%ds, polling_url=%s",
-				fluxResp.ID, fluxResp.Cost, quota, duration, fluxResp.PollingURL)
+			logger.Infof(c, "Flux 请求成功: task_id=%s, cost=%.4f cents, quota=%d, duration=%ds",
+				fluxResp.ID, fluxResp.Cost, quota, duration)
 		}
 	}
 
-	// 透传原始响应给客户端
-	c.Data(resp.StatusCode, "application/json", body)
+	// 修改响应数据：删除 webhook_url，添加 polling_url
+	var respMap map[string]any
+	if err := json.Unmarshal(body, &respMap); err != nil {
+		logger.Errorf(c, "解析响应为 map 失败: %v", err)
+		// 如果解析失败，透传原始响应
+		c.Data(resp.StatusCode, "application/json", body)
+		return nil, nil
+	}
+
+	// 删除 webhook_url
+	delete(respMap, "webhook_url")
+
+	// 添加 polling_url
+	if taskID, ok := respMap["id"].(string); ok && taskID != "" {
+		pollingURL := fmt.Sprintf("https://api.bfl.ai/v1/get_result?id=%s", taskID)
+		respMap["polling_url"] = pollingURL
+		logger.Debugf(c, "添加 polling_url: %s", pollingURL)
+	}
+
+	// 重新序列化修改后的响应
+	modifiedBody, err := json.Marshal(respMap)
+	if err != nil {
+		logger.Errorf(c, "序列化修改后的响应失败: %v", err)
+		// 如果序列化失败，透传原始响应
+		c.Data(resp.StatusCode, "application/json", body)
+		return nil, nil
+	}
+
+	// 返回修改后的响应给客户端
+	c.Data(resp.StatusCode, "application/json", modifiedBody)
 
 	// Flux 不计算 token usage，返回 nil
 	return nil, nil
@@ -278,8 +306,8 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 // HandleCallback 处理 Flux API 回调通知的业务逻辑
 // 返回: (是否成功, HTTP状态码, 响应消息)
 func HandleCallback(c *gin.Context, notification FluxCallbackNotification) (bool, int, string) {
-	taskID := notification.ID
-	logger.Infof(c, "Flux callback received: task_id=%s, status=%s", taskID, notification.Status)
+	taskID := notification.TaskId
+	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d", taskID, notification.Status, notification.Progress)
 	logger.Debugf(c, "Flux callback notification: %+v", notification)
 
 	// 查询任务记录
@@ -308,10 +336,11 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification) (bool
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
 
-	// 处理回调结果
-	if notification.Status == TaskStatusSucceed {
+	// 处理回调结果（注意：Flux 使用 SUCCESS/FAILED 大写状态）
+	normalizedStatus := strings.ToLower(notification.Status)
+	if normalizedStatus == TaskStatusSucceed {
 		return handleSuccessCallback(c, image, notification, taskID)
-	} else if notification.Status == TaskStatusFailed {
+	} else if normalizedStatus == TaskStatusFailed {
 		return handleFailedCallback(c, image, notification, taskID)
 	} else {
 		// 其他状态（processing等），更新状态但不扣费
@@ -328,31 +357,50 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 		image.StoreUrl = notification.Result.Sample
 	}
 
-	// 获取用户组倍率
-	group, err := model.CacheGetUserGroup(image.UserId)
-	if err != nil {
-		logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
-		group = "Lv1" // 默认组
+	// 计算配额
+	var quota int64
+	if notification.Cost > 0 {
+		// 如果回调返回了 cost，使用回调的 cost 重新计算
+		group, err := model.CacheGetUserGroup(image.UserId)
+		if err != nil {
+			logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
+			group = "Lv1" // 默认组
+		}
+		groupRatio := common.GetGroupRatio(group)
+		quota = CalculateQuota(notification.Cost, groupRatio)
+		image.Quota = quota
+
+		// 更新详细信息
+		image.Detail = fmt.Sprintf("cost=%.4f,input_mp=%.2f,output_mp=%.2f",
+			notification.Cost, notification.InputMP, notification.OutputMP)
+		logger.Infof(c, "Flux callback with cost: task_id=%s, cost=%.4f cents, quota=%d", taskID, notification.Cost, quota)
+	} else {
+		// 如果回调没有 cost，使用初始响应时已计算的 quota
+		quota = image.Quota
+		if quota == 0 {
+			// 如果 quota 也为 0，使用预估价格
+			logger.Warnf(c, "Flux callback has no cost and no saved quota: task_id=%s, using estimated quota", taskID)
+			group, err := model.CacheGetUserGroup(image.UserId)
+			if err != nil {
+				logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
+				group = "Lv1"
+			}
+			groupRatio := common.GetGroupRatio(group)
+			quota = EstimateQuota(image.Model, groupRatio)
+			image.Quota = quota
+		}
+		logger.Infof(c, "Flux callback without cost: task_id=%s, using saved quota=%d", taskID, quota)
 	}
-	groupRatio := common.GetGroupRatio(group)
-
-	// 计算配额（基于回调返回的 cost）
-	quota := CalculateQuota(notification.Cost, groupRatio)
-	image.Quota = quota
-
-	// 保存详细信息
-	image.Detail = fmt.Sprintf("cost=%.4f,input_mp=%.2f,output_mp=%.2f",
-		notification.Cost, notification.InputMP, notification.OutputMP)
 
 	// 【真正扣费】：回调成功时才扣费
-	err = model.DecreaseUserQuota(image.UserId, quota)
+	err := model.DecreaseUserQuota(image.UserId, quota)
 	if err != nil {
 		logger.Errorf(c, "Flux callback billing failed: user_id=%d, quota=%d, error=%v",
 			image.UserId, quota, err)
 		// 扣费失败不影响状态更新，继续处理
 	} else {
-		logger.Infof(c, "Flux callback billing success: user_id=%d, quota=%d, task_id=%s, cost=%.4f cents, duration=%ds",
-			image.UserId, quota, taskID, notification.Cost, image.TotalDuration)
+		logger.Infof(c, "Flux callback billing success: user_id=%d, quota=%d, task_id=%s, duration=%ds",
+			image.UserId, quota, taskID, image.TotalDuration)
 	}
 
 	if err = image.Update(); err != nil {
