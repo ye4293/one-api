@@ -6,7 +6,7 @@ import (
 
 type Image struct {
 	Id            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskId        string `gorm:"index:idx_task_id" json:"task_id"`
+	TaskId        string `gorm:"type:varchar(255);index:idx_task_id" json:"task_id"`
 	Username      string `json:"username"`
 	ChannelId     int    `json:"channel_id"`
 	UserId        int    `json:"user_id"`
