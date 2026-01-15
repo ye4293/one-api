@@ -6,7 +6,7 @@ import (
 
 type Image struct {
 	Id            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskId        string `gorm:"index:idx_task_id" json:"task_id"`
+	TaskId        string `gorm:"type:varchar(255);index:idx_task_id,length:40" json:"task_id"`
 	Username      string `json:"username"`
 	ChannelId     int    `json:"channel_id"`
 	UserId        int    `json:"user_id"`
@@ -22,7 +22,7 @@ type Image struct {
 	N             int    `json:"n"`
 	Quota         int64  `json:"quota"`
 	Detail        string `json:"detail"`
-	TotalDuration int    `json:"total_duration"` // 总时长（秒）
+	TotalDuration int    `json:"total_duration"`          // 总时长（秒）
 	Result        string `gorm:"type:text" json:"result"` // API 响应结果（JSON 格式）
 }
 
