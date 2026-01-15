@@ -27,7 +27,7 @@ services:
       - "3200:3000"
     volumes:
       - ./grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ../grafana/provisioning:/etc/grafana/provisioning  # 使用项目根目录的 grafana 配置
     environment:
       - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}

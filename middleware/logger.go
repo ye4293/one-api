@@ -14,6 +14,7 @@ type AccessLogEntry struct {
 	Ts        string `json:"ts"`
 	Level     string `json:"level"`
 	RequestId string `json:"request_id"`
+	Msg       string `json:"msg"` // 添加 msg 字段以兼容 Promtail 配置
 	Status    int    `json:"status"`
 	LatencyMs int64  `json:"latency_ms"`
 	ClientIP  string `json:"client_ip"`
@@ -25,8 +26,8 @@ type AccessLogEntry struct {
 
 func SetUpLogger(server *gin.Engine) {
 	server.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		// 只记录非 200 的请求（错误/异常请求）
-		if param.StatusCode == 200 {
+		// 只记录非 200 的请求，或者在 debug 模式下记录所有请求
+		if param.StatusCode == 200 && !config.DebugEnabled {
 			return ""
 		}
 
@@ -50,6 +51,7 @@ func SetUpLogger(server *gin.Engine) {
 			Ts:        param.TimeStamp.Format(time.RFC3339Nano),
 			Level:     level,
 			RequestId: requestID,
+			Msg:       "HTTP request", // 添加固定的 msg 值
 			Status:    param.StatusCode,
 			LatencyMs: param.Latency.Milliseconds(),
 			ClientIP:  param.ClientIP,
@@ -64,6 +66,16 @@ func SetUpLogger(server *gin.Engine) {
 			// Fallback if marshal fails
 			return `{"level":"error","msg":"access log marshal error"}` + "\n"
 		}
-		return string(jsonBytes) + "\n"
+
+		logLine := string(jsonBytes) + "\n"
+
+		// 直接写入 gin.DefaultWriter（包含 stdout + 文件）
+		// 这确保访问日志被写入日志文件
+		if gin.DefaultWriter != nil {
+			gin.DefaultWriter.Write([]byte(logLine))
+		}
+
+		// 返回空字符串，避免 Gin 再次写入
+		return ""
 	}))
 }
