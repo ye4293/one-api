@@ -7,6 +7,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/aws"
 	"github.com/songquanpeng/one-api/relay/channel/baidu"
 	"github.com/songquanpeng/one-api/relay/channel/cohere"
+	"github.com/songquanpeng/one-api/relay/channel/flux"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -46,6 +47,8 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &xai.Adaptor{}
 	case constant.APITypeVertexAI:
 		return &vertexai.Adaptor{}
+	case constant.APITypeFlux:
+		return &flux.Adaptor{}
 	}
 	return nil
 }
