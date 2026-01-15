@@ -173,53 +173,27 @@ func SetRelayRouter(router *gin.Engine) {
 	modeMjRouter := router.Group("/mj-:mode/mj", mjModeMiddleware())
 	setupMJRoutes(modeMjRouter)
 
-	// 现有的路由组
-	relaySdRouter := router.Group("/v2beta")
-	relaySdRouter.Use(middleware.TokenAuth(), middleware.Distribute())
-	{
-		relaySdRouter.POST("/stable-image/generate/core", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/generate/ultra", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/upscale/conservative", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
-		relaySdRouter.GET("/stable-image/upscale/creative/result/:generation_id", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/erase", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/control/structure", controller.RelaySd)
-		relaySdRouter.POST("/image-to-video", controller.RelaySd)
-		relaySdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
-		// relaySdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
-	}
-
-	// 新增的路由组，支持 /sd 开头的所有相同路径
-	sdRouter := router.Group("/sd/v2beta")
-	sdRouter.Use(middleware.TokenAuth(), middleware.Distribute())
-	{
-		sdRouter.POST("/stable-image/generate/core", controller.RelaySd)
-		sdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
-		sdRouter.POST("/stable-image/generate/ultra", controller.RelaySd)
-		sdRouter.POST("/stable-image/upscale/conservative", controller.RelaySd)
-		sdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
-		sdRouter.GET("/stable-image/upscale/creative/result/:generation_id", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/erase", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
-		sdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
-		sdRouter.POST("/stable-image/control/structure", controller.RelaySd)
-		sdRouter.POST("/image-to-video", controller.RelaySd)
-		sdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
-		// sdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
-	}
-
+	// Flux 图像生成路由组 - 回调模式
 	relayFluxRouter := router.Group("/flux")
+	relayFluxRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
+		relayFluxRouter.POST("/v1/flux-2-pro", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-2-flex", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-kontext-pro", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-kontext-max", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.1", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-dev", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.1-ultra", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.0-fill", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-pro-1.0-expand", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/flux-2-max", controller.RelayFlux)
 		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
+	}
+
+	// Flux 回调路由组 - 接收 Flux API 回调通知
+	fluxCallbackRouter := router.Group("/flux/internal")
+	{
+		fluxCallbackRouter.POST("/callback", controller.HandleFluxCallback)
 	}
 	// 豆包API兼容路由组 - 支持原始豆包API路径格式
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")

@@ -65,6 +65,9 @@ func init() {
 	// https://platform.openai.com/docs/models/model-endpoint-compatibility
 	for i := 0; i < constant.APITypeDummy; i++ {
 		adaptor := helper.GetAdaptor(i)
+		if adaptor == nil {
+			continue
+		}
 		channelName := adaptor.GetChannelName()
 		modelNames := adaptor.GetModelList()
 		for _, modelName := range modelNames {
@@ -102,17 +105,6 @@ func init() {
 			Object:     "model",
 			Created:    1626777600,
 			OwnedBy:    "midjourney",
-			Permission: permission,
-			Root:       modelName,
-			Parent:     nil,
-		})
-	}
-	for modelName, _ := range common.SdModel2Action {
-		openAIModels = append(openAIModels, OpenAIModels{
-			Id:         modelName,
-			Object:     "model",
-			Created:    1626777600,
-			OwnedBy:    "Stability",
 			Permission: permission,
 			Root:       modelName,
 			Parent:     nil,
