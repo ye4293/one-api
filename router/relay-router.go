@@ -187,7 +187,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayFluxRouter.POST("/v1/flux-pro-1.0-fill", controller.RelayFlux)
 		relayFluxRouter.POST("/v1/flux-pro-1.0-expand", controller.RelayFlux)
 		relayFluxRouter.POST("/v1/flux-2-max", controller.RelayFlux)
-		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
+		relayFluxRouter.GET("/v1/get_result/:id", controller.GetFlux) // 查询 Flux 任务结果
 	}
 
 	// Flux 回调路由组 - 接收 Flux API 回调通知

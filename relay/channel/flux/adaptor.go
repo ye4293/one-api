@@ -443,3 +443,39 @@ func handleProcessingCallback(c *gin.Context, image *model.Image, notification F
 
 	return true, http.StatusOK, "success"
 }
+
+// QueryResult 查询 Flux 任务结果
+// 返回: (HTTP状态码, 响应体, 错误)
+func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, apiKey string) (int, []byte, error) {
+	// 1. 构建查询 URL
+	queryURL := fmt.Sprintf("%s/v1/get_result?id=%s", baseURL, taskID)
+	logger.Debugf(c, "Flux 查询 URL: %s", queryURL)
+
+	// 2. 创建 HTTP 请求
+	req, err := http.NewRequest("GET", queryURL, nil)
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	// 3. 设置请求头
+	req.Header.Set("x-key", apiKey)
+
+	// 4. 发送请求
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 5. 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return http.StatusInternalServerError, nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	// 6. 记录响应日志
+	logger.Debugf(c, "Flux 查询响应: status=%d, body=%s", resp.StatusCode, string(body))
+
+	// 7. 返回状态码和响应体（透传）
+	return resp.StatusCode, body, nil
+}

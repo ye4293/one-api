@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -97,4 +98,52 @@ func HandleFluxCallback(c *gin.Context) {
 	} else {
 		c.JSON(statusCode, gin.H{"error": message})
 	}
+}
+
+// GetFlux 查询 Flux 任务结果
+func GetFlux(c *gin.Context) {
+	// 1. 获取任务 ID
+	taskID := c.Param("id")
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		return
+	}
+
+	logger.Infof(c, "查询 Flux 任务: task_id=%s", taskID)
+
+	// 2. 从数据库查询任务记录（获取 channel_id）
+	image, err := model.GetImageByTaskId(taskID)
+	if err != nil {
+		logger.Errorf(c, "Flux 任务不存在: task_id=%s, error=%v", taskID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	// 3. 查询渠道信息（获取 API key 和 base_url）
+	channel, err := model.GetChannelById(image.ChannelId, true)
+	if err != nil {
+		logger.Errorf(c, "获取 channel 失败: channel_id=%d, error=%v", image.ChannelId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get channel"})
+		return
+	}
+
+	// 4. 验证 channel 信息
+	if channel.BaseURL == nil || *channel.BaseURL == "" {
+		logger.Errorf(c, "Channel base_url 为空: channel_id=%d", image.ChannelId)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid channel configuration"})
+		return
+	}
+
+	// 5. 调用 Adaptor 层查询结果
+	adaptor := &flux.Adaptor{}
+	statusCode, responseBody, err := adaptor.QueryResult(c, taskID, *channel.BaseURL, channel.Key)
+	if err != nil {
+		logger.Errorf(c, "查询 Flux 结果失败: task_id=%s, error=%v", taskID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 6. 透传响应给客户端
+	c.Data(statusCode, "application/json", responseBody)
+	logger.Infof(c, "Flux 查询完成: task_id=%s, status=%d", taskID, statusCode)
 }
