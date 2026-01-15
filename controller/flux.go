@@ -73,13 +73,20 @@ func HandleFluxCallback(c *gin.Context) {
 		return
 	}
 
+	// 【调试日志】打印原始 JSON 数据
+	logger.Infof(c, "Flux callback raw JSON: %s", string(bodyBytes))
+
 	// 解析回调通知
 	var notification flux.FluxCallbackNotification
 	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
-		logger.Errorf(c, "Flux callback parse error: %v", err)
+		logger.Errorf(c, "Flux callback parse error: %v, raw body: %s", err, string(bodyBytes))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
+
+	// 【调试日志】打印解析后的结构体（包含所有字段的值）
+	logger.Debugf(c, "Flux callback parsed notification: ID=%s, Status=%s, Cost=%.4f, InputMP=%.2f, OutputMP=%.2f, Error=%s, PollingURL=%s, Result=%+v",
+		notification.ID, notification.Status, notification.Cost, notification.InputMP, notification.OutputMP, notification.Error, notification.PollingURL, notification.Result)
 
 	// 调用业务逻辑处理回调
 	success, statusCode, message := flux.HandleCallback(c, notification)
