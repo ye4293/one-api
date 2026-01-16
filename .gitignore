@@ -8,3 +8,6 @@ build
 logs
 data
 /web/node_modules
+
+/loki/grafana-data
+/loki/loki-data
