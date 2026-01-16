@@ -71,9 +71,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		}
 	}
 
+	// 处理 MaxTokens：优先使用 MaxCompletionTokens（OpenAI 新格式），其次使用 MaxTokens
+	maxTokens := textRequest.MaxTokens
+	if textRequest.MaxCompletionTokens > 0 {
+		maxTokens = textRequest.MaxCompletionTokens
+	}
+
 	claudeRequest := Request{
 		Model:       textRequest.Model,
-		MaxTokens:   textRequest.MaxTokens,
+		MaxTokens:   maxTokens,
 		Temperature: textRequest.Temperature,
 		TopP:        textRequest.TopP,
 		TopK:        textRequest.TopK,
@@ -93,11 +99,25 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				}
 			}
 		} else if toolChoiceType, ok := textRequest.ToolChoice.(string); ok {
-			if toolChoiceType == "any" {
-				claudeToolChoice.Type = toolChoiceType
+			// OpenAI tool_choice 到 Claude tool_choice 的映射：
+			// "auto" -> "auto" (模型自行决定)
+			// "required" -> "any" (必须调用工具)
+			// "any" -> "any" (兼容已使用 Claude 格式的请求)
+			// "none" -> 不设置 tool_choice (当前保持 auto，Claude 会自行判断)
+			switch toolChoiceType {
+			case "required", "any":
+				claudeToolChoice.Type = "any"
+			case "auto":
+				claudeToolChoice.Type = "auto"
+			case "none":
+				// 对于 none，不设置 tool_choice，让 Claude 自行判断
+				// 但由于有 tools，仍然可能调用，如果完全不想调用需要不传 tools
+				claudeToolChoice = nil
 			}
 		}
-		claudeRequest.ToolChoice = claudeToolChoice
+		if claudeToolChoice != nil {
+			claudeRequest.ToolChoice = claudeToolChoice
+		}
 	}
 	if claudeRequest.MaxTokens == 0 {
 		claudeRequest.MaxTokens = 4096
