@@ -22,6 +22,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
+	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -462,6 +463,14 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		TotalTokens:      claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens,
 	}
 
+	if claudeResponse.Usage != nil {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
+			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
+		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
+	} else {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
+	}
+
 	// 直接返回 Claude 原生格式响应
 	c.Header("Content-Type", "application/json")
 	if _, writeErr := c.Writer.Write(awsResp.Body); writeErr != nil {
@@ -526,6 +535,10 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				// 安全地获取 usage 信息，避免 nil 指针
 				if claudeResp.Type == "message_start" && claudeResp.Message != nil && claudeResp.Message.Usage != nil {
 					usage.PromptTokens = claudeResp.Message.Usage.InputTokens
+					// 判断是否创建或读取了缓存，并记录到 redis 中
+					logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeStreamHandler 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d",
+						claudeResp.Message.Id, usage.TotalTokens))
+					cache.HandleClaudeCache(c, claudeResp.Message.Id, claudeResp.Message.Usage)
 				}
 				if claudeResp.Type == "message_delta" && claudeResp.Usage != nil {
 					usage.CompletionTokens = claudeResp.Usage.OutputTokens

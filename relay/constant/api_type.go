@@ -18,6 +18,7 @@ const (
 	APITypeMinimax
 	APITypeXAI
 	APITypeVertexAI
+	APITypeFlux
 	APITypeDummy // this one is only for count, do not add any channel after this
 )
 
@@ -48,6 +49,8 @@ func ChannelType2APIType(channelType int) int {
 		apiType = APITypeXAI
 	case common.ChannelTypeVertexAI:
 		apiType = APITypeVertexAI
+	case common.ChannelTypeFlux:
+		apiType = APITypeFlux
 	}
 	return apiType
 }

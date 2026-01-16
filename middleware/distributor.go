@@ -88,7 +88,9 @@ func Distribute() func(c *gin.Context) {
 					abortWithMessage(c, http.StatusBadRequest, "Model name is required")
 					return
 				}
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0)
+				// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
+				responseID := c.GetHeader("X-Response-ID")
+				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
 				if err != nil {
 					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 					if channel != nil {

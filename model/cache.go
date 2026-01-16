@@ -248,7 +248,7 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, excludeChannelIds ...[]int) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -261,7 +261,62 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
 		excludeIds = excludeChannelIds[0]
 	}
+	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
+	if skipPriorityLevels == 0 && responseID != "" {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 尝试从Redis获取缓存的Channel - ResponseID: %s", responseID))
+		// 从 Redis 中获取缓存的 channel ID
+		cachedChannelID, err := GetClaudeCacheIdFromRedis(responseID)
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis查询结果 - ResponseID: %s, CachedChannelID: %s, Error: %v",
+			responseID, cachedChannelID, err))
+		if err == nil && cachedChannelID != "" {
+			// 将 channel ID 字符串转换为整数
+			channelID, parseErr := strconv.Atoi(cachedChannelID)
+			if parseErr == nil {
+				// 尝试获取该 channel
+				channel, getErr := CacheGetChannel(channelID)
+				if getErr == nil && channel != nil {
+					// 验证该 channel 是否满足条件（group、model、状态）
+					if channel.Status == common.ChannelStatusEnabled {
+						// 检查 group 是否匹配
+						channelGroups := strings.Split(channel.Group, ",")
+						groupMatched := false
+						for _, cg := range channelGroups {
+							if strings.TrimSpace(cg) == group {
+								groupMatched = true
+								break
+							}
+						}
 
+						// 检查 model 是否匹配
+						channelModels := strings.Split(channel.Models, ",")
+						modelMatched := false
+						for _, cm := range channelModels {
+							if strings.TrimSpace(cm) == model {
+								modelMatched = true
+								break
+							}
+						}
+
+						// 如果都匹配，直接返回该 channel
+						if groupMatched && modelMatched {
+							logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d for responseID: %s, group: %s, model: %s",
+								channelID, responseID, group, model))
+							return channel, nil
+						} else {
+							logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
+								channelID, groupMatched, modelMatched))
+						}
+					} else {
+						logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
+							channelID, channel.Status))
+					}
+				} else {
+					logger.SysLog(fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
+						channelID, getErr))
+				}
+			}
+		}
+	}
 	// 构建基础查询条件
 	baseQuery := DB.Table("abilities").
 		Joins("JOIN channels ON abilities.channel_id = channels.id").
@@ -396,4 +451,59 @@ func CacheGetChannel(id int) (*Channel, error) {
 		return nil, fmt.Errorf("当前渠道# %d，已不存在", id)
 	}
 	return c, nil
+}
+
+// SetClaudeCacheIdToRedis 将 Claude 缓存信息存储到 Redis
+// id: Claude 响应 ID
+// channel: 渠道 ID
+// expire: 过期时间（分钟）
+func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
+	if !common.RedisEnabled {
+		return errors.New("redis disabled")
+	}
+	if channel == "" {
+		return errors.New("empty channel")
+	}
+	if id == "" {
+		return errors.New("empty id")
+	}
+	if expire <= 0 {
+		return errors.New("invalid expire time")
+	}
+
+	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
+	cacheLength := fmt.Sprintf(common.CacheClaudeLength, id)
+	expireDuration := time.Duration(expire) * time.Minute
+
+	// 原子性设置两个 key，使用 Pipeline 提高性能并保证一致性
+	pipe := common.RDB.Pipeline()
+	pipe.Set(context.Background(), cacheKey, channel, expireDuration)
+	pipe.Set(context.Background(), cacheLength, expire, expireDuration)
+
+	_, err := pipe.Exec(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to set claude cache to redis: %w", err)
+	}
+
+	return nil
+}
+
+func GetClaudeCacheIdFromRedis(id string) (string, error) {
+	if !common.RedisEnabled {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis未启用 - ResponseID: %s", id))
+		return "", errors.New("redis disabled")
+	}
+	if id == "" {
+		logger.SysLog("[Claude Cache Debug] ResponseID为空")
+		return "", errors.New("empty id")
+	}
+	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
+	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 从Redis读取 - Key: %s, ResponseID: %s", cacheKey, id))
+	channel, err := common.RedisGet(cacheKey)
+	if err != nil {
+		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取失败 - Key: %s, Error: %v", cacheKey, err))
+		return "", err
+	}
+	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取成功 - Key: %s, ChannelID: %s", cacheKey, channel))
+	return channel, nil
 }
