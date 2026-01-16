@@ -173,50 +173,6 @@ func SetRelayRouter(router *gin.Engine) {
 	modeMjRouter := router.Group("/mj-:mode/mj", mjModeMiddleware())
 	setupMJRoutes(modeMjRouter)
 
-	// 现有的路由组
-	relaySdRouter := router.Group("/v2beta")
-	relaySdRouter.Use(middleware.TokenAuth(), middleware.Distribute())
-	{
-		relaySdRouter.POST("/stable-image/generate/core", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/generate/ultra", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/upscale/conservative", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
-		relaySdRouter.GET("/stable-image/upscale/creative/result/:generation_id", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/erase", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
-		relaySdRouter.POST("/stable-image/control/structure", controller.RelaySd)
-		relaySdRouter.POST("/image-to-video", controller.RelaySd)
-		relaySdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
-		// relaySdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
-	}
-
-	// 新增的路由组，支持 /sd 开头的所有相同路径
-	sdRouter := router.Group("/sd/v2beta")
-	sdRouter.Use(middleware.TokenAuth(), middleware.Distribute())
-	{
-		sdRouter.POST("/stable-image/generate/core", controller.RelaySd)
-		sdRouter.POST("/stable-image/generate/sd3", controller.RelaySd)
-		sdRouter.POST("/stable-image/generate/ultra", controller.RelaySd)
-		sdRouter.POST("/stable-image/upscale/conservative", controller.RelaySd)
-		sdRouter.POST("/stable-image/upscale/creative", controller.RelaySd)
-		sdRouter.GET("/stable-image/upscale/creative/result/:generation_id", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/erase", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/inpaint", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/outpaint", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/search-and-replace", controller.RelaySd)
-		sdRouter.POST("/stable-image/edit/remove-background", controller.RelaySd)
-		sdRouter.POST("/stable-image/control/sketch", controller.RelaySd)
-		sdRouter.POST("/stable-image/control/structure", controller.RelaySd)
-		sdRouter.POST("/image-to-video", controller.RelaySd)
-		sdRouter.GET("/image-to-video/result/:generation_id", controller.RelaySd)
-		// sdRouter.POST("/3d/stable-fast-3d", controller.RelaySd)
-	}
-
 	relayFluxRouter := router.Group("/flux")
 	{
 		relayFluxRouter.GET("/:id", controller.RelayReplicateImage)
@@ -254,6 +210,8 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/omni-video", controller.RelayKlingVideo)
 		klingRouter.POST("/image2video", controller.RelayKlingVideo)
 		klingRouter.POST("/multi-image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/identify-face", controller.DoIdentifyFace)
+		klingRouter.POST("/advanced-lip-sync", controller.DoAdvancedLipSync)
 	}
 
 	// Kling 查询路由（不需要 Distribute 中间件）

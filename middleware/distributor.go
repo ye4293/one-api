@@ -12,7 +12,6 @@ import (
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
-	"github.com/songquanpeng/one-api/relay/channel/stability"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 )
 
@@ -142,16 +141,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 					shouldSelectChannel = false
 				}
 			}
-		}
-		c.Set("relay_mode", relayMode)
-
-	} else if strings.HasPrefix(path, "/v2beta") || strings.HasPrefix(path, "/sd") {
-		relayMode := relayconstant.Path2RelayModeSd(path)
-		if relayMode == relayconstant.RelayModeUpscaleCreativeResult || relayMode == relayconstant.RelayModeVideoResult {
-			shouldSelectChannel = false
-		}
-		if sdModel, err := stability.GetSdRequestModel(relayMode); err == nil {
-			modelRequest.Model = sdModel
 		}
 		c.Set("relay_mode", relayMode)
 

@@ -2063,7 +2063,7 @@ func handleAliImageRequest(c *gin.Context, ctx context.Context, modelName string
 	baseUrl := meta.BaseURL
 
 	// 构建阿里云万相API URL
-	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/image2image/image-synthesis", baseUrl)
+	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/image-generation/generation", baseUrl)
 
 	// Read the original request body
 	bodyBytes, err := io.ReadAll(c.Request.Body)

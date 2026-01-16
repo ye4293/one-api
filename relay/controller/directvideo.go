@@ -564,6 +564,9 @@ func updateTaskStatus(taskId string, responseData map[string]interface{}, isImag
 		// 检查是否需要退款：只有当状态从非失败变为失败时才退款
 		needRefund := (oldVideoStatus != "failed" && oldVideoStatus != "cancelled") && (dbStatus == "failed" || dbStatus == "cancelled")
 
+		// 计算总耗时（秒）
+		task.TotalDuration = time.Now().Unix() - task.CreatedAt
+
 		// 保存到数据库
 		err = task.Update()
 		if err != nil {

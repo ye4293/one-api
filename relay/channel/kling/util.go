@@ -24,6 +24,10 @@ func DetermineRequestType(path string) string {
 		return RequestTypeImage2Video
 	} else if strings.Contains(path, "/multi-image2video") {
 		return RequestTypeMultiImage2Video
+	} else if strings.Contains(path, "/identify-face") {
+		return RequestTypeIdentifyFace
+	} else if strings.Contains(path, "/advanced-lip-sync") {
+		return RequestTypeAdvancedLipSync
 	}
 	return ""
 }
@@ -39,9 +43,15 @@ func GetPromptFromRequest(params map[string]interface{}) string {
 // GetDurationFromRequest 从请求参数中提取视频时长
 func GetDurationFromRequest(params map[string]interface{}) int {
 	if duration, ok := params["duration"].(float64); ok {
+		if duration < 5 {
+			return 5
+		}
 		return int(duration)
 	}
 	if duration, ok := params["duration"].(int); ok {
+		if duration < 5 {
+			return 5
+		}
 		return duration
 	}
 	return 5 // 默认5秒
@@ -75,4 +85,3 @@ func GetModeFromRequest(params map[string]interface{}) string {
 	}
 	return "std" // 默认标准模式
 }
-

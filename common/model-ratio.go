@@ -198,12 +198,27 @@ var ImageOutputRatio = map[string]float64{
 	// 支持图片输出的模型配置
 }
 
+// 缓存token倍率：缓存读取token相对于文本输入token的价格倍率
+// Claude 缓存读取价格是输入价格的 0.1 倍 (90% 折扣)
+// 缓存写入价格是输入价格的 1.25 倍
+var CacheRatio = map[string]float64{
+	// Claude 模型的缓存读取倍率
+	"claude-3-5-sonnet-20240620": 0.1,
+	"claude-3-5-sonnet-20241022": 0.1,
+	"claude-3-5-haiku-20241022":  0.1,
+	"claude-3-opus-20240229":     0.1,
+	"claude-3-sonnet-20240229":   0.1,
+	"claude-3-haiku-20240307":    0.1,
+	"claude-sonnet-4-20250514":   0.1,
+}
+
 var DefaultModelRatio map[string]float64
 var DefaultCompletionRatio map[string]float64
 var DefaultAudioInputRatio map[string]float64
 var DefaultAudioOutputRatio map[string]float64
 var DefaultImageInputRatio map[string]float64
 var DefaultImageOutputRatio map[string]float64
+var DefaultCacheRatio map[string]float64
 var ModelPrice map[string]float64
 
 func init() {
@@ -230,6 +245,10 @@ func init() {
 	DefaultImageOutputRatio = make(map[string]float64)
 	for k, v := range ImageOutputRatio {
 		DefaultImageOutputRatio[k] = v
+	}
+	DefaultCacheRatio = make(map[string]float64)
+	for k, v := range CacheRatio {
+		DefaultCacheRatio[k] = v
 	}
 	ModelPrice = make(map[string]float64)
 	for k, v := range DefaultModelPrice {
@@ -470,6 +489,52 @@ func AddNewMissingImageOutputRatio(oldRatio string) string {
 		return oldRatio
 	}
 	return string(jsonBytes)
+}
+
+func CacheRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(CacheRatio)
+	if err != nil {
+		logger.SysError("error marshalling cache ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateCacheRatioByJSONString(jsonStr string) error {
+	CacheRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &CacheRatio)
+}
+
+func AddNewMissingCacheRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old cache ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultCacheRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new cache ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+// GetCacheRatio 获取缓存token倍率
+// 如果找到了缓存倍率就直接使用，如果没找到就默认使用文字补全的倍率（CompletionRatio）
+func GetCacheRatio(name string) float64 {
+	if ratio, ok := CacheRatio[name]; ok {
+		return ratio
+	}
+	if ratio, ok := DefaultCacheRatio[name]; ok {
+		return ratio
+	}
+	// 没有配置缓存倍率的模型，默认使用补全倍率
+	return GetCompletionRatio(name)
 }
 
 func GetCompletionRatio(name string) float64 {

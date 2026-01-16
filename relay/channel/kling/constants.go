@@ -13,4 +13,6 @@ const (
 	RequestTypeOmniVideo        = "omni-video"
 	RequestTypeImage2Video      = "image2video"
 	RequestTypeMultiImage2Video = "multi-image2video"
+	RequestTypeIdentifyFace     = "identify-face"
+	RequestTypeAdvancedLipSync  = "advanced-lip-sync"
 )

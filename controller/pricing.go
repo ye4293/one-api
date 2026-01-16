@@ -178,6 +178,7 @@ func UpdateModelRatio(c *gin.Context) {
 		ImageOutputRatio *float64 `json:"image_output_ratio"`
 		AudioInputRatio  *float64 `json:"audio_input_ratio"`
 		AudioOutputRatio *float64 `json:"audio_output_ratio"`
+		CacheRatio       *float64 `json:"cache_ratio"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -280,6 +281,19 @@ func UpdateModelRatio(c *gin.Context) {
 		}
 	}
 
+	// 更新缓存倍率
+	if req.CacheRatio != nil {
+		common.CacheRatio[req.ModelName] = *req.CacheRatio
+		err := model.UpdateOption("CacheRatio", common.CacheRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存缓存倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "更新成功",
@@ -298,6 +312,7 @@ func BatchUpdateModelRatio(c *gin.Context) {
 			ImageOutputRatio *float64 `json:"image_output_ratio"`
 			AudioInputRatio  *float64 `json:"audio_input_ratio"`
 			AudioOutputRatio *float64 `json:"audio_output_ratio"`
+			CacheRatio       *float64 `json:"cache_ratio"`
 		} `json:"models"`
 	}
 
@@ -316,6 +331,7 @@ func BatchUpdateModelRatio(c *gin.Context) {
 	imageOutputRatioUpdated := false
 	audioInputRatioUpdated := false
 	audioOutputRatioUpdated := false
+	cacheRatioUpdated := false
 
 	for _, m := range req.Models {
 		if m.ModelRatio != nil {
@@ -345,6 +361,10 @@ func BatchUpdateModelRatio(c *gin.Context) {
 		if m.AudioOutputRatio != nil {
 			common.AudioOutputRatio[m.ModelName] = *m.AudioOutputRatio
 			audioOutputRatioUpdated = true
+		}
+		if m.CacheRatio != nil {
+			common.CacheRatio[m.ModelName] = *m.CacheRatio
+			cacheRatioUpdated = true
 		}
 	}
 
@@ -421,6 +441,17 @@ func BatchUpdateModelRatio(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "保存音频输出倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
+	if cacheRatioUpdated {
+		err := model.UpdateOption("CacheRatio", common.CacheRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存缓存倍率失败: " + err.Error(),
 			})
 			return
 		}
