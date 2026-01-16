@@ -26,40 +26,34 @@ scrape_configs:
           stream: general
           __path__: /var/log/oneapi/oneapi-*.log
     pipeline_stages:
-      # 解析 JSON
+      # 解析 JSON - 提取需要作为标签的字段
       - json:
           expressions:
             ts: ts
             level: level
-            request_id: request_id
             msg: msg
             service: service
             instance: instance
-            # Access log 特有字段
-            status: status
-            latency_ms: latency_ms
-            client_ip: client_ip
             method: method
-            path: path
-      
-      # 将低基数字段提取为 labels（用于快速筛选）
+            status: status
+            path: path       # API路径
+
+      # 提取为索引标签（用于快速筛选和分组）
       - labels:
-          level:
-          service:
-          instance:
-          method:
-          # 可选：如果你的 path 是固定路由模板（低基数），可以启用
-          # path:
-          # status:
+          msg:             # 消息类型（如"HTTP request"）
+          level:           # 日志级别（info/warn/error）
+          status:          # HTTP状态码
+          path:            # API路径（如 /api/status）
       
       # 设置时间戳（使用日志中的 ts 字段）
       - timestamp:
           source: ts
           format: RFC3339Nano
-      
-      # 输出完整 JSON 作为日志内容
-      - output:
-          source: msg
+
+      # 保留原始日志行（完整的 JSON）
+      # 注释掉 output 阶段以保留完整的原始日志
+      # - output:
+      #     source: msg
 
   # 错误日志（ERROR）
   - job_name: oneapi-error
@@ -71,33 +65,31 @@ scrape_configs:
           stream: error
           __path__: /var/log/oneapi/oneapi-error-*.log
     pipeline_stages:
-      # 解析 JSON
+      # 解析 JSON - 提取需要作为标签的字段
       - json:
           expressions:
             ts: ts
             level: level
-            request_id: request_id
             msg: msg
             service: service
             instance: instance
-            status: status
-            latency_ms: latency_ms
-            client_ip: client_ip
             method: method
-            path: path
-      
-      # 将低基数字段提取为 labels
+            status: status
+            path: path       # API路径
+
+      # 提取为索引标签（用于快速筛选和分组）
       - labels:
-          level:
-          service:
-          instance:
-          method:
+          msg:             # 消息类型
+          level:           # 日志级别
+          status:          # HTTP状态码
+          path:            # API路径
       
       # 设置时间戳
       - timestamp:
           source: ts
           format: RFC3339Nano
-      
-      # 输出完整 JSON 作为日志内容
-      - output:
-          source: msg
+
+      # 保留原始日志行（完整的 JSON）
+      # 注释掉 output 阶段以保留完整的原始日志
+      # - output:
+      #     source: msg

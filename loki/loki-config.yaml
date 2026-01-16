@@ -29,7 +29,7 @@ limits_config:
   max_entries_limit_per_query: 5000
   max_streams_per_user: 0
   max_global_streams_per_user: 0
-  retention_period: 336h  # 14 天数据保留
+  retention_period: 168h  # 7 天数据保留（可改为 72h=3天, 24h=1天）
   allow_structured_metadata: false  # 禁用结构化元数据（v12 不支持）
 
 # 存储模式配置
