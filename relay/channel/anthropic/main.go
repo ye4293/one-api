@@ -18,6 +18,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/relay/util"
 )
 
 func stopReasonClaude2OpenAI(reason *string) string {
@@ -287,7 +288,7 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 		FinishReason: stopReasonClaude2OpenAI(claudeResponse.StopReason),
 	}
 	fullTextResponse := openai.TextResponse{
-		Id:      fmt.Sprintf("chatcmpl-%s", claudeResponse.Id),
+		Id:      claudeResponse.Id,
 		Model:   claudeResponse.Model,
 		Object:  "chat.completion",
 		Created: helper.GetTimestamp(),
@@ -296,7 +297,7 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 	return &fullTextResponse
 }
 
-func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, *model.Usage) {
+func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMeta) (*model.ErrorWithStatusCode, *model.Usage) {
 	createdTime := helper.GetTimestamp()
 
 	// 获取请求开始时间用于计算首字延迟
@@ -355,7 +356,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			usage.CompletionTokens += meta.Usage.OutputTokens
 			if len(meta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
 				modelName = meta.Model
-				id = fmt.Sprintf("chatcmpl-%s", meta.Id)
+				id = meta.Id
 				continue
 			} else { // finish_reason case
 				if len(lastToolCallChoice.Delta.ToolCalls) > 0 {
@@ -404,6 +405,31 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 
 	if err := scanner.Err(); err != nil {
 		logger.SysError("error reading stream: " + err.Error())
+	}
+
+	// 如果需要包含 usage 信息，在流结束时发送一个包含 usage 的最终 chunk
+	if relayMeta != nil && relayMeta.ShouldIncludeUsage {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		// 防御性处理：如果 id 或 modelName 为空，使用默认值
+		responseId := id
+		if responseId == "" {
+			responseId = helper.GetUUID()
+		}
+		responseName := modelName
+		if responseName == "" {
+			responseName = relayMeta.ActualModelName
+		}
+		finalResponse := &openai.ChatCompletionsStreamResponse{
+			Id:      responseId,
+			Object:  "chat.completion.chunk",
+			Created: createdTime,
+			Model:   responseName,
+			Choices: []openai.ChatCompletionsStreamResponseChoice{},
+			Usage:   &usage,
+		}
+		if err := render.ObjectData(c, finalResponse); err != nil {
+			logger.SysError("error sending final usage chunk: " + err.Error())
+		}
 	}
 
 	render.Done(c)
