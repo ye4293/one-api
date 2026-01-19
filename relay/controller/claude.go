@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/helper"
@@ -23,14 +24,13 @@ import (
 )
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
-// Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
+// Vertex AI API 要求必须指定 role 字段(值为 "user" 或 "model"),而 Gemini 原生 API 可以省略
 // 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
 
-// RelayClaudeNative 处理 Claude 原生 API 请求
+// RelayClaudeNative 处理 Gemini 原生 API 请求
 func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now()
-	fmt.Println(1111)
 
 	// 获取基本信息
 	tokenId := c.GetInt("token_id")
@@ -96,22 +96,16 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	// AWS adaptor 的 DoRequest 返回 nil, nil，因为 AWS SDK 直接处理请求
 	// 这种情况下应该使用 DoResponse 来处理
 	if resp == nil {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] adaptor.DoRequest返回resp=nil(可能为AWS路径) - IsStream=%v, APIType=%d, RequestID=%s",
-			meta.IsStream, meta.APIType, c.GetString("request_id")))
 		usage, doRespErr := adaptor.DoResponse(c, resp, meta)
 		if doRespErr != nil {
 			return doRespErr
 		}
 		// 从 usage 构建 anthropic.Usage
 		if usage != nil {
-			logger.SysLog(fmt.Sprintf("[Claude Cache Debug] adaptor.DoResponse返回usage - PromptTokens=%d, CompletionTokens=%d",
-				usage.PromptTokens, usage.CompletionTokens))
 			usageMetadata = &anthropic.Usage{
 				InputTokens:  usage.PromptTokens,
 				OutputTokens: usage.CompletionTokens,
 			}
-		} else {
-			logger.SysLog("[Claude Cache Debug] adaptor.DoResponse返回usage=nil")
 		}
 	} else {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
@@ -459,7 +453,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if claudeResponse.Usage != nil {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
-		anthropic.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
+		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
@@ -472,7 +466,6 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 // claude 流式响应格式为 SSE，每行以 "data: " 开头，后跟 JSON 对象
 func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
 	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 开始处理流式响应 - StatusCode: %d", resp.StatusCode))
-	logger.SysLog("开始处理流式响应")
 	defer util.CloseResponseBodyGracefully(resp)
 
 	// 检查响应状态码 - 如果不是200，读取错误信息并返回
@@ -522,7 +515,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			if lastUsageMetadata != nil {
 				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 					claudeResponse.Message.Id, lastUsageMetadata.InputTokens, lastUsageMetadata.OutputTokens))
-				anthropic.HandleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
+				cache.HandleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
 			} else {
 				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理(流式) - ResponseID: %s", claudeResponse.Message.Id))
 			}
@@ -531,10 +524,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			// 首字时间由 StreamScannerHandler 统一设置，这里不需要处理
 		} else if claudeResponse.Type == "message_delta" {
 			// 最终的usage获取
-			logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 收到message_delta - Usage是否为空: %v", claudeResponse.Usage == nil))
 			if claudeResponse.Usage != nil {
-				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] message_delta Usage详情 - InputTokens: %d, OutputTokens: %d, CacheCreationInputTokens: %d, CacheReadInputTokens: %d",
-					claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens, claudeResponse.Usage.CacheCreationInputTokens, claudeResponse.Usage.CacheReadInputTokens))
 				if claudeResponse.Usage.InputTokens > 0 {
 					// 不叠加，只取最新的
 					lastUsageMetadata.InputTokens = claudeResponse.Usage.InputTokens
@@ -578,14 +568,6 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 
 	if openaiErr != nil {
 		return nil, openaiErr
-	}
-
-	// 流式响应处理完成，输出最终的 Usage 统计
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 流式响应处理完成 - 最终Usage: InputTokens=%d, OutputTokens=%d, CacheCreationInputTokens=%d, CacheReadInputTokens=%d",
-		lastUsageMetadata.InputTokens, lastUsageMetadata.OutputTokens, lastUsageMetadata.CacheCreationInputTokens, lastUsageMetadata.CacheReadInputTokens))
-	if lastUsageMetadata.CacheCreation != nil {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 流式响应缓存创建详情 - Ephemeral5m=%d, Ephemeral1h=%d",
-			lastUsageMetadata.CacheCreation.Ephemeral5mInputTokens, lastUsageMetadata.CacheCreation.Ephemeral1hInputTokens))
 	}
 
 	return lastUsageMetadata, nil

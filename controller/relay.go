@@ -144,7 +144,7 @@ func Relay(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-
+	
 	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
 	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
 		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
@@ -2655,7 +2655,12 @@ func RelayResponse(c *gin.Context) {
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
 
-	lastFailedChannelId := channelId
+	// 记录所有已失败的渠道ID，用于重试时排除
+	failedChannelIds := []int{channelId}
+
+	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存定向）
+	claudeResponseID := c.GetHeader("X-Response-ID")
+
 	group := c.GetString("group")
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
@@ -2663,16 +2668,11 @@ func RelayResponse(c *gin.Context) {
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
-		skipPriorityLevels := retryTimes - i
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels, requestID)
+		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
-		}
-
-		// 跳过上次失败的渠道
-		if channel.Id == lastFailedChannelId {
-			continue
 		}
 
 		// 获取重试原因 - 直接使用原始错误消息
@@ -2719,9 +2719,11 @@ func RelayResponse(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
 		channelName := c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
+
+		// 记录失败的渠道ID，下次重试时排除
+		failedChannelIds = append(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)

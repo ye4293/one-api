@@ -22,6 +22,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
+	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -354,9 +355,37 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 	var id string
 	var lastToolCallChoice openai.ChatCompletionsStreamResponseChoice
 
+	var modelName string
 	c.Stream(func(w io.Writer) bool {
 		event, ok := <-stream.Events()
 		if !ok {
+			// 如果需要包含 usage 信息，在流结束时发送一个包含 usage 的最终 chunk
+			if meta != nil && meta.ShouldIncludeUsage {
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				// 防御性处理：如果 id 或 modelName 为空，使用默认值
+				responseId := id
+				if responseId == "" {
+					responseId = helper.GetUUID()
+				}
+				responseName := modelName
+				if responseName == "" {
+					responseName = meta.ActualModelName
+				}
+				finalResponse := &openai.ChatCompletionsStreamResponse{
+					Id:      responseId,
+					Object:  "chat.completion.chunk",
+					Created: createdTime,
+					Model:   responseName,
+					Choices: []openai.ChatCompletionsStreamResponseChoice{},
+					Usage:   &usage,
+				}
+				jsonStr, marshalErr := json.Marshal(finalResponse)
+				if marshalErr != nil {
+					logger.SysError("error marshalling final usage chunk: " + marshalErr.Error())
+				} else {
+					c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
+				}
+			}
 			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
 			return false
 		}
@@ -370,12 +399,13 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 				return false
 			}
 
-			response, meta := anthropic.StreamResponseClaude2OpenAI(claudeResp)
-			if meta != nil {
-				usage.PromptTokens += meta.Usage.InputTokens
-				usage.CompletionTokens += meta.Usage.OutputTokens
-				if len(meta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
-					id = fmt.Sprintf("chatcmpl-%s", meta.Id)
+			response, respMeta := anthropic.StreamResponseClaude2OpenAI(claudeResp)
+			if respMeta != nil {
+				usage.PromptTokens += respMeta.Usage.InputTokens
+				usage.CompletionTokens += respMeta.Usage.OutputTokens
+				if len(respMeta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
+					id = respMeta.Id
+					modelName = respMeta.Model
 					return true
 				} else { // finish_reason case
 					if len(lastToolCallChoice.Delta.ToolCalls) > 0 {
@@ -465,7 +495,7 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 	if claudeResponse.Usage != nil {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
-		anthropic.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
+		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
@@ -537,7 +567,7 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 					// 判断是否创建或读取了缓存，并记录到 redis 中
 					logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeStreamHandler 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d",
 						claudeResp.Message.Id, usage.TotalTokens))
-					anthropic.HandleClaudeCache(c, claudeResp.Message.Id, claudeResp.Message.Usage)
+					cache.HandleClaudeCache(c, claudeResp.Message.Id, claudeResp.Message.Usage)
 				}
 				if claudeResp.Type == "message_delta" && claudeResp.Usage != nil {
 					usage.CompletionTokens = claudeResp.Usage.OutputTokens
