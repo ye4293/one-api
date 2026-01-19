@@ -20,6 +20,14 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
+// isImageRequestType 判断是否为图片类请求
+func isImageRequestType(requestType string) bool {
+	return requestType == kling.RequestTypeImageGeneration ||
+		requestType == kling.RequestTypeOmniImage ||
+		requestType == kling.RequestTypeMultiImage2Image ||
+		requestType == kling.RequestTypeImageExpand
+}
+
 // RelayKlingVideo 处理 Kling 视频生成请求
 func RelayKlingVideo(c *gin.Context) {
 	meta := util.GetRelayMeta(c)
@@ -86,25 +94,54 @@ func RelayKlingVideo(c *gin.Context) {
 		user = &dbmodel.User{Username: ""}
 	}
 
-	// 先创建 Video 记录以获取 ID（用于 external_task_id）
-	video := &dbmodel.Video{
-		TaskId:    "", // 暂时为空，等 Kling 返回后更新
-		UserId:    meta.UserId,
-		Username:  user.Username,
-		ChannelId: meta.ChannelId,
-		Model:     model,
-		Provider:  "kling",
-		Type:      requestType,
-		Status:    "",
-		Quota:     quota,
-		Mode:      mode,
-		Prompt:    kling.GetPromptFromRequest(requestParams),
-		Duration:  duration,
-	}
-	if err := video.Insert(); err != nil {
-		errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
-		c.JSON(errResp.StatusCode, errResp.Error)
-		return
+	// 根据请求类型创建不同的任务记录
+	var externalTaskID int64
+	var taskRecord interface{} // 用于后续更新
+
+	if isImageRequestType(requestType) {
+		// 图片类：创建 Image 记录
+		image := &dbmodel.Image{
+			TaskId:    "", // 暂时为空，等 Kling 返回后更新
+			UserId:    meta.UserId,
+			Username:  user.Username,
+			ChannelId: meta.ChannelId,
+			Model:     model,
+			Provider:  "kling",
+			Status:    "",
+			Quota:     quota,
+			Mode:      mode,
+			Detail:    kling.GetPromptFromRequest(requestParams),
+		}
+		if err := image.Insert(); err != nil {
+			errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
+			c.JSON(errResp.StatusCode, errResp.Error)
+			return
+		}
+		externalTaskID = image.Id
+		taskRecord = image
+	} else {
+		// 视频/音频类：创建 Video 记录
+		video := &dbmodel.Video{
+			TaskId:    "", // 暂时为空，等 Kling 返回后更新
+			UserId:    meta.UserId,
+			Username:  user.Username,
+			ChannelId: meta.ChannelId,
+			Model:     model,
+			Provider:  "kling",
+			Type:      requestType,
+			Status:    "",
+			Quota:     quota,
+			Mode:      mode,
+			Prompt:    kling.GetPromptFromRequest(requestParams),
+			Duration:  duration,
+		}
+		if err := video.Insert(); err != nil {
+			errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
+			c.JSON(errResp.StatusCode, errResp.Error)
+			return
+		}
+		externalTaskID = video.Id
+		taskRecord = video
 	}
 
 	// 构建回调URL
@@ -120,12 +157,23 @@ func RelayKlingVideo(c *gin.Context) {
 	adaptor := &kling.Adaptor{RequestType: requestType}
 	adaptor.Init(meta)
 
-	// 转换请求并注入回调URL和 external_task_id (使用 video.Id)
-	convertedBody, err := adaptor.ConvertRequest(c, meta, requestParams, callbackURL, video.Id)
+	// 转换请求并注入回调URL和 external_task_id
+	convertedBody, err := adaptor.ConvertRequest(c, meta, requestParams, callbackURL, externalTaskID)
 	if err != nil {
-		video.Status = kling.TaskStatusFailed
-		video.FailReason = err.Error()
-		video.Update()
+		// 更新失败状态
+		if isImageRequestType(requestType) {
+			if img, ok := taskRecord.(*dbmodel.Image); ok {
+				img.Status = kling.TaskStatusFailed
+				img.FailReason = err.Error()
+				img.Update()
+			}
+		} else {
+			if vid, ok := taskRecord.(*dbmodel.Video); ok {
+				vid.Status = kling.TaskStatusFailed
+				vid.FailReason = err.Error()
+				vid.Update()
+			}
+		}
 		errResp := openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -133,9 +181,20 @@ func RelayKlingVideo(c *gin.Context) {
 
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
 	if err != nil {
-		video.Status = kling.TaskStatusFailed
-		video.FailReason = err.Error()
-		video.Update()
+		// 更新失败状态
+		if isImageRequestType(requestType) {
+			if img, ok := taskRecord.(*dbmodel.Image); ok {
+				img.Status = kling.TaskStatusFailed
+				img.FailReason = err.Error()
+				img.Update()
+			}
+		} else {
+			if vid, ok := taskRecord.(*dbmodel.Video); ok {
+				vid.Status = kling.TaskStatusFailed
+				vid.FailReason = err.Error()
+				vid.Update()
+			}
+		}
 		errResp := openai.ErrorWrapper(err, "request_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -143,25 +202,49 @@ func RelayKlingVideo(c *gin.Context) {
 
 	klingResp, errWithCode := adaptor.DoResponse(c, resp, meta)
 	if errWithCode != nil {
-		video.Status = kling.TaskStatusFailed
-		video.FailReason = errWithCode.Error.Message
-		video.Update()
+		// 更新失败状态
+		if isImageRequestType(requestType) {
+			if img, ok := taskRecord.(*dbmodel.Image); ok {
+				img.Status = kling.TaskStatusFailed
+				img.FailReason = errWithCode.Error.Message
+				img.Update()
+			}
+		} else {
+			if vid, ok := taskRecord.(*dbmodel.Video); ok {
+				vid.Status = kling.TaskStatusFailed
+				vid.FailReason = errWithCode.Error.Message
+				vid.Update()
+			}
+		}
 		c.JSON(errWithCode.StatusCode, errWithCode.Error)
 		return
 	}
 
-	// 更新 Video 记录（使用 Kling 返回的 task_id）
-	video.TaskId = klingResp.Data.TaskID
-	video.Status = klingResp.Data.TaskStatus
-	//video.CreatedAt = klingResp.Data.CreatedAt
-	//video.UpdatedAt = klingResp.Data.UpdatedAt
-	video.VideoId = klingResp.Data.TaskID
-	if err := video.Update(); err != nil {
-		logger.SysError(fmt.Sprintf("更新视频任务失败: id=%d, task_id=%s, error=%v", video.Id, video.TaskId, err))
+	// 更新任务记录（使用 Kling 返回的 task_id）
+	if isImageRequestType(requestType) {
+		if img, ok := taskRecord.(*dbmodel.Image); ok {
+			img.TaskId = klingResp.Data.TaskID
+			img.Status = klingResp.Data.TaskStatus
+			img.ImageId = klingResp.Data.TaskID
+			if err := img.Update(); err != nil {
+				logger.SysError(fmt.Sprintf("更新图片任务失败: id=%d, task_id=%s, error=%v", img.Id, img.TaskId, err))
+			}
+			logger.SysLog(fmt.Sprintf("Kling image task submitted: id=%d, task_id=%s, external_task_id=%d, user_id=%d, channel_id=%d, quota=%d",
+				img.Id, klingResp.Data.TaskID, externalTaskID, meta.UserId, meta.ChannelId, quota))
+		}
+	} else {
+		if vid, ok := taskRecord.(*dbmodel.Video); ok {
+			vid.TaskId = klingResp.Data.TaskID
+			vid.Status = klingResp.Data.TaskStatus
+			vid.VideoId = klingResp.Data.TaskID
+			if err := vid.Update(); err != nil {
+				logger.SysError(fmt.Sprintf("更新视频任务失败: id=%d, task_id=%s, error=%v", vid.Id, vid.TaskId, err))
+			}
+			logger.SysLog(fmt.Sprintf("video: id=+%v, ", vid))
+			logger.SysLog(fmt.Sprintf("Kling video task submitted: id=%d, task_id=%s, external_task_id=%d, user_id=%d, channel_id=%d, quota=%d",
+				vid.Id, klingResp.Data.TaskID, externalTaskID, meta.UserId, meta.ChannelId, quota))
+		}
 	}
-	logger.SysLog(fmt.Sprintf("video: id=+%v, ", video))
-	logger.SysLog(fmt.Sprintf("Kling video task submitted: id=%d, task_id=%s, external_task_id=%d, user_id=%d, channel_id=%d, quota=%d",
-		video.Id, klingResp.Data.TaskID, video.Id, meta.UserId, meta.ChannelId, quota))
 
 	// 透传 Kling 原始响应
 	c.JSON(http.StatusOK, klingResp)
@@ -198,123 +281,48 @@ func HandleKlingCallback(c *gin.Context) {
 		taskID, externalTaskID, notification.TaskStatus))
 	logger.SysLog(fmt.Sprintf("Kling callback notification: %+v", notification))
 
-	// 查询任务记录（优先使用 external_task_id，其次使用 task_id）
+	// Fallback 查询机制：先查 Video 表，再查 Image 表
 	var video *dbmodel.Video
-	var queryErr error
+	var image *dbmodel.Image
 
+	// 1. 尝试从 Video 表查询
 	if externalTaskID != "" {
-		// 尝试通过 external_task_id (即 video.id) 查询
 		var internalID int64
 		if _, parseErr := fmt.Sscanf(externalTaskID, "%d", &internalID); parseErr == nil {
-			video, queryErr = dbmodel.GetVideoTaskByInternalId(internalID)
+			video, _ = dbmodel.GetVideoTaskByInternalId(internalID)
+		}
+	}
+	if video == nil && taskID != "" {
+		video, _ = dbmodel.GetVideoTaskById(taskID)
+	}
+
+	// 2. 如果 Video 表没找到，尝试从 Image 表查询
+	if video == nil {
+		if externalTaskID != "" {
+			var internalID int64
+			if _, parseErr := fmt.Sscanf(externalTaskID, "%d", &internalID); parseErr == nil {
+				// Image 表使用 Id 字段，需要转换查询
+				image, _ = dbmodel.GetImageById(internalID)
+			}
+		}
+		if image == nil && taskID != "" {
+			image, _ = dbmodel.GetImageByTaskId(taskID)
 		}
 	}
 
-	// 如果通过 external_task_id 没找到，尝试通过 task_id 查询
-	if video == nil && taskID != "" {
-		video, queryErr = dbmodel.GetVideoTaskById(taskID)
-	}
-
-	if queryErr != nil || video == nil {
+	// 3. 两个表都没找到，返回错误
+	if video == nil && image == nil {
 		logger.SysError(fmt.Sprintf("Kling callback task not found: task_id=%s, external_task_id=%s", taskID, externalTaskID))
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 		return
 	}
 
-	// 防止重复处理
-	currentStatus := video.Status
-	if currentStatus == kling.TaskStatusSucceed || currentStatus == kling.TaskStatusFailed {
-		logger.SysLog(fmt.Sprintf("Kling callback already processed: task_id=%s, status=%s", taskID, currentStatus))
-		c.JSON(http.StatusOK, gin.H{"message": "already processed"})
-		return
-	}
-
-	// 将回调数据转换成查询数据格式（QueryTaskResponse）
-	queryResponse := kling.QueryTaskResponse{
-		Code:      0,
-		Message:   "success",
-		RequestID: fmt.Sprintf("callback-%s", taskID),
-		Data: kling.TaskData{
-			TaskID:        notification.TaskID,
-			TaskStatus:    notification.TaskStatus,
-			TaskStatusMsg: notification.TaskStatusMsg,
-			TaskInfo:      notification.TaskInfo, // 保存 task_info（包含 parent_video 等信息）
-			CreatedAt:     notification.CreatedAt,
-			UpdatedAt:     notification.UpdatedAt,
-			TaskResult:    notification.TaskResult,
-		},
-	}
-
-	// 将转换后的查询格式保存到 result 字段
-	queryResponseBytes, err := json.Marshal(queryResponse)
-	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling callback marshal query response error: %v", err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
-	}
-	video.Result = string(queryResponseBytes)
-
-	// 处理回调结果
-	if notification.TaskStatus == kling.TaskStatusSucceed {
-		video.Status = kling.TaskStatusSucceed
-
-		// 提取实际视频时长
-		var actualDuration string
-		if len(notification.TaskResult.Videos) > 0 {
-			video.StoreUrl = notification.TaskResult.Videos[0].URL
-			actualDuration = notification.TaskResult.Videos[0].Duration
-			video.Duration = actualDuration
-			video.VideoId = notification.TaskResult.Videos[0].ID
-		}
-
-		// 保存旧的 quota 用于日志
-		oldQuota := video.Quota
-
-		// 根据实际 duration 重新计算费用
-		newQuota := common.CalculateVideoQuota(
-			video.Model,
-			video.Type,
-			video.Mode,
-			actualDuration,
-			video.Resolution,
-		)
-
-		// 更新 quota 字段
-		video.Quota = newQuota
-
-		// 后扣费模式：在成功时根据实际 duration 扣费
-		err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
-		} else {
-			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
-				video.UserId, oldQuota, newQuota, actualDuration, taskID))
-		}
-
-		// 计算总耗时（秒）
-		video.TotalDuration = time.Now().Unix() - video.CreatedAt
-
-		video.Update()
-	} else if notification.TaskStatus == kling.TaskStatusFailed {
-		video.Status = kling.TaskStatusFailed
-		video.FailReason = notification.TaskStatusMsg
-
-		// 计算总耗时（秒）
-		video.TotalDuration = time.Now().Unix() - video.CreatedAt
-
-		video.Update()
-		logger.SysLog(fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
+	// 4. 根据找到的类型，调用相应的处理函数
+	if video != nil {
+		handleVideoCallback(c, video, &notification)
 	} else {
-		// 其他状态（processing等），更新状态但不扣费
-		video.Status = notification.TaskStatus
-
-		// 计算总耗时（秒）
-		video.TotalDuration = time.Now().Unix() - video.CreatedAt
-
-		video.Update()
+		handleImageCallback(c, image, &notification)
 	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "success"})
 }
 
 // updateVideoFromKlingResult 从 Kling 查询结果更新视频记录
@@ -350,4 +358,162 @@ func DoIdentifyFace(c *gin.Context) {
 
 func DoAdvancedLipSync(c *gin.Context) {
 	controller.DoAdvancedLipSync(c)
+}
+
+// handleVideoCallback 处理视频/音频任务的回调
+func handleVideoCallback(c *gin.Context, video *dbmodel.Video, notification *kling.CallbackNotification) {
+	taskID := notification.TaskID
+
+	// 防止重复处理
+	currentStatus := video.Status
+	if currentStatus == kling.TaskStatusSucceed || currentStatus == kling.TaskStatusFailed {
+		logger.SysLog(fmt.Sprintf("Kling callback already processed: task_id=%s, status=%s", taskID, currentStatus))
+		c.JSON(http.StatusOK, gin.H{"message": "already processed"})
+		return
+	}
+
+	// 将回调数据转换成查询数据格式
+	queryResponse := kling.QueryTaskResponse{
+		Code:      0,
+		Message:   "success",
+		RequestID: fmt.Sprintf("callback-%s", taskID),
+		Data: kling.TaskData{
+			TaskID:        notification.TaskID,
+			TaskStatus:    notification.TaskStatus,
+			TaskStatusMsg: notification.TaskStatusMsg,
+			TaskInfo:      notification.TaskInfo,
+			CreatedAt:     notification.CreatedAt,
+			UpdatedAt:     notification.UpdatedAt,
+			TaskResult:    notification.TaskResult,
+		},
+	}
+
+	queryResponseBytes, _ := json.Marshal(queryResponse)
+	video.Result = string(queryResponseBytes)
+
+	// 处理成功状态
+	if notification.TaskStatus == kling.TaskStatusSucceed {
+		video.Status = kling.TaskStatusSucceed
+
+		// 提取实际视频时长
+		var actualDuration string
+		if len(notification.TaskResult.Videos) > 0 {
+			video.StoreUrl = notification.TaskResult.Videos[0].URL
+			actualDuration = notification.TaskResult.Videos[0].Duration
+			video.Duration = actualDuration
+			video.VideoId = notification.TaskResult.Videos[0].ID
+		}
+
+		// 保存旧的 quota 用于日志
+		oldQuota := video.Quota
+
+		// 根据实际 duration 重新计算费用
+		newQuota := common.CalculateVideoQuota(
+			video.Model,
+			video.Type,
+			video.Mode,
+			actualDuration,
+			video.Resolution,
+		)
+		video.Quota = newQuota
+
+		// 后扣费模式：成功时根据实际 duration 扣费
+		err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
+		} else {
+			logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
+				video.UserId, oldQuota, newQuota, actualDuration, taskID))
+		}
+
+		video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		video.Update()
+
+	} else if notification.TaskStatus == kling.TaskStatusFailed {
+		// 处理失败状态（不扣费）
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = notification.TaskStatusMsg
+		video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		video.Update()
+		logger.SysLog(fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
+
+	} else {
+		// 其他状态（processing等），更新状态但不扣费
+		video.Status = notification.TaskStatus
+		video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		video.Update()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "success"})
+}
+
+// handleImageCallback 处理图片任务的回调
+func handleImageCallback(c *gin.Context, image *dbmodel.Image, notification *kling.CallbackNotification) {
+	taskID := notification.TaskID
+
+	// 防止重复处理
+	currentStatus := image.Status
+	if currentStatus == kling.TaskStatusSucceed || currentStatus == kling.TaskStatusFailed {
+		logger.SysLog(fmt.Sprintf("Kling image callback already processed: task_id=%s, status=%s", taskID, currentStatus))
+		c.JSON(http.StatusOK, gin.H{"message": "already processed"})
+		return
+	}
+
+	// 将回调数据转换成查询数据格式
+	queryResponse := kling.QueryTaskResponse{
+		Code:      0,
+		Message:   "success",
+		RequestID: fmt.Sprintf("callback-%s", taskID),
+		Data: kling.TaskData{
+			TaskID:        notification.TaskID,
+			TaskStatus:    notification.TaskStatus,
+			TaskStatusMsg: notification.TaskStatusMsg,
+			TaskInfo:      notification.TaskInfo,
+			CreatedAt:     notification.CreatedAt,
+			UpdatedAt:     notification.UpdatedAt,
+			TaskResult:    notification.TaskResult,
+		},
+	}
+
+	queryResponseBytes, _ := json.Marshal(queryResponse)
+	image.Result = string(queryResponseBytes)
+
+	// 处理成功状态
+	if notification.TaskStatus == kling.TaskStatusSucceed {
+		image.Status = kling.TaskStatusSucceed
+
+		// 提取图片 URL（可能在 Videos 数组中，也可能在其他字段）
+		if len(notification.TaskResult.Videos) > 0 {
+			image.StoreUrl = notification.TaskResult.Videos[0].URL
+			image.ImageId = notification.TaskResult.Videos[0].ID
+		}
+
+		// 后扣费模式：成功时扣费
+		err := dbmodel.DecreaseUserQuota(image.UserId, image.Quota)
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, image.Quota, err))
+		} else {
+			logger.SysLog(fmt.Sprintf("Kling image callback billing success: user_id=%d, quota=%d, task_id=%s",
+				image.UserId, image.Quota, taskID))
+		}
+
+		image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
+		image.Update()
+
+	} else if notification.TaskStatus == kling.TaskStatusFailed {
+		// 处理失败状态（不扣费）
+		image.Status = kling.TaskStatusFailed
+		image.FailReason = notification.TaskStatusMsg
+		image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
+		image.Update()
+		logger.SysLog(fmt.Sprintf("Kling image callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
+
+	} else {
+		// 其他状态（processing等），更新状态但不扣费
+		image.Status = notification.TaskStatus
+		image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
+		image.Update()
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "success"})
 }

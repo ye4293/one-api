@@ -29,6 +29,42 @@ func DetermineRequestType(path string) string {
 	} else if strings.Contains(path, "/advanced-lip-sync") {
 		return RequestTypeAdvancedLipSync
 	}
+
+	// 视频类（新增6个）
+	if strings.Contains(path, "/motion-control") {
+		return RequestTypeMotionControl
+	} else if strings.Contains(path, "/multi-elements") {
+		return RequestTypeMultiElements
+	} else if strings.Contains(path, "/video-extend") {
+		return RequestTypeVideoExtend
+	} else if strings.Contains(path, "/avatar/image2video") {
+		return RequestTypeAvatarI2V
+	} else if strings.Contains(path, "/effects") {
+		return RequestTypeVideoEffects
+	} else if strings.Contains(path, "/image-recognize") {
+		return RequestTypeImageRecognize
+	}
+
+	// 音频类（新增3个）
+	if strings.Contains(path, "/text-to-audio") {
+		return RequestTypeTextToAudio
+	} else if strings.Contains(path, "/video-to-audio") {
+		return RequestTypeVideoToAudio
+	} else if strings.Contains(path, "/tts") {
+		return RequestTypeTTS
+	}
+
+	// 图片类（新增4个）
+	if strings.Contains(path, "/generations") {
+		return RequestTypeImageGeneration
+	} else if strings.Contains(path, "/omni-image") {
+		return RequestTypeOmniImage
+	} else if strings.Contains(path, "/multi-image2image") {
+		return RequestTypeMultiImage2Image
+	} else if strings.Contains(path, "/editing/expand") {
+		return RequestTypeImageExpand
+	}
+
 	return ""
 }
 
