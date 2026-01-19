@@ -129,7 +129,7 @@ func GetFlux(c *gin.Context) {
 		logger.Infof(c, "从本地数据库返回 Flux 任务: task_id=%s, status=%s", taskID, image.Status)
 
 		// 只有状态为成功时才返回完整的 result 数据
-		if image.Status == "Ready" && image.Result != "" {
+		if image.Status == flux.TaskStatusSucceed && image.Result != "" {
 			// 直接返回存储的完整 API 响应 JSON
 			c.Data(http.StatusOK, "application/json", []byte(image.Result))
 			return
