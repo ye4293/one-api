@@ -224,12 +224,48 @@ func SetRelayRouter(router *gin.Engine) {
 	klingRouter := router.Group("/kling/v1/videos")
 	klingRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
+		// 现有视频接口
 		klingRouter.POST("/text2video", controller.RelayKlingVideo)
 		klingRouter.POST("/omni-video", controller.RelayKlingVideo)
 		klingRouter.POST("/image2video", controller.RelayKlingVideo)
 		klingRouter.POST("/multi-image2video", controller.RelayKlingVideo)
 		klingRouter.POST("/identify-face", controller.DoIdentifyFace)
 		klingRouter.POST("/advanced-lip-sync", controller.DoAdvancedLipSync)
+
+		// 新增视频类接口（6个）
+		klingRouter.POST("/motion-control", controller.RelayKlingVideo)
+		klingRouter.POST("/multi-elements/init-selection", controller.RelayKlingVideo)
+		klingRouter.POST("/video-extend", controller.RelayKlingVideo)
+		klingRouter.POST("/avatar/image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/effects", controller.RelayKlingVideo)
+		klingRouter.POST("/image-recognize", controller.RelayKlingVideo)
+	}
+
+	// 新增音频类接口（3个）
+	klingAudioRouter := router.Group("/kling/v1/audio")
+	klingAudioRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		klingAudioRouter.POST("/text-to-audio", controller.RelayKlingVideo)
+		klingAudioRouter.POST("/video-to-audio", controller.RelayKlingVideo)
+		klingAudioRouter.POST("/tts", controller.RelayKlingVideo)
+	}
+
+	// 新增图片类接口（4个）
+	klingImageRouter := router.Group("/kling/v1/images")
+	klingImageRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		klingImageRouter.POST("/generations", controller.RelayKlingVideo)
+		klingImageRouter.POST("/omni-image", controller.RelayKlingVideo)
+		klingImageRouter.POST("/multi-image2image", controller.RelayKlingVideo)
+		klingImageRouter.POST("/editing/expand", controller.RelayKlingVideo)
+	}
+
+	// 新增通用类接口（2个）
+	klingGeneralRouter := router.Group("/kling/v1/general")
+	klingGeneralRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		klingGeneralRouter.POST("/custom-elements", controller.DoCustomElements)   // 同步接口
+		klingGeneralRouter.POST("/custom-voices", controller.RelayKlingVideo)      // 异步接口，复用逻辑
 	}
 
 	// Kling 查询路由（不需要 Distribute 中间件）
