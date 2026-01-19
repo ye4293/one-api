@@ -260,6 +260,14 @@ func SetRelayRouter(router *gin.Engine) {
 		klingImageRouter.POST("/editing/expand", controller.RelayKlingVideo)
 	}
 
+	// 新增通用类接口（2个）
+	klingGeneralRouter := router.Group("/kling/v1/general")
+	klingGeneralRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		klingGeneralRouter.POST("/custom-elements", controller.DoCustomElements)   // 同步接口
+		klingGeneralRouter.POST("/custom-voices", controller.RelayKlingVideo)      // 异步接口，复用逻辑
+	}
+
 	// Kling 查询路由（不需要 Distribute 中间件）
 	klingResultRouter := router.Group("/kling/v1/videos")
 	klingResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())

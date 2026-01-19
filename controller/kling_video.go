@@ -517,3 +517,144 @@ func handleImageCallback(c *gin.Context, image *dbmodel.Image, notification *kli
 
 	c.JSON(http.StatusOK, gin.H{"message": "success"})
 }
+
+// DoCustomElements 处理自定义元素训练请求（同步接口）
+func DoCustomElements(c *gin.Context) {
+	meta := util.GetRelayMeta(c)
+	requestType := kling.RequestTypeCustomElements
+
+	// 读取并解析请求体
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		errResp := openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	var requestParams map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestParams); err != nil {
+		errResp := openai.ErrorWrapper(err, "invalid_request_json", http.StatusBadRequest)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	model := kling.GetModelNameFromRequest(requestParams)
+	mode := kling.GetModeFromRequest(requestParams)
+
+	// 计算预估费用（custom-elements 按次计费）
+	quota := common.CalculateVideoQuota(model, requestType, mode, "0", "")
+
+	// 检查用户余额
+	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
+	if err != nil {
+		errResp := openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+	if userQuota < quota {
+		errResp := openai.ErrorWrapper(fmt.Errorf("余额不足"), "insufficient_quota", http.StatusPaymentRequired)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	// 获取渠道信息
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		errResp := openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	meta.APIKey = channel.Key
+	if channel.BaseURL != nil && *channel.BaseURL != "" {
+		meta.BaseURL = *channel.BaseURL
+	}
+
+	// 获取用户信息
+	user, err := dbmodel.GetUserById(meta.UserId, false)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("获取用户信息失败: user_id=%d, error=%v", meta.UserId, err))
+		user = &dbmodel.User{Username: ""}
+	}
+
+	// 创建 Video 记录
+	video := &dbmodel.Video{
+		TaskId:    "", // 同步接口可能没有 task_id
+		UserId:    meta.UserId,
+		Username:  user.Username,
+		ChannelId: meta.ChannelId,
+		Model:     model,
+		Provider:  "kling",
+		Type:      requestType,
+		Status:    kling.TaskStatusPending,
+		Quota:     quota,
+		Mode:      mode,
+		Prompt:    kling.GetPromptFromRequest(requestParams),
+	}
+	if err := video.Insert(); err != nil {
+		errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	// 调用 Kling API（同步调用）
+	adaptor := &kling.Adaptor{RequestType: requestType}
+	adaptor.Init(meta)
+
+	// 注意：同步接口不需要 callback_url
+	convertedBody, err := adaptor.ConvertRequest(c, meta, requestParams, "", video.Id)
+	if err != nil {
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = err.Error()
+		video.Update()
+		errResp := openai.ErrorWrapper(err, "convert_request_failed", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
+	if err != nil {
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = err.Error()
+		video.Update()
+		errResp := openai.ErrorWrapper(err, "request_failed", http.StatusInternalServerError)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
+	klingResp, errWithCode := adaptor.DoResponse(c, resp, meta)
+	if errWithCode != nil {
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = errWithCode.Error.Message
+		video.Update()
+		c.JSON(errWithCode.StatusCode, errWithCode.Error)
+		return
+	}
+
+	// 同步接口：立即更新为成功状态并扣费
+	video.TaskId = klingResp.Data.TaskID
+	video.Status = kling.TaskStatusSucceed
+	video.VideoId = klingResp.Data.TaskID
+
+	// 保存响应结果
+	resultJSON, _ := json.Marshal(klingResp)
+	video.Result = string(resultJSON)
+
+	// 立即扣费
+	err = dbmodel.DecreaseUserQuota(video.UserId, quota)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Custom elements billing failed: user_id=%d, quota=%d, error=%v", video.UserId, quota, err))
+	} else {
+		logger.SysLog(fmt.Sprintf("Custom elements billing success: user_id=%d, quota=%d, task_id=%s",
+			video.UserId, quota, video.TaskId))
+	}
+
+	video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+	video.Update()
+
+	logger.SysLog(fmt.Sprintf("Custom elements task completed (sync): id=%d, task_id=%s, user_id=%d, channel_id=%d, quota=%d",
+		video.Id, klingResp.Data.TaskID, meta.UserId, meta.ChannelId, quota))
+
+	// 返回响应
+	c.JSON(http.StatusOK, klingResp)
+}

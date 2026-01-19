@@ -293,3 +293,23 @@ type ImageExpandRequest struct {
 	Direction   string  `json:"direction,omitempty"` // top/bottom/left/right
 	ExpandRatio float64 `json:"expand_ratio,omitempty"`
 }
+
+// ============ 通用类接口（新增2个） ============
+
+// 自定义元素训练请求（同步接口）
+type CustomElementsRequest struct {
+	KlingBaseRequest
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Images      []string `json:"images"`      // 训练图片列表
+	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
+}
+
+// 自定义声音训练请求（异步接口）
+type CustomVoicesRequest struct {
+	KlingBaseRequest
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	AudioFiles  []string `json:"audio_files"` // 训练音频文件列表
+	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
+}

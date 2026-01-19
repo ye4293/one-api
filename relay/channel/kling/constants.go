@@ -34,4 +34,8 @@ const (
 	RequestTypeOmniImage        = "omni-image"
 	RequestTypeMultiImage2Image = "multi-image2image"
 	RequestTypeImageExpand      = "image-expand"
+
+	// 通用类（新增2个）
+	RequestTypeCustomElements = "custom-elements"
+	RequestTypeCustomVoices   = "custom-voices"
 )

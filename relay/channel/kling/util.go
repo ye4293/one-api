@@ -65,6 +65,13 @@ func DetermineRequestType(path string) string {
 		return RequestTypeImageExpand
 	}
 
+	// 通用类（新增2个）
+	if strings.Contains(path, "/custom-elements") {
+		return RequestTypeCustomElements
+	} else if strings.Contains(path, "/custom-voices") {
+		return RequestTypeCustomVoices
+	}
+
 	return ""
 }
 
