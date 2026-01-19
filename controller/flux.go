@@ -101,6 +101,7 @@ func HandleFluxCallback(c *gin.Context) {
 }
 
 // GetFlux 查询 Flux 任务结果
+// 查询参数 from_source: true(默认) - 从 Flux API 源站获取，false - 从本地数据库读取
 func GetFlux(c *gin.Context) {
 	// 1. 获取任务 ID
 	taskID := c.Param("id")
@@ -109,9 +110,13 @@ func GetFlux(c *gin.Context) {
 		return
 	}
 
-	logger.Infof(c, "查询 Flux 任务: task_id=%s", taskID)
+	// 2. 获取查询参数 from_source（默认为 true）
+	fromSource := c.DefaultQuery("from_source", "true")
+	isFromSource := fromSource == "true" || fromSource == "1"
 
-	// 2. 从数据库查询任务记录（获取 channel_id）
+	logger.Infof(c, "查询 Flux 任务: task_id=%s, from_source=%v", taskID, isFromSource)
+
+	// 3. 从数据库查询任务记录
 	image, err := model.GetImageByTaskId(taskID)
 	if err != nil {
 		logger.Errorf(c, "Flux 任务不存在: task_id=%s, error=%v", taskID, err)
@@ -119,7 +124,27 @@ func GetFlux(c *gin.Context) {
 		return
 	}
 
-	// 3. 查询渠道信息（获取 API key 和 base_url）
+	// 4. 如果不从源站获取，直接返回数据库中存储的数据
+	if !isFromSource {
+		logger.Infof(c, "从本地数据库返回 Flux 任务: task_id=%s, status=%s", taskID, image.Status)
+
+		// 只有状态为成功时才返回完整的 result 数据
+		if image.Status == "Ready" && image.Result != "" {
+			// 直接返回存储的完整 API 响应 JSON
+			c.Data(http.StatusOK, "application/json", []byte(image.Result))
+			return
+		}
+
+		// 其他状态返回基本信息
+		c.JSON(http.StatusOK, gin.H{
+			"id":     image.TaskId,
+			"status": image.Status,
+			"error":  image.FailReason,
+		})
+		return
+	}
+
+	// 5. 从源站获取 - 查询渠道信息（获取 API key 和 base_url）
 	channel, err := model.GetChannelById(image.ChannelId, true)
 	if err != nil {
 		logger.Errorf(c, "获取 channel 失败: channel_id=%d, error=%v", image.ChannelId, err)
@@ -127,14 +152,14 @@ func GetFlux(c *gin.Context) {
 		return
 	}
 
-	// 4. 验证 channel 信息
+	// 6. 验证 channel 信息
 	if channel.BaseURL == nil || *channel.BaseURL == "" {
 		logger.Errorf(c, "Channel base_url 为空: channel_id=%d", image.ChannelId)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid channel configuration"})
 		return
 	}
 
-	// 5. 调用 Adaptor 层查询结果
+	// 7. 调用 Adaptor 层从源站查询结果
 	adaptor := &flux.Adaptor{}
 	statusCode, responseBody, err := adaptor.QueryResult(c, taskID, *channel.BaseURL, channel.Key)
 	if err != nil {
@@ -143,7 +168,7 @@ func GetFlux(c *gin.Context) {
 		return
 	}
 
-	// 6. 透传响应给客户端
+	// 8. 透传源站响应给客户端
 	c.Data(statusCode, "application/json", responseBody)
-	logger.Infof(c, "Flux 查询完成: task_id=%s, status=%d", taskID, statusCode)
+	logger.Infof(c, "Flux 查询完成（源站）: task_id=%s, status=%d", taskID, statusCode)
 }
