@@ -10,6 +10,7 @@ package anthropic
 // - 完善的token使用统计（包括缓存统计）
 // - 支持工具调用和服务器工具
 // - 支持思考过程展示
+// - 支持结构化输出（Structured Outputs）
 //
 // 使用示例见文件末尾的注释
 
@@ -217,8 +218,17 @@ type ContentBlockParam struct {
 
 // Message 消息结构
 type Message struct {
-	Role    string              `json:"role"` // "user", "assistant"
-	Content any `json:"content"`
+	Role    string `json:"role"` // "user", "assistant"
+	Content any    `json:"content"`
+}
+
+// OutputFormat 结构化输出格式
+// 基于 https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+// Beta 功能，需要设置 header: anthropic-beta: structured-outputs-2025-11-13
+// 用于控制 Claude 的响应格式，确保返回符合 schema 的 JSON
+type OutputFormat struct {
+	Type   string `json:"type"`   // "json_schema"
+	Schema any    `json:"schema"` // JSON Schema 定义
 }
 
 // Tool 工具定义
@@ -226,6 +236,7 @@ type Tool struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description,omitempty"`
 	InputSchema InputSchema `json:"input_schema"`
+	Strict      bool        `json:"strict,omitempty"` // 启用 strict tool use，保证 schema 验证
 }
 
 // InputSchema 工具输入模式
@@ -243,18 +254,19 @@ type ToolChoice struct {
 
 // Request Claude API 请求结构
 type Request struct {
-	Model         string      `json:"model"`                    // 模型名称
-	Messages      []Message   `json:"messages,omitempty"`       // 消息列表
-	System        interface{} `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
-	MaxTokens     int         `json:"max_tokens"`               // 最大输出token数
-	StopSequences []string    `json:"stop_sequences,omitempty"` // 停止序列
-	Stream        bool        `json:"stream,omitempty"`         // 是否流式输出
-	Temperature   float64     `json:"temperature,omitempty"`    // 温度参数
-	TopP          float64     `json:"top_p,omitempty"`          // Top-p 参数
-	TopK          int         `json:"top_k,omitempty"`          // Top-k 参数
-	Tools         []Tool      `json:"tools,omitempty"`          // 可用工具
-	ToolChoice    *ToolChoice `json:"tool_choice,omitempty"`    // 工具选择策略
-	Metadata      *Metadata   `json:"metadata,omitempty"`       // 元数据
+	Model         string        `json:"model"`                    // 模型名称
+	Messages      []Message     `json:"messages,omitempty"`       // 消息列表
+	System        interface{}   `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
+	MaxTokens     int           `json:"max_tokens"`               // 最大输出token数
+	StopSequences []string      `json:"stop_sequences,omitempty"` // 停止序列
+	Stream        bool          `json:"stream,omitempty"`         // 是否流式输出
+	Temperature   float64       `json:"temperature,omitempty"`    // 温度参数
+	TopP          float64       `json:"top_p,omitempty"`          // Top-p 参数
+	TopK          int           `json:"top_k,omitempty"`          // Top-k 参数
+	Tools         []Tool        `json:"tools,omitempty"`          // 可用工具
+	ToolChoice    *ToolChoice   `json:"tool_choice,omitempty"`    // 工具选择策略
+	Metadata      *Metadata     `json:"metadata,omitempty"`       // 元数据
+	OutputFormat  *OutputFormat `json:"output_format,omitempty"`  // 结构化输出格式（Beta: structured-outputs-2025-11-13）
 }
 
 // CacheCreation 缓存创建统计
@@ -270,14 +282,14 @@ type ServerToolUsage struct {
 
 // Usage token 使用统计
 type Usage struct {
-	InputTokens              int              `json:"input_tokens"`                          // 输入token数
-	OutputTokens             int              `json:"output_tokens"`                         // 输出token数
-	CacheCreationInputTokens int              `json:"cache_creation_input_tokens,omitempty"` // 缓存创建输入token数
-	CacheReadInputTokens     int              `json:"cache_read_input_tokens,omitempty"`     // 缓存读取输入token数
-	ClaudeCacheCreation5mTokens int                  `json:"claude_cache_creation_5_m_tokens,omitempty"`
-	ClaudeCacheCreation1hTokens int                  `json:"claude_cache_creation_1_h_tokens,omitempty"`
-	CacheCreation            *CacheCreation   `json:"cache_creation,omitempty"`              // 缓存创建详情
-	ServerToolUse            *ServerToolUsage `json:"server_tool_use,omitempty"`             // 服务器工具使用统计
+	InputTokens                 int              `json:"input_tokens"`                          // 输入token数
+	OutputTokens                int              `json:"output_tokens"`                         // 输出token数
+	CacheCreationInputTokens    int              `json:"cache_creation_input_tokens,omitempty"` // 缓存创建输入token数
+	CacheReadInputTokens        int              `json:"cache_read_input_tokens,omitempty"`     // 缓存读取输入token数
+	ClaudeCacheCreation5mTokens int              `json:"claude_cache_creation_5_m_tokens,omitempty"`
+	ClaudeCacheCreation1hTokens int              `json:"claude_cache_creation_1_h_tokens,omitempty"`
+	CacheCreation               *CacheCreation   `json:"cache_creation,omitempty"`  // 缓存创建详情
+	ServerToolUse               *ServerToolUsage `json:"server_tool_use,omitempty"` // 服务器工具使用统计
 }
 
 // Error API 错误信息
@@ -295,11 +307,11 @@ type Response struct {
 	Model        string              `json:"model"`                   // 使用的模型
 	StopReason   *string             `json:"stop_reason"`             // 停止原因: "end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal"
 	StopSequence *string             `json:"stop_sequence,omitempty"` // 自定义停止序列
-	Usage        *Usage               `json:"usage"`                   // token使用统计
+	Usage        *Usage              `json:"usage"`                   // token使用统计
 	Error        *Error              `json:"error,omitempty"`         // 错误信息（如果有）
 	Message      *Message            `json:"message,omitempty"`       // 消息
-	ContentBlock *ContentBlockParam `json:"content_block,omitempty"` // 内容块
-	Delta        *Delta             `json:"delta,omitempty"`         // 增量内容
+	ContentBlock *ContentBlockParam  `json:"content_block,omitempty"` // 内容块
+	Delta        *Delta              `json:"delta,omitempty"`         // 增量内容
 }
 
 // WebSearchResultBlock 网络搜索结果块
@@ -459,6 +471,26 @@ func NewToolChoiceTool(name string) *ToolChoice {
 	}
 }
 
+// 辅助函数：创建 JSON Schema 输出格式
+// 用于 Structured Outputs 功能
+// schema 参数可以是 map[string]any 或其他符合 JSON Schema 规范的结构
+func NewJSONSchemaOutputFormat(schema any) *OutputFormat {
+	return &OutputFormat{
+		Type:   "json_schema",
+		Schema: schema,
+	}
+}
+
+// 辅助函数：创建带 strict 模式的工具
+func NewStrictTool(name, description string, inputSchema InputSchema) Tool {
+	return Tool{
+		Name:        name,
+		Description: description,
+		InputSchema: inputSchema,
+		Strict:      true,
+	}
+}
+
 /*
 使用示例：
 
@@ -537,5 +569,60 @@ for event := range streamEvents {
             fmt.Printf("Total tokens: %d\n", event.Usage.InputTokens + event.Usage.OutputTokens)
         }
     }
+}
+
+6. 结构化输出 (Structured Outputs) - 保证返回符合 schema 的 JSON：
+   注意：需要设置 Beta header: anthropic-beta: structured-outputs-2025-11-13
+
+request := Request{
+    Model: "claude-sonnet-4-5",
+    Messages: []Message{
+        NewUserMessage(NewTextContent("Extract info from: John Smith (john@example.com) wants Enterprise plan")),
+    },
+    MaxTokens: 1024,
+    OutputFormat: &OutputFormat{
+        Type: "json_schema",
+        Schema: map[string]any{
+            "type": "object",
+            "properties": map[string]any{
+                "name":           map[string]any{"type": "string"},
+                "email":          map[string]any{"type": "string"},
+                "plan_interest":  map[string]any{"type": "string"},
+                "demo_requested": map[string]any{"type": "boolean"},
+            },
+            "required":             []string{"name", "email", "plan_interest", "demo_requested"},
+            "additionalProperties": false,
+        },
+    },
+}
+
+7. 严格工具调用 (Strict Tool Use) - 保证工具输入符合 schema：
+
+tools := []Tool{{
+    Name: "search_flights",
+    Description: "Search for flights",
+    Strict: true, // 启用严格模式
+    InputSchema: InputSchema{
+        Type: "object",
+        Properties: map[string]interface{}{
+            "destination": map[string]interface{}{
+                "type": "string",
+            },
+            "date": map[string]interface{}{
+                "type": "string",
+                "format": "date",
+            },
+        },
+        Required: []string{"destination", "date"},
+    },
+}}
+
+request := Request{
+    Model: "claude-sonnet-4-5",
+    Messages: []Message{
+        NewUserMessage(NewTextContent("Find flights to Paris next month")),
+    },
+    Tools: tools,
+    MaxTokens: 1024,
 }
 */
