@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/relay/controller"
@@ -636,8 +637,9 @@ func DoCustomElements(c *gin.Context) {
 	logger.SysLog(fmt.Sprintf("Kling custom-elements response: channel_id=%d, user_id=%d, response=%s",
 		meta.ChannelId, meta.UserId, string(respJSON)))
 
-	// 检查响应的 message 字段，只有 "success" 才视为成功
-	if klingResp.Message != "success" {
+	// 检查响应的 message 字段，只有 "success" 或 "succeed" 才视为成功（统一转小写比较）
+	message := strings.ToLower(klingResp.Message)
+	if message != "success" && message != "succeed" {
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = fmt.Sprintf("API returned non-success message: %s", klingResp.Message)
 		video.TaskId = klingResp.Data.TaskID
