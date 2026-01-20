@@ -327,16 +327,16 @@ func DoAdvancedLipSync(c *gin.Context) {
 	}
 
 	// 更新 Video 记录
-	video.TaskId = klingResp.Data.TaskID
-	video.Status = klingResp.Data.TaskStatus
-	video.VideoId = klingResp.Data.TaskID
+	video.TaskId = klingResp.GetTaskID()
+	video.Status = klingResp.GetTaskStatus()
+	video.VideoId = klingResp.GetTaskID()
 	if err := video.Update(); err != nil {
 		logger.SysError(fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v",
 			video.Id, video.TaskId, err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling advanced-lip-sync task created: id=%d, task_id=%s, user_id=%d, quota=%d",
-		video.Id, klingResp.Data.TaskID, meta.UserId, quota))
+		video.Id, klingResp.GetTaskID(), meta.UserId, quota))
 
 	// 返回 Kling 原始响应
 	c.JSON(http.StatusOK, klingResp)
