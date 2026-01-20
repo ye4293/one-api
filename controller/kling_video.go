@@ -208,11 +208,11 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 
 	// 更新任务记录
 	if err := task.UpdateWithKlingResponse(klingResp); err != nil {
-		logger.SysError(fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.Data.TaskID, err))
+		logger.SysError(fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling task submitted: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
-		task.GetID(), klingResp.Data.TaskID, req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
+		task.GetID(), klingResp.GetTaskID(), req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
 
 	// 返回响应
 	c.JSON(http.StatusOK, klingResp)
@@ -271,11 +271,11 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	// 检查 message 字段
 	if !kling.IsSuccessMessage(klingResp.Message) {
 		failReason := fmt.Sprintf("API returned non-success message: %s", klingResp.Message)
-		task.SetTaskID(klingResp.Data.TaskID)
+		task.SetTaskID(klingResp.GetTaskID())
 		task.MarkFailed(c.Request.Context(), failReason)
 
 		logger.Warn(c.Request.Context(), fmt.Sprintf("Sync task failed: id=%d, task_id=%s, message=%s, type=%s",
-			task.GetID(), klingResp.Data.TaskID, klingResp.Message, req.RequestType))
+			task.GetID(), klingResp.GetTaskID(), klingResp.Message, req.RequestType))
 
 		// 返回响应但不扣费
 		c.JSON(http.StatusOK, klingResp)
@@ -283,7 +283,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	}
 
 	// 同步任务成功：立即扣费
-	task.SetTaskID(klingResp.Data.TaskID)
+	task.SetTaskID(klingResp.GetTaskID())
 	task.SetStatus(kling.TaskStatusSucceed)
 
 	// 保存响应结果
@@ -296,7 +296,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 		logger.SysError(fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
 	} else {
 		logger.SysLog(fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
-			req.Meta.UserId, req.Quota, klingResp.Data.TaskID, req.RequestType))
+			req.Meta.UserId, req.Quota, klingResp.GetTaskID(), req.RequestType))
 	}
 
 	// 更新任务
@@ -306,7 +306,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	task.Update()
 
 	logger.SysLog(fmt.Sprintf("Sync task completed: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
-		task.GetID(), klingResp.Data.TaskID, req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
+		task.GetID(), klingResp.GetTaskID(), req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
 
 	c.JSON(http.StatusOK, klingResp)
 }

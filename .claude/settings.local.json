@@ -3,7 +3,8 @@
     "allow": [
       "Bash(grep:*)",
       "Bash(xargs ls:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "WebFetch(domain:app.klingai.com)"
     ],
     "deny": [],
     "ask": []

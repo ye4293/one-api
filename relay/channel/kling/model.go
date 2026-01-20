@@ -1,5 +1,10 @@
 package kling
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // 通用请求参数
 type KlingBaseRequest struct {
 	Model          string `json:"model"`                      // 模型名称
@@ -78,10 +83,81 @@ type CameraConfig struct {
 
 // API 响应
 type KlingResponse struct {
-	Code      int      `json:"code"`
-	Message   string   `json:"message"`
-	RequestID string   `json:"request_id"`
-	Data      TaskData `json:"data"`
+	Code      int         `json:"code"`
+	Message   string      `json:"message"`
+	RequestID string      `json:"request_id"`
+	Data      interface{} `json:"data"` // 使用 interface{} 以支持不同类型的响应数据
+}
+
+// GetDataMap 获取 data 的 map 表示
+func (r *KlingResponse) GetDataMap() (map[string]interface{}, error) {
+	if r.Data == nil {
+		return nil, fmt.Errorf("data is nil")
+	}
+
+	dataMap, ok := r.Data.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("data is not a map")
+	}
+
+	return dataMap, nil
+}
+
+// GetString 安全地从 data 中获取字符串字段
+func (r *KlingResponse) GetString(key string) string {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return ""
+	}
+
+	if val, ok := dataMap[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+// GetInt64 安全地从 data 中获取 int64 字段
+func (r *KlingResponse) GetInt64(key string) int64 {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return 0
+	}
+
+	if val, ok := dataMap[key].(float64); ok {
+		return int64(val)
+	}
+	return 0
+}
+
+// GetTaskID 获取 task_id 字段
+func (r *KlingResponse) GetTaskID() string {
+	return r.GetString("task_id")
+}
+
+// GetTaskStatus 获取 task_status 字段
+func (r *KlingResponse) GetTaskStatus() string {
+	return r.GetString("task_status")
+}
+
+// GetTaskData 获取 TaskData（用于异步接口）
+func (r *KlingResponse) GetTaskData() (*TaskData, error) {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return nil, err
+	}
+
+	// 将 map 转换为 TaskData 结构体
+	jsonBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		return nil, err
+	}
+
+	var taskData TaskData
+	if err := json.Unmarshal(jsonBytes, &taskData); err != nil {
+		return nil, err
+	}
+
+	return &taskData, nil
 }
 
 // 任务数据

@@ -213,8 +213,8 @@ func (tw *TaskWrapper) Update() error {
 
 // UpdateWithKlingResponse 使用 Kling 响应更新任务
 func (tw *TaskWrapper) UpdateWithKlingResponse(klingResp *KlingResponse) error {
-	tw.SetTaskID(klingResp.Data.TaskID)
-	tw.SetStatus(klingResp.Data.TaskStatus)
+	tw.SetTaskID(klingResp.GetTaskID())
+	tw.SetStatus(klingResp.GetTaskStatus())
 
 	// 保存完整响应
 	if respJSON, err := json.Marshal(klingResp); err == nil {

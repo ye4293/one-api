@@ -112,7 +112,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		}
 	}
 	logger.SysLog(fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s",
-		klingResp.Code, klingResp.Data.TaskID, klingResp.Data.TaskStatus))
+		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus()))
 
 	if klingResp.Code != 0 {
 		return nil, &model.ErrorWithStatusCode{
