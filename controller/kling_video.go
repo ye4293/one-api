@@ -631,6 +631,11 @@ func DoCustomElements(c *gin.Context) {
 		return
 	}
 
+	// 打印完整的 Kling 响应以便调试
+	respJSON, _ := json.Marshal(klingResp)
+	logger.SysLog(fmt.Sprintf("Kling custom-elements response: channel_id=%d, user_id=%d, response=%s",
+		meta.ChannelId, meta.UserId, string(respJSON)))
+
 	// 检查响应的 message 字段，只有 "success" 才视为成功
 	if klingResp.Message != "success" {
 		video.Status = kling.TaskStatusFailed
