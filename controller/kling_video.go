@@ -411,7 +411,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				actualDuration := notification.TaskResult.Videos[0].Duration
 				video.Duration = actualDuration
 
-				// 根据实际时长重新计算费用
+				// 重新计算费用（按次计费的接口会返回固定价格，按时长计费的接口会根据实际时长计算）
 				oldQuota := video.Quota
 				newQuota := common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
 				video.Quota = newQuota
@@ -421,8 +421,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
-						video.UserId, oldQuota, newQuota, actualDuration, taskID))
+					logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
+						video.UserId, oldQuota, newQuota, actualDuration, video.Type, video.Model, taskID))
 				}
 
 				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
@@ -562,4 +562,3 @@ func RelayKlingTransparent(c *gin.Context) {
 	// 透传响应（保持原始状态码和内容）
 	c.Data(resp.StatusCode, "application/json", body)
 }
-

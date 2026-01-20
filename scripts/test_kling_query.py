@@ -24,7 +24,7 @@ import requests
 
 # ============ 默认配置 ============
 ONE_API_BASE_URL = "http://localhost:3000"
-ONE_API_TOKEN = "sk-xxx"  # 替换为你的 One API Token
+ONE_API_TOKEN = "sk-ZEXrJ6HkmZUIDMzg4c2eFbC0899b46938f384e9556105c16"  # 替换为你的 One API Token
 
 # 接口映射
 ENDPOINTS = {

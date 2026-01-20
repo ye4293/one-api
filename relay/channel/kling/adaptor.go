@@ -63,6 +63,18 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 
 // ConvertRequest 转换请求并注入回调URL和外部任务ID
 func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBody map[string]interface{}, callbackURL string, externalTaskID int64) ([]byte, error) {
+	// 注入 model_name（如果请求体中没有）
+	if _, exists := requestBody["model_name"]; !exists {
+		if modelValue, ok := c.Get("model"); ok {
+			if modelStr, isString := modelValue.(string); isString && modelStr != "" {
+				requestBody["model_name"] = modelStr
+			}
+		}
+	}
+
+	// 删除 model 字段（Kling API 使用 model_name）
+	delete(requestBody, "model")
+
 	// 注入回调 URL（如果系统配置了回调域名）
 	if callbackURL != "" {
 		requestBody["callback_url"] = callbackURL

@@ -256,6 +256,14 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/general/custom-elements", controller.DoCustomElements) // 同步接口
 		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)    // 异步接口，复用逻辑
 
+		// ========== 通用类 - 查询和管理接口（透明代理，不计费）==========
+		klingRouter.GET("/general/custom-elements", controller.RelayKlingTransparent)   // 查询自定义元素列表
+		klingRouter.GET("/general/presets-elements", controller.RelayKlingTransparent)  // 查询预设元素列表
+		klingRouter.POST("/general/delete-elements", controller.RelayKlingTransparent)  // 删除元素
+		klingRouter.GET("/general/custom-voices/:id", controller.RelayKlingTransparent) // 查询指定声音
+		klingRouter.GET("/general/custom-voices", controller.RelayKlingTransparent)     // 查询自定义声音列表
+		klingRouter.GET("/general/presets-voices", controller.RelayKlingTransparent)    // 查询预设声音列表
+		klingRouter.POST("/general/delete-voices", controller.RelayKlingTransparent)    // 删除声音
 	}
 
 	// Kling 查询路由（不需要 Distribute 中间件）
@@ -263,14 +271,6 @@ func SetRelayRouter(router *gin.Engine) {
 	klingResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
 		klingResultRouter.GET("/videos/:id", controller.RelayKlingVideoResult)
-		// ========== 通用类 - 查询和管理接口（透明代理，不计费）==========
-		klingResultRouter.GET("/general/custom-elements", controller.RelayKlingTransparent)    // 查询自定义元素列表
-		klingResultRouter.GET("/general/presets-elements", controller.RelayKlingTransparent)   // 查询预设元素列表
-		klingResultRouter.DELETE("/general/delete-elements", controller.RelayKlingTransparent) // 删除元素
-		klingResultRouter.GET("/general/custom-voices/:id", controller.RelayKlingTransparent)  // 查询指定声音
-		klingResultRouter.GET("/general/custom-voices", controller.RelayKlingTransparent)      // 查询自定义声音列表
-		klingResultRouter.GET("/general/presets-voices", controller.RelayKlingTransparent)     // 查询预设声音列表
-		klingResultRouter.DELETE("/general/delete-voices", controller.RelayKlingTransparent)   // 删除声音
 	}
 
 	// Kling 回调路由（不需要认证）
