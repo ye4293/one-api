@@ -7,7 +7,8 @@ import "strings"
 func IsSyncRequestType(requestType string) bool {
 	syncTypes := []string{
 		RequestTypeCustomElements, // 自定义元素训练（同步）
-		// 可以在这里添加其他同步接口
+		RequestTypeTTS,            // 语音合成（同步）
+		RequestTypeImageRecognize, // 图像识别（同步）
 	}
 
 	for _, t := range syncTypes {

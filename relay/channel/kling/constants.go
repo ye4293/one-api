@@ -38,4 +38,10 @@ const (
 	// 通用类（新增2个）
 	RequestTypeCustomElements = "custom-elements"
 	RequestTypeCustomVoices   = "custom-voices"
+
+	// 通用类 - 查询和管理接口
+	RequestTypePresetsElements = "presets-elements"
+	RequestTypeDeleteElements  = "delete-elements"
+	RequestTypePresetsVoices   = "presets-voices"
+	RequestTypeDeleteVoices    = "delete-voices"
 )

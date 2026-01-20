@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -410,7 +411,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				actualDuration := notification.TaskResult.Videos[0].Duration
 				video.Duration = actualDuration
 
-				// 根据实际时长重新计算费用
+				// 重新计算费用（按次计费的接口会返回固定价格，按时长计费的接口会根据实际时长计算）
 				oldQuota := video.Quota
 				newQuota := common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
 				video.Quota = newQuota
@@ -420,8 +421,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, task_id=%s",
-						video.UserId, oldQuota, newQuota, actualDuration, taskID))
+					logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
+						video.UserId, oldQuota, newQuota, actualDuration, video.Type, video.Model, taskID))
 				}
 
 				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
@@ -491,3 +492,73 @@ func DoCustomElements(c *gin.Context) {
 	RelayKlingVideo(c)
 }
 
+// RelayKlingTransparent 透明代理接口（不做数据库操作，不计费）
+// 用于 custom-elements 和 custom-voices 的查询和管理操作
+func RelayKlingTransparent(c *gin.Context) {
+	meta := util.GetRelayMeta(c)
+
+	// 获取渠道信息
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling transparent get channel error: user_id=%d, channel_id=%d, error=%v",
+			meta.UserId, meta.ChannelId, err))
+		respondError(c, err, "get_channel_error", http.StatusInternalServerError)
+		return
+	}
+
+	meta.APIKey = channel.Key
+	if channel.BaseURL != nil && *channel.BaseURL != "" {
+		meta.BaseURL = *channel.BaseURL
+	}
+
+	// 确定请求类型
+	requestType := kling.DetermineRequestType(c.Request.URL.Path)
+	if requestType == "" {
+		respondError(c, fmt.Errorf("unsupported endpoint"), "invalid_endpoint", http.StatusBadRequest)
+		return
+	}
+
+	// 初始化 Adaptor
+	adaptor := &kling.Adaptor{RequestType: requestType}
+	adaptor.Init(meta)
+
+	// 准备请求体（对于 GET 和 DELETE 请求可能为空）
+	var bodyReader io.Reader
+	if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut {
+		bodyBytes, err := c.GetRawData()
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Kling transparent read body error: user_id=%d, error=%v", meta.UserId, err))
+			respondError(c, err, "invalid_request_body", http.StatusBadRequest)
+			return
+		}
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	// 发送请求
+	resp, err := adaptor.DoRequestWithMethod(c, meta, c.Request.Method, bodyReader)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling transparent request error: user_id=%d, channel_id=%d, error=%v",
+			meta.UserId, meta.ChannelId, err))
+		respondError(c, err, "request_failed", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 读取并透传响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Kling transparent read response error: user_id=%d, error=%v", meta.UserId, err))
+		respondError(c, err, "read_response_failed", http.StatusInternalServerError)
+		return
+	}
+
+	// 解析响应用于日志记录
+	var klingResp kling.KlingResponse
+	if unmarshalErr := json.Unmarshal(body, &klingResp); unmarshalErr == nil {
+		logger.SysLog(fmt.Sprintf("Kling transparent success: method=%s, path=%s, user_id=%d, channel_id=%d, code=%d",
+			c.Request.Method, c.Request.URL.Path, meta.UserId, meta.ChannelId, klingResp.Code))
+	}
+
+	// 透传响应（保持原始状态码和内容）
+	c.Data(resp.StatusCode, "application/json", body)
+}
