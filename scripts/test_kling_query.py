@@ -61,7 +61,7 @@ ENDPOINTS = {
 }
 
 
-def test_query_endpoint(endpoint_key, voice_id=None, params=None, body=None):
+def test_query_endpoint(endpoint_key, base_url, token, voice_id=None, params=None, body=None):
     """测试查询接口"""
     if endpoint_key not in ENDPOINTS:
         print(f"❌ 未知的接口: {endpoint_key}")
@@ -75,9 +75,9 @@ def test_query_endpoint(endpoint_key, voice_id=None, params=None, body=None):
 
     # 构建完整 URL
     if voice_id and endpoint_key == "custom-voices":
-        url = f"{ONE_API_BASE_URL}{path}/{voice_id}"
+        url = f"{base_url}{path}/{voice_id}"
     else:
-        url = f"{ONE_API_BASE_URL}{path}"
+        url = f"{base_url}{path}"
 
     # 添加查询参数
     if params:
@@ -85,7 +85,7 @@ def test_query_endpoint(endpoint_key, voice_id=None, params=None, body=None):
 
     # 设置请求头
     headers = {
-        "Authorization": f"Bearer {ONE_API_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
@@ -147,18 +147,17 @@ def main():
                         help="要测试的接口")
     parser.add_argument("--voice-id", help="声音 ID（用于查询指定声音）")
     parser.add_argument("--element-id", help="元素 ID（用于删除元素）")
-    parser.add_argument("--base-url", default=ONE_API_BASE_URL, help="One API 基础 URL")
-    parser.add_argument("--token", default=ONE_API_TOKEN, help="One API Token")
+    parser.add_argument("--base-url", default=None, help="One API 基础 URL")
+    parser.add_argument("--token", default=None, help="One API Token")
 
     args = parser.parse_args()
 
-    # 更新全局配置
-    global ONE_API_BASE_URL, ONE_API_TOKEN
-    ONE_API_BASE_URL = args.base_url
-    ONE_API_TOKEN = args.token
+    # 使用命令行参数或全局配置
+    base_url = args.base_url if args.base_url else ONE_API_BASE_URL
+    token = args.token if args.token else ONE_API_TOKEN
 
     # 检查 Token
-    if ONE_API_TOKEN == "sk-xxx":
+    if token == "sk-xxx":
         print("❌ 错误: 请先配置 ONE_API_TOKEN!")
         print("\n方法1: 在脚本中修改 ONE_API_TOKEN")
         print("方法2: 使用命令行参数 --token")
@@ -174,7 +173,7 @@ def main():
     elif args.endpoint == "delete-voices" and args.voice_id:
         body = {"voice_id": args.voice_id}
 
-    return test_query_endpoint(args.endpoint, args.voice_id, params, body)
+    return test_query_endpoint(args.endpoint, base_url, token, args.voice_id, params, body)
 
 
 if __name__ == "__main__":
