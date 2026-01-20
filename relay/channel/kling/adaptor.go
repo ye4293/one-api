@@ -25,7 +25,25 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	if baseURL == "" {
 		baseURL = "https://api-beijing.klingai.com"
 	}
-	return fmt.Sprintf("%s/v1/videos/%s", baseURL, a.RequestType), nil
+
+	// 根据请求类型确定路径前缀
+	var pathPrefix string
+	switch a.RequestType {
+	// 音频类接口
+	case RequestTypeTextToAudio, RequestTypeVideoToAudio, RequestTypeTTS:
+		pathPrefix = "/v1/audio"
+	// 图片类接口
+	case RequestTypeImageGeneration, RequestTypeOmniImage, RequestTypeMultiImage2Image, RequestTypeImageExpand:
+		pathPrefix = "/v1/images"
+	// 通用类接口
+	case RequestTypeCustomElements, RequestTypeCustomVoices:
+		pathPrefix = "/v1/general"
+	// 默认：视频类接口
+	default:
+		pathPrefix = "/v1/videos"
+	}
+
+	return fmt.Sprintf("%s%s/%s", baseURL, pathPrefix, a.RequestType), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
