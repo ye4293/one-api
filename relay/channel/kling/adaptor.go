@@ -35,8 +35,10 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	// 图片类接口
 	case RequestTypeImageGeneration, RequestTypeOmniImage, RequestTypeMultiImage2Image, RequestTypeImageExpand:
 		pathPrefix = "/v1/images"
-	// 通用类接口
-	case RequestTypeCustomElements, RequestTypeCustomVoices:
+	// 通用类接口（包括查询和管理接口）
+	case RequestTypeCustomElements, RequestTypeCustomVoices,
+		RequestTypePresetsElements, RequestTypeDeleteElements,
+		RequestTypePresetsVoices, RequestTypeDeleteVoices:
 		pathPrefix = "/v1/general"
 	// 默认：视频类接口
 	default:
@@ -75,12 +77,28 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
+	return a.DoRequestWithMethod(c, meta, "POST", requestBody)
+}
+
+// DoRequestWithMethod 执行指定 HTTP 方法的请求
+func (a *Adaptor) DoRequestWithMethod(c *gin.Context, meta *util.RelayMeta, method string, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(meta)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", fullRequestURL, requestBody)
+	// 对于查询接口，需要将路径参数添加到 URL 中
+	// 例如: /v1/general/custom-voices/{id}
+	if c.Param("id") != "" {
+		fullRequestURL = fullRequestURL + "/" + c.Param("id")
+	}
+
+	// 添加查询参数
+	if len(c.Request.URL.RawQuery) > 0 {
+		fullRequestURL = fullRequestURL + "?" + c.Request.URL.RawQuery
+	}
+
+	req, err := http.NewRequest(method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, err
 	}

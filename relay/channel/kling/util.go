@@ -65,9 +65,18 @@ func DetermineRequestType(path string) string {
 		return RequestTypeImageExpand
 	}
 
-	// 通用类（新增2个）
-	if strings.Contains(path, "/custom-elements") {
+	// 通用类（新增2个 + 4个查询管理接口）
+	// 注意：更具体的路径匹配要放在前面
+	if strings.Contains(path, "/presets-elements") {
+		return RequestTypePresetsElements
+	} else if strings.Contains(path, "/delete-elements") {
+		return RequestTypeDeleteElements
+	} else if strings.Contains(path, "/custom-elements") {
 		return RequestTypeCustomElements
+	} else if strings.Contains(path, "/presets-voices") {
+		return RequestTypePresetsVoices
+	} else if strings.Contains(path, "/delete-voices") {
+		return RequestTypeDeleteVoices
 	} else if strings.Contains(path, "/custom-voices") {
 		return RequestTypeCustomVoices
 	}
