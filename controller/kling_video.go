@@ -631,7 +631,27 @@ func DoCustomElements(c *gin.Context) {
 		return
 	}
 
-	// 同步接口：立即更新为成功状态并扣费
+	// 检查响应的 message 字段，只有 "success" 才视为成功
+	if klingResp.Message != "success" {
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = fmt.Sprintf("API returned non-success message: %s", klingResp.Message)
+		video.TaskId = klingResp.Data.TaskID
+
+		// 保存响应结果（即使失败也保存，便于排查问题）
+		resultJSON, _ := json.Marshal(klingResp)
+		video.Result = string(resultJSON)
+
+		video.Update()
+
+		logger.Warn(c.Request.Context(), fmt.Sprintf("Custom elements task failed: id=%d, task_id=%s, message=%s, user_id=%d, channel_id=%d",
+			video.Id, klingResp.Data.TaskID, klingResp.Message, meta.UserId, meta.ChannelId))
+
+		// 返回响应（不扣费）
+		c.JSON(http.StatusOK, klingResp)
+		return
+	}
+
+	// 同步接口：message 为 "success" 时立即更新为成功状态并扣费
 	video.TaskId = klingResp.Data.TaskID
 	video.Status = kling.TaskStatusSucceed
 	video.VideoId = klingResp.Data.TaskID
