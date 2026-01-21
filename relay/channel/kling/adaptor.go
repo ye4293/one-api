@@ -13,7 +13,8 @@ import (
 )
 
 type Adaptor struct {
-	RequestType string // text2video/omni-video/image2video/multi-image2video
+	RequestType  string // text2video/omni-video/image2video/multi-image2video
+	FullPath     string // 透传模式下使用完整路径（包含 ID 等参数）
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -24,6 +25,11 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	baseURL := meta.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api-beijing.klingai.com"
+	}
+
+	// 透传模式：直接使用完整路径
+	if a.FullPath != "" {
+		return baseURL + a.FullPath, nil
 	}
 
 	// 根据请求类型确定路径前缀
