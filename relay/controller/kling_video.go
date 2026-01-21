@@ -54,6 +54,21 @@ func DoIdentifyFace(c *gin.Context) {
 		return
 	}
 
+	// 验证 model_name
+	modelName := kling.GetModelNameFromRequest(request)
+	needValidate, isValid, errMsg := kling.ValidateModelName(kling.RequestTypeIdentifyFace, modelName)
+	if needValidate && !isValid {
+		logger.SysError(fmt.Sprintf("Kling identify-face model_name validation failed: user_id=%d, model=%s, error=%s",
+			meta.UserId, modelName, errMsg))
+		errResp := openai.ErrorWrapper(
+			fmt.Errorf(errMsg),
+			"invalid_model_name",
+			http.StatusBadRequest,
+		)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
