@@ -157,9 +157,12 @@ func Relay(c *gin.Context) {
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 
+	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
+	claudeResponseID := c.GetHeader("X-Response-ID")
+
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -836,7 +839,7 @@ func RelayMidjourney(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
 			// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, failedChannelIds)
+			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
 			if err != nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v (excludedChannels: %v)", err, failedChannelIds)
 				break
@@ -1015,7 +1018,7 @@ func RelayVideoGenerate(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -1293,7 +1296,7 @@ func RelayRecraft(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -1652,7 +1655,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -1797,7 +1800,7 @@ func RelayRunway(c *gin.Context) {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
 			break
@@ -2063,7 +2066,7 @@ func RelaySoraVideo(c *gin.Context) {
 		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
 
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
 			break
@@ -2426,7 +2429,7 @@ func RelayGemini(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -2555,7 +2558,7 @@ func RelayClaude(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, failedChannelIds)
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
@@ -2675,7 +2678,12 @@ func RelayResponse(c *gin.Context) {
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
 
-	lastFailedChannelId := channelId
+	// 记录所有已失败的渠道ID，用于重试时排除
+	failedChannelIds := []int{channelId}
+
+	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存定向）
+	claudeResponseID := c.GetHeader("X-Response-ID")
+
 	group := c.GetString("group")
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
@@ -2683,16 +2691,11 @@ func RelayResponse(c *gin.Context) {
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
-		skipPriorityLevels := retryTimes - i
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, skipPriorityLevels)
+		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v", err)
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
 			break
-		}
-
-		// 跳过上次失败的渠道
-		if channel.Id == lastFailedChannelId {
-			continue
 		}
 
 		// 获取重试原因 - 直接使用原始错误消息
@@ -2739,9 +2742,11 @@ func RelayResponse(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
-		lastFailedChannelId = channelId
 		channelName := c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
+
+		// 记录失败的渠道ID，下次重试时排除
+		failedChannelIds = append(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)

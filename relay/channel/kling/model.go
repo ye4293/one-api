@@ -1,5 +1,10 @@
 package kling
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // 通用请求参数
 type KlingBaseRequest struct {
 	Model          string `json:"model"`                      // 模型名称
@@ -78,10 +83,81 @@ type CameraConfig struct {
 
 // API 响应
 type KlingResponse struct {
-	Code      int      `json:"code"`
-	Message   string   `json:"message"`
-	RequestID string   `json:"request_id"`
-	Data      TaskData `json:"data"`
+	Code      int         `json:"code"`
+	Message   string      `json:"message"`
+	RequestID string      `json:"request_id"`
+	Data      interface{} `json:"data"` // 使用 interface{} 以支持不同类型的响应数据
+}
+
+// GetDataMap 获取 data 的 map 表示
+func (r *KlingResponse) GetDataMap() (map[string]interface{}, error) {
+	if r.Data == nil {
+		return nil, fmt.Errorf("data is nil")
+	}
+
+	dataMap, ok := r.Data.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("data is not a map")
+	}
+
+	return dataMap, nil
+}
+
+// GetString 安全地从 data 中获取字符串字段
+func (r *KlingResponse) GetString(key string) string {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return ""
+	}
+
+	if val, ok := dataMap[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+// GetInt64 安全地从 data 中获取 int64 字段
+func (r *KlingResponse) GetInt64(key string) int64 {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return 0
+	}
+
+	if val, ok := dataMap[key].(float64); ok {
+		return int64(val)
+	}
+	return 0
+}
+
+// GetTaskID 获取 task_id 字段
+func (r *KlingResponse) GetTaskID() string {
+	return r.GetString("task_id")
+}
+
+// GetTaskStatus 获取 task_status 字段
+func (r *KlingResponse) GetTaskStatus() string {
+	return r.GetString("task_status")
+}
+
+// GetTaskData 获取 TaskData（用于异步接口）
+func (r *KlingResponse) GetTaskData() (*TaskData, error) {
+	dataMap, err := r.GetDataMap()
+	if err != nil {
+		return nil, err
+	}
+
+	// 将 map 转换为 TaskData 结构体
+	jsonBytes, err := json.Marshal(dataMap)
+	if err != nil {
+		return nil, err
+	}
+
+	var taskData TaskData
+	if err := json.Unmarshal(jsonBytes, &taskData); err != nil {
+		return nil, err
+	}
+
+	return &taskData, nil
 }
 
 // 任务数据
@@ -169,4 +245,147 @@ type FaceChoose struct {
 	SoundInsertTime     int64   `json:"sound_insert_time"`
 	SoundVolume         float64 `json:"sound_volume,omitempty"`
 	OriginalAudioVolume float64 `json:"original_audio_volume,omitempty"`
+}
+
+// ============ 视频类接口（新增6个） ============
+
+// 镜头控制请求
+type MotionControlRequest struct {
+	KlingBaseRequest
+	VideoID       string         `json:"video_id"`
+	CameraControl *CameraControl `json:"camera_control,omitempty"`
+	Duration      int            `json:"duration,omitempty"`
+	Mode          string         `json:"mode,omitempty"`
+}
+
+// 多元素初始化选择请求
+type MultiElementsRequest struct {
+	KlingBaseRequest
+	VideoID    string   `json:"video_id"`
+	ElementIDs []string `json:"element_ids,omitempty"`
+}
+
+// 视频延长请求
+type VideoExtendRequest struct {
+	KlingBaseRequest
+	VideoID   string `json:"video_id"`
+	Duration  int    `json:"duration,omitempty"`
+	Direction string `json:"direction,omitempty"` // before/after
+}
+
+// 数字人图生视频请求
+type AvatarImage2VideoRequest struct {
+	KlingBaseRequest
+	Image       string `json:"image"`
+	AudioFile   string `json:"audio_file,omitempty"`
+	AudioID     string `json:"audio_id,omitempty"`
+	Duration    int    `json:"duration,omitempty"`
+	AspectRatio string `json:"aspect_ratio,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+}
+
+// 视频效果应用请求
+type VideoEffectsRequest struct {
+	KlingBaseRequest
+	VideoID      string                 `json:"video_id"`
+	EffectType   string                 `json:"effect_type"`
+	EffectParams map[string]interface{} `json:"effect_params,omitempty"`
+}
+
+// 图像识别请求
+type ImageRecognizeRequest struct {
+	KlingBaseRequest
+	VideoID  string `json:"video_id,omitempty"`
+	VideoURL string `json:"video_url,omitempty"`
+	Image    string `json:"image,omitempty"`
+}
+
+// ============ 音频类接口（新增3个） ============
+
+// 文本转音频请求
+type TextToAudioRequest struct {
+	KlingBaseRequest
+	Text     string  `json:"text"`
+	Voice    string  `json:"voice,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`
+	Volume   float64 `json:"volume,omitempty"`
+	Duration int     `json:"duration,omitempty"`
+}
+
+// 视频提取音频请求
+type VideoToAudioRequest struct {
+	KlingBaseRequest
+	VideoID  string `json:"video_id,omitempty"`
+	VideoURL string `json:"video_url,omitempty"`
+}
+
+// 文本转语音请求
+type TTSRequest struct {
+	KlingBaseRequest
+	Text  string  `json:"text"`
+	Voice string  `json:"voice,omitempty"`
+	Speed float64 `json:"speed,omitempty"`
+	Pitch float64 `json:"pitch,omitempty"`
+}
+
+// ============ 图片类接口（新增4个） ============
+
+// 图片生成请求
+type ImageGenerationRequest struct {
+	KlingBaseRequest
+	Prompt         string  `json:"prompt"`
+	NegativePrompt string  `json:"negative_prompt,omitempty"`
+	AspectRatio    string  `json:"aspect_ratio,omitempty"`
+	N              int     `json:"n,omitempty"`
+	Style          string  `json:"style,omitempty"`
+	CfgScale       float64 `json:"cfg_scale,omitempty"`
+}
+
+// 全能图片请求
+type OmniImageRequest struct {
+	KlingBaseRequest
+	Prompt         string  `json:"prompt"`
+	Image          string  `json:"image,omitempty"`
+	NegativePrompt string  `json:"negative_prompt,omitempty"`
+	AspectRatio    string  `json:"aspect_ratio,omitempty"`
+	Style          string  `json:"style,omitempty"`
+	CfgScale       float64 `json:"cfg_scale,omitempty"`
+}
+
+// 多图转图请求
+type MultiImage2ImageRequest struct {
+	KlingBaseRequest
+	Images         []ImageItem `json:"images"`
+	Prompt         string      `json:"prompt"`
+	NegativePrompt string      `json:"negative_prompt,omitempty"`
+	AspectRatio    string      `json:"aspect_ratio,omitempty"`
+}
+
+// 图片扩展编辑请求
+type ImageExpandRequest struct {
+	KlingBaseRequest
+	Image       string  `json:"image"`
+	Prompt      string  `json:"prompt,omitempty"`
+	Direction   string  `json:"direction,omitempty"` // top/bottom/left/right
+	ExpandRatio float64 `json:"expand_ratio,omitempty"`
+}
+
+// ============ 通用类接口（新增2个） ============
+
+// 自定义元素训练请求（同步接口）
+type CustomElementsRequest struct {
+	KlingBaseRequest
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Images      []string `json:"images"`      // 训练图片列表
+	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
+}
+
+// 自定义声音训练请求（异步接口）
+type CustomVoicesRequest struct {
+	KlingBaseRequest
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	AudioFiles  []string `json:"audio_files"` // 训练音频文件列表
+	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
 }

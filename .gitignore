@@ -16,3 +16,5 @@ docs/docs.go
 
 # 环境变量配置
 .env
+/loki/grafana-data
+/loki/loki-data
