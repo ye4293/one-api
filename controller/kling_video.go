@@ -386,24 +386,9 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 		return
 	}
 
-	// 转换回调数据为查询数据格式
-	queryResponse := kling.QueryTaskResponse{
-		Code:      0,
-		Message:   "success",
-		RequestID: fmt.Sprintf("callback-%s", taskID),
-		Data: kling.TaskData{
-			TaskID:        notification.TaskID,
-			TaskStatus:    notification.TaskStatus,
-			TaskStatusMsg: notification.TaskStatusMsg,
-			TaskInfo:      notification.TaskInfo,
-			CreatedAt:     notification.CreatedAt,
-			UpdatedAt:     notification.UpdatedAt,
-			TaskResult:    notification.TaskResult,
-		},
-	}
-
-	queryResponseBytes, _ := json.Marshal(queryResponse)
-	task.SetResult(string(queryResponseBytes))
+	// 直接保存 Kling 回调的原始 JSON（不做转换，不生成虚假的 request_id）
+	notificationBytes, _ := json.Marshal(notification)
+	task.SetResult(string(notificationBytes))
 
 	// 处理成功状态
 	if notification.TaskStatus == kling.TaskStatusSucceed {
