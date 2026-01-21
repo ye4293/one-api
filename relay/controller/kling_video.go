@@ -54,21 +54,6 @@ func DoIdentifyFace(c *gin.Context) {
 		return
 	}
 
-	// 验证 model_name
-	modelName := kling.GetModelNameFromRequest(request)
-	needValidate, isValid, errMsg := kling.ValidateModelName(kling.RequestTypeIdentifyFace, modelName)
-	if needValidate && !isValid {
-		logger.SysError(fmt.Sprintf("Kling identify-face model_name validation failed: user_id=%d, model=%s, error=%s",
-			meta.UserId, modelName, errMsg))
-		errResp := openai.ErrorWrapper(
-			fmt.Errorf(errMsg),
-			"invalid_model_name",
-			http.StatusBadRequest,
-		)
-		c.JSON(errResp.StatusCode, errResp.Error)
-		return
-	}
-
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -137,10 +122,9 @@ func DoIdentifyFace(c *gin.Context) {
 	}
 
 	// 获取模型信息用于计费
-	model := kling.GetModelNameFromRequest(request)
-	if model == "" {
-		model = "kling-v1" // 默认模型
-	}
+	userModel := kling.GetModelNameFromRequest(request)
+	// 根据 requestType 自动确定 model（identify-face 使用固定的 kling-identify-face）
+	model := kling.GetModelNameByRequestType(kling.RequestTypeIdentifyFace, userModel)
 
 	// 计算费用（identify-face 固定 mode=std，不记录 duration）
 	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "")
