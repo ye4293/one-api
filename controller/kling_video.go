@@ -209,9 +209,16 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		return
 	}
 
+	// 检查 Kling API 返回的错误码
+	if klingResp.Code != 0 {
+		task.MarkFailed(c.Request.Context(), klingResp.Message)
+		c.JSON(http.StatusOK, klingResp) // 透传原始响应
+		return
+	}
+
 	// 更新任务记录
 	if err := task.UpdateWithKlingResponse(klingResp); err != nil {
-		logger.SysError(fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
+		logger.Error(c, fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling task submitted: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
@@ -271,16 +278,16 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	logger.SysLog(fmt.Sprintf("Kling sync task response: type=%s, channel_id=%d, user_id=%d, response=%s",
 		req.RequestType, req.Meta.ChannelId, req.Meta.UserId, string(respJSON)))
 
-	// 检查 message 字段
-	if !kling.IsSuccessMessage(klingResp.Message) {
-		failReason := fmt.Sprintf("API returned non-success message: %s", klingResp.Message)
+	// 检查 code 和 message 字段
+	if klingResp.Code != 0 || !kling.IsSuccessMessage(klingResp.Message) {
+		failReason := fmt.Sprintf("API returned error: code=%d, message=%s", klingResp.Code, klingResp.Message)
 		task.SetTaskID(klingResp.GetTaskID())
 		task.MarkFailed(c.Request.Context(), failReason)
 
-		logger.Warn(c.Request.Context(), fmt.Sprintf("Sync task failed: id=%d, task_id=%s, message=%s, type=%s",
-			task.GetID(), klingResp.GetTaskID(), klingResp.Message, req.RequestType))
+		logger.Warn(c.Request.Context(), fmt.Sprintf("Sync task failed: id=%d, task_id=%s, code=%d, message=%s, type=%s",
+			task.GetID(), klingResp.GetTaskID(), klingResp.Code, klingResp.Message, req.RequestType))
 
-		// 返回响应但不扣费
+		// 透传原始响应但不扣费
 		c.JSON(http.StatusOK, klingResp)
 		return
 	}
