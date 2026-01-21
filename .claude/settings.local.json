@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(grep:*)",
-      "Bash(xargs ls:*)"
+      "Bash(xargs ls:*)",
+      "Bash(go build:*)",
+      "WebFetch(domain:app.klingai.com)"
     ],
     "deny": [],
     "ask": []

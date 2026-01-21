@@ -155,17 +155,24 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			c.Set("relay_mode", relayMode)
 		}
 
-	} else if strings.HasPrefix(path, "/kling/v1/videos/") {
+	} else if strings.HasPrefix(path, "/kling/v1/") {
 		// Kling API 路径处理
 		// 判断是查询接口还是生成接口
 		// 查询接口格式: /kling/v1/videos/{task_id} (GET)
 		// 生成接口格式: /kling/v1/videos/text2video 等 (POST)
 		if c.Request.Method == "GET" {
-			// GET 请求是查询接口，不需要选择渠道
-			shouldSelectChannel = false
+			// GET 请求是查询接口，从查询参数中读取 model_name 或 model
+			if modelName := c.Query("model_name"); modelName != "" {
+				modelRequest.Model = modelName
+			} else if model := c.Query("model"); model != "" {
+				modelRequest.Model = model
+			}
 		} else {
 			// POST 请求是视频生成接口，解析请求体中的 model 字段
 			_ = common.UnmarshalBodyReusable(c, &modelRequest)
+			if modelRequest.ModelName != "" {
+				modelRequest.Model = modelRequest.ModelName
+			}
 		}
 
 	} else {

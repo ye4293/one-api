@@ -220,23 +220,57 @@ func SetRelayRouter(router *gin.Engine) {
 		runwayResultRouter.GET("/tasks/:taskId", controller.RelayRunwayResult)
 	}
 
-	// Kling AI 视频生成路由组
-	klingRouter := router.Group("/kling/v1/videos")
+	// Kling AI 路由组 - 统一管理所有 Kling 接口
+	klingRouter := router.Group("/kling/v1")
 	klingRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		klingRouter.POST("/text2video", controller.RelayKlingVideo)
-		klingRouter.POST("/omni-video", controller.RelayKlingVideo)
-		klingRouter.POST("/image2video", controller.RelayKlingVideo)
-		klingRouter.POST("/multi-image2video", controller.RelayKlingVideo)
-		klingRouter.POST("/identify-face", controller.DoIdentifyFace)
-		klingRouter.POST("/advanced-lip-sync", controller.DoAdvancedLipSync)
+		// ========== 视频类接口 ==========
+		// 现有视频接口
+		klingRouter.POST("/videos/text2video", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/omni-video", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/multi-image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/identify-face", controller.DoIdentifyFace)
+		klingRouter.POST("/videos/advanced-lip-sync", controller.DoAdvancedLipSync)
+
+		// 新增视频类接口（6个）
+		klingRouter.POST("/videos/motion-control", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/multi-elements/init-selection", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/video-extend", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/avatar/image2video", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/effects", controller.RelayKlingVideo)
+		klingRouter.POST("/videos/image-recognize", controller.RelayKlingVideo)
+
+		// ========== 音频类接口（3个）==========
+		klingRouter.POST("/audio/text-to-audio", controller.RelayKlingVideo)
+		klingRouter.POST("/audio/video-to-audio", controller.RelayKlingVideo)
+		klingRouter.POST("/audio/tts", controller.RelayKlingVideo)
+
+		// ========== 图片类接口（4个）==========
+		klingRouter.POST("/images/generations", controller.RelayKlingVideo)
+		klingRouter.POST("/images/omni-image", controller.RelayKlingVideo)
+		klingRouter.POST("/images/multi-image2image", controller.RelayKlingVideo)
+		klingRouter.POST("/images/editing/expand", controller.RelayKlingVideo)
+
+		// ========== 通用类接口（2个）==========
+		klingRouter.POST("/general/custom-elements", controller.DoCustomElements) // 同步接口
+		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)    // 异步接口，复用逻辑
+
+		// ========== 通用类 - 查询和管理接口（透明代理，不计费）==========
+		klingRouter.GET("/general/custom-elements", controller.RelayKlingTransparent)   // 查询自定义元素列表
+		klingRouter.GET("/general/presets-elements", controller.RelayKlingTransparent)  // 查询预设元素列表
+		klingRouter.POST("/general/delete-elements", controller.RelayKlingTransparent)  // 删除元素
+		klingRouter.GET("/general/custom-voices/:id", controller.RelayKlingTransparent) // 查询指定声音
+		klingRouter.GET("/general/custom-voices", controller.RelayKlingTransparent)     // 查询自定义声音列表
+		klingRouter.GET("/general/presets-voices", controller.RelayKlingTransparent)    // 查询预设声音列表
+		klingRouter.POST("/general/delete-voices", controller.RelayKlingTransparent)    // 删除声音
 	}
 
 	// Kling 查询路由（不需要 Distribute 中间件）
-	klingResultRouter := router.Group("/kling/v1/videos")
+	klingResultRouter := router.Group("/kling/v1")
 	klingResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
-		klingResultRouter.GET("/:id", controller.RelayKlingVideoResult)
+		klingResultRouter.GET("/videos/:id", controller.RelayKlingVideoResult)
 	}
 
 	// Kling 回调路由（不需要认证）

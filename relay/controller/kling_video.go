@@ -54,6 +54,21 @@ func DoIdentifyFace(c *gin.Context) {
 		return
 	}
 
+	// 验证 model_name
+	modelName := kling.GetModelNameFromRequest(request)
+	needValidate, isValid, errMsg := kling.ValidateModelName(kling.RequestTypeIdentifyFace, modelName)
+	if needValidate && !isValid {
+		logger.SysError(fmt.Sprintf("Kling identify-face model_name validation failed: user_id=%d, model=%s, error=%s",
+			meta.UserId, modelName, errMsg))
+		errResp := openai.ErrorWrapper(
+			fmt.Errorf(errMsg),
+			"invalid_model_name",
+			http.StatusBadRequest,
+		)
+		c.JSON(errResp.StatusCode, errResp.Error)
+		return
+	}
+
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -327,16 +342,16 @@ func DoAdvancedLipSync(c *gin.Context) {
 	}
 
 	// 更新 Video 记录
-	video.TaskId = klingResp.Data.TaskID
-	video.Status = klingResp.Data.TaskStatus
-	video.VideoId = klingResp.Data.TaskID
+	video.TaskId = klingResp.GetTaskID()
+	video.Status = klingResp.GetTaskStatus()
+	video.VideoId = klingResp.GetTaskID()
 	if err := video.Update(); err != nil {
 		logger.SysError(fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v",
 			video.Id, video.TaskId, err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling advanced-lip-sync task created: id=%d, task_id=%s, user_id=%d, quota=%d",
-		video.Id, klingResp.Data.TaskID, meta.UserId, quota))
+		video.Id, klingResp.GetTaskID(), meta.UserId, quota))
 
 	// 返回 Kling 原始响应
 	c.JSON(http.StatusOK, klingResp)
