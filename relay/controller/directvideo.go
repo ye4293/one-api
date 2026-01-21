@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -793,6 +794,7 @@ func handleRunwayVideoBilling(c *gin.Context, meta *util.RelayMeta, modelName st
 // 功能：
 // 1. 透传 multipart/form-data 请求到 OpenAI Sora API
 // 2. 创建数据库记录并执行计费
+// 3. 支持 Azure 渠道（路径为 /openai/v1/videos）
 func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 	ctx := c.Request.Context()
 
@@ -808,8 +810,13 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 		return
 	}
 
-	// 构建完整的请求URL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", meta.BaseURL)
+	// 构建完整的请求URL，Azure 渠道需要添加 /openai 前缀
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", meta.BaseURL)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", meta.BaseURL)
+	}
 
 	// 解析 multipart form
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32MB
@@ -950,9 +957,13 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 		return
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
@@ -1056,13 +1067,23 @@ func GetSoraVideoResult(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s", baseURL, videoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s", baseURL, videoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseURL, videoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseURL, videoId)
+		}
 	}
 
 	logger.Debugf(ctx, "GetSoraVideoResult - requesting URL: %s", fullRequestUrl)
@@ -1075,8 +1096,12 @@ func GetSoraVideoResult(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 设置请求头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	// 设置请求头，Azure 渠道使用 Api-key header
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
@@ -1157,13 +1182,23 @@ func GetSoraVideoContent(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s/content", baseURL, videoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}/content
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s/content", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/content", baseURL, videoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, videoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s/content", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, videoId)
+		}
 	}
 
 	logger.Debugf(ctx, "GetSoraVideoContent - requesting URL: %s", fullRequestUrl)
@@ -1176,8 +1211,12 @@ func GetSoraVideoContent(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 设置请求头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	// 设置请求头，Azure 渠道使用 Api-key header
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "*/*")
 
 	// 为视频下载创建专门的 HTTP client，设置更长的超时时间
@@ -1518,13 +1557,23 @@ func DirectRelaySoraVideoRemix(c *gin.Context, originalVideoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s/remix", baseURL, originalVideoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}/remix
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s/remix", baseURL, originalVideoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/remix", baseURL, originalVideoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseURL, originalVideoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s/remix", baseURL, originalVideoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseURL, originalVideoId)
+		}
 	}
 
 	logger.Debugf(ctx, "DirectRelaySoraVideoRemix - requesting URL: %s", fullRequestUrl)
@@ -1543,9 +1592,13 @@ func DirectRelaySoraVideoRemix(c *gin.Context, originalVideoId string) {
 		return
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
