@@ -258,12 +258,12 @@ func SetRelayRouter(router *gin.Engine) {
 
 		// ========== 查询和管理接口（透明代理，不计费）==========
 		// 使用通配符批量处理所有 GET 查询接口
-		klingRouter.GET("/videos/*path", controller.RelayKlingTransparent)             // 视频类查询
-		klingRouter.GET("/audio/*path", controller.RelayKlingTransparent)              // 音频类查询
-		klingRouter.GET("/images/*path", controller.RelayKlingTransparent)             // 图片类查询
-		klingRouter.GET("/general/*path", controller.RelayKlingTransparent)            // 通用类查询
-		klingRouter.POST("/general/delete-elements", controller.RelayKlingTransparent) // 删除元素
-		klingRouter.POST("/general/delete-voices", controller.RelayKlingTransparent)   // 删除声音
+		klingRouter.GET("/videos/*path", controller.RelayKlingTransparent)  // 视频类查询
+		klingRouter.GET("/audio/*path", controller.RelayKlingTransparent)   // 音频类查询
+		klingRouter.GET("/images/*path", controller.RelayKlingTransparent)  // 图片类查询
+		klingRouter.GET("/general/*path", controller.RelayKlingTransparent) // 通用类查询
+		//klingRouter.POST("/general/delete-elements", controller.RelayKlingTransparent) // 删除元素
+		//klingRouter.POST("/general/delete-voices", controller.RelayKlingTransparent)   // 删除声音
 	}
 	// Kling 查询路由（不需要 Distribute 中间件）
 	klingResultRouter := router.Group("/kling/v1")
