@@ -29,6 +29,58 @@ func DetermineRequestType(path string) string {
 	} else if strings.Contains(path, "/advanced-lip-sync") {
 		return RequestTypeAdvancedLipSync
 	}
+
+	// 视频类（新增6个）
+	if strings.Contains(path, "/motion-control") {
+		return RequestTypeMotionControl
+	} else if strings.Contains(path, "/multi-elements") {
+		return RequestTypeMultiElements
+	} else if strings.Contains(path, "/video-extend") {
+		return RequestTypeVideoExtend
+	} else if strings.Contains(path, "/avatar/image2video") {
+		return RequestTypeAvatarI2V
+	} else if strings.Contains(path, "/effects") {
+		return RequestTypeVideoEffects
+	} else if strings.Contains(path, "/image-recognize") {
+		return RequestTypeImageRecognize
+	}
+
+	// 音频类（新增3个）
+	if strings.Contains(path, "/text-to-audio") {
+		return RequestTypeTextToAudio
+	} else if strings.Contains(path, "/video-to-audio") {
+		return RequestTypeVideoToAudio
+	} else if strings.Contains(path, "/tts") {
+		return RequestTypeTTS
+	}
+
+	// 图片类（新增4个）
+	if strings.Contains(path, "/generations") {
+		return RequestTypeImageGeneration
+	} else if strings.Contains(path, "/omni-image") {
+		return RequestTypeOmniImage
+	} else if strings.Contains(path, "/multi-image2image") {
+		return RequestTypeMultiImage2Image
+	} else if strings.Contains(path, "/editing/expand") {
+		return RequestTypeImageExpand
+	}
+
+	// 通用类（新增2个 + 4个查询管理接口）
+	// 注意：更具体的路径匹配要放在前面
+	if strings.Contains(path, "/presets-elements") {
+		return RequestTypePresetsElements
+	} else if strings.Contains(path, "/delete-elements") {
+		return RequestTypeDeleteElements
+	} else if strings.Contains(path, "/custom-elements") {
+		return RequestTypeCustomElements
+	} else if strings.Contains(path, "/presets-voices") {
+		return RequestTypePresetsVoices
+	} else if strings.Contains(path, "/delete-voices") {
+		return RequestTypeDeleteVoices
+	} else if strings.Contains(path, "/custom-voices") {
+		return RequestTypeCustomVoices
+	}
+
 	return ""
 }
 
@@ -67,7 +119,7 @@ func GetAspectRatioFromRequest(params map[string]interface{}) string {
 
 // GetModelNameFromRequest 从请求参数中提取模型名称
 func GetModelNameFromRequest(params map[string]interface{}) string {
-	if model, ok := params["model"].(string); ok {
+	if model, ok := params["model_name"].(string); ok {
 		return model
 	}
 	return ""

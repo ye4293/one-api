@@ -24,8 +24,8 @@ func CreateRootAccountIfNeed() error {
 	var user User
 	//if user.Status != util.UserStatusEnabled {
 	if err := DB.First(&user).Error; err != nil {
-		logger.SysLog("no user exists, creating a root user for you: username is root, password is 123456")
-		hashedPassword, err := common.Password2Hash("123456")
+		logger.SysLog("no user exists, creating a root user for you: username is root, password is 12345678")
+		hashedPassword, err := common.Password2Hash("12345678")
 		if err != nil {
 			return err
 		}

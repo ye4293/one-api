@@ -18,6 +18,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/relay/util"
 )
 
 func stopReasonClaude2OpenAI(reason *string) string {
@@ -71,9 +72,15 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		}
 	}
 
+	// 处理 MaxTokens：优先使用 MaxCompletionTokens（OpenAI 新格式），其次使用 MaxTokens
+	maxTokens := textRequest.MaxTokens
+	if textRequest.MaxCompletionTokens > 0 {
+		maxTokens = textRequest.MaxCompletionTokens
+	}
+
 	claudeRequest := Request{
 		Model:       textRequest.Model,
-		MaxTokens:   textRequest.MaxTokens,
+		MaxTokens:   maxTokens,
 		Temperature: textRequest.Temperature,
 		TopP:        textRequest.TopP,
 		TopK:        textRequest.TopK,
@@ -93,11 +100,25 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				}
 			}
 		} else if toolChoiceType, ok := textRequest.ToolChoice.(string); ok {
-			if toolChoiceType == "any" {
-				claudeToolChoice.Type = toolChoiceType
+			// OpenAI tool_choice 到 Claude tool_choice 的映射：
+			// "auto" -> "auto" (模型自行决定)
+			// "required" -> "any" (必须调用工具)
+			// "any" -> "any" (兼容已使用 Claude 格式的请求)
+			// "none" -> 不设置 tool_choice (当前保持 auto，Claude 会自行判断)
+			switch toolChoiceType {
+			case "required", "any":
+				claudeToolChoice.Type = "any"
+			case "auto":
+				claudeToolChoice.Type = "auto"
+			case "none":
+				// 对于 none，不设置 tool_choice，让 Claude 自行判断
+				// 但由于有 tools，仍然可能调用，如果完全不想调用需要不传 tools
+				claudeToolChoice = nil
 			}
 		}
-		claudeRequest.ToolChoice = claudeToolChoice
+		if claudeToolChoice != nil {
+			claudeRequest.ToolChoice = claudeToolChoice
+		}
 	}
 	if claudeRequest.MaxTokens == 0 {
 		claudeRequest.MaxTokens = 4096
@@ -267,7 +288,7 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 		FinishReason: stopReasonClaude2OpenAI(claudeResponse.StopReason),
 	}
 	fullTextResponse := openai.TextResponse{
-		Id:      fmt.Sprintf("chatcmpl-%s", claudeResponse.Id),
+		Id:      claudeResponse.Id,
 		Model:   claudeResponse.Model,
 		Object:  "chat.completion",
 		Created: helper.GetTimestamp(),
@@ -276,7 +297,7 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 	return &fullTextResponse
 }
 
-func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusCode, *model.Usage) {
+func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMeta) (*model.ErrorWithStatusCode, *model.Usage) {
 	createdTime := helper.GetTimestamp()
 
 	// 获取请求开始时间用于计算首字延迟
@@ -335,7 +356,7 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			usage.CompletionTokens += meta.Usage.OutputTokens
 			if len(meta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
 				modelName = meta.Model
-				id = fmt.Sprintf("chatcmpl-%s", meta.Id)
+				id = meta.Id
 				continue
 			} else { // finish_reason case
 				if len(lastToolCallChoice.Delta.ToolCalls) > 0 {
@@ -384,6 +405,31 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 
 	if err := scanner.Err(); err != nil {
 		logger.SysError("error reading stream: " + err.Error())
+	}
+
+	// 如果需要包含 usage 信息，在流结束时发送一个包含 usage 的最终 chunk
+	if relayMeta != nil && relayMeta.ShouldIncludeUsage {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		// 防御性处理：如果 id 或 modelName 为空，使用默认值
+		responseId := id
+		if responseId == "" {
+			responseId = helper.GetUUID()
+		}
+		responseName := modelName
+		if responseName == "" {
+			responseName = relayMeta.ActualModelName
+		}
+		finalResponse := &openai.ChatCompletionsStreamResponse{
+			Id:      responseId,
+			Object:  "chat.completion.chunk",
+			Created: createdTime,
+			Model:   responseName,
+			Choices: []openai.ChatCompletionsStreamResponseChoice{},
+			Usage:   &usage,
+		}
+		if err := render.ObjectData(c, finalResponse); err != nil {
+			logger.SysError("error sending final usage chunk: " + err.Error())
+		}
 	}
 
 	render.Done(c)

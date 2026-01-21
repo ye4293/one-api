@@ -46,6 +46,8 @@ type RelayMeta struct {
 	IsMultiKey   bool
 	Keys         []string // 存储所有解析的密钥
 	DisablePing  bool
+	// 流式响应是否包含 usage 信息
+	ShouldIncludeUsage bool
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）

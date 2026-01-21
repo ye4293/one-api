@@ -36,6 +36,14 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	meta.IsStream = textRequest.Stream
 
+	// 只有流式请求才解析 stream_options.include_usage
+	if textRequest.Stream {
+		meta.ShouldIncludeUsage = true // 默认为 true
+		if textRequest.StreamOptions != nil {
+			meta.ShouldIncludeUsage = textRequest.StreamOptions.IncludeUsage
+		}
+	}
+
 	// map model name
 	var isModelMapped bool
 	meta.OriginModelName = textRequest.Model
