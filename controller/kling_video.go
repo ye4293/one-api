@@ -527,8 +527,15 @@ func RelayKlingTransparent(c *gin.Context) {
 		return
 	}
 
-	// 初始化 Adaptor
-	adaptor := &kling.Adaptor{RequestType: requestType}
+	// 提取完整路径（去掉 /kling 前缀）
+	// 例如：/kling/v1/videos/text2video/123 -> /v1/videos/text2video/123
+	fullPath := strings.TrimPrefix(c.Request.URL.Path, "/kling")
+
+	// 初始化 Adaptor（透传模式：使用完整路径）
+	adaptor := &kling.Adaptor{
+		RequestType: requestType,
+		FullPath:    fullPath,
+	}
 	adaptor.Init(meta)
 
 	// 准备请求体（对于 GET 和 DELETE 请求可能为空）
