@@ -59,6 +59,14 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
 
+	// 验证按次计费接口的 model_name 合法性
+	needValidate, isValid, errMsg := kling.ValidateModelName(requestType, model)
+	if needValidate && !isValid {
+		logger.SysError(fmt.Sprintf("Kling model_name validation failed: user_id=%d, request_type=%s, model=%s, error=%s",
+			meta.UserId, requestType, model, errMsg))
+		return nil, fmt.Errorf(errMsg)
+	}
+
 	// 计算预估费用
 	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
 
