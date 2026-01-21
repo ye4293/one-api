@@ -843,16 +843,8 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			lastUsageMetadata = geminiResponse.UsageMetadata
 		}
 
-		// 处理响应中的图片，上传到 R2 并替换为 URL
-		ctx := c.Request.Context()
-		modifiedData, processErr := processGeminiResponseImages(ctx, []byte(data))
-		if processErr != nil {
-			logger.Warnf(ctx, "Failed to process stream response images: %v, using original", processErr)
-			err = helper.StringData(c, data)
-		} else {
-			err = helper.StringData(c, string(modifiedData))
-		}
-
+		// 直接返回原始数据，不处理图片
+		err = helper.StringData(c, data)
 		if err != nil {
 			logger.Error(c, err.Error())
 		}
