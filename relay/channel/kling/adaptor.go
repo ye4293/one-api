@@ -141,16 +141,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 			Error:      model.Error{Message: "解析响应失败: " + unmarshalErr.Error()},
 		}
 	}
-	logger.SysLog(fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s",
-		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus()))
 
-	if klingResp.Code != 0 {
-		return nil, &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error:      model.Error{Message: klingResp.Message},
-		}
-	}
+	// 记录日志（不管成功失败）
+	logger.Debug(c, fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s, message=%s",
+		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus(), klingResp.Message))
 
+	// 不管成功失败，都透传原始 Kling 返回数据
 	return &klingResp, nil
 }
 
