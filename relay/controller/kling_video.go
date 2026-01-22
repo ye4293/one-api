@@ -391,6 +391,29 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 	}
 
 	// 从 result 字段解析查询响应数据
+	// 先尝试解析为 CallbackNotification（回调保存的格式）
+	var notification kling.CallbackNotification
+	if err := json.Unmarshal([]byte(video.Result), &notification); err == nil {
+		// 成功解析为 CallbackNotification，转换为 QueryTaskResponse
+		response := kling.QueryTaskResponse{
+			Code:      0,
+			Message:   "success",
+			RequestID: fmt.Sprintf("query-%s", taskID),
+			Data: kling.TaskData{
+				TaskID:        notification.TaskID,
+				TaskStatus:    notification.TaskStatus,
+				TaskStatusMsg: notification.TaskStatusMsg,
+				TaskInfo:      notification.TaskInfo,
+				CreatedAt:     notification.CreatedAt,
+				UpdatedAt:     notification.UpdatedAt,
+				TaskResult:    notification.TaskResult,
+			},
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// 如果不是 CallbackNotification，尝试解析为 QueryTaskResponse（兼容旧格式）
 	var queryResponse kling.QueryTaskResponse
 	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
 		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
