@@ -119,6 +119,35 @@ func buildCallbackURL() (string, error) {
 }
 
 // RelayKlingVideo 处理 Kling 视频/音频/图片生成请求（统一入口）
+// @Summary Kling 视频/音频/图片生成接口
+// @Description 统一的 Kling API 入口，支持视频生成(text2video/image2video等)、音频生成(text-to-audio/tts等)、图片生成(generations等)。根据不同路径自动识别请求类型并处理。异步接口返回任务ID，通过回调或查询接口获取结果；同步接口立即返回结果。
+// @Tags Kling API
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer {token}"
+// @Param body body object true "请求参数(根据具体接口类型不同)"
+// @Success 200 {object} object "成功响应，返回任务ID或结果"
+// @Failure 400 {object} object "请求参数错误"
+// @Failure 402 {object} object "余额不足"
+// @Failure 500 {object} object "服务器错误"
+// @Router /kling/v1/videos/text2video [post]
+// @Router /kling/v1/videos/image2video [post]
+// @Router /kling/v1/videos/omni-video [post]
+// @Router /kling/v1/videos/multi-image2video [post]
+// @Router /kling/v1/videos/motion-control [post]
+// @Router /kling/v1/videos/multi-elements/init-selection [post]
+// @Router /kling/v1/videos/video-extend [post]
+// @Router /kling/v1/videos/avatar/image2video [post]
+// @Router /kling/v1/videos/effects [post]
+// @Router /kling/v1/videos/image-recognize [post]
+// @Router /kling/v1/audio/text-to-audio [post]
+// @Router /kling/v1/audio/video-to-audio [post]
+// @Router /kling/v1/audio/tts [post]
+// @Router /kling/v1/images/generations [post]
+// @Router /kling/v1/images/omni-image [post]
+// @Router /kling/v1/images/multi-image2image [post]
+// @Router /kling/v1/images/editing/expand [post]
+// @Router /kling/v1/general/custom-voices [post]
 func RelayKlingVideo(c *gin.Context) {
 	// 确定请求类型
 	requestType := kling.DetermineRequestType(c.Request.URL.Path)
@@ -323,12 +352,33 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 
 // RelayKlingVideoResult 查询任务结果（从数据库读取）
 // 统一入口，调用 relay/controller 中的实现
+// @Summary 查询 Kling 任务结果
+// @Description 通过任务ID查询任务执行结果，返回任务状态、生成的视频/音频/图片URL等信息
+// @Tags Kling API
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer {token}"
+// @Param id path string true "任务ID"
+// @Success 200 {object} object "任务详情(包含状态、结果URL等)"
+// @Failure 404 {object} object "任务不存在"
+// @Failure 500 {object} object "服务器错误"
+// @Router /kling/result/video/{id} [get]
 func RelayKlingVideoResult(c *gin.Context) {
 	taskID := c.Param("id")
 	controller.GetKlingVideoResult(c, taskID)
 }
 
 // HandleKlingCallback 处理 Kling 回调通知
+// @Summary Kling 异步任务回调接口(内部接口)
+// @Description Kling API 在任务完成后会调用此接口推送结果。收到回调后更新任务状态、保存结果URL并扣费。此接口由 Kling 服务端调用，不需要认证。
+// @Tags Kling API - Internal
+// @Accept json
+// @Produce json
+// @Param body body object true "Kling 回调通知数据(包含 task_id、task_status、task_result 等)"
+// @Success 200 {object} object "处理成功"
+// @Failure 400 {object} object "请求格式错误"
+// @Failure 404 {object} object "任务不存在"
+// @Router /kling/internal/callback [post]
 func HandleKlingCallback(c *gin.Context) {
 	// 读取原始body
 	bodyBytes, err := c.GetRawData()
@@ -515,6 +565,20 @@ func DoCustomElements(c *gin.Context) {
 
 // RelayKlingTransparent 透明代理接口（不做数据库操作，不计费）
 // 用于 custom-elements 和 custom-voices 的查询和管理操作
+// @Summary Kling 透明代理接口(查询/管理操作)
+// @Description 透明代理 Kling API 的查询和管理类接口，不做数据库记录和扣费。支持查询训练元素、声音库、任务详情等 GET 请求，以及删除元素/声音等操作。
+// @Tags Kling API
+// @Accept json
+// @Produce json
+// @Param Authorization header string true "Bearer {token}"
+// @Param path path string true "具体的 API 路径"
+// @Success 200 {object} object "透传 Kling API 原始响应"
+// @Failure 400 {object} object "请求参数错误"
+// @Failure 500 {object} object "服务器错误"
+// @Router /kling/v1/videos/{path} [get]
+// @Router /kling/v1/audio/{path} [get]
+// @Router /kling/v1/images/{path} [get]
+// @Router /kling/v1/general/{path} [get]
 func RelayKlingTransparent(c *gin.Context) {
 	meta := util.GetRelayMeta(c)
 
