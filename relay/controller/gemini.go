@@ -727,15 +727,18 @@ func processGeminiResponseImages(ctx context.Context, responseBody []byte) ([]by
 				continue
 			}
 
-			// 用 URL 替换 base64 数据
-			inlineData["data"] = url
+			// 将 URL 转换为 base64 编码
+			urlBase64 := base64.StdEncoding.EncodeToString([]byte(url))
+
+			// 用 base64 编码的 URL 替换原始数据
+			inlineData["data"] = urlBase64
 			part["inlineData"] = inlineData
 			parts[j] = part
 			content["parts"] = parts
 			candidate["content"] = content
 			candidates[i] = candidate
 
-			logger.Infof(ctx, "Successfully replaced image with R2 URL: %s", url)
+			logger.Infof(ctx, "Successfully replaced image with base64-encoded R2 URL: %s", url)
 			modified = true
 		}
 	}
