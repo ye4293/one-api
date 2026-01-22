@@ -52,10 +52,11 @@ type urlDownloadResult struct {
 // 返回: 处理后的请求体、是否处理了URL、错误信息
 func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byte, bool, error) {
 	var request map[string]interface{}
+	
 	if err := json.Unmarshal(requestBody, &request); err != nil {
 		return requestBody, false, err
 	}
-
+	
 	contents, ok := request["contents"].([]interface{})
 	if !ok {
 		return requestBody, false, nil
@@ -80,7 +81,7 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			inlineData, ok := partMap["inlineData"].(map[string]interface{})
+			inlineData, ok := partMap["inline_data"].(map[string]interface{})
 			if !ok {
 				continue
 			}
@@ -90,6 +91,7 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
+			
 			// 尝试判断是否为 URL
 			var finalURL string
 
@@ -113,8 +115,8 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 			}
 
 			// 获取原始的 mimeType
-			originalMimeType, _ := inlineData["mimeType"].(string)
-
+			originalMimeType, _ := inlineData["mime_type"].(string)
+            logger.Infof(ctx, "originalMimeType: %s", originalMimeType)
 			// 添加到下载任务列表
 			downloadTasks = append(downloadTasks, urlDownloadTask{
 				contentIdx:       i,
@@ -196,17 +198,17 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 		contentMap := contents[result.contentIdx].(map[string]interface{})
 		parts := contentMap["parts"].([]interface{})
 		partMap := parts[result.partIdx].(map[string]interface{})
-		inlineData := partMap["inlineData"].(map[string]interface{})
+		inlineData := partMap["inline_data"].(map[string]interface{})
 
 		// 更新 mimeType（如果原本没有设置）
 		if task.originalMimeType == "" && result.mimeType != "" {
-			inlineData["mimeType"] = result.mimeType
+			inlineData["mime_type"] = result.mimeType
 		}
 
 		// 更新 data 为 base64 格式
 		inlineData["data"] = result.base64Data
 
-		partMap["inlineData"] = inlineData
+		partMap["inline_data"] = inlineData
 		parts[result.partIdx] = partMap
 		contentMap["parts"] = parts
 		contents[result.contentIdx] = contentMap
