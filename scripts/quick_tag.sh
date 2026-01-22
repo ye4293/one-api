@@ -43,16 +43,17 @@ fi
 # 保存当前分支
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# 生成 tag
-TAG_NAME="alphaas-$(date +%m%d%H%M)"
-echo "📦 Tag 名称: ${TAG_NAME}"
-
-# 切换并拉取
+# 切换到 main 分支
 echo "🔄 切换到 main 分支..."
 git checkout main
 
+# 拉取最新代码
 echo "⬇️  拉取最新代码..."
 git pull origin main
+
+# 生成 tag (基于 main 分支的最新代码)
+TAG_NAME="alphaas-$(date +%m%d%H%M)"
+echo "📦 Tag 名称: ${TAG_NAME}"
 
 # 检查 tag 是否已存在
 if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
