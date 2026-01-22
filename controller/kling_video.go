@@ -55,17 +55,11 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	}
 
 	// 提取请求参数
-	model := kling.GetModelNameFromRequest(requestParams)
+	userModel := kling.GetModelNameFromRequest(requestParams)
+	// 根据 requestType 自动确定 model（在映射表中的使用固定值，不在的使用用户传递的值）
+	model := kling.GetModelNameByRequestType(requestType, userModel)
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
-
-	// 验证按次计费接口的 model_name 合法性
-	needValidate, isValid, errMsg := kling.ValidateModelName(requestType, model)
-	if needValidate && !isValid {
-		logger.SysError(fmt.Sprintf("Kling model_name validation failed: user_id=%d, request_type=%s, model=%s, error=%s",
-			meta.UserId, requestType, model, errMsg))
-		return nil, fmt.Errorf(errMsg)
-	}
 
 	// 计算预估费用
 	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
@@ -215,9 +209,16 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		return
 	}
 
+	// 检查 Kling API 返回的错误码
+	if klingResp.Code != 0 {
+		task.MarkFailed(c.Request.Context(), klingResp.Message)
+		c.JSON(http.StatusOK, klingResp) // 透传原始响应
+		return
+	}
+
 	// 更新任务记录
 	if err := task.UpdateWithKlingResponse(klingResp); err != nil {
-		logger.SysError(fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
+		logger.Error(c, fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling task submitted: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
@@ -277,16 +278,16 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	logger.SysLog(fmt.Sprintf("Kling sync task response: type=%s, channel_id=%d, user_id=%d, response=%s",
 		req.RequestType, req.Meta.ChannelId, req.Meta.UserId, string(respJSON)))
 
-	// 检查 message 字段
-	if !kling.IsSuccessMessage(klingResp.Message) {
-		failReason := fmt.Sprintf("API returned non-success message: %s", klingResp.Message)
+	// 检查 code 和 message 字段
+	if klingResp.Code != 0 || !kling.IsSuccessMessage(klingResp.Message) {
+		failReason := fmt.Sprintf("API returned error: code=%d, message=%s", klingResp.Code, klingResp.Message)
 		task.SetTaskID(klingResp.GetTaskID())
 		task.MarkFailed(c.Request.Context(), failReason)
 
-		logger.Warn(c.Request.Context(), fmt.Sprintf("Sync task failed: id=%d, task_id=%s, message=%s, type=%s",
-			task.GetID(), klingResp.GetTaskID(), klingResp.Message, req.RequestType))
+		logger.Warn(c.Request.Context(), fmt.Sprintf("Sync task failed: id=%d, task_id=%s, code=%d, message=%s, type=%s",
+			task.GetID(), klingResp.GetTaskID(), klingResp.Code, klingResp.Message, req.RequestType))
 
-		// 返回响应但不扣费
+		// 透传原始响应但不扣费
 		c.JSON(http.StatusOK, klingResp)
 		return
 	}
@@ -385,24 +386,9 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 		return
 	}
 
-	// 转换回调数据为查询数据格式
-	queryResponse := kling.QueryTaskResponse{
-		Code:      0,
-		Message:   "success",
-		RequestID: fmt.Sprintf("callback-%s", taskID),
-		Data: kling.TaskData{
-			TaskID:        notification.TaskID,
-			TaskStatus:    notification.TaskStatus,
-			TaskStatusMsg: notification.TaskStatusMsg,
-			TaskInfo:      notification.TaskInfo,
-			CreatedAt:     notification.CreatedAt,
-			UpdatedAt:     notification.UpdatedAt,
-			TaskResult:    notification.TaskResult,
-		},
-	}
-
-	queryResponseBytes, _ := json.Marshal(queryResponse)
-	task.SetResult(string(queryResponseBytes))
+	// 直接保存 Kling 回调的原始 JSON（不做转换，不生成虚假的 request_id）
+	notificationBytes, _ := json.Marshal(notification)
+	task.SetResult(string(notificationBytes))
 
 	// 处理成功状态
 	if notification.TaskStatus == kling.TaskStatusSucceed {
@@ -526,8 +512,15 @@ func RelayKlingTransparent(c *gin.Context) {
 		return
 	}
 
-	// 初始化 Adaptor
-	adaptor := &kling.Adaptor{RequestType: requestType}
+	// 提取完整路径（去掉 /kling 前缀）
+	// 例如：/kling/v1/videos/text2video/123 -> /v1/videos/text2video/123
+	fullPath := strings.TrimPrefix(c.Request.URL.Path, "/kling")
+
+	// 初始化 Adaptor（透传模式：使用完整路径）
+	adaptor := &kling.Adaptor{
+		RequestType: requestType,
+		FullPath:    fullPath,
+	}
 	adaptor.Init(meta)
 
 	// 准备请求体（对于 GET 和 DELETE 请求可能为空）

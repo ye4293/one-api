@@ -211,10 +211,12 @@ func (tw *TaskWrapper) Update() error {
 	return tw.image.Update()
 }
 
-// UpdateWithKlingResponse 使用 Kling 响应更新任务
+// UpdateWithKlingResponse 使用 Kling 响应更新异步任务
+// 异步任务提交成功后固定设置为 submitted 状态，等待回调更新
 func (tw *TaskWrapper) UpdateWithKlingResponse(klingResp *KlingResponse) error {
 	tw.SetTaskID(klingResp.GetTaskID())
-	tw.SetStatus(klingResp.GetTaskStatus())
+	// 异步任务固定设置为 submitted，防止 Kling 返回 success 导致无法回调更新
+	tw.SetStatus(TaskStatusSubmitted)
 
 	// 保存完整响应
 	if respJSON, err := json.Marshal(klingResp); err == nil {

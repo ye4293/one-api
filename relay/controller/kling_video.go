@@ -54,21 +54,6 @@ func DoIdentifyFace(c *gin.Context) {
 		return
 	}
 
-	// 验证 model_name
-	modelName := kling.GetModelNameFromRequest(request)
-	needValidate, isValid, errMsg := kling.ValidateModelName(kling.RequestTypeIdentifyFace, modelName)
-	if needValidate && !isValid {
-		logger.SysError(fmt.Sprintf("Kling identify-face model_name validation failed: user_id=%d, model=%s, error=%s",
-			meta.UserId, modelName, errMsg))
-		errResp := openai.ErrorWrapper(
-			fmt.Errorf(errMsg),
-			"invalid_model_name",
-			http.StatusBadRequest,
-		)
-		c.JSON(errResp.StatusCode, errResp.Error)
-		return
-	}
-
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -127,20 +112,15 @@ func DoIdentifyFace(c *gin.Context) {
 	if klingResp.Code != 0 {
 		logger.SysError(fmt.Sprintf("Kling identify-face API error: user_id=%d, code=%d, message=%s",
 			meta.UserId, klingResp.Code, klingResp.Message))
-		errResp := openai.ErrorWrapper(
-			fmt.Errorf(klingResp.Message),
-			"kling_api_error",
-			resp.StatusCode,
-		)
-		c.JSON(errResp.StatusCode, errResp.Error)
+		// 透传原始响应，不扣费
+		c.JSON(http.StatusOK, klingResp)
 		return
 	}
 
 	// 获取模型信息用于计费
-	model := kling.GetModelNameFromRequest(request)
-	if model == "" {
-		model = "kling-v1" // 默认模型
-	}
+	userModel := kling.GetModelNameFromRequest(request)
+	// 根据 requestType 自动确定 model（identify-face 使用固定的 kling-identify-face）
+	model := kling.GetModelNameByRequestType(kling.RequestTypeIdentifyFace, userModel)
 
 	// 计算费用（identify-face 固定 mode=std，不记录 duration）
 	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "")
@@ -338,6 +318,17 @@ func DoAdvancedLipSync(c *gin.Context) {
 		video.FailReason = errWithCode.Error.Message
 		video.Update()
 		c.JSON(errWithCode.StatusCode, errWithCode.Error)
+		return
+	}
+
+	// 检查 Kling API 返回的错误码
+	if klingResp.Code != 0 {
+		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync API error: user_id=%d, video_id=%d, code=%d, message=%s",
+			meta.UserId, video.Id, klingResp.Code, klingResp.Message))
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = klingResp.Message
+		video.Update()
+		c.JSON(http.StatusOK, klingResp) // 透传原始响应
 		return
 	}
 

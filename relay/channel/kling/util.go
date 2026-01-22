@@ -119,7 +119,7 @@ func GetAspectRatioFromRequest(params map[string]interface{}) string {
 
 // GetModelNameFromRequest 从请求参数中提取模型名称
 func GetModelNameFromRequest(params map[string]interface{}) string {
-	if model, ok := params["model"].(string); ok {
+	if model, ok := params["model_name"].(string); ok {
 		return model
 	}
 	return ""

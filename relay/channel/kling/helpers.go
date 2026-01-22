@@ -1,10 +1,8 @@
 package kling
 
 import (
-	"fmt"
 	"strings"
 )
-
 
 // IsSyncRequestType 判断是否为同步请求类型
 // 同步接口会立即返回结果，不需要回调
@@ -52,41 +50,29 @@ func FormatDuration(durationStr string) string {
 	return strings.TrimSuffix(durationStr, "s")
 }
 
-// RequiredModelNameMapping 按次计费接口必须使用的 model_name 映射
-// key: requestType, value: 合法的 model_name 列表
-var RequiredModelNameMapping = map[string][]string{
-	RequestTypeIdentifyFace:   {"kling-identify-face"},
-	RequestTypeImageRecognize: {"kling-image-recognize"},
-	RequestTypeCustomVoices:   {"kling-custom-voices"},
-	RequestTypeTTS:            {"kling-tts"},
-	RequestTypeTextToAudio:    {"kling-text-to-audio"},
-	RequestTypeVideoToAudio:   {"kling-video-to-audio"},
-	RequestTypeCustomElements: {"kling-custom-elements"},
+// RequiredModelNameMapping 需要使用固定 model_name 的接口映射
+// 这些接口通过 requestType 自动确定 model_name，用于计费识别
+// key: requestType, value: 固定的 model_name
+var RequiredModelNameMapping = map[string]string{
+	RequestTypeIdentifyFace:     "kling-identify-face",
+	RequestTypeImageRecognize:   "kling-image-recognize",
+	RequestTypeCustomVoices:     "kling-custom-voices",
+	RequestTypeTTS:              "kling-tts",
+	RequestTypeTextToAudio:      "kling-text-to-audio",
+	RequestTypeVideoToAudio:     "kling-video-to-audio",
+	RequestTypeCustomElements:   "kling-custom-elements",
+	RequestTypeMotionControl:    "kling-motion-control",
+	RequestTypeVideoExtend:      "kling-video-extend",
+	RequestTypeVideoEffects:     "kling-video-effects",
+	RequestTypeAvatarI2V:        "kling-avatar-image2video",
+	RequestTypeImageExpand:      "kling-image-expand",
 }
 
-// ValidateModelName 验证按次计费接口的 model_name 是否合法
-// 返回: (是否需要验证, 是否合法, 错误信息)
-func ValidateModelName(requestType string, modelName string) (needValidate bool, isValid bool, errMsg string) {
-	// 检查是否需要验证
-	allowedNames, needValidate := RequiredModelNameMapping[requestType]
-	if !needValidate {
-		// 不在按次计费列表中，不需要验证
-		return false, true, ""
+// GetModelNameByRequestType 根据 requestType 获取应该使用的 model_name
+// 如果 requestType 在映射表中，返回固定的 model_name；否则返回用户传递的 model
+func GetModelNameByRequestType(requestType string, userModel string) string {
+	if fixedModel, exists := RequiredModelNameMapping[requestType]; exists {
+		return fixedModel
 	}
-
-	// 需要验证，检查 model_name 是否为空
-	if modelName == "" {
-		return true, false, fmt.Sprintf("按次计费接口 %s 必须提供 model_name 参数，支持的值: %s", requestType, strings.Join(allowedNames, ", "))
-	}
-
-	// 检查 model_name 是否在允许列表中
-	for _, allowed := range allowedNames {
-		if strings.EqualFold(modelName, allowed) {
-			return true, true, ""
-		}
-	}
-
-	// model_name 不合法
-	errMsg = fmt.Sprintf("model_name '%s' 不合法，接口 %s 仅支持: %s", modelName, requestType, strings.Join(allowedNames, ", "))
-	return true, false, errMsg
+	return userModel
 }

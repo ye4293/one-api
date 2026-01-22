@@ -13,7 +13,8 @@ import (
 )
 
 type Adaptor struct {
-	RequestType string // text2video/omni-video/image2video/multi-image2video
+	RequestType  string // text2video/omni-video/image2video/multi-image2video
+	FullPath     string // 透传模式下使用完整路径（包含 ID 等参数）
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -24,6 +25,11 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	baseURL := meta.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api-beijing.klingai.com"
+	}
+
+	// 透传模式：直接使用完整路径
+	if a.FullPath != "" {
+		return baseURL + a.FullPath, nil
 	}
 
 	// 根据请求类型确定路径前缀
@@ -141,16 +147,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 			Error:      model.Error{Message: "解析响应失败: " + unmarshalErr.Error()},
 		}
 	}
-	logger.SysLog(fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s",
-		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus()))
 
-	if klingResp.Code != 0 {
-		return nil, &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error:      model.Error{Message: klingResp.Message},
-		}
-	}
+	// 记录日志（不管成功失败）
+	logger.Debug(c, fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s, message=%s",
+		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus(), klingResp.Message))
 
+	// 不管成功失败，都透传原始 Kling 返回数据
 	return &klingResp, nil
 }
 
