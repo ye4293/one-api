@@ -34,6 +34,8 @@ type urlDownloadTask struct {
 	partIdx          int
 	url              string
 	originalMimeType string
+	inlineDataKey    string // 记录使用的字段名：inline_data 或 inlineData
+	mimeTypeKey      string // 记录使用的 mimeType 字段名：mime_type 或 mimeType
 }
 
 // urlDownloadResult 表示URL下载结果
@@ -52,11 +54,10 @@ type urlDownloadResult struct {
 // 返回: 处理后的请求体、是否处理了URL、错误信息
 func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byte, bool, error) {
 	var request map[string]interface{}
-	
 	if err := json.Unmarshal(requestBody, &request); err != nil {
 		return requestBody, false, err
 	}
-	
+
 	contents, ok := request["contents"].([]interface{})
 	if !ok {
 		return requestBody, false, nil
@@ -81,8 +82,17 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			inlineData, ok := partMap["inline_data"].(map[string]interface{})
-			if !ok {
+			// 兼容两种命名格式：inline_data（下划线）和 inlineData（驼峰）
+			var inlineData map[string]interface{}
+			var inlineDataKey string
+
+			if data, ok := partMap["inline_data"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inline_data"
+			} else if data, ok := partMap["inlineData"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inlineData"
+			} else {
 				continue
 			}
 
@@ -91,7 +101,6 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			
 			// 尝试判断是否为 URL
 			var finalURL string
 
@@ -114,15 +123,34 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			// 获取原始的 mimeType
-			originalMimeType, _ := inlineData["mime_type"].(string)
-            logger.Infof(ctx, "originalMimeType: %s", originalMimeType)
+			// 获取原始的 mimeType（同时兼容 mime_type 和 mimeType）
+			var originalMimeType string
+			var mimeTypeKey string
+			if mt, ok := inlineData["mime_type"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mime_type"
+			} else if mt, ok := inlineData["mimeType"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mimeType"
+			} else {
+				// 如果没有指定，根据 inlineDataKey 使用相应的默认格式
+				if inlineDataKey == "inline_data" {
+					mimeTypeKey = "mime_type"
+				} else {
+					mimeTypeKey = "mimeType"
+				}
+			}
+
+			logger.Infof(ctx, "Found %s with URL, originalMimeType: %s", inlineDataKey, originalMimeType)
+
 			// 添加到下载任务列表
 			downloadTasks = append(downloadTasks, urlDownloadTask{
 				contentIdx:       i,
 				partIdx:          j,
 				url:              finalURL,
 				originalMimeType: originalMimeType,
+				inlineDataKey:    inlineDataKey,
+				mimeTypeKey:      mimeTypeKey,
 			})
 		}
 	}
@@ -198,17 +226,20 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 		contentMap := contents[result.contentIdx].(map[string]interface{})
 		parts := contentMap["parts"].([]interface{})
 		partMap := parts[result.partIdx].(map[string]interface{})
-		inlineData := partMap["inline_data"].(map[string]interface{})
 
-		// 更新 mimeType（如果原本没有设置）
+		// 使用保存的 key 来访问 inlineData
+		inlineData := partMap[task.inlineDataKey].(map[string]interface{})
+
+		// 更新 mimeType（如果原本没有设置），使用保存的 mimeTypeKey
 		if task.originalMimeType == "" && result.mimeType != "" {
-			inlineData["mime_type"] = result.mimeType
+			inlineData[task.mimeTypeKey] = result.mimeType
 		}
 
 		// 更新 data 为 base64 格式
 		inlineData["data"] = result.base64Data
 
-		partMap["inline_data"] = inlineData
+		// 使用保存的 key 来更新 inlineData
+		partMap[task.inlineDataKey] = inlineData
 		parts[result.partIdx] = partMap
 		contentMap["parts"] = parts
 		contents[result.contentIdx] = contentMap
