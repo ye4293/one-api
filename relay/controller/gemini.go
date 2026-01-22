@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,9 +90,25 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			// 检测是否为 URL（http:// 或 https://）
-			if !strings.HasPrefix(data, "http://") && !strings.HasPrefix(data, "https://") {
-				// 不是 URL，跳过（可能已经是 base64 或 data URL）
+			// 尝试判断是否为 URL
+			var finalURL string
+
+			// 1. 先检查是否直接就是 URL
+			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+				finalURL = data
+			} else {
+				// 2. 尝试 base64 解码，看是否是编码后的 URL
+				decodedData, err := base64.StdEncoding.DecodeString(data)
+				if err == nil {
+					decodedStr := string(decodedData)
+					if strings.HasPrefix(decodedStr, "http://") || strings.HasPrefix(decodedStr, "https://") {
+						finalURL = decodedStr
+					}
+				}
+			}
+
+			// 如果不是 URL（直接或解码后），跳过
+			if finalURL == "" {
 				continue
 			}
 
@@ -102,7 +119,7 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 			downloadTasks = append(downloadTasks, urlDownloadTask{
 				contentIdx:       i,
 				partIdx:          j,
-				url:              data,
+				url:              finalURL,
 				originalMimeType: originalMimeType,
 			})
 		}
