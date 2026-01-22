@@ -103,35 +103,54 @@ jobs:
             exit 0
           fi
 
-          echo "遍历 tag 列表并按 last_updated 从新到旧处理（排除 latest/buildcache）..."
+          echo "第一步: 收集所有 tag 列表（排除 latest/buildcache）..."
           URL="https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags?page_size=100&ordering=-last_updated"
-          KEPT=0
-          DELETED=0
+          ALL_TAGS=()
 
           while [[ -n "${URL}" && "${URL}" != "null" ]]; do
             RESP=$(curl -fsSL -H "Authorization: JWT ${JWT}" "${URL}")
             URL=$(echo "${RESP}" | jq -r '.next')
 
-            mapfile -t TAGS < <(echo "${RESP}" | jq -r '.results[].name')
-            for TAG in "${TAGS[@]}"; do
+            mapfile -t PAGE_TAGS < <(echo "${RESP}" | jq -r '.results[].name')
+            for TAG in "${PAGE_TAGS[@]}"; do
               [[ "${TAG}" == "latest" || "${TAG}" == "buildcache" ]] && continue
-
-              if [[ "${KEPT}" -lt "${KEEP}" ]]; then
-                echo "保留: ${NAMESPACE}/${REPO}:${TAG}"
-                KEPT=$((KEPT + 1))
-                continue
-              fi
-
-              echo "删除: ${NAMESPACE}/${REPO}:${TAG}"
-              curl -fsSL -X DELETE \
-                -H "Authorization: JWT ${JWT}" \
-                "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/" \
-                >/dev/null
-              DELETED=$((DELETED + 1))
+              ALL_TAGS+=("${TAG}")
             done
           done
 
-          echo "Docker Hub 清理完成. 保留=${KEPT}, 删除=${DELETED}"
+          echo "找到 ${#ALL_TAGS[@]} 个需要处理的 tag"
+
+          echo "第二步: 保留最新 ${KEEP} 个，删除其余的..."
+          KEPT=0
+          DELETED=0
+          FAILED=0
+
+          for TAG in "${ALL_TAGS[@]}"; do
+            if [[ "${KEPT}" -lt "${KEEP}" ]]; then
+              echo "保留: ${NAMESPACE}/${REPO}:${TAG}"
+              KEPT=$((KEPT + 1))
+              continue
+            fi
+
+            echo "删除: ${NAMESPACE}/${REPO}:${TAG}"
+            # 使用 -w 获取 HTTP 状态码，不使用 -f 以避免非 200 响应导致脚本退出
+            HTTP_CODE=$(curl -sL -w "%{http_code}" -X DELETE \
+              -H "Authorization: JWT ${JWT}" \
+              "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/" \
+              -o /dev/null)
+
+            if [[ "${HTTP_CODE}" == "204" || "${HTTP_CODE}" == "200" ]]; then
+              DELETED=$((DELETED + 1))
+            elif [[ "${HTTP_CODE}" == "404" ]]; then
+              echo "  ⚠️  Tag 已不存在，跳过"
+              DELETED=$((DELETED + 1))
+            else
+              echo "  ❌ 删除失败，HTTP code: ${HTTP_CODE}"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "Docker Hub 清理完成. 保留=${KEPT}, 删除=${DELETED}, 失败=${FAILED}"
 
       - name: 清理 GHCR 旧镜像（保留最新 5 个版本）
         uses: actions/delete-package-versions@v5
