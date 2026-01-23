@@ -31,6 +31,7 @@ type CreateTaskRequest struct {
 	Detail      string
 	Quota       int64
 	RequestType string
+	CallbackUrl string // 用户提供的回调地址
 }
 
 // TaskWrapper 任务包装器（统一 Video 和 Image 的操作）
@@ -58,28 +59,35 @@ func (tm *TaskManager) CreateTask(req *CreateTaskRequest) (*TaskWrapper, error) 
 
 // createVideoTask 创建视频/音频任务
 func (tm *TaskManager) createVideoTask(req *CreateTaskRequest) (*dbmodel.Video, error) {
+	callbackStatus := "none" // 默认不需要回调
+	if req.CallbackUrl != "" {
+		callbackStatus = "pending" // 有回调URL，状态为待回调
+	}
+
 	video := &dbmodel.Video{
-		TaskId:    "",
-		UserId:    req.UserID,
-		Username:  req.Username,
-		ChannelId: req.ChannelID,
-		Model:     req.Model,
-		Provider:  "kling",
-		Type:      req.Type,
-		Status:    TaskStatusPending,
-		Quota:     req.Quota,
-		Mode:      req.Mode,
-		Prompt:    req.Prompt,
-		Duration:  req.Duration,
-		CreatedAt: time.Now().Unix(),
+		TaskId:         "",
+		UserId:         req.UserID,
+		Username:       req.Username,
+		ChannelId:      req.ChannelID,
+		Model:          req.Model,
+		Provider:       "kling",
+		Type:           req.Type,
+		Status:         TaskStatusPending,
+		Quota:          req.Quota,
+		Mode:           req.Mode,
+		Prompt:         req.Prompt,
+		Duration:       req.Duration,
+		CallbackUrl:    req.CallbackUrl,
+		CallbackStatus: callbackStatus,
+		CreatedAt:      time.Now().Unix(),
 	}
 
 	if err := video.Insert(); err != nil {
 		return nil, fmt.Errorf("创建视频任务失败: %w", err)
 	}
 
-	logger.SysLog(fmt.Sprintf("Created video task: id=%d, type=%s, user_id=%d, channel_id=%d",
-		video.Id, req.Type, req.UserID, req.ChannelID))
+	logger.SysLog(fmt.Sprintf("Created video task: id=%d, type=%s, user_id=%d, channel_id=%d, callback_url=%s",
+		video.Id, req.Type, req.UserID, req.ChannelID, req.CallbackUrl))
 
 	return video, nil
 }
