@@ -101,8 +101,10 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	// 创建S3客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建S3客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传视频到R2
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
@@ -115,9 +117,9 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("failed to upload video to R2: %w", err)
 	}
 
-	// 生成文件URL
-	fileUrl := "https://file.ezlinkai.com"
-	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+	// 生成文件URL（Path-Style 格式：endpoint/bucket/key）
+	fileUrl := config.CfFileEndpoint
+	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
 }
 
 func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode {

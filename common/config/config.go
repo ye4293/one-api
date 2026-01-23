@@ -51,9 +51,14 @@ var StripeEndpointSecret = ""
 
 var CfR2storeEnabled = true
 var CfBucketFileName = "ezlinkai-file"
-var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
-var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
-var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+// var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
+// var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
+// var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+var CfFileAccessKey = "GQwDfmzqBlTMsBjf"
+var CfFileSecretKey = "JrL2Sy9ojWemCKv45iJukOKKrlBw64"
+var CfFileEndpoint = "https://hua.cn-nb1.rains3.com"
 
 var CfBucketImageName = ""
 var CfImageAccessKey = ""
@@ -114,6 +119,7 @@ var AutomaticEnableChannelEnabled = false
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
+
 // 自动禁用关键词配置（一行一个关键词）
 var AutoDisableKeywords = `api key not valid
 invalid_api_key

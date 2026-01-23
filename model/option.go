@@ -95,15 +95,15 @@ func InitOptionMap() {
 	config.OptionMap["StripeEndpointKey"] = ""
 
 	config.OptionMap["CfR2storeEnabled"] = strconv.FormatBool(config.CfR2storeEnabled)
-	config.OptionMap["CfBucketFileName"] = ""
-	config.OptionMap["CfFileAccessKey"] = ""
-	config.OptionMap["CfFileSecretKey"] = ""
-	config.OptionMap["CfFileEndpoint"] = ""
+	config.OptionMap["CfBucketFileName"] = config.CfBucketFileName
+	config.OptionMap["CfFileAccessKey"] = config.CfFileAccessKey
+	config.OptionMap["CfFileSecretKey"] = config.CfFileSecretKey
+	config.OptionMap["CfFileEndpoint"] = config.CfFileEndpoint
 
-	config.OptionMap["CfBucketImageName"] = ""
-	config.OptionMap["CfImageAccessKey"] = ""
-	config.OptionMap["CfImageSecretKey"] = ""
-	config.OptionMap["CfImageEndpoint"] = ""
+	config.OptionMap["CfBucketImageName"] = config.CfBucketImageName
+	config.OptionMap["CfImageAccessKey"] = config.CfImageAccessKey
+	config.OptionMap["CfImageSecretKey"] = config.CfImageSecretKey
+	config.OptionMap["CfImageEndpoint"] = config.CfImageEndpoint
 	config.OptionMap["FeishuWebhookUrls"] = ""
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
@@ -323,21 +323,37 @@ func updateOptionMap(key string, value string) (err error) {
 	case "StripeEndpointSecret":
 		config.StripeEndpointSecret = value
 	case "CfBucketFileName":
-		config.CfBucketFileName = value
+		if value != "" {
+			config.CfBucketFileName = value
+		}
 	case "CfFileAccessKey":
-		config.CfFileAccessKey = value
+		if value != "" {
+			config.CfFileAccessKey = value
+		}
 	case "CfFileSecretKey":
-		config.CfFileSecretKey = value
+		if value != "" {
+			config.CfFileSecretKey = value
+		}
 	case "CfFileEndpoint":
-		config.CfFileEndpoint = value
+		if value != "" {
+			config.CfFileEndpoint = value
+		}
 	case "CfBucketImageName":
-		config.CfBucketImageName = value
+		if value != "" {
+			config.CfBucketImageName = value
+		}
 	case "CfImageAccessKey":
-		config.CfImageAccessKey = value
+		if value != "" {
+			config.CfImageAccessKey = value
+		}
 	case "CfImageSecretKey":
-		config.CfImageSecretKey = value
+		if value != "" {
+			config.CfImageSecretKey = value
+		}
 	case "CfImageEndpoint":
-		config.CfImageEndpoint = value
+		if value != "" {
+			config.CfImageEndpoint = value
+		}
 	case "FeishuWebhookUrls":
 		config.FeishuWebhookUrls = value
 	case "PingIntervalSeconds":

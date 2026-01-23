@@ -215,8 +215,10 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 		return "", fmt.Errorf("failed to load AWS config: %v", err)
 	}
 
-	// 创建 S3 客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建 S3 客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传图片到 R2
 	_, err = client.PutObject(uploadCtx, &s3.PutObjectInput{
@@ -229,9 +231,9 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
 	}
 
-	// 生成文件 URL（与 video.go 保持一致）
-	fileUrl := "https://file.ezlinkai.com"
-	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+	// 生成文件 URL（Path-Style 格式：endpoint/bucket/key）
+	fileUrl := config.CfFileEndpoint
+	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
 }
 
 // calculateGeminiImageQuota 计算 Gemini 图片生成的配额

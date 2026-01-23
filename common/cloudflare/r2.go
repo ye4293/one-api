@@ -88,8 +88,10 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 		return "", fmt.Errorf("failed to create AWS config: %v", err)
 	}
 
-	// 创建 S3 客户端
-	s3Client := s3.NewFromConfig(cfg)
+	// 创建 S3 客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传对象
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
@@ -103,10 +105,10 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 		return "", fmt.Errorf("failed to upload to R2: %v", err)
 	}
 
-	// 返回公开访问 URL（使用固定的 URL）
-	fileUrl := "https://file.ezlinkai.com"
-	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s (size: %d bytes)", fileUrl, len(imageData)))
+	// 返回公开访问 URL（Path-Style 格式：endpoint/bucket/key）
+	fileUrl := commonConfig.CfFileEndpoint
+	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s/%s/%s (size: %d bytes)", fileUrl, bucketName, objectKey, len(imageData)))
 
-	// 返回完整 URL
-	return fmt.Sprintf("%s/%s", fileUrl, objectKey), nil
+	// 返回完整 URL（包含 bucket 名称）
+	return fmt.Sprintf("%s/%s/%s", fileUrl, bucketName, objectKey), nil
 }
