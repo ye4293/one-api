@@ -9,56 +9,181 @@ on:
       name:
         description: 'reason'
         required: false
-jobs:
-  push_to_registries:
-    name: Push Docker image to multiple registries
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-    steps:
-      - name: Check out the repo
-        uses: actions/checkout@v3
 
-      - name: Check repository URL
+env:
+  DOCKER_REGISTRY: ye4293xx7
+  IMAGE_NAME: one-api
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 检查仓库 URL
         run: |
           REPO_URL=$(git config --get remote.origin.url)
           if [[ $REPO_URL == *"pro" ]]; then
+            echo "跳过 pro 仓库的构建"
             exit 1
-          fi        
+          fi
 
-      - name: Save version info
+      - name: 保存版本信息
+        id: version
         run: |
           VERSION=$(git describe --tags --always || echo "0.0.0-unknown")
-          echo "VERSION=$VERSION" > VERSION
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "$VERSION" > VERSION
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v4
-        with:
-          images: |
-            ye4293xx7/one-api
-            ghcr.io/${{ github.repository }}
-
-      - name: Build and push Docker images
-        uses: docker/build-push-action@v3
+      - name: 构建并推送生产镜像
+        uses: docker/build-push-action@v5
         with:
           context: .
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: 清理 Docker Hub 旧镜像（保留最新 5 个 tag）
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          NAMESPACE="${{ env.DOCKER_REGISTRY }}"
+          REPO="${{ env.IMAGE_NAME }}"
+          KEEP=5
+
+          if [[ -z "${DOCKERHUB_USERNAME:-}" || -z "${DOCKERHUB_TOKEN:-}" ]]; then
+            echo "Docker Hub 凭证缺失，跳过清理"
+            exit 0
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          echo "获取 Docker Hub JWT..."
+          JWT=$(curl -fsSL \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login/ | jq -r .token)
+
+          if [[ -z "${JWT}" || "${JWT}" == "null" ]]; then
+            echo "获取 JWT 失败，跳过清理"
+            exit 0
+          fi
+
+          echo "第一步: 收集所有 tag 列表（排除 latest/buildcache）..."
+          URL="https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags?page_size=100&ordering=-last_updated"
+          ALL_TAGS=()
+
+          while [[ -n "${URL}" && "${URL}" != "null" ]]; do
+            RESP=$(curl -fsSL -H "Authorization: JWT ${JWT}" "${URL}")
+            URL=$(echo "${RESP}" | jq -r '.next')
+
+            mapfile -t PAGE_TAGS < <(echo "${RESP}" | jq -r '.results[].name')
+            for TAG in "${PAGE_TAGS[@]}"; do
+              [[ "${TAG}" == "latest" || "${TAG}" == "buildcache" ]] && continue
+              ALL_TAGS+=("${TAG}")
+            done
+          done
+
+          echo "找到 ${#ALL_TAGS[@]} 个需要处理的 tag"
+
+          echo "第二步: 保留最新 ${KEEP} 个，删除其余的..."
+          KEPT=0
+          DELETED=0
+          FAILED=0
+
+          for TAG in "${ALL_TAGS[@]}"; do
+            if [[ "${KEPT}" -lt "${KEEP}" ]]; then
+              echo "保留: ${NAMESPACE}/${REPO}:${TAG}"
+              KEPT=$((KEPT + 1))
+              continue
+            fi
+
+            echo "删除: ${NAMESPACE}/${REPO}:${TAG}"
+            # 使用 -w 获取 HTTP 状态码，不使用 -f 以避免非 200 响应导致脚本退出
+            HTTP_CODE=$(curl -sL -w "%{http_code}" -X DELETE \
+              -H "Authorization: JWT ${JWT}" \
+              "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/" \
+              -o /dev/null)
+
+            if [[ "${HTTP_CODE}" == "204" || "${HTTP_CODE}" == "200" ]]; then
+              DELETED=$((DELETED + 1))
+            elif [[ "${HTTP_CODE}" == "404" ]]; then
+              echo "  ⚠️  Tag 已不存在，跳过"
+              DELETED=$((DELETED + 1))
+            else
+              echo "  ❌ 删除失败，HTTP code: ${HTTP_CODE}"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "Docker Hub 清理完成. 保留=${KEPT}, 删除=${DELETED}, 失败=${FAILED}"
+
+      - name: 清理 GHCR 旧镜像（保留最新 5 个版本）
+        uses: actions/delete-package-versions@v5
+        with:
+          package-type: container
+          package-name: ${{ github.event.repository.name }}
+          min-versions-to-keep: 5
+          ignore-versions: ^latest$
+
+      - name: 输出构建信息
+        run: |
+          echo "## ✅ 生产镜像构建完成！" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**版本:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**提交:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 镜像标签" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ github.repository }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 生产服务器拉取命令" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取 latest" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取指定版本号" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker tag ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

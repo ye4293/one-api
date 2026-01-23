@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ type klingRequest struct {
 	Mode          string
 	Duration      string
 	Quota         int64
+	CallbackUrl   string
 	Meta          *util.RelayMeta
 	Channel       *dbmodel.Channel
 	User          *dbmodel.User
@@ -61,6 +63,12 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
 
+	// 提取用户回调 URL（可选）
+	var callbackUrl string
+	if cbUrl, ok := requestParams["callback_url"].(string); ok {
+		callbackUrl = cbUrl
+	}
+
 	// 计算预估费用
 	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
 
@@ -87,7 +95,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	// 获取用户信息
 	user, err := dbmodel.GetUserById(meta.UserId, false)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("获取用户信息失败: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c, fmt.Sprintf("获取用户信息失败: user_id=%d, error=%v", meta.UserId, err))
 		user = &dbmodel.User{Username: ""}
 	}
 
@@ -98,6 +106,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 		Mode:          mode,
 		Duration:      duration,
 		Quota:         quota,
+		CallbackUrl:   callbackUrl,
 		Meta:          meta,
 		Channel:       channel,
 		User:          user,
@@ -167,6 +176,7 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		Detail:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
 		RequestType: req.RequestType,
+		CallbackUrl: req.CallbackUrl,
 	})
 	if err != nil {
 		respondError(c, err, "database_error", http.StatusInternalServerError)
@@ -221,7 +231,7 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		logger.Error(c, fmt.Sprintf("更新任务失败: id=%d, task_id=%s, error=%v", task.GetID(), klingResp.GetTaskID(), err))
 	}
 
-	logger.SysLog(fmt.Sprintf("Kling task submitted: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
+	logger.Info(c, fmt.Sprintf("Kling task submitted: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
 		task.GetID(), klingResp.GetTaskID(), req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
 
 	// 返回响应
@@ -242,6 +252,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 		Prompt:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
 		RequestType: req.RequestType,
+		CallbackUrl: req.CallbackUrl,
 	})
 	if err != nil {
 		respondError(c, err, "database_error", http.StatusInternalServerError)
@@ -275,7 +286,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 
 	// 打印完整响应以便调试
 	respJSON, _ := json.Marshal(klingResp)
-	logger.SysLog(fmt.Sprintf("Kling sync task response: type=%s, channel_id=%d, user_id=%d, response=%s",
+	logger.Info(c, fmt.Sprintf("Kling sync task response: type=%s, channel_id=%d, user_id=%d, response=%s",
 		req.RequestType, req.Meta.ChannelId, req.Meta.UserId, string(respJSON)))
 
 	// 检查 code 和 message 字段
@@ -303,9 +314,9 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	// 扣费
 	err = dbmodel.DecreaseUserQuota(req.Meta.UserId, req.Quota)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
+		logger.Error(c, fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
 	} else {
-		logger.SysLog(fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
+		logger.Info(c, fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
 			req.Meta.UserId, req.Quota, klingResp.GetTaskID(), req.RequestType))
 	}
 
@@ -315,7 +326,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	}
 	task.Update()
 
-	logger.SysLog(fmt.Sprintf("Sync task completed: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
+	logger.Info(c, fmt.Sprintf("Sync task completed: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
 		task.GetID(), klingResp.GetTaskID(), req.RequestType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
 
 	c.JSON(http.StatusOK, klingResp)
@@ -333,19 +344,19 @@ func HandleKlingCallback(c *gin.Context) {
 	// 读取原始body
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling callback read body error: %v", err))
+		logger.Error(c, fmt.Sprintf("Kling callback read body error: %v", err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
 	var notification kling.CallbackNotification
 	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
-		logger.SysError(fmt.Sprintf("Kling callback parse error: error=%v", err))
+		logger.Error(c, fmt.Sprintf("Kling callback parse error: error=%v", err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Kling callback received: task_id=%s, external_task_id=%s, status=%s",
+	logger.Info(c, fmt.Sprintf("Kling callback received: task_id=%s, external_task_id=%s, status=%s",
 		notification.TaskID, notification.ExternalTaskID, notification.TaskStatus))
 
 	// 使用 TaskManager 查找任务（自动 Fallback）
@@ -364,7 +375,7 @@ func HandleKlingCallback(c *gin.Context) {
 
 	// 3. 都没找到，返回错误
 	if task == nil {
-		logger.SysError(fmt.Sprintf("Kling callback task not found: task_id=%s, external_task_id=%s",
+		logger.Error(c, fmt.Sprintf("Kling callback task not found: task_id=%s, external_task_id=%s",
 			notification.TaskID, notification.ExternalTaskID))
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 		return
@@ -381,7 +392,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 	// 防止重复处理
 	currentStatus := task.GetStatus()
 	if currentStatus == kling.TaskStatusSucceed || currentStatus == kling.TaskStatusFailed {
-		logger.SysLog(fmt.Sprintf("Kling callback already processed: task_id=%s, status=%s", taskID, currentStatus))
+		logger.Info(c, fmt.Sprintf("Kling callback already processed: task_id=%s, status=%s", taskID, currentStatus))
 		c.JSON(http.StatusOK, gin.H{"message": "already processed"})
 		return
 	}
@@ -413,9 +424,9 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				// 扣费
 				err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
 				if err != nil {
-					logger.SysError(fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
+					logger.Error(c, fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.SysLog(fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
+					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
 						video.UserId, oldQuota, newQuota, actualDuration, video.Type, video.Model, taskID))
 				}
 
@@ -428,9 +439,9 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				// 扣费
 				err := dbmodel.DecreaseUserQuota(image.UserId, image.Quota)
 				if err != nil {
-					logger.SysError(fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, image.Quota, err))
+					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, image.Quota, err))
 				} else {
-					logger.SysLog(fmt.Sprintf("Kling image callback billing success: user_id=%d, quota=%d, task_id=%s",
+					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, quota=%d, task_id=%s",
 						image.UserId, image.Quota, taskID))
 				}
 
@@ -452,7 +463,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 		}
 
 		task.Update()
-		logger.SysLog(fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
+		logger.Info(c, fmt.Sprintf("Kling callback task failed: task_id=%s, reason=%s", taskID, notification.TaskStatusMsg))
 
 	} else {
 		// 其他状态（processing等），更新状态但不扣费
@@ -465,6 +476,15 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 		}
 
 		task.Update()
+	}
+
+	// 向用户的回调地址发送通知（如果配置了 callback_url）
+	if video := task.GetVideo(); video != nil {
+		// 复制 context 用于 goroutine，避免主请求结束时 context 被取消
+		// 使用 WithoutCancel 保留 trace/span 信息但不会被父 context 取消
+		callbackCtx := context.WithoutCancel(c.Request.Context())
+		// 使用 goroutine 异步发送回调，避免阻塞主流程
+		go kling.NotifyUserCallback(callbackCtx, video, notificationBytes)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "success"})
@@ -494,7 +514,7 @@ func RelayKlingTransparent(c *gin.Context) {
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling transparent get channel error: user_id=%d, channel_id=%d, error=%v",
+		logger.Error(c, fmt.Sprintf("Kling transparent get channel error: user_id=%d, channel_id=%d, error=%v",
 			meta.UserId, meta.ChannelId, err))
 		respondError(c, err, "get_channel_error", http.StatusInternalServerError)
 		return
@@ -528,7 +548,7 @@ func RelayKlingTransparent(c *gin.Context) {
 	if c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut {
 		bodyBytes, err := c.GetRawData()
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Kling transparent read body error: user_id=%d, error=%v", meta.UserId, err))
+			logger.Error(c, fmt.Sprintf("Kling transparent read body error: user_id=%d, error=%v", meta.UserId, err))
 			respondError(c, err, "invalid_request_body", http.StatusBadRequest)
 			return
 		}
@@ -538,7 +558,7 @@ func RelayKlingTransparent(c *gin.Context) {
 	// 发送请求
 	resp, err := adaptor.DoRequestWithMethod(c, meta, c.Request.Method, bodyReader)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling transparent request error: user_id=%d, channel_id=%d, error=%v",
+		logger.Error(c, fmt.Sprintf("Kling transparent request error: user_id=%d, channel_id=%d, error=%v",
 			meta.UserId, meta.ChannelId, err))
 		respondError(c, err, "request_failed", http.StatusInternalServerError)
 		return
@@ -548,7 +568,7 @@ func RelayKlingTransparent(c *gin.Context) {
 	// 读取并透传响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling transparent read response error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c, fmt.Sprintf("Kling transparent read response error: user_id=%d, error=%v", meta.UserId, err))
 		respondError(c, err, "read_response_failed", http.StatusInternalServerError)
 		return
 	}
@@ -556,7 +576,7 @@ func RelayKlingTransparent(c *gin.Context) {
 	// 解析响应用于日志记录
 	var klingResp kling.KlingResponse
 	if unmarshalErr := json.Unmarshal(body, &klingResp); unmarshalErr == nil {
-		logger.SysLog(fmt.Sprintf("Kling transparent success: method=%s, path=%s, user_id=%d, channel_id=%d, code=%d",
+		logger.Info(c, fmt.Sprintf("Kling transparent success: method=%s, path=%s, user_id=%d, channel_id=%d, code=%d",
 			c.Request.Method, c.Request.URL.Path, meta.UserId, meta.ChannelId, klingResp.Code))
 	}
 
