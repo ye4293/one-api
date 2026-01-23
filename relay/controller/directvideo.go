@@ -9,10 +9,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -792,6 +794,7 @@ func handleRunwayVideoBilling(c *gin.Context, meta *util.RelayMeta, modelName st
 // 功能：
 // 1. 透传 multipart/form-data 请求到 OpenAI Sora API
 // 2. 创建数据库记录并执行计费
+// 3. 支持 Azure 渠道（路径为 /openai/v1/videos）
 func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 	ctx := c.Request.Context()
 
@@ -807,8 +810,13 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 		return
 	}
 
-	// 构建完整的请求URL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", meta.BaseURL)
+	// 构建完整的请求URL，Azure 渠道需要添加 /openai 前缀
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", meta.BaseURL)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", meta.BaseURL)
+	}
 
 	// 解析 multipart form
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32MB
@@ -828,15 +836,82 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	// 复制所有表单字段
+	// 复制所有表单字段（跳过 input_reference，稍后特殊处理）
 	for key, values := range c.Request.MultipartForm.Value {
+		if key == "input_reference" {
+			continue // 跳过，稍后处理
+		}
 		for _, value := range values {
 			writer.WriteField(key, value)
 		}
 	}
 
-	// 复制所有文件（如 input_reference）
+	// 处理 input_reference 字段：支持 URL 和文件两种方式
+	inputReferenceHandled := false
+
+	// 1. 检查是否有 input_reference 作为 URL（普通字段）
+	if urlValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(urlValues) > 0 {
+		imageUrl := urlValues[0]
+		if imageUrl != "" {
+			logger.Debugf(ctx, "检测到 input_reference URL: %s，开始下载", imageUrl)
+
+			// 下载图片并添加为文件字段
+			if err := downloadAndAddImageFile(ctx, writer, imageUrl); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "下载 input_reference 图片失败: " + err.Error()})
+				return
+			}
+			inputReferenceHandled = true
+			logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
+		}
+	}
+
+	// 2. 如果没有处理过，检查是否有 input_reference 作为文件
+	if !inputReferenceHandled {
+		if fileHeaders, exists := c.Request.MultipartForm.File["input_reference"]; exists && len(fileHeaders) > 0 {
+			logger.Debugf(ctx, "检测到 input_reference 文件上传")
+			// 按现有逻辑处理文件
+			for _, fileHeader := range fileHeaders {
+				// 打开原始文件
+				file, err := fileHeader.Open()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "读取 input_reference 文件失败: " + err.Error()})
+					return
+				}
+				defer file.Close()
+
+				// 获取并验证文件的Content-Type
+				contentType, err := detectFileContentType(file, fileHeader)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "input_reference 文件类型检测失败: " + err.Error()})
+					return
+				}
+
+				// 手动创建multipart header并设置正确的Content-Type
+				h := make(textproto.MIMEHeader)
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, fileHeader.Filename))
+				h.Set("Content-Type", contentType)
+
+				part, err := writer.CreatePart(h)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "创建 input_reference 表单文件失败: " + err.Error()})
+					return
+				}
+
+				// 复制文件内容
+				if _, err := io.Copy(part, file); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "复制 input_reference 文件内容失败: " + err.Error()})
+					return
+				}
+			}
+			inputReferenceHandled = true
+		}
+	}
+
+	// 复制其他所有文件字段（排除 input_reference，已处理）
 	for key, fileHeaders := range c.Request.MultipartForm.File {
+		if key == "input_reference" {
+			continue // 已经处理过了
+		}
 		for _, fileHeader := range fileHeaders {
 			// 打开原始文件
 			file, err := fileHeader.Open()
@@ -882,9 +957,13 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 		return
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
@@ -988,13 +1067,23 @@ func GetSoraVideoResult(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s", baseURL, videoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s", baseURL, videoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseURL, videoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseURL, videoId)
+		}
 	}
 
 	logger.Debugf(ctx, "GetSoraVideoResult - requesting URL: %s", fullRequestUrl)
@@ -1007,8 +1096,12 @@ func GetSoraVideoResult(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 设置请求头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	// 设置请求头，Azure 渠道使用 Api-key header
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
@@ -1089,13 +1182,23 @@ func GetSoraVideoContent(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s/content", baseURL, videoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}/content
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s/content", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/content", baseURL, videoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, videoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s/content", baseURL, videoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, videoId)
+		}
 	}
 
 	logger.Debugf(ctx, "GetSoraVideoContent - requesting URL: %s", fullRequestUrl)
@@ -1108,8 +1211,12 @@ func GetSoraVideoContent(c *gin.Context, videoId string) {
 		return
 	}
 
-	// 设置请求头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	// 设置请求头，Azure 渠道使用 Api-key header
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "*/*")
 
 	// 为视频下载创建专门的 HTTP client，设置更长的超时时间
@@ -1450,13 +1557,23 @@ func DirectRelaySoraVideoRemix(c *gin.Context, originalVideoId string) {
 		return
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
 	var fullRequestUrl string
-	if strings.HasSuffix(baseURL, "/v1") {
-		fullRequestUrl = fmt.Sprintf("%s/videos/%s/remix", baseURL, originalVideoId)
+	if channel.Type == common.ChannelTypeAzure {
+		// Azure 渠道：/openai/v1/videos/{id}/remix
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/%s/remix", baseURL, originalVideoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/remix", baseURL, originalVideoId)
+		}
 	} else {
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseURL, originalVideoId)
+		// 标准 OpenAI 渠道
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/%s/remix", baseURL, originalVideoId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseURL, originalVideoId)
+		}
 	}
 
 	logger.Debugf(ctx, "DirectRelaySoraVideoRemix - requesting URL: %s", fullRequestUrl)
@@ -1475,9 +1592,13 @@ func DirectRelaySoraVideoRemix(c *gin.Context, originalVideoId string) {
 		return
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	// 发送请求
@@ -1655,6 +1776,130 @@ func compensateSoraVideoTask(videoId string) {
 	} else {
 		fmt.Printf("成功补偿渠道 %d 配额，任务 %s\n", task.ChannelId, videoId)
 	}
+}
+
+// ========================================
+// 文件下载和处理函数
+// ========================================
+
+// downloadAndAddImageFile 从 URL 下载图片并添加为 multipart 文件字段
+// 参数：
+//   - ctx: 上下文
+//   - writer: multipart writer
+//   - imageUrl: 图片的 URL
+//
+// 返回：
+//   - error: 下载或处理失败时返回错误
+func downloadAndAddImageFile(ctx context.Context, writer *multipart.Writer, imageUrl string) error {
+	// 创建 HTTP 客户端，设置 30 秒超时
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
+
+	// 发起下载请求
+	resp, err := client.Get(imageUrl)
+	if err != nil {
+		return fmt.Errorf("下载图片请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查 HTTP 状态码
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("下载图片失败，HTTP 状态码: %d", resp.StatusCode)
+	}
+
+	// 检查 Content-Length（如果存在）
+	if resp.ContentLength > 100*1024*1024 { // 100MB
+		return fmt.Errorf("图片文件过大: %d bytes，最大支持 100MB", resp.ContentLength)
+	}
+
+	// 读取图片内容（限制大小）
+	limitReader := io.LimitReader(resp.Body, 100*1024*1024+1) // 100MB + 1 byte
+	imageData, err := io.ReadAll(limitReader)
+	if err != nil {
+		return fmt.Errorf("读取图片内容失败: %v", err)
+	}
+
+	// 检查是否超过大小限制
+	if len(imageData) > 100*1024*1024 {
+		return fmt.Errorf("图片文件过大: 超过 100MB")
+	}
+
+	// 验证文件类型（基于内容）
+	detectedType := http.DetectContentType(imageData)
+
+	// 支持的图片类型
+	supportedImageTypes := map[string]bool{
+		"image/jpeg": true,
+		"image/png":  true,
+		"image/webp": true,
+	}
+
+	// 特殊处理 WebP 格式
+	if len(imageData) >= 12 &&
+		string(imageData[0:4]) == "RIFF" &&
+		string(imageData[8:12]) == "WEBP" {
+		detectedType = "image/webp"
+	}
+
+	// 验证类型
+	if !supportedImageTypes[detectedType] {
+		return fmt.Errorf("不支持的图片类型: %s，仅支持 jpeg, png, webp", detectedType)
+	}
+
+	// 从 URL 中提取文件名
+	filename := extractFilenameFromURL(imageUrl, detectedType)
+
+	logger.Debugf(ctx, "下载图片成功: URL=%s, 大小=%d bytes, 类型=%s, 文件名=%s",
+		imageUrl, len(imageData), detectedType, filename)
+
+	// 创建 multipart 文件字段
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="input_reference"; filename="%s"`, filename))
+	h.Set("Content-Type", detectedType)
+
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("创建 multipart 文件字段失败: %v", err)
+	}
+
+	// 写入图片数据
+	if _, err := part.Write(imageData); err != nil {
+		return fmt.Errorf("写入图片数据失败: %v", err)
+	}
+
+	return nil
+}
+
+// extractFilenameFromURL 从 URL 中提取文件名
+// 如果 URL 中没有文件名，则根据文件类型生成默认文件名
+func extractFilenameFromURL(urlStr string, contentType string) string {
+	// 解析 URL
+	parsedURL, err := url.Parse(urlStr)
+	if err == nil && parsedURL.Path != "" {
+		// 从路径中提取文件名
+		parts := strings.Split(parsedURL.Path, "/")
+		if len(parts) > 0 {
+			filename := parts[len(parts)-1]
+			// 如果文件名不为空且包含扩展名
+			if filename != "" && strings.Contains(filename, ".") {
+				return filename
+			}
+		}
+	}
+
+	// 如果无法从 URL 提取，根据内容类型生成文件名
+	ext := ".jpg"
+	switch contentType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "image/webp":
+		ext = ".webp"
+	}
+
+	return "input_reference" + ext
 }
 
 // ========================================

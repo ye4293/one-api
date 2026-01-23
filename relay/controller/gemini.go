@@ -3,17 +3,21 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/cloudflare"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
@@ -23,6 +27,235 @@ import (
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
+
+// urlDownloadTask 表示一个URL下载任务
+type urlDownloadTask struct {
+	contentIdx       int
+	partIdx          int
+	url              string
+	originalMimeType string
+	inlineDataKey    string // 记录使用的字段名：inline_data 或 inlineData
+	mimeTypeKey      string // 记录使用的 mimeType 字段名：mime_type 或 mimeType
+}
+
+// urlDownloadResult 表示URL下载结果
+type urlDownloadResult struct {
+	contentIdx int
+	partIdx    int
+	mimeType   string
+	base64Data string
+	mediaType  string
+	err        error
+}
+
+// processGeminiInlineDataURLs 处理 Gemini 请求体中的 inlineData.data 字段
+// 如果 data 字段包含 URL（http/https），则下载并转换为 base64 格式
+// 如果已经是 base64 或 data URL，则保持不变
+// 返回: 处理后的请求体、是否处理了URL、错误信息
+func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byte, bool, error) {
+	var request map[string]interface{}
+	if err := json.Unmarshal(requestBody, &request); err != nil {
+		return requestBody, false, err
+	}
+
+	contents, ok := request["contents"].([]interface{})
+	if !ok {
+		return requestBody, false, nil
+	}
+
+	// 第一步：收集所有需要下载的URL任务
+	var downloadTasks []urlDownloadTask
+	for i, content := range contents {
+		contentMap, ok := content.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		parts, ok := contentMap["parts"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for j, part := range parts {
+			partMap, ok := part.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// 兼容两种命名格式：inline_data（下划线）和 inlineData（驼峰）
+			var inlineData map[string]interface{}
+			var inlineDataKey string
+
+			if data, ok := partMap["inline_data"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inline_data"
+			} else if data, ok := partMap["inlineData"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inlineData"
+			} else {
+				continue
+			}
+
+			data, ok := inlineData["data"].(string)
+			if !ok || data == "" {
+				continue
+			}
+
+			// 尝试判断是否为 URL
+			var finalURL string
+
+			// 1. 先检查是否直接就是 URL
+			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+				finalURL = data
+			} else {
+				// 2. 尝试 base64 解码，看是否是编码后的 URL
+				decodedData, err := base64.StdEncoding.DecodeString(data)
+				if err == nil {
+					decodedStr := string(decodedData)
+					if strings.HasPrefix(decodedStr, "http://") || strings.HasPrefix(decodedStr, "https://") {
+						finalURL = decodedStr
+					}
+				}
+			}
+
+			// 如果不是 URL（直接或解码后），跳过
+			if finalURL == "" {
+				continue
+			}
+
+			// 获取原始的 mimeType（同时兼容 mime_type 和 mimeType）
+			var originalMimeType string
+			var mimeTypeKey string
+			if mt, ok := inlineData["mime_type"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mime_type"
+			} else if mt, ok := inlineData["mimeType"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mimeType"
+			} else {
+				// 如果没有指定，根据 inlineDataKey 使用相应的默认格式
+				if inlineDataKey == "inline_data" {
+					mimeTypeKey = "mime_type"
+				} else {
+					mimeTypeKey = "mimeType"
+				}
+			}
+
+			logger.Infof(ctx, "Found %s with URL, originalMimeType: %s", inlineDataKey, originalMimeType)
+
+			// 添加到下载任务列表
+			downloadTasks = append(downloadTasks, urlDownloadTask{
+				contentIdx:       i,
+				partIdx:          j,
+				url:              finalURL,
+				originalMimeType: originalMimeType,
+				inlineDataKey:    inlineDataKey,
+				mimeTypeKey:      mimeTypeKey,
+			})
+		}
+	}
+
+	// 如果没有需要下载的URL，直接返回
+	if len(downloadTasks) == 0 {
+		return requestBody, false, nil
+	}
+
+	logger.Infof(ctx, "Found %d URL(s) to download, starting concurrent download...", len(downloadTasks))
+
+	// 第二步：并发下载所有URL
+	results := make([]urlDownloadResult, len(downloadTasks))
+	var wg sync.WaitGroup
+
+	for idx, task := range downloadTasks {
+		wg.Add(1)
+		go func(index int, t urlDownloadTask) {
+			defer wg.Done()
+
+			logger.Infof(ctx, "Downloading URL [%d/%d]: %s", index+1, len(downloadTasks), t.url)
+
+			// 使用现有的图片处理函数下载并转换
+			mimeType, base64Data, mediaType, err := image.GetGeminiMediaInfo(t.url)
+			if err != nil {
+				logger.Warnf(ctx, "Failed to download URL [%d/%d]: %v, URL: %s", index+1, len(downloadTasks), err, t.url)
+				results[index] = urlDownloadResult{
+					contentIdx: t.contentIdx,
+					partIdx:    t.partIdx,
+					err:        err,
+				}
+				return
+			}
+
+			// 去除 base64Data 中可能存在的 data URL 前缀
+			if strings.Contains(base64Data, ";base64,") {
+				splitParts := strings.Split(base64Data, ";base64,")
+				if len(splitParts) == 2 {
+					base64Data = splitParts[1]
+				}
+			} else if strings.HasPrefix(base64Data, "data:") {
+				if commaIdx := strings.Index(base64Data, ","); commaIdx != -1 {
+					base64Data = base64Data[commaIdx+1:]
+				}
+			}
+
+			results[index] = urlDownloadResult{
+				contentIdx: t.contentIdx,
+				partIdx:    t.partIdx,
+				mimeType:   mimeType,
+				base64Data: base64Data,
+				mediaType:  mediaType,
+				err:        nil,
+			}
+
+			logger.Infof(ctx, "Successfully downloaded URL [%d/%d]: mediaType=%s, mimeType=%s, size=%d bytes",
+				index+1, len(downloadTasks), mediaType, mimeType, len(base64Data))
+		}(idx, task)
+	}
+
+	// 等待所有下载完成
+	wg.Wait()
+	logger.Infof(ctx, "All %d URL downloads completed", len(downloadTasks))
+
+	// 第三步：应用下载结果到原始数据
+	successCount := 0
+	for idx, result := range results {
+		if result.err != nil {
+			continue
+		}
+
+		task := downloadTasks[idx]
+		contentMap := contents[result.contentIdx].(map[string]interface{})
+		parts := contentMap["parts"].([]interface{})
+		partMap := parts[result.partIdx].(map[string]interface{})
+
+		// 使用保存的 key 来访问 inlineData
+		inlineData := partMap[task.inlineDataKey].(map[string]interface{})
+
+		// 更新 mimeType（如果原本没有设置），使用保存的 mimeTypeKey
+		if task.originalMimeType == "" && result.mimeType != "" {
+			inlineData[task.mimeTypeKey] = result.mimeType
+		}
+
+		// 更新 data 为 base64 格式
+		inlineData["data"] = result.base64Data
+
+		// 使用保存的 key 来更新 inlineData
+		partMap[task.inlineDataKey] = inlineData
+		parts[result.partIdx] = partMap
+		contentMap["parts"] = parts
+		contents[result.contentIdx] = contentMap
+
+		successCount++
+	}
+
+	if successCount > 0 {
+		logger.Infof(ctx, "Successfully processed %d/%d URLs", successCount, len(downloadTasks))
+		request["contents"] = contents
+		modifiedBody, err := json.Marshal(request)
+		return modifiedBody, true, err
+	}
+
+	return requestBody, false, nil
+}
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
 // Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
@@ -91,7 +324,21 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 			originRequestBody = processedBody
 		}
 	}
-
+	//如果R2存储启用，则处理inlineData中的URL格式图片
+	if config.CfR2storeEnabled {
+		// 处理 inlineData 中的 URL 格式图片，自动下载并转换为 base64
+		processedBody, processedURL, err := processGeminiInlineDataURLs(ctx, originRequestBody)
+		if err != nil {
+			logger.Warnf(ctx, "Failed to process inlineData URLs: %v", err)
+		} else {
+			originRequestBody = processedBody
+			// 设置标记表示通过 URL 方式处理了图片
+			if processedURL {
+				c.Set("gemini_inline_data_url_processed", true)
+				logger.Infof(ctx, "Gemini inlineData URL processing flag set")
+			}
+		}
+	}
 	adaptor := helper.GetAdaptor(meta.APIType)
 	if adaptor == nil {
 		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
@@ -449,6 +696,102 @@ func CalculateGeminiQuotaFromUsageMetadata(usageMetadata *gemini.UsageMetadata, 
 	return CalculateGeminiQuotaByRatio(usageMetadata, modelName, groupRatio)
 }
 
+// processGeminiResponseImages 处理 Gemini 响应中的图片，上传到 R2 并替换为 URL
+// 参数: ctx - 上下文, responseBody - 原始响应体字节数组
+// 返回: 处理后的响应体字节数组, 错误信息
+func processGeminiResponseImages(ctx context.Context, responseBody []byte) ([]byte, error) {
+	// 解析响应体为 map
+	var response map[string]interface{}
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return responseBody, fmt.Errorf("failed to unmarshal response: %v", err)
+	}
+
+	// 获取 candidates 数组
+	candidates, ok := response["candidates"].([]interface{})
+	if !ok || len(candidates) == 0 {
+		return responseBody, nil // 没有 candidates，直接返回
+	}
+
+	modified := false
+	for i, candidateItem := range candidates {
+		candidate, ok := candidateItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 获取 content
+		content, ok := candidate["content"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 获取 parts 数组
+		parts, ok := content["parts"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for j, partItem := range parts {
+			part, ok := partItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// 检查是否有 inlineData
+			inlineData, ok := part["inlineData"].(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// 获取 mimeType 和 data
+			mimeType, _ := inlineData["mimeType"].(string)
+			base64Data, ok := inlineData["data"].(string)
+			if !ok || base64Data == "" {
+				continue
+			}
+
+			logger.Infof(ctx, "Found image in response, uploading to R2 (mimeType: %s, size: %d bytes)",
+				mimeType, len(base64Data))
+
+			// 上传到 R2
+			url, err := cloudflare.UploadImageToR2(ctx, base64Data, mimeType)
+			if err != nil {
+				logger.Warnf(ctx, "Failed to upload image to R2: %v, keeping base64", err)
+				continue
+			}
+
+			// 将 URL 转换为 base64 编码
+			urlBase64 := base64.StdEncoding.EncodeToString([]byte(url))
+
+			// 用 base64 编码的 URL 替换原始数据
+			inlineData["data"] = urlBase64
+			part["inlineData"] = inlineData
+			parts[j] = part
+			content["parts"] = parts
+			candidate["content"] = content
+			candidates[i] = candidate
+
+			logger.Infof(ctx, "Successfully replaced image with base64-encoded R2 URL: %s", url)
+			modified = true
+		}
+	}
+
+	if modified {
+		logger.Infof(ctx, "Gemini response images processed and uploaded to R2")
+		// 更新 response 中的 candidates
+		response["candidates"] = candidates
+		// 重新序列化为 JSON
+		modifiedBody, err := json.Marshal(response)
+		if err != nil {
+			return responseBody, fmt.Errorf("failed to marshal modified response: %v", err)
+		}
+		return modifiedBody, nil
+	}
+
+	// 没有修改，返回原始响应体
+	return responseBody, nil
+}
+
 // doNativeGeminiResponse 处理 Gemini 非流式响应
 func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *gemini.UsageMetadata, err *model.ErrorWithStatusCode) {
 	defer util.CloseResponseBodyGracefully(resp)
@@ -476,8 +819,23 @@ func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
-	// 直接返回原生 Gemini 响应格式
-	util.IOCopyBytesGracefully(c, resp, responseBody)
+	//如果没有处理过inlineData中的URL格式图片，则直接返回
+	if c.GetBool("gemini_inline_data_url_processed") == false {
+		logger.Infof(c, "Gemini response images not processed, returning original response")
+		util.IOCopyBytesGracefully(c, resp, responseBody)
+		return geminiResponse.UsageMetadata, nil
+	}
+
+	// 处理响应中的图片，上传到 R2 并替换为 URL
+	ctx := c.Request.Context()
+	modifiedResponse, processErr := processGeminiResponseImages(ctx, responseBody)
+	if processErr != nil {
+		logger.Warnf(ctx, "Failed to process response images: %v, using original response", processErr)
+		util.IOCopyBytesGracefully(c, resp, responseBody)
+	} else {
+		util.IOCopyBytesGracefully(c, resp, modifiedResponse)
+	}
+
 	return geminiResponse.UsageMetadata, nil
 
 }
@@ -538,7 +896,7 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			lastUsageMetadata = geminiResponse.UsageMetadata
 		}
 
-		// 直接发送 GeminiChatResponse 响应
+		// 直接返回原始数据，不处理图片
 		err = helper.StringData(c, data)
 		if err != nil {
 			logger.Error(c, err.Error())

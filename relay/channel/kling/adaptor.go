@@ -13,7 +13,8 @@ import (
 )
 
 type Adaptor struct {
-	RequestType string // text2video/omni-video/image2video/multi-image2video
+	RequestType  string // text2video/omni-video/image2video/multi-image2video
+	FullPath     string // 透传模式下使用完整路径（包含 ID 等参数）
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -25,7 +26,32 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	if baseURL == "" {
 		baseURL = "https://api-beijing.klingai.com"
 	}
-	return fmt.Sprintf("%s/v1/videos/%s", baseURL, a.RequestType), nil
+
+	// 透传模式：直接使用完整路径
+	if a.FullPath != "" {
+		return baseURL + a.FullPath, nil
+	}
+
+	// 根据请求类型确定路径前缀
+	var pathPrefix string
+	switch a.RequestType {
+	// 音频类接口
+	case RequestTypeTextToAudio, RequestTypeVideoToAudio, RequestTypeTTS:
+		pathPrefix = "/v1/audio"
+	// 图片类接口
+	case RequestTypeImageGeneration, RequestTypeOmniImage, RequestTypeMultiImage2Image, RequestTypeImageExpand:
+		pathPrefix = "/v1/images"
+	// 通用类接口（包括查询和管理接口）
+	case RequestTypeCustomElements, RequestTypeCustomVoices,
+		RequestTypePresetsElements, RequestTypeDeleteElements,
+		RequestTypePresetsVoices, RequestTypeDeleteVoices:
+		pathPrefix = "/v1/general"
+	// 默认：视频类接口
+	default:
+		pathPrefix = "/v1/videos"
+	}
+
+	return fmt.Sprintf("%s%s/%s", baseURL, pathPrefix, a.RequestType), nil
 }
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
@@ -43,6 +69,18 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 
 // ConvertRequest 转换请求并注入回调URL和外部任务ID
 func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBody map[string]interface{}, callbackURL string, externalTaskID int64) ([]byte, error) {
+	// 注入 model_name（如果请求体中没有）
+	if _, exists := requestBody["model_name"]; !exists {
+		if modelValue, ok := c.Get("model"); ok {
+			if modelStr, isString := modelValue.(string); isString && modelStr != "" {
+				requestBody["model_name"] = modelStr
+			}
+		}
+	}
+
+	// 删除 model 字段（Kling API 使用 model_name）
+	delete(requestBody, "model")
+
 	// 注入回调 URL（如果系统配置了回调域名）
 	if callbackURL != "" {
 		requestBody["callback_url"] = callbackURL
@@ -57,12 +95,28 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
+	return a.DoRequestWithMethod(c, meta, "POST", requestBody)
+}
+
+// DoRequestWithMethod 执行指定 HTTP 方法的请求
+func (a *Adaptor) DoRequestWithMethod(c *gin.Context, meta *util.RelayMeta, method string, requestBody io.Reader) (*http.Response, error) {
 	fullRequestURL, err := a.GetRequestURL(meta)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", fullRequestURL, requestBody)
+	// 对于查询接口，需要将路径参数添加到 URL 中
+	// 例如: /v1/general/custom-voices/{id}
+	if c.Param("id") != "" {
+		fullRequestURL = fullRequestURL + "/" + c.Param("id")
+	}
+
+	// 添加查询参数
+	if len(c.Request.URL.RawQuery) > 0 {
+		fullRequestURL = fullRequestURL + "?" + c.Request.URL.RawQuery
+	}
+
+	req, err := http.NewRequest(method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, err
 	}
@@ -93,16 +147,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 			Error:      model.Error{Message: "解析响应失败: " + unmarshalErr.Error()},
 		}
 	}
-	logger.SysLog(fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s",
-		klingResp.Code, klingResp.Data.TaskID, klingResp.Data.TaskStatus))
 
-	if klingResp.Code != 0 {
-		return nil, &model.ErrorWithStatusCode{
-			StatusCode: resp.StatusCode,
-			Error:      model.Error{Message: klingResp.Message},
-		}
-	}
+	// 记录日志（不管成功失败）
+	logger.Debug(c, fmt.Sprintf("Kling response: code=%d, task_id=%s, status=%s, message=%s",
+		klingResp.Code, klingResp.GetTaskID(), klingResp.GetTaskStatus(), klingResp.Message))
 
+	// 不管成功失败，都透传原始 Kling 返回数据
 	return &klingResp, nil
 }
 

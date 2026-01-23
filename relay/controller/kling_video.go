@@ -112,20 +112,15 @@ func DoIdentifyFace(c *gin.Context) {
 	if klingResp.Code != 0 {
 		logger.SysError(fmt.Sprintf("Kling identify-face API error: user_id=%d, code=%d, message=%s",
 			meta.UserId, klingResp.Code, klingResp.Message))
-		errResp := openai.ErrorWrapper(
-			fmt.Errorf(klingResp.Message),
-			"kling_api_error",
-			resp.StatusCode,
-		)
-		c.JSON(errResp.StatusCode, errResp.Error)
+		// 透传原始响应，不扣费
+		c.JSON(http.StatusOK, klingResp)
 		return
 	}
 
 	// 获取模型信息用于计费
-	model := kling.GetModelNameFromRequest(request)
-	if model == "" {
-		model = "kling-v1" // 默认模型
-	}
+	userModel := kling.GetModelNameFromRequest(request)
+	// 根据 requestType 自动确定 model（identify-face 使用固定的 kling-identify-face）
+	model := kling.GetModelNameByRequestType(kling.RequestTypeIdentifyFace, userModel)
 
 	// 计算费用（identify-face 固定 mode=std，不记录 duration）
 	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "")
@@ -326,17 +321,28 @@ func DoAdvancedLipSync(c *gin.Context) {
 		return
 	}
 
+	// 检查 Kling API 返回的错误码
+	if klingResp.Code != 0 {
+		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync API error: user_id=%d, video_id=%d, code=%d, message=%s",
+			meta.UserId, video.Id, klingResp.Code, klingResp.Message))
+		video.Status = kling.TaskStatusFailed
+		video.FailReason = klingResp.Message
+		video.Update()
+		c.JSON(http.StatusOK, klingResp) // 透传原始响应
+		return
+	}
+
 	// 更新 Video 记录
-	video.TaskId = klingResp.Data.TaskID
-	video.Status = klingResp.Data.TaskStatus
-	video.VideoId = klingResp.Data.TaskID
+	video.TaskId = klingResp.GetTaskID()
+	video.Status = klingResp.GetTaskStatus()
+	video.VideoId = klingResp.GetTaskID()
 	if err := video.Update(); err != nil {
 		logger.SysError(fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v",
 			video.Id, video.TaskId, err))
 	}
 
 	logger.SysLog(fmt.Sprintf("Kling advanced-lip-sync task created: id=%d, task_id=%s, user_id=%d, quota=%d",
-		video.Id, klingResp.Data.TaskID, meta.UserId, quota))
+		video.Id, klingResp.GetTaskID(), meta.UserId, quota))
 
 	// 返回 Kling 原始响应
 	c.JSON(http.StatusOK, klingResp)
@@ -385,6 +391,29 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 	}
 
 	// 从 result 字段解析查询响应数据
+	// 先尝试解析为 CallbackNotification（回调保存的格式）
+	var notification kling.CallbackNotification
+	if err := json.Unmarshal([]byte(video.Result), &notification); err == nil {
+		// 成功解析为 CallbackNotification，转换为 QueryTaskResponse
+		response := kling.QueryTaskResponse{
+			Code:      0,
+			Message:   "success",
+			RequestID: fmt.Sprintf("query-%s", taskID),
+			Data: kling.TaskData{
+				TaskID:        notification.TaskID,
+				TaskStatus:    notification.TaskStatus,
+				TaskStatusMsg: notification.TaskStatusMsg,
+				TaskInfo:      notification.TaskInfo,
+				CreatedAt:     notification.CreatedAt,
+				UpdatedAt:     notification.UpdatedAt,
+				TaskResult:    notification.TaskResult,
+			},
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// 如果不是 CallbackNotification，尝试解析为 QueryTaskResponse（兼容旧格式）
 	var queryResponse kling.QueryTaskResponse
 	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
 		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))

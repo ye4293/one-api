@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -149,6 +153,85 @@ func extractAdminInfoFromContext(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// uploadImageBase64ToS3 将 base64 编码的图片上传到 S3/R2 并返回 URL
+// 复用 video.go 中的 R2 配置
+func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType string, userId int) (string, error) {
+	// 检查 S3 配置是否完整（复用 File 存储的配置）
+	if config.CfFileAccessKey == "" || config.CfFileSecretKey == "" || config.CfFileEndpoint == "" || config.CfBucketFileName == "" {
+		return "", fmt.Errorf("S3/R2 storage not configured")
+	}
+
+	// 解码 base64 数据
+	imageData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 data: %v", err)
+	}
+
+	// 确定文件扩展名和内容类型
+	ext := "png" // 默认扩展名
+	contentType := "image/png"
+	if mimeType != "" {
+		contentType = mimeType
+		switch mimeType {
+		case "image/jpeg":
+			ext = "jpg"
+		case "image/png":
+			ext = "png"
+		case "image/gif":
+			ext = "gif"
+		case "image/webp":
+			ext = "webp"
+		}
+	}
+
+	// 生成唯一的文件名（添加 gemini-image 前缀便于管理）
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("gemini-image/%d_%d_%x.%s", userId, timestamp, randomBytes, ext)
+
+	// 创建带超时的上下文
+	uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// 加载 AWS 配置（复用 CfFile 配置）
+	cfg, err := awsconfig.LoadDefaultConfig(uploadCtx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     config.CfFileAccessKey,
+				SecretAccessKey: config.CfFileSecretKey,
+			}, nil
+		}))),
+		awsconfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: config.CfFileEndpoint}, nil
+			}),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config: %v", err)
+	}
+
+	// 创建 S3 客户端
+	client := s3.NewFromConfig(cfg)
+
+	// 上传图片到 R2
+	_, err = client.PutObject(uploadCtx, &s3.PutObjectInput{
+		Bucket:      aws.String(config.CfBucketFileName),
+		Key:         aws.String(filename),
+		Body:        bytes.NewReader(imageData),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload image to R2: %v", err)
+	}
+
+	// 生成文件 URL（与 video.go 保持一致）
+	fileUrl := "https://file.ezlinkai.com"
+	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
 }
 
 // calculateGeminiImageQuota 计算 Gemini 图片生成的配额
@@ -1358,7 +1441,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
-			B64Json string `json:"b64_json"`
+			B64Json  string `json:"b64_json"`
+			MimeType string `json:"mime_type"`
 		}
 
 		// Extract image data from Gemini response
@@ -1367,9 +1451,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				if part.InlineData != nil {
 					// Use the base64 data in b64_json field (OpenAI standard)
 					imageData = append(imageData, struct {
-						B64Json string `json:"b64_json"`
+						B64Json  string `json:"b64_json"`
+						MimeType string `json:"mime_type"`
 					}{
-						B64Json: part.InlineData.Data,
+						B64Json:  part.InlineData.Data,
+						MimeType: part.InlineData.MimeType,
 					})
 				} else if part.Text != "" {
 					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
@@ -1490,18 +1576,45 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return nil
 		}
 
-		// Create OpenAI compatible response data with b64_json
+		// Create OpenAI compatible response data
+		// 检查 response_format 是否为 "url"，如果是则上传图片到 S3 并返回 URL
 		var openaiCompatibleData []struct {
 			Url     string `json:"url,omitempty"`
 			B64Json string `json:"b64_json,omitempty"`
 		}
+
+		wantUrl := strings.ToLower(imageRequest.ResponseFormat) == "url"
+
 		for _, img := range imageData {
-			openaiCompatibleData = append(openaiCompatibleData, struct {
-				Url     string `json:"url,omitempty"`
-				B64Json string `json:"b64_json,omitempty"`
-			}{
-				B64Json: img.B64Json,
-			})
+			if wantUrl {
+				// 上传图片到 S3/R2 并返回 URL
+				imageUrl, err := uploadImageBase64ToS3(ctx, img.B64Json, img.MimeType, meta.UserId)
+				if err != nil {
+					logger.Errorf(ctx, "上传图片到 S3 失败: %v，回退到 base64 格式", err)
+					// 上传失败时回退到 base64 格式
+					openaiCompatibleData = append(openaiCompatibleData, struct {
+						Url     string `json:"url,omitempty"`
+						B64Json string `json:"b64_json,omitempty"`
+					}{
+						B64Json: img.B64Json,
+					})
+				} else {
+					openaiCompatibleData = append(openaiCompatibleData, struct {
+						Url     string `json:"url,omitempty"`
+						B64Json string `json:"b64_json,omitempty"`
+					}{
+						Url: imageUrl,
+					})
+				}
+			} else {
+				// 默认返回 base64 格式
+				openaiCompatibleData = append(openaiCompatibleData, struct {
+					Url     string `json:"url,omitempty"`
+					B64Json string `json:"b64_json,omitempty"`
+				}{
+					B64Json: img.B64Json,
+				})
+			}
 		}
 
 		// 为 Gemini JSON 请求构建包含 usage 信息的响应
@@ -2063,7 +2176,7 @@ func handleAliImageRequest(c *gin.Context, ctx context.Context, modelName string
 	baseUrl := meta.BaseURL
 
 	// 构建阿里云万相API URL
-	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/image2image/image-synthesis", baseUrl)
+	fullRequestUrl := fmt.Sprintf("%s/api/v1/services/aigc/image-generation/generation", baseUrl)
 
 	// Read the original request body
 	bodyBytes, err := io.ReadAll(c.Request.Body)

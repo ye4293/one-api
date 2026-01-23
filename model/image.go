@@ -6,7 +6,7 @@ import (
 
 type Image struct {
 	Id            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskId        string `gorm:"type:varchar(255);index:idx_task_id,length:40" json:"task_id"`
+	TaskId        string `gorm:"type:varchar(255);index:idx_images_task_id,length:40" json:"task_id"`
 	Username      string `json:"username"`
 	ChannelId     int    `json:"channel_id"`
 	UserId        int    `json:"user_id"`
@@ -39,6 +39,12 @@ func (image *Image) Update() error {
 func GetImageByTaskId(taskId string) (*Image, error) {
 	var image Image
 	err := DB.Where("task_id = ?", taskId).First(&image).Error
+	return &image, err
+}
+
+func GetImageById(id int64) (*Image, error) {
+	var image Image
+	err := DB.Where("id = ?", id).First(&image).Error
 	return &image, err
 }
 

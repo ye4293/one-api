@@ -8,7 +8,11 @@ on:
 
 env:
   DOCKER_REGISTRY: ye4293xx7
-  IMAGE_NAME: one-api
+  IMAGE_NAME: one-api-test
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-dev:
@@ -28,9 +32,11 @@ jobs:
       - name: 保存版本信息
         id: version
         run: |
-          VERSION="dev-$(git rev-parse --short HEAD)-$(date +%Y%m%d-%H%M%S)"
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          VERSION="dev-${TIMESTAMP}-$(git rev-parse --short HEAD)"
           echo "$VERSION" > VERSION
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
 
       - name: 设置 Docker Buildx
@@ -56,12 +62,82 @@ jobs:
           platforms: linux/amd64    # 测试环境只构建 amd64，速度快
           push: true
           tags: |
-            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:dev
-            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:dev
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-dev
-          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-dev,mode=max
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: 清理 Docker Hub 旧镜像（保留最新 5 个版本号 tag）
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          NAMESPACE="${{ env.DOCKER_REGISTRY }}"
+          REPO="${{ env.IMAGE_NAME }}"
+          KEEP=5
+
+          if [[ -z "${DOCKERHUB_USERNAME:-}" || -z "${DOCKERHUB_TOKEN:-}" ]]; then
+            echo "Docker Hub 凭证缺失，跳过清理"
+            exit 0
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+          echo "获取 Docker Hub JWT..."
+          JWT=$(curl -fsSL \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login/ | jq -r .token)
+
+          if [[ -z "${JWT}" || "${JWT}" == "null" ]]; then
+            echo "获取 JWT 失败，跳过清理"
+            exit 0
+          fi
+
+          echo "遍历 tag 列表并按 last_updated 从新到旧处理（排除 latest/buildcache，仅处理 dev-*）..."
+          URL="https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags?page_size=100&ordering=last_updated"
+          KEPT=0
+          DELETED=0
+
+          while [[ -n "${URL}" && "${URL}" != "null" ]]; do
+            RESP=$(curl -fsSL -H "Authorization: JWT ${JWT}" "${URL}")
+            URL=$(echo "${RESP}" | jq -r '.next')
+
+            mapfile -t TAGS < <(echo "${RESP}" | jq -r '.results[].name')
+            for TAG in "${TAGS[@]}"; do
+              [[ "${TAG}" == "latest" || "${TAG}" == "buildcache" ]] && continue
+              [[ "${TAG}" != dev-* ]] && continue
+
+              if [[ "${KEPT}" -lt "${KEEP}" ]]; then
+                KEPT=$((KEPT + 1))
+                continue
+              fi
+
+              echo "Deleting ${NAMESPACE}/${REPO}:${TAG}"
+              curl -fsSL -X DELETE \
+                -H "Authorization: JWT ${JWT}" \
+                "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/" \
+                >/dev/null
+              DELETED=$((DELETED + 1))
+            done
+          done
+
+          echo "Docker Hub cleanup done. kept=${KEPT}, deleted=${DELETED}"
+
+      - name: 清理 GHCR 旧镜像（保留最新 5 个版本）
+        uses: actions/delete-package-versions@v5
+        with:
+          package-type: container
+          package-name: ${{ github.event.repository.name }}
+          min-versions-to-keep: 5
+          ignore-versions: ^latest$
 
       - name: 输出构建信息
         run: |
@@ -72,11 +148,19 @@ jobs:
           echo "**提交:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 镜像标签" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:dev\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 测试服务器拉取命令" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取 latest（可能有缓存）" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:dev" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### 拉取指定版本号（确保最新）" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker tag ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
           echo "docker-compose restart one-api" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

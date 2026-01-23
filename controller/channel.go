@@ -1515,3 +1515,223 @@ func ClearChannelQuota(c *gin.Context) {
 		},
 	})
 }
+
+// ==================== 获取上游模型列表 API ====================
+
+// OpenAIModelsResponse OpenAI /v1/models 接口返回结构
+type OpenAIModelsResponse struct {
+	Data []struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	} `json:"data"`
+}
+
+// buildModelsURL 根据渠道类型构建获取模型列表的URL
+func buildModelsURL(channelType int, baseURL string) string {
+	if baseURL == "" {
+		if channelType >= 0 && channelType < len(common.ChannelBaseURLs) {
+			baseURL = common.ChannelBaseURLs[channelType]
+		}
+	}
+
+	// 移除末尾的斜杠
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	switch channelType {
+	case common.ChannelTypeGemini:
+		return fmt.Sprintf("%s/v1beta/openai/models", baseURL)
+	case common.ChannelTypeAli:
+		return fmt.Sprintf("%s/compatible-mode/v1/models", baseURL)
+	default:
+		return fmt.Sprintf("%s/v1/models", baseURL)
+	}
+}
+
+// getAuthHeader 根据渠道类型构建认证头
+func getAuthHeader(channelType int, key string) http.Header {
+	headers := make(http.Header)
+
+	switch channelType {
+	case common.ChannelTypeAnthropic:
+		headers.Set("x-api-key", key)
+		headers.Set("anthropic-version", "2023-06-01")
+	default:
+		headers.Set("Authorization", "Bearer "+key)
+	}
+
+	return headers
+}
+
+// FetchModels 获取上游API的模型列表（用于新建渠道）
+func FetchModels(c *gin.Context) {
+	var req struct {
+		BaseURL string `json:"base_url"`
+		Type    int    `json:"type"`
+		Key     string `json:"key"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 密钥不能为空
+	key := strings.TrimSpace(req.Key)
+	if key == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "密钥不能为空",
+		})
+		return
+	}
+
+	// 如果密钥包含换行符，只使用第一个
+	if strings.Contains(key, "\n") {
+		key = strings.Split(key, "\n")[0]
+		key = strings.TrimSpace(key)
+	}
+
+	url := buildModelsURL(req.Type, req.BaseURL)
+	headers := getAuthHeader(req.Type, key)
+
+	models, err := fetchModelsFromURL(url, headers)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "获取模型列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    models,
+	})
+}
+
+// FetchUpstreamModels 获取已有渠道的上游模型列表
+func FetchUpstreamModels(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的渠道ID",
+		})
+		return
+	}
+
+	channel, err := model.GetChannelById(id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "渠道不存在: " + err.Error(),
+		})
+		return
+	}
+
+	// 获取可用的密钥
+	key := channel.Key
+	if channel.MultiKeyInfo.IsMultiKey {
+		keys := channel.ParseKeys()
+		if len(keys) > 0 {
+			// 优先使用启用状态的密钥
+			for i, k := range keys {
+				status := channel.GetKeyStatus(i)
+				if status == common.ChannelStatusEnabled {
+					key = k
+					break
+				}
+			}
+			// 如果没有启用的密钥，使用第一个
+			if key == channel.Key {
+				key = keys[0]
+			}
+		}
+	}
+
+	key = strings.TrimSpace(key)
+	if key == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "渠道密钥为空",
+		})
+		return
+	}
+
+	baseURL := ""
+	if channel.BaseURL != nil {
+		baseURL = *channel.BaseURL
+	}
+
+	url := buildModelsURL(channel.Type, baseURL)
+	headers := getAuthHeader(channel.Type, key)
+
+	models, err := fetchModelsFromURL(url, headers)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "获取模型列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    models,
+	})
+}
+
+// fetchModelsFromURL 从指定URL获取模型列表
+func fetchModelsFromURL(url string, headers http.Header) ([]string, error) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	// 设置请求头
+	for key, values := range headers {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("请求返回错误状态码: %d", resp.StatusCode)
+	}
+
+	var result OpenAIModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w", err)
+	}
+
+	// 提取模型ID并去重
+	modelSet := make(map[string]bool)
+	var models []string
+	for _, m := range result.Data {
+		id := m.ID
+		// Gemini 模型ID需要去掉 "models/" 前缀
+		id = strings.TrimPrefix(id, "models/")
+		if id != "" && !modelSet[id] {
+			modelSet[id] = true
+			models = append(models, id)
+		}
+	}
+
+	return models, nil
+}
