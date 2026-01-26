@@ -99,22 +99,31 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 
-		// Gemini API 从 query 参数或 x-goog-api-key header 中获取 key
-		// 支持 v1beta、v1alpha、v1 等版本路径
-		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
-			strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
-			strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models") ||
-			strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
-			skKey := c.Query("key")
-			if skKey != "" {
-				c.Request.Header.Set("Authorization", "Bearer "+skKey)
-			}
-			// 从 x-goog-api-key header 中获取 key
-			xGoogKey := c.Request.Header.Get("x-goog-api-key")
-			if xGoogKey != "" {
-				c.Request.Header.Set("Authorization", "Bearer "+xGoogKey)
-			}
+	// Gemini API 从 query 参数或 x-goog-api-key header 中获取 key
+	// 支持 v1beta、v1alpha、v1 等版本路径
+	if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
+		strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
+		strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models") ||
+		strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+		skKey := c.Query("key")
+		if skKey != "" {
+			c.Request.Header.Set("Authorization", "Bearer "+skKey)
 		}
+		// 从 x-goog-api-key header 中获取 key
+		xGoogKey := c.Request.Header.Get("x-goog-api-key")
+		if xGoogKey != "" {
+			c.Request.Header.Set("Authorization", "Bearer "+xGoogKey)
+		}
+	}
+
+	// Flux API 从 x-key header 中获取 key
+	// 支持 /flux/ 路径
+	if strings.HasPrefix(c.Request.URL.Path, "/flux/") {
+		xKey := c.Request.Header.Get("x-key")
+		if xKey != "" {
+			c.Request.Header.Set("Authorization", "Bearer "+xKey)
+		}
+	}
 		key := c.Request.Header.Get("Authorization")
 		parts := make([]string, 0)
 		key = strings.TrimPrefix(key, "Bearer ")
