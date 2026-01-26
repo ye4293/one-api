@@ -16,7 +16,7 @@ clients:
     # 外部服务: http://your-loki-host:3100/loki/api/v1/push
 
 scrape_configs:
-  # 普通日志（INFO/WARN/DEBUG）
+  # 普通日志（INFO/WARN/DEBUG） - 排除 error 文件
   - job_name: oneapi-general
     static_configs:
       - targets:
@@ -24,7 +24,7 @@ scrape_configs:
         labels:
           job: oneapi
           stream: general
-          __path__: /var/log/oneapi/oneapi-*.log
+          __path__: /var/log/oneapi/oneapi-[0-9]*.log
     pipeline_stages:
       # 解析 JSON - 提取需要作为标签的字段
       - json:

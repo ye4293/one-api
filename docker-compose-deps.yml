@@ -1,0 +1,116 @@
+version: '3.8'
+
+# 完整的 one-api 服务栈
+# 包含：MySQL、Redis、one-api 应用、Promtail 日志采集
+
+services:
+  redis:
+    image: "${REGISTRY:-docker.io}/redis:latest"
+    container_name: one-api-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - one-api-network
+
+  db:
+    image: "${REGISTRY:-docker.io}/mysql:8.2.0"
+    restart: always
+    container_name: one-api-mysql
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    ports:
+      - '3306:3306'
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: 'OneAPI@justsong'
+      MYSQL_USER: oneapi
+      MYSQL_PASSWORD: '123456'
+      MYSQL_DATABASE: one-api
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pOneAPI@justsong"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - one-api-network
+
+  oneapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: one-api
+    restart: always
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data/oneapi:/data
+      - ./logs:/var/log/oneapi  # 日志目录，供 promtail 采集
+    environment:
+      # 数据库配置
+      - SQL_DSN=oneapi:123456@tcp(db:3306)/one-api?charset=utf8mb4&parseTime=True&loc=Local
+      # Redis 配置
+      - REDIS_CONN_STRING=redis://redis:6379
+      # 会话密钥（请修改为随机字符串）
+      - SESSION_SECRET=XcFFF4JAKNUINZnfMdCeICDl5ja/1Aun/DGq2kRxPukTbd4Rog+Aph4olPV3/aLu
+      # 日志配置
+      - LOG_DIR=/var/log/oneapi
+      - LOG_LEVEL=info
+      # Debug 模式（启用后会记录所有 HTTP 请求日志）
+      - DEBUG=true
+      # 实例标识（用于日志和监控）
+      - INSTANCE_ID=oneapi-prod-01  # 自定义实例名称
+      - SERVICE_NAME=one-api  # 服务名称（可选，默认为 one-api）
+      # 其他配置
+      - TZ=Asia/Shanghai
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - one-api-network
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: one-api-promtail
+    restart: always
+    volumes:
+      - ./logs:/var/log/oneapi:ro  # 只读挂载日志目录
+      - ./promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - ./data/promtail:/tmp  # positions 文件存储
+    environment:
+      # Loki 地址 - 使用 Docker 网络中的服务名
+      - LOKI_URL=http://loki:3100/loki/api/v1/push
+    command: -config.file=/etc/promtail/config.yaml -config.expand-env=true
+    depends_on:
+      - oneapi
+    networks:
+      - one-api-network
+      - logging  # 加入 logging 网络以连接到 loki
+
+networks:
+  one-api-network:
+    driver: bridge
+
+  logging:
+    external: true  # 外部网络，需要先创建或由 loki/docker-compose-logging.yml 创建
+    name: loki_logging  # 引用 loki 的网络名称（格式：目录名_网络名）

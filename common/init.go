@@ -14,7 +14,7 @@ var (
 	Port         = flag.Int("port", 3000, "the listening port")
 	PrintVersion = flag.Bool("version", false, "print version and exit")
 	PrintHelp    = flag.Bool("help", false, "print help and exit")
-	LogDir       = flag.String("log-dir", "./logs", "specify the log directory")
+	LogDir       = flag.String("log-dir", "", "specify the log directory")
 )
 
 func printHelp() {
@@ -47,18 +47,28 @@ func init() {
 	if os.Getenv("SQLITE_PATH") != "" {
 		SQLitePath = os.Getenv("SQLITE_PATH")
 	}
-	if *LogDir != "" {
+	
+	// 优先顺序：命令行参数 > 环境变量 > 默认值
+	logDir := *LogDir
+	if logDir == "" {
+		logDir = os.Getenv("LOG_DIR")
+	}
+	if logDir == "" {
+		logDir = "./logs" // 默认值
+	}
+	
+	if logDir != "" {
 		var err error
-		*LogDir, err = filepath.Abs(*LogDir)
+		logDir, err = filepath.Abs(logDir)
 		if err != nil {
 			log.Fatal(err)
 		}
-		if _, err := os.Stat(*LogDir); os.IsNotExist(err) {
-			err = os.Mkdir(*LogDir, 0777)
+		if _, err := os.Stat(logDir); os.IsNotExist(err) {
+			err = os.Mkdir(logDir, 0777)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
-		logger.LogDir = *LogDir
+		logger.LogDir = logDir
 	}
 }
