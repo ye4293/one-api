@@ -67,9 +67,17 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 }
 
 // SetupRequestHeader 设置请求头
+// 接收客户端请求时兼容两种认证方式：
+// 1. Authorization: Bearer <token> 或 Authorization: <token>
+// 2. x-key: <api-key>
+// 但向 Flux API 发送时统一使用官方的 x-key header
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	req.Header.Set("Content-Type", "application/json")
+	
+	// 使用渠道配置的 APIKey（meta.APIKey 已经在中间件中提取并验证）
+	// 统一使用官方的 x-key header 格式
 	req.Header.Set("x-key", meta.APIKey)
+	
 	return nil
 }
 
@@ -457,7 +465,7 @@ func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, api
 		return http.StatusInternalServerError, nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
-	// 3. 设置请求头
+	// 3. 设置请求头 - 使用官方的 x-key header
 	req.Header.Set("x-key", apiKey)
 
 	// 4. 发送请求
