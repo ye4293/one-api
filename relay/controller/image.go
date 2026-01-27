@@ -411,7 +411,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					if err == nil {
 						// 获取文件的MIME类型
 						mimeType := fileHeader.Header.Get("Content-Type")
-						if mimeType == "" || mimeType == "application/octet-stream" {
+						if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" {
 							ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 							switch ext {
 							case ".png":
@@ -2990,7 +2990,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 				// 获取 MIME 类型
 				mimeType := fileHeader.Header.Get("Content-Type")
-				if mimeType == "" || mimeType == "application/octet-stream" {
+				if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" {
 					// 根据文件扩展名推断 MIME 类型
 					ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 					switch ext {
@@ -4077,7 +4077,8 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	contentType := resp.Header.Get("Content-Type")
 
 	// 如果Content-Type为空或者是通用二进制类型，需要推断真实类型
-	if contentType == "" || contentType == "application/octet-stream" {
+	// 常见的通用二进制类型：application/octet-stream, binary/octet-stream, application/x-octet-stream
+	if contentType == "" || contentType == "application/octet-stream" || contentType == "binary/octet-stream" || contentType == "application/x-octet-stream" {
 		// 优先尝试从URL扩展名推断
 		inferredType := inferContentTypeFromURL(imageURL)
 		if inferredType != "" {
