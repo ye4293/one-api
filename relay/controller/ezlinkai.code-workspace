@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../ezlinkai-web-next"
+		},
+		{
+			"path": "../../../monitor"
+		},
+		{
+			"path": "../../../new-api"
+		}
+	],
+	"settings": {}
+}

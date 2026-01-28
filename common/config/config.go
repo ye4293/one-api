@@ -204,3 +204,10 @@ var MetricSuccessChanSize = env.Int("METRIC_SUCCESS_CHAN_SIZE", 1024)
 var MetricFailChanSize = env.Int("METRIC_FAIL_CHAN_SIZE", 128)
 
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
+
+// Claude Thinking 模型配置
+var ClaudeThinkingEnabled = true                              // 是否启用 Claude 思考适配（-thinking 后缀）
+var ClaudeThinkingBudgetRatio = 0.8                           // 默认思考 token 百分比（80%）
+var ClaudeDefaultMaxTokens map[string]int                     // 模型默认 MaxTokens
+var ClaudeReasoningEffortMap map[string]float64               // reasoning_effort 到百分比的映射
+var ClaudeRequestHeaders map[string]map[string]string         // 请求头覆盖（模型名 -> 请求头键值对）

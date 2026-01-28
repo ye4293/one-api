@@ -357,7 +357,18 @@ func updateOptionMap(key string, value string) (err error) {
 	case "FeishuWebhookUrls":
 		config.FeishuWebhookUrls = value
 	case "PingIntervalSeconds":
-		config.PingIntervalSeconds,_ = strconv.Atoi(value)
+		config.PingIntervalSeconds, _ = strconv.Atoi(value)
+	// Claude Thinking 模型配置
+	case "ClaudeThinkingEnabled":
+		config.ClaudeThinkingEnabled = value == "true"
+	case "ClaudeThinkingBudgetRatio":
+		config.ClaudeThinkingBudgetRatio, _ = strconv.ParseFloat(value, 64)
+	case "ClaudeDefaultMaxTokens":
+		err = common.UpdateClaudeDefaultMaxTokensByJSONString(value)
+	case "ClaudeReasoningEffortMap":
+		err = common.UpdateClaudeReasoningEffortMapByJSONString(value)
+	case "ClaudeRequestHeaders":
+		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	}
 	return err
 }
