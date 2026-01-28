@@ -36,6 +36,8 @@ type Video struct {
 	CallbackStatus string `json:"callback_status"`                 // 回调状态：pending/success/failed/none
 	CallbackTime   int64  `json:"callback_time"`                   // 回调时间戳
 	CallbackError  string `json:"callback_error" gorm:"type:text"` // 回调失败原因
+	Sound          string `json:"sound"`                           // 是否有声：on/off（视频V2.6模型）
+	VoiceList      string `json:"voice_list" gorm:"type:text"`     // 指定的音色列表（JSON格式，视频V2.6模型）
 }
 
 func (video *Video) Insert() error {

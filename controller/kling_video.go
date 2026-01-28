@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type klingRequest struct {
 	Model         string
 	Mode          string
 	Duration      string
+	Sound         string // 是否有声：on/off（视频V2.6模型）
+	VoiceList     string // 指定的音色列表（JSON格式，视频V2.6模型）
 	Quota         int64
 	CallbackUrl   string
 	Meta          *util.RelayMeta
@@ -67,6 +70,25 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	var callbackUrl string
 	if cbUrl, ok := requestParams["callback_url"].(string); ok {
 		callbackUrl = cbUrl
+	}
+
+	// 提取视频V2.6模型的声音参数（可选）
+	var sound string
+	if soundVal, ok := requestParams["sound"].(string); ok {
+		sound = soundVal
+	} else if soundBool, ok := requestParams["sound"].(bool); ok {
+		if soundBool {
+			sound = "on"
+		} else {
+			sound = "off"
+		}
+	}
+
+	// 提取音色列表（可选）
+	var voiceList string
+	if voiceListVal, ok := requestParams["voice_list"]; ok && voiceListVal != nil {
+		voiceListBytes, _ := json.Marshal(voiceListVal)
+		voiceList = string(voiceListBytes)
 	}
 
 	// 计算预估费用
@@ -105,6 +127,8 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 		Model:         model,
 		Mode:          mode,
 		Duration:      duration,
+		Sound:         sound,
+		VoiceList:     voiceList,
 		Quota:         quota,
 		CallbackUrl:   callbackUrl,
 		Meta:          meta,
@@ -172,6 +196,8 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		Type:        req.RequestType,
 		Mode:        req.Mode,
 		Duration:    req.Duration,
+		Sound:       req.Sound,
+		VoiceList:   req.VoiceList,
 		Prompt:      kling.GetPromptFromRequest(req.RequestParams),
 		Detail:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
@@ -249,6 +275,8 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 		Model:       req.Model,
 		Type:        req.RequestType,
 		Mode:        req.Mode,
+		Sound:       req.Sound,
+		VoiceList:   req.VoiceList,
 		Prompt:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
 		RequestType: req.RequestType,
@@ -416,9 +444,43 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				actualDuration := notification.TaskResult.Videos[0].Duration
 				video.Duration = actualDuration
 
-				// 重新计算费用（按次计费的接口会返回固定价格，按时长计费的接口会根据实际时长计算）
+				// 计算费用
 				oldQuota := video.Quota
-				newQuota := common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+				var newQuota int64
+
+				// 优先使用 Kling 官方返回的计费金额（人民币）
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to system billing",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500 quota
+						newQuota = int64(usdAmount * float64(common.USD))
+						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+						logger.Info(c, fmt.Sprintf("Using system billing rules (zero amount): task_id=%s, duration=%s, quota=%d",
+							taskID, actualDuration, newQuota))
+					}
+				} else {
+					// 使用系统配置的计费规则重新计算
+					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					logger.Info(c, fmt.Sprintf("Using system billing rules: task_id=%s, duration=%s, quota=%d",
+						taskID, actualDuration, newQuota))
+				}
+
 				video.Quota = newQuota
 
 				// 扣费
@@ -426,8 +488,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.Error(c, fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
-						video.UserId, oldQuota, newQuota, actualDuration, video.Type, video.Model, taskID))
+					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, final_unit_deduction=%s, type=%s, model=%s, task_id=%s",
+						video.UserId, oldQuota, newQuota, actualDuration, notification.FinalUnitDeduction, video.Type, video.Model, taskID))
 				}
 
 				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
@@ -436,13 +498,48 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				image.StoreUrl = notification.TaskResult.Videos[0].URL
 				image.ImageId = notification.TaskResult.Videos[0].ID
 
-				// 扣费
-				err := dbmodel.DecreaseUserQuota(image.UserId, image.Quota)
-				if err != nil {
-					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, image.Quota, err))
+				// 计算费用
+				oldQuota := image.Quota
+				var newQuota int64
+
+				// 优先使用 Kling 官方返回的计费金额（人民币）
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to original quota",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用原有 quota
+						newQuota = image.Quota
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500 quota
+						newQuota = int64(usdAmount * float64(common.USD))
+						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用原有 quota
+						newQuota = image.Quota
+					}
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, quota=%d, task_id=%s",
-						image.UserId, image.Quota, taskID))
+					// 使用原有的 quota（图片任务通常已经计算好）
+					newQuota = image.Quota
+				}
+
+				image.Quota = newQuota
+
+				// 扣费
+				err := dbmodel.DecreaseUserQuota(image.UserId, newQuota)
+				if err != nil {
+					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, newQuota, err))
+				} else {
+					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, old_quota=%d, new_quota=%d, final_unit_deduction=%s, task_id=%s",
+						image.UserId, oldQuota, newQuota, notification.FinalUnitDeduction, taskID))
 				}
 
 				image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)

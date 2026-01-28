@@ -27,6 +27,8 @@ type CreateTaskRequest struct {
 	Type        string
 	Mode        string
 	Duration    string
+	Sound       string // 是否有声：on/off（视频V2.6模型）
+	VoiceList   string // 指定的音色列表（JSON格式，视频V2.6模型）
 	Prompt      string
 	Detail      string
 	Quota       int64
@@ -77,6 +79,8 @@ func (tm *TaskManager) createVideoTask(req *CreateTaskRequest) (*dbmodel.Video, 
 		Mode:           req.Mode,
 		Prompt:         req.Prompt,
 		Duration:       req.Duration,
+		Sound:          req.Sound,
+		VoiceList:      req.VoiceList,
 		CallbackUrl:    req.CallbackUrl,
 		CallbackStatus: callbackStatus,
 		CreatedAt:      time.Now().Unix(),
@@ -120,14 +124,14 @@ func (tm *TaskManager) createImageTask(req *CreateTaskRequest) (*dbmodel.Image, 
 
 // TaskWrapper 方法
 
-func (tw *TaskWrapper) GetID() int64        { return tw.getID() }
-func (tw *TaskWrapper) GetTaskID() string   { return tw.getTaskID() }
-func (tw *TaskWrapper) GetUserID() int      { return tw.getUserID() }
-func (tw *TaskWrapper) GetChannelID() int   { return tw.getChannelID() }
-func (tw *TaskWrapper) GetStatus() string   { return tw.getStatus() }
-func (tw *TaskWrapper) GetQuota() int64     { return tw.getQuota() }
-func (tw *TaskWrapper) IsVideo() bool       { return tw.video != nil }
-func (tw *TaskWrapper) IsImage() bool       { return tw.image != nil }
+func (tw *TaskWrapper) GetID() int64             { return tw.getID() }
+func (tw *TaskWrapper) GetTaskID() string        { return tw.getTaskID() }
+func (tw *TaskWrapper) GetUserID() int           { return tw.getUserID() }
+func (tw *TaskWrapper) GetChannelID() int        { return tw.getChannelID() }
+func (tw *TaskWrapper) GetStatus() string        { return tw.getStatus() }
+func (tw *TaskWrapper) GetQuota() int64          { return tw.getQuota() }
+func (tw *TaskWrapper) IsVideo() bool            { return tw.video != nil }
+func (tw *TaskWrapper) IsImage() bool            { return tw.image != nil }
 func (tw *TaskWrapper) GetVideo() *dbmodel.Video { return tw.video }
 func (tw *TaskWrapper) GetImage() *dbmodel.Image { return tw.image }
 
