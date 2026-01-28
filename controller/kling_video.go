@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -448,15 +449,31 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				var newQuota int64
 
 				// 优先使用 Kling 官方返回的计费金额（人民币）
-				if notification.FinalUnitDeduction > 0 {
-					// 转换人民币为美元
-					newQuota, err := common.ConvertCNYToUSD(notification.FinalUnitDeduction)
-					if err != nil {
-						logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
-							notification.FinalUnitDeduction, err))
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to system billing",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500 quota
+						newQuota = int64(usdAmount * float64(common.USD))
+						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+						logger.Info(c, fmt.Sprintf("Using system billing rules (zero amount): task_id=%s, duration=%s, quota=%d",
+							taskID, actualDuration, newQuota))
 					}
-					logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%.4f, quota=%d",
-						taskID, notification.FinalUnitDeduction, newQuota))
 				} else {
 					// 使用系统配置的计费规则重新计算
 					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
@@ -471,7 +488,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.Error(c, fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, final_unit_deduction=%.4f, type=%s, model=%s, task_id=%s",
+					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, final_unit_deduction=%s, type=%s, model=%s, task_id=%s",
 						video.UserId, oldQuota, newQuota, actualDuration, notification.FinalUnitDeduction, video.Type, video.Model, taskID))
 				}
 
@@ -486,17 +503,29 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				var newQuota int64
 
 				// 优先使用 Kling 官方返回的计费金额（人民币）
-				if notification.FinalUnitDeduction > 0 {
-					// 转换人民币为美元
-					usdAmount, err := common.ConvertCNYToUSD(notification.FinalUnitDeduction)
-					if err != nil {
-						logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
-							notification.FinalUnitDeduction, err))
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to original quota",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用原有 quota
+						newQuota = image.Quota
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500 quota
+						newQuota = int64(usdAmount * float64(common.USD))
+						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用原有 quota
+						newQuota = image.Quota
 					}
-					// 转换为 quota：$1 = 500 quota
-					newQuota = int64(usdAmount * float64(common.USD))
-					logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%.4f, usd=%.4f, quota=%d",
-						taskID, notification.FinalUnitDeduction, usdAmount, newQuota))
 				} else {
 					// 使用原有的 quota（图片任务通常已经计算好）
 					newQuota = image.Quota
@@ -509,7 +538,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, newQuota, err))
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, old_quota=%d, new_quota=%d, final_unit_deduction=%.4f, task_id=%s",
+					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, old_quota=%d, new_quota=%d, final_unit_deduction=%s, task_id=%s",
 						image.UserId, oldQuota, newQuota, notification.FinalUnitDeduction, taskID))
 				}
 
