@@ -193,7 +193,7 @@ type CallbackNotification struct {
 	UpdatedAt          int64                  `json:"updated_at,omitempty"` // Unix时间戳(ms)
 	TaskResult         TaskResult             `json:"task_result,omitempty"`
 	ExternalTaskID     string                 `json:"external_task_id,omitempty"`     // 外部任务ID（系统内部ID）
-	FinalUnitDeduction float64                `json:"final_unit_deduction,omitempty"` // 本次任务计费金额（人民币）
+	FinalUnitDeduction string                 `json:"final_unit_deduction,omitempty"` // 本次任务计费金额（人民币，字符串格式）
 }
 
 // 查询任务状态响应
