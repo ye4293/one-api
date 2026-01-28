@@ -62,7 +62,6 @@ type Channel struct {
 	ModelMapping       *string `json:"model_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
-	ChannelRatio       float64 `json:"channel_ratio" gorm:"default:1"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`

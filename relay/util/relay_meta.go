@@ -1,7 +1,6 @@
 package util
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,12 +28,9 @@ type RelayMeta struct {
 	// OriginModelName is the model name from the raw user request
 	OriginModelName string
 	// ActualModelName is the model name after mapping
-	ActualModelName         string
-	RequestURLPath          string
-	PromptTokens            int // only for DoResponse
-	ChannelRatio            float64
-	UserChannelTypeRatio    float64
-	UserChannelTypeRatioMap string
+	ActualModelName string
+	RequestURLPath  string
+	PromptTokens    int // only for DoResponse
 	// 用于计算首字延迟
 	FirstWordLatency  float64
 	StartTime         time.Time // 请求开始时间
@@ -82,16 +78,13 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		BaseURL:      c.GetString("base_url"),
 		// APIVersion:     c.GetString(common.ConfigKeyAPIVersion),
 		// APIKey:          channel.Key,
-		APIKey:                  strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
-		RequestURLPath:          c.Request.URL.String(),
-		OriginModelName:         c.GetString("original_model"),
-		ChannelRatio:            c.GetFloat64("channel_ratio"),
-		UserChannelTypeRatioMap: c.GetString("user_channel_type_ratio_map"),
-		UserChannelTypeRatio:    GetChannelTypeRatio(c.GetString("user_channel_type_ratio_map"), c.GetInt("channel")),
-		ActualAPIKey:            c.GetString("actual_key"),
-		IsMultiKey:              c.GetBool("is_multi_key"),
-		StartTime:               time.Now(), // 记录请求开始时间
-		isFirstResponse:         true,       // 初始化为 true，等待第一个响应
+		APIKey:          strings.TrimPrefix(c.Request.Header.Get("Authorization"), "Bearer "),
+		RequestURLPath:  c.Request.URL.String(),
+		OriginModelName: c.GetString("original_model"),
+		ActualAPIKey:    c.GetString("actual_key"),
+		IsMultiKey:      c.GetBool("is_multi_key"),
+		StartTime:       time.Now(), // 记录请求开始时间
+		isFirstResponse: true,       // 初始化为 true，等待第一个响应
 	}
 
 	// 处理多密钥索引
@@ -130,46 +123,4 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
 	return &meta
-}
-
-// GetChannelTypeRatio 根据 ChannelType 从 UserChannelTypeRatioMap 中获取对应的倍率
-// ratioMapStr 格式: "{41:0.2,42:0.6}"
-// 如果找不到对应的 ChannelType，返回默认值 1.0
-func GetChannelTypeRatio(ratioMapStr string, channelType int) float64 {
-	if ratioMapStr == "" {
-		return 1.0
-	}
-
-	// 移除大括号
-	ratioMapStr = strings.Trim(ratioMapStr, "{}")
-
-	// 按逗号分割键值对
-	pairs := strings.Split(ratioMapStr, ",")
-
-	for _, pair := range pairs {
-		// 按冒号分割键和值
-		kv := strings.Split(strings.TrimSpace(pair), ":")
-		if len(kv) != 2 {
-			continue
-		}
-
-		// 解析 ChannelType
-		key, err := strconv.Atoi(strings.TrimSpace(kv[0]))
-		if err != nil {
-			continue
-		}
-
-		// 如果找到匹配的 ChannelType
-		if key == channelType {
-			// 解析倍率值
-			ratio, err := strconv.ParseFloat(strings.TrimSpace(kv[1]), 64)
-			if err != nil {
-				return 1.0
-			}
-			return ratio
-		}
-	}
-
-	// 如果没有找到对应的 ChannelType，返回默认值
-	return 1.0
 }
