@@ -98,19 +98,21 @@ services:
       - ./promtail-config.yaml:/etc/promtail/config.yaml:ro
       - ./data/promtail:/tmp  # positions 文件存储
     environment:
-      # Loki 地址 - 使用 Docker 网络中的服务名
-      - LOKI_URL=http://loki:3100/loki/api/v1/push
+      # Loki 地址 - 通过宿主机端口访问独立部署的监控栈
+      # 本地部署：http://host.docker.internal:3100/loki/api/v1/push
+      # 跨服务器：https://loki.yourdomain.com/loki/api/v1/push
+      - LOKI_URL=${LOKI_URL:-http://localhost:3100/loki/api/v1/push}
+
+      # Bearer Token 认证（必须配置）
+      # ⚠️ 重要：此 Token 必须与监控服务器的 monitoring-stack/.env 中的 LOKI_BEARER_TOKEN 一致
+      # 生成方法：openssl rand -base64 32
+      - LOKI_BEARER_TOKEN=${LOKI_BEARER_TOKEN:-}
     command: -config.file=/etc/promtail/config.yaml -config.expand-env=true
     depends_on:
       - oneapi
     networks:
       - one-api-network
-      - logging  # 加入 logging 网络以连接到 loki
 
 networks:
   one-api-network:
     driver: bridge
-
-  logging:
-    external: true  # 外部网络，需要先创建或由 loki/docker-compose-logging.yml 创建
-    name: loki_logging  # 引用 loki 的网络名称（格式：目录名_网络名）

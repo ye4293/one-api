@@ -10,10 +10,27 @@ positions:
 
 clients:
   # Loki 地址 - 可通过环境变量 LOKI_URL 覆盖
+  # 跨服务器部署时使用外部域名，例如：https://loki.yourdomain.com/loki/api/v1/push
   - url: ${LOKI_URL:-http://host.docker.internal:3100/loki/api/v1/push}
     # Docker 内访问宿主机: host.docker.internal
     # K8s 或同网络: http://loki:3100/loki/api/v1/push
-    # 外部服务: http://your-loki-host:3100/loki/api/v1/push
+    # 跨服务器外部访问: https://loki.yourdomain.com/loki/api/v1/push
+
+    # Bearer Token 认证（跨服务器部署时必须配置）
+    # 通过环境变量 LOKI_BEARER_TOKEN 注入
+    headers:
+      Authorization: "Bearer ${LOKI_BEARER_TOKEN}"
+
+    # 重试和超时配置
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+    # 批量发送配置（减少网络请求）
+    batchwait: 1s      # 最多等待 1 秒
+    batchsize: 1048576 # 1MB 批量大小
 
 scrape_configs:
   # 普通日志（INFO/WARN/DEBUG） - 排除 error 文件
