@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -149,6 +153,87 @@ func extractAdminInfoFromContext(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// uploadImageBase64ToS3 将 base64 编码的图片上传到 S3/R2 并返回 URL
+// 复用 video.go 中的 R2 配置
+func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType string, userId int) (string, error) {
+	// 检查 S3 配置是否完整（复用 File 存储的配置）
+	if config.CfFileAccessKey == "" || config.CfFileSecretKey == "" || config.CfFileEndpoint == "" || config.CfBucketFileName == "" {
+		return "", fmt.Errorf("S3/R2 storage not configured")
+	}
+
+	// 解码 base64 数据
+	imageData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64 data: %v", err)
+	}
+
+	// 确定文件扩展名和内容类型
+	ext := "png" // 默认扩展名
+	contentType := "image/png"
+	if mimeType != "" {
+		contentType = mimeType
+		switch mimeType {
+		case "image/jpeg":
+			ext = "jpg"
+		case "image/png":
+			ext = "png"
+		case "image/gif":
+			ext = "gif"
+		case "image/webp":
+			ext = "webp"
+		}
+	}
+
+	// 生成唯一的文件名（添加 gemini-image 前缀便于管理）
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("gemini-image/%d_%d_%x.%s", userId, timestamp, randomBytes, ext)
+
+	// 创建带超时的上下文
+	uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// 加载 AWS 配置（复用 CfFile 配置）
+	cfg, err := awsconfig.LoadDefaultConfig(uploadCtx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     config.CfFileAccessKey,
+				SecretAccessKey: config.CfFileSecretKey,
+			}, nil
+		}))),
+		awsconfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: config.CfFileEndpoint}, nil
+			}),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to load AWS config: %v", err)
+	}
+
+	// 创建 S3 客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
+
+	// 上传图片到 R2
+	_, err = client.PutObject(uploadCtx, &s3.PutObjectInput{
+		Bucket:      aws.String(config.CfBucketFileName),
+		Key:         aws.String(filename),
+		Body:        bytes.NewReader(imageData),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload image to R2: %v", err)
+	}
+
+	// 生成文件 URL（Path-Style 格式：endpoint/bucket/key）
+	fileUrl := config.CfFileEndpoint
+	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
 }
 
 // calculateGeminiImageQuota 计算 Gemini 图片生成的配额
@@ -326,7 +411,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					if err == nil {
 						// 获取文件的MIME类型
 						mimeType := fileHeader.Header.Get("Content-Type")
-						if mimeType == "" || mimeType == "application/octet-stream" {
+						if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" || mimeType == "text/plain" {
 							ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 							switch ext {
 							case ".png":
@@ -523,7 +608,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 
 			// 并发处理所有找到的图片
-			imageParts, _ := processImagesConcurrently(ctx, imageInputs)
+			imageParts, _, imgErr := processImagesConcurrently(ctx, imageInputs)
+			if imgErr != nil {
+				return openai.ErrorWrapper(imgErr, "image_download_failed", http.StatusBadRequest)
+			}
 
 			// 将成功处理的图片添加到Gemini请求中
 			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, imageParts...)
@@ -1358,7 +1446,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// Convert to OpenAI DALL-E 3 format
 		var imageData []struct {
-			B64Json string `json:"b64_json"`
+			B64Json  string `json:"b64_json"`
+			MimeType string `json:"mime_type"`
 		}
 
 		// Extract image data from Gemini response
@@ -1367,9 +1456,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				if part.InlineData != nil {
 					// Use the base64 data in b64_json field (OpenAI standard)
 					imageData = append(imageData, struct {
-						B64Json string `json:"b64_json"`
+						B64Json  string `json:"b64_json"`
+						MimeType string `json:"mime_type"`
 					}{
-						B64Json: part.InlineData.Data,
+						B64Json:  part.InlineData.Data,
+						MimeType: part.InlineData.MimeType,
 					})
 				} else if part.Text != "" {
 					logger.Infof(ctx, "候选项 #%d 部分 #%d 包含文本: %s", i, j, part.Text)
@@ -1490,18 +1581,45 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return nil
 		}
 
-		// Create OpenAI compatible response data with b64_json
+		// Create OpenAI compatible response data
+		// 检查 response_format 是否为 "url"，如果是则上传图片到 S3 并返回 URL
 		var openaiCompatibleData []struct {
 			Url     string `json:"url,omitempty"`
 			B64Json string `json:"b64_json,omitempty"`
 		}
+
+		wantUrl := strings.ToLower(imageRequest.ResponseFormat) == "url"
+
 		for _, img := range imageData {
-			openaiCompatibleData = append(openaiCompatibleData, struct {
-				Url     string `json:"url,omitempty"`
-				B64Json string `json:"b64_json,omitempty"`
-			}{
-				B64Json: img.B64Json,
-			})
+			if wantUrl {
+				// 上传图片到 S3/R2 并返回 URL
+				imageUrl, err := uploadImageBase64ToS3(ctx, img.B64Json, img.MimeType, meta.UserId)
+				if err != nil {
+					logger.Errorf(ctx, "上传图片到 S3 失败: %v，回退到 base64 格式", err)
+					// 上传失败时回退到 base64 格式
+					openaiCompatibleData = append(openaiCompatibleData, struct {
+						Url     string `json:"url,omitempty"`
+						B64Json string `json:"b64_json,omitempty"`
+					}{
+						B64Json: img.B64Json,
+					})
+				} else {
+					openaiCompatibleData = append(openaiCompatibleData, struct {
+						Url     string `json:"url,omitempty"`
+						B64Json string `json:"b64_json,omitempty"`
+					}{
+						Url: imageUrl,
+					})
+				}
+			} else {
+				// 默认返回 base64 格式
+				openaiCompatibleData = append(openaiCompatibleData, struct {
+					Url     string `json:"url,omitempty"`
+					B64Json string `json:"b64_json,omitempty"`
+				}{
+					B64Json: img.B64Json,
+				})
+			}
 		}
 
 		// 为 Gemini JSON 请求构建包含 usage 信息的响应
@@ -2872,7 +2990,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 				// 获取 MIME 类型
 				mimeType := fileHeader.Header.Get("Content-Type")
-				if mimeType == "" || mimeType == "application/octet-stream" {
+				if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" || mimeType == "text/plain" {
 					// 根据文件扩展名推断 MIME 类型
 					ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 					switch ext {
@@ -3937,20 +4055,6 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 		return "", "", fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
 	}
 
-	// 获取Content-Type
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		// 如果没有Content-Type，尝试从URL扩展名推断
-		contentType = inferContentTypeFromURL(imageURL)
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-	}
-
-	// 不限制图片类型，直接使用获取到的Content-Type
-	// 把类型验证交给Gemini官方API处理
-	logger.Debugf(ctx, "Content-Type from response: %s", contentType)
-
 	// 设置最大下载大小（50MB）
 	const maxImageSize = 50 * 1024 * 1024
 	limitedReader := &io.LimitedReader{
@@ -3968,6 +4072,33 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	if limitedReader.N <= 0 {
 		return "", "", fmt.Errorf("image size exceeds maximum limit of %d bytes", maxImageSize)
 	}
+
+	// 获取Content-Type
+	contentType := resp.Header.Get("Content-Type")
+
+	// 如果Content-Type为空或者是通用二进制类型，需要推断真实类型
+	// 常见的通用二进制类型：application/octet-stream, binary/octet-stream, application/x-octet-stream, text/plain
+	if contentType == "" || contentType == "application/octet-stream" || contentType == "binary/octet-stream" || contentType == "application/x-octet-stream" || contentType == "text/plain" {
+		// 优先尝试从URL扩展名推断
+		inferredType := inferContentTypeFromURL(imageURL)
+		if inferredType != "" {
+			logger.Debugf(ctx, "Content-Type is '%s', inferred from URL extension: %s", contentType, inferredType)
+			contentType = inferredType
+		} else {
+			// URL没有扩展名，尝试从图片数据的魔数推断
+			inferredType = detectImageTypeByMagicBytes(imageBytes)
+			if inferredType != "" {
+				logger.Debugf(ctx, "Content-Type is '%s', inferred from magic bytes: %s", contentType, inferredType)
+				contentType = inferredType
+			} else if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+		}
+	}
+
+	// 不限制图片类型，直接使用获取到的Content-Type
+	// 把类型验证交给Gemini官方API处理
+	logger.Debugf(ctx, "Final Content-Type for image: %s", contentType)
 
 	// 转换为base64
 	base64Data = base64.StdEncoding.EncodeToString(imageBytes)
@@ -4022,10 +4153,73 @@ func inferContentTypeFromURL(imageURL string) string {
 	}
 }
 
+// detectImageTypeByMagicBytes 通过检查文件魔数（Magic Bytes）来检测图片类型
+// 用于处理 OSS 等无扩展名 URL 的情况
+func detectImageTypeByMagicBytes(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+
+	// JPEG: FF D8 FF
+	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg"
+	}
+
+	// PNG: 89 50 4E 47 0D 0A 1A 0A
+	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
+		return "image/png"
+	}
+
+	// GIF: 47 49 46 38 (GIF8)
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
+		return "image/gif"
+	}
+
+	// WebP: 52 49 46 46 xx xx xx xx 57 45 42 50 (RIFF....WEBP)
+	if data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
+		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
+		return "image/webp"
+	}
+
+	// BMP: 42 4D (BM)
+	if data[0] == 0x42 && data[1] == 0x4D {
+		return "image/bmp"
+	}
+
+	// TIFF: 49 49 2A 00 (little endian) or 4D 4D 00 2A (big endian)
+	if (data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00) ||
+		(data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A) {
+		return "image/tiff"
+	}
+
+	// HEIC/HEIF: 需要检查 ftyp box
+	if len(data) >= 12 && data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 {
+		// 检查具体的 brand
+		brand := string(data[8:12])
+		if brand == "heic" || brand == "heix" || brand == "hevc" || brand == "hevx" {
+			return "image/heic"
+		}
+		if brand == "mif1" || brand == "msf1" {
+			return "image/heif"
+		}
+		if brand == "avif" || brand == "avis" {
+			return "image/avif"
+		}
+	}
+
+	// ICO: 00 00 01 00
+	if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x00 {
+		return "image/x-icon"
+	}
+
+	return "" // 未知类型
+}
+
 // processImagesConcurrently 并发处理多个图片输入
-func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gemini.Part, int) {
+func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gemini.Part, int, error) {
 	if len(imageInputs) == 0 {
-		return []gemini.Part{}, 0
+		return []gemini.Part{}, 0, nil
 	}
 
 	// 设置最大并发数，避免创建过多goroutine
@@ -4068,7 +4262,7 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 
 	if validTasks == 0 {
 		logger.Infof(ctx, "No valid images to process")
-		return []gemini.Part{}, 0
+		return []gemini.Part{}, 0, nil
 	}
 
 	// 启动worker goroutines
@@ -4085,7 +4279,16 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 
 				var err error
 				if part.InlineData == nil {
-					err = fmt.Errorf("failed to parse image input")
+					// 生成更详细的错误信息
+					inputPreview := task.input
+					if len(inputPreview) > 100 {
+						inputPreview = inputPreview[:100] + "..."
+					}
+					if strings.HasPrefix(task.input, "http://") || strings.HasPrefix(task.input, "https://") {
+						err = fmt.Errorf("failed to download image from URL: %s", inputPreview)
+					} else {
+						err = fmt.Errorf("failed to parse image input (index %d)", task.index+1)
+					}
 					logger.Warnf(ctx, "Worker %d processing image %d: failed", workerID, task.index+1)
 				} else {
 					logger.Debugf(ctx, "Worker %d processing image %d: success (MIME: %s, size: %d bytes)",
@@ -4114,10 +4317,15 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 	// 创建一个临时map来存储结果，以便按原始顺序排列
 	resultMap := make(map[int]gemini.Part)
 
+	// 收集失败的错误信息
+	var failedErrors []string
+
 	for result := range resultChan {
 		if result.error == nil && result.part.InlineData != nil {
 			resultMap[result.index] = result.part
 			successCount++
+		} else if result.error != nil {
+			failedErrors = append(failedErrors, result.error.Error())
 		}
 	}
 
@@ -4132,7 +4340,12 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 	logger.Infof(ctx, "Concurrent image processing completed: %d/%d successful, duration: %v, workers: %d",
 		successCount, validTasks, duration, concurrency)
 
-	return results, successCount
+	// 如果有任何图片处理失败，返回错误
+	if len(failedErrors) > 0 {
+		return results, successCount, fmt.Errorf("failed to process %d image(s): %s", len(failedErrors), strings.Join(failedErrors, "; "))
+	}
+
+	return results, successCount, nil
 }
 
 // updateAliImageTaskStatusFromBody 更新阿里云图片任务状态到数据库

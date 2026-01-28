@@ -185,14 +185,15 @@ type Video struct {
 
 // 回调通知结构（完整协议）
 type CallbackNotification struct {
-	TaskID         string                 `json:"task_id"`
-	TaskStatus     string                 `json:"task_status"`
-	TaskStatusMsg  string                 `json:"task_status_msg,omitempty"`
-	TaskInfo       map[string]interface{} `json:"task_info,omitempty"`  // 任务创建时的参数信息
-	CreatedAt      int64                  `json:"created_at,omitempty"` // Unix时间戳(ms)
-	UpdatedAt      int64                  `json:"updated_at,omitempty"` // Unix时间戳(ms)
-	TaskResult     TaskResult             `json:"task_result,omitempty"`
-	ExternalTaskID string                 `json:"external_task_id,omitempty"` // 外部任务ID（系统内部ID）
+	TaskID             string                 `json:"task_id"`
+	TaskStatus         string                 `json:"task_status"`
+	TaskStatusMsg      string                 `json:"task_status_msg,omitempty"`
+	TaskInfo           map[string]interface{} `json:"task_info,omitempty"`  // 任务创建时的参数信息
+	CreatedAt          int64                  `json:"created_at,omitempty"` // Unix时间戳(ms)
+	UpdatedAt          int64                  `json:"updated_at,omitempty"` // Unix时间戳(ms)
+	TaskResult         TaskResult             `json:"task_result,omitempty"`
+	ExternalTaskID     string                 `json:"external_task_id,omitempty"`     // 外部任务ID（系统内部ID）
+	FinalUnitDeduction float64                `json:"final_unit_deduction,omitempty"` // 本次任务计费金额（人民币）
 }
 
 // 查询任务状态响应
@@ -377,7 +378,7 @@ type CustomElementsRequest struct {
 	KlingBaseRequest
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
-	Images      []string `json:"images"`      // 训练图片列表
+	Images      []string `json:"images"`                // 训练图片列表
 	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
 }
 
@@ -386,6 +387,6 @@ type CustomVoicesRequest struct {
 	KlingBaseRequest
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
-	AudioFiles  []string `json:"audio_files"` // 训练音频文件列表
+	AudioFiles  []string `json:"audio_files"`           // 训练音频文件列表
 	TrainSteps  int      `json:"train_steps,omitempty"` // 训练步数
 }

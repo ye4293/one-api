@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,8 @@ type urlDownloadTask struct {
 	partIdx          int
 	url              string
 	originalMimeType string
+	inlineDataKey    string // 记录使用的字段名：inline_data 或 inlineData
+	mimeTypeKey      string // 记录使用的 mimeType 字段名：mime_type 或 mimeType
 }
 
 // urlDownloadResult 表示URL下载结果
@@ -79,8 +82,17 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			inlineData, ok := partMap["inlineData"].(map[string]interface{})
-			if !ok {
+			// 兼容两种命名格式：inline_data（下划线）和 inlineData（驼峰）
+			var inlineData map[string]interface{}
+			var inlineDataKey string
+
+			if data, ok := partMap["inline_data"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inline_data"
+			} else if data, ok := partMap["inlineData"].(map[string]interface{}); ok {
+				inlineData = data
+				inlineDataKey = "inlineData"
+			} else {
 				continue
 			}
 
@@ -89,21 +101,56 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				continue
 			}
 
-			// 检测是否为 URL（http:// 或 https://）
-			if !strings.HasPrefix(data, "http://") && !strings.HasPrefix(data, "https://") {
-				// 不是 URL，跳过（可能已经是 base64 或 data URL）
+			// 尝试判断是否为 URL
+			var finalURL string
+
+			// 1. 先检查是否直接就是 URL
+			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+				finalURL = data
+			} else {
+				// 2. 尝试 base64 解码，看是否是编码后的 URL
+				decodedData, err := base64.StdEncoding.DecodeString(data)
+				if err == nil {
+					decodedStr := string(decodedData)
+					if strings.HasPrefix(decodedStr, "http://") || strings.HasPrefix(decodedStr, "https://") {
+						finalURL = decodedStr
+					}
+				}
+			}
+
+			// 如果不是 URL（直接或解码后），跳过
+			if finalURL == "" {
 				continue
 			}
 
-			// 获取原始的 mimeType
-			originalMimeType, _ := inlineData["mimeType"].(string)
+			// 获取原始的 mimeType（同时兼容 mime_type 和 mimeType）
+			var originalMimeType string
+			var mimeTypeKey string
+			if mt, ok := inlineData["mime_type"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mime_type"
+			} else if mt, ok := inlineData["mimeType"].(string); ok {
+				originalMimeType = mt
+				mimeTypeKey = "mimeType"
+			} else {
+				// 如果没有指定，根据 inlineDataKey 使用相应的默认格式
+				if inlineDataKey == "inline_data" {
+					mimeTypeKey = "mime_type"
+				} else {
+					mimeTypeKey = "mimeType"
+				}
+			}
+
+			logger.Infof(ctx, "Found %s with URL, originalMimeType: %s", inlineDataKey, originalMimeType)
 
 			// 添加到下载任务列表
 			downloadTasks = append(downloadTasks, urlDownloadTask{
 				contentIdx:       i,
 				partIdx:          j,
-				url:              data,
+				url:              finalURL,
 				originalMimeType: originalMimeType,
+				inlineDataKey:    inlineDataKey,
+				mimeTypeKey:      mimeTypeKey,
 			})
 		}
 	}
@@ -179,17 +226,20 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 		contentMap := contents[result.contentIdx].(map[string]interface{})
 		parts := contentMap["parts"].([]interface{})
 		partMap := parts[result.partIdx].(map[string]interface{})
-		inlineData := partMap["inlineData"].(map[string]interface{})
 
-		// 更新 mimeType（如果原本没有设置）
+		// 使用保存的 key 来访问 inlineData
+		inlineData := partMap[task.inlineDataKey].(map[string]interface{})
+
+		// 更新 mimeType（如果原本没有设置），使用保存的 mimeTypeKey
 		if task.originalMimeType == "" && result.mimeType != "" {
-			inlineData["mimeType"] = result.mimeType
+			inlineData[task.mimeTypeKey] = result.mimeType
 		}
 
 		// 更新 data 为 base64 格式
 		inlineData["data"] = result.base64Data
 
-		partMap["inlineData"] = inlineData
+		// 使用保存的 key 来更新 inlineData
+		partMap[task.inlineDataKey] = inlineData
 		parts[result.partIdx] = partMap
 		contentMap["parts"] = parts
 		contents[result.contentIdx] = contentMap
@@ -710,15 +760,18 @@ func processGeminiResponseImages(ctx context.Context, responseBody []byte) ([]by
 				continue
 			}
 
-			// 用 URL 替换 base64 数据
-			inlineData["data"] = url
+			// 将 URL 转换为 base64 编码
+			urlBase64 := base64.StdEncoding.EncodeToString([]byte(url))
+
+			// 用 base64 编码的 URL 替换原始数据
+			inlineData["data"] = urlBase64
 			part["inlineData"] = inlineData
 			parts[j] = part
 			content["parts"] = parts
 			candidate["content"] = content
 			candidates[i] = candidate
 
-			logger.Infof(ctx, "Successfully replaced image with R2 URL: %s", url)
+			logger.Infof(ctx, "Successfully replaced image with base64-encoded R2 URL: %s", url)
 			modified = true
 		}
 	}

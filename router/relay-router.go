@@ -174,20 +174,16 @@ func SetRelayRouter(router *gin.Engine) {
 	setupMJRoutes(modeMjRouter)
 
 	// Flux 图像生成路由组 - 回调模式
+	// 使用通配符支持所有 Flux 模型的透传
 	relayFluxRouter := router.Group("/flux")
 	relayFluxRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		relayFluxRouter.POST("/v1/flux-2-pro", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-2-flex", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-kontext-pro", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-kontext-max", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-pro-1.1", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-dev", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-pro-1.1-ultra", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-pro-1.0-fill", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-pro-1.0-expand", controller.RelayFlux)
-		relayFluxRouter.POST("/v1/flux-2-max", controller.RelayFlux)
-		relayFluxRouter.GET("/v1/get_result/:id", controller.GetFlux) // 查询 Flux 任务结果
+		// 查询结果接口（需要在通配符之前注册，优先匹配）
+		relayFluxRouter.GET("/v1/get_result/:id", controller.GetFlux)
+
+		// 通配符路由：匹配所有 /flux/v1/* 的 POST 请求
+		// 支持所有 Flux 模型（flux-2-pro, flux-dev, flux-kontext-max 等）
+		relayFluxRouter.POST("/v1/*model", controller.RelayFlux)
 	}
 
 	// Flux 回调路由组 - 接收 Flux API 回调通知

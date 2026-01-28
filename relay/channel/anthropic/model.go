@@ -252,21 +252,29 @@ type ToolChoice struct {
 	Name string `json:"name,omitempty"` // 当 type 为 "tool" 时指定工具名称
 }
 
+// ThinkingConfig 扩展思考配置
+// 用于启用 Claude 的扩展思考能力
+type ThinkingConfig struct {
+	Type         string `json:"type"`                    // "enabled" 或 "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考 token 预算，最小 1024
+}
+
 // Request Claude API 请求结构
 type Request struct {
-	Model         string        `json:"model"`                    // 模型名称
-	Messages      []Message     `json:"messages,omitempty"`       // 消息列表
-	System        interface{}   `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
-	MaxTokens     int           `json:"max_tokens"`               // 最大输出token数
-	StopSequences []string      `json:"stop_sequences,omitempty"` // 停止序列
-	Stream        bool          `json:"stream,omitempty"`         // 是否流式输出
-	Temperature   float64       `json:"temperature,omitempty"`    // 温度参数
-	TopP          float64       `json:"top_p,omitempty"`          // Top-p 参数
-	TopK          int           `json:"top_k,omitempty"`          // Top-k 参数
-	Tools         []Tool        `json:"tools,omitempty"`          // 可用工具
-	ToolChoice    *ToolChoice   `json:"tool_choice,omitempty"`    // 工具选择策略
-	Metadata      *Metadata     `json:"metadata,omitempty"`       // 元数据
-	OutputFormat  *OutputFormat `json:"output_format,omitempty"`  // 结构化输出格式（Beta: structured-outputs-2025-11-13）
+	Model         string          `json:"model"`                    // 模型名称
+	Messages      []Message       `json:"messages,omitempty"`       // 消息列表
+	System        interface{}     `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
+	MaxTokens     int             `json:"max_tokens"`               // 最大输出token数
+	StopSequences []string        `json:"stop_sequences,omitempty"` // 停止序列
+	Stream        bool            `json:"stream,omitempty"`         // 是否流式输出
+	Temperature   float64         `json:"temperature,omitempty"`    // 温度参数
+	TopP          float64         `json:"top_p,omitempty"`          // Top-p 参数
+	TopK          int             `json:"top_k,omitempty"`          // Top-k 参数
+	Tools         []Tool          `json:"tools,omitempty"`          // 可用工具
+	ToolChoice    *ToolChoice     `json:"tool_choice,omitempty"`    // 工具选择策略
+	Metadata      *Metadata       `json:"metadata,omitempty"`       // 元数据
+	OutputFormat  *OutputFormat   `json:"output_format,omitempty"`  // 结构化输出格式（Beta: structured-outputs-2025-11-13）
+	Thinking      *ThinkingConfig `json:"thinking,omitempty"`       // 扩展思考配置
 }
 
 // CacheCreation 缓存创建统计

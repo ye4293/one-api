@@ -51,9 +51,14 @@ var StripeEndpointSecret = ""
 
 var CfR2storeEnabled = true
 var CfBucketFileName = "ezlinkai-file"
-var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
-var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
-var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+// var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
+// var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
+// var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+var CfFileAccessKey = "GQwDfmzqBlTMsBjf"
+var CfFileSecretKey = "JrL2Sy9ojWemCKv45iJukOKKrlBw64"
+var CfFileEndpoint = "https://hua.cn-nb1.rains3.com"
 
 var CfBucketImageName = ""
 var CfImageAccessKey = ""
@@ -114,6 +119,7 @@ var AutomaticEnableChannelEnabled = false
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
+
 // 自动禁用关键词配置（一行一个关键词）
 var AutoDisableKeywords = `api key not valid
 invalid_api_key
@@ -198,3 +204,10 @@ var MetricSuccessChanSize = env.Int("METRIC_SUCCESS_CHAN_SIZE", 1024)
 var MetricFailChanSize = env.Int("METRIC_FAIL_CHAN_SIZE", 128)
 
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
+
+// Claude Thinking 模型配置
+var ClaudeThinkingEnabled = true                              // 是否启用 Claude 思考适配（-thinking 后缀）
+var ClaudeThinkingBudgetRatio = 0.8                           // 默认思考 token 百分比（80%）
+var ClaudeDefaultMaxTokens map[string]int                     // 模型默认 MaxTokens
+var ClaudeReasoningEffortMap map[string]float64               // reasoning_effort 到百分比的映射
+var ClaudeRequestHeaders map[string]map[string]string         // 请求头覆盖（模型名 -> 请求头键值对）

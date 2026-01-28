@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -137,50 +138,55 @@ func IsDocumentType(mimeType string) bool {
 }
 
 // getMimeTypeFromURL 根据URL的文件扩展名推断MIME类型
-func getMimeTypeFromURL(url string) string {
-	url = strings.ToLower(url)
+func getMimeTypeFromURL(rawURL string) string {
+	// 解析 URL，去掉查询参数，只检查路径部分
+	parsedURL, err := neturl.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	path := strings.ToLower(parsedURL.Path)
 
 	// 音频格式
-	if strings.HasSuffix(url, ".wav") {
+	if strings.HasSuffix(path, ".wav") {
 		return "audio/wav"
-	} else if strings.HasSuffix(url, ".mp3") {
+	} else if strings.HasSuffix(path, ".mp3") {
 		return "audio/mp3"
-	} else if strings.HasSuffix(url, ".aac") {
+	} else if strings.HasSuffix(path, ".aac") {
 		return "audio/aac"
-	} else if strings.HasSuffix(url, ".ogg") {
+	} else if strings.HasSuffix(path, ".ogg") {
 		return "audio/ogg"
-	} else if strings.HasSuffix(url, ".flac") {
+	} else if strings.HasSuffix(path, ".flac") {
 		return "audio/flac"
-	} else if strings.HasSuffix(url, ".aiff") || strings.HasSuffix(url, ".aif") {
+	} else if strings.HasSuffix(path, ".aiff") || strings.HasSuffix(path, ".aif") {
 		return "audio/aiff"
 	}
 
 	// 视频格式
-	if strings.HasSuffix(url, ".mp4") {
+	if strings.HasSuffix(path, ".mp4") {
 		return "video/mp4"
-	} else if strings.HasSuffix(url, ".webm") {
+	} else if strings.HasSuffix(path, ".webm") {
 		return "video/webm"
-	} else if strings.HasSuffix(url, ".mov") {
+	} else if strings.HasSuffix(path, ".mov") {
 		return "video/quicktime"
-	} else if strings.HasSuffix(url, ".avi") {
+	} else if strings.HasSuffix(path, ".avi") {
 		return "video/x-msvideo"
-	} else if strings.HasSuffix(url, ".wmv") {
+	} else if strings.HasSuffix(path, ".wmv") {
 		return "video/wmv"
 	}
 
 	// 图片格式
-	if strings.HasSuffix(url, ".jpg") || strings.HasSuffix(url, ".jpeg") {
+	if strings.HasSuffix(path, ".jpg") || strings.HasSuffix(path, ".jpeg") {
 		return "image/jpeg"
-	} else if strings.HasSuffix(url, ".png") {
+	} else if strings.HasSuffix(path, ".png") {
 		return "image/png"
-	} else if strings.HasSuffix(url, ".gif") {
+	} else if strings.HasSuffix(path, ".gif") {
 		return "image/gif"
-	} else if strings.HasSuffix(url, ".webp") {
+	} else if strings.HasSuffix(path, ".webp") {
 		return "image/webp"
 	}
 
 	// 文档格式
-	if strings.HasSuffix(url, ".pdf") {
+	if strings.HasSuffix(path, ".pdf") {
 		return "application/pdf"
 	}
 
@@ -305,14 +311,20 @@ func GetImageFromUrl(input string) (mimeType string, data string, err error) {
 		return "", "", fmt.Errorf("failed to read response body: %v", err)
 	}
 
-	// 从响应头或内容检测媒体类型
+	// 从响应头获取媒体类型
 	mimeType = resp.Header.Get("Content-Type")
-	if mimeType == "" {
-		mimeType = http.DetectContentType(buffer.Bytes())
+	
+	// 如果 Content-Type 为空或不可靠（octet-stream），则从内容检测
+	if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" {
+		// 优先使用内容检测
+		detectedType := http.DetectContentType(buffer.Bytes())
+		if detectedType != "" && detectedType != "application/octet-stream" {
+			mimeType = detectedType
+		}
 	}
 
 	// 如果还是无法检测到正确的MIME类型，尝试根据URL扩展名推断
-	if mimeType == "" || mimeType == "application/octet-stream" {
+	if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" {
 		mimeType = getMimeTypeFromURL(input)
 	}
 

@@ -1,14 +1,15 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-
-	"encoding/json"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -41,6 +42,38 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	anthropicBeta := c.Request.Header.Get("anthropic-beta")
 	if anthropicBeta != "" {
 		req.Header.Set("anthropic-beta", anthropicBeta)
+	}
+
+	// 应用自定义请求头覆盖（从配置读取）
+	customHeaders := common.GetClaudeRequestHeaders(meta.ActualModelName)
+	if customHeaders != nil {
+		for key, value := range customHeaders {
+			if key == "anthropic-beta" {
+				// 对于 anthropic-beta，追加而不是覆盖
+				existingBeta := req.Header.Get("anthropic-beta")
+				if existingBeta != "" {
+					req.Header.Set("anthropic-beta", existingBeta+","+value)
+				} else {
+					req.Header.Set("anthropic-beta", value)
+				}
+			} else {
+				req.Header.Set(key, value)
+			}
+		}
+	}
+
+	// 为 thinking 模型添加 anthropic-beta header
+	if IsThinkingModel(meta.ActualModelName) {
+		// 如果已经有 anthropic-beta header，追加；否则设置新的
+		existingBeta := req.Header.Get("anthropic-beta")
+		if existingBeta != "" {
+			// 检查是否已包含 interleaved-thinking
+			if !strings.Contains(existingBeta, "interleaved-thinking") {
+				req.Header.Set("anthropic-beta", existingBeta+",interleaved-thinking-2025-05-14")
+			}
+		} else {
+			req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+		}
 	}
 	return nil
 }

@@ -851,18 +851,22 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 						usage.CompletionTokensDetails.ReasoningTokens = lastUsageMetadata.ThoughtsTokenCount
 					}
 
-					for _, detail := range lastUsageMetadata.PromptTokensDetails {
-						if detail.Modality == "TEXT" {
-							usage.PromptTokensDetails.TextTokens = detail.TokenCount
-						} else if detail.Modality == "IMAGE" {
-							usage.PromptTokensDetails.ImageTokens = detail.TokenCount
-						}
+		for _, detail := range lastUsageMetadata.PromptTokensDetails {
+					if detail.Modality == "TEXT" {
+						usage.PromptTokensDetails.TextTokens = detail.TokenCount
+					} else if detail.Modality == "IMAGE" {
+						usage.PromptTokensDetails.ImageTokens = detail.TokenCount
+					} else if detail.Modality == "AUDIO" {
+						usage.PromptTokensDetails.AudioTokens = detail.TokenCount
 					}
-					for _, detail := range lastUsageMetadata.CandidatesTokensDetails {
-						if detail.Modality == "IMAGE" {
-							usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
-						}
+				}
+				for _, detail := range lastUsageMetadata.CandidatesTokensDetails {
+					if detail.Modality == "IMAGE" {
+						usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
+					} else if detail.Modality == "AUDIO" {
+						usage.CompletionTokensDetails.AudioTokens = detail.TokenCount
 					}
+				}
 
 					finalResponse := &openai.ChatCompletionsStreamResponse{
 						Id:      response.Id,
@@ -981,11 +985,15 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 				usage.PromptTokensDetails.TextTokens = detail.TokenCount
 			} else if detail.Modality == "IMAGE" {
 				usage.PromptTokensDetails.ImageTokens = detail.TokenCount
+			} else if detail.Modality == "AUDIO" {
+				usage.PromptTokensDetails.AudioTokens = detail.TokenCount
 			}
 		}
 		for _, detail := range geminiResponse.UsageMetadata.CandidatesTokensDetails {
 			if detail.Modality == "IMAGE" {
 				usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
+			} else if detail.Modality == "AUDIO" {
+				usage.CompletionTokensDetails.AudioTokens = detail.TokenCount
 			}
 		}
 	}

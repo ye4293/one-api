@@ -101,8 +101,10 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	// 创建S3客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建S3客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传视频到R2
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
@@ -115,9 +117,9 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("failed to upload video to R2: %w", err)
 	}
 
-	// 生成文件URL
-	fileUrl := "https://file.ezlinkai.com"
-	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+	// 生成文件URL（Path-Style 格式：endpoint/bucket/key）
+	fileUrl := config.CfFileEndpoint
+	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
 }
 
 func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode {
@@ -3313,6 +3315,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		VideoId:     videoId,
 		Quota:       quota,
 		Credentials: credentialsJSON, // 保存完整的JSON凭证
+		Status:      "processing",    // 初始状态设置为处理中
 	}
 
 	// 调用 Insert 方法插入记录
@@ -4371,41 +4374,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 								processedVideoURIs = videoURIs
 							}
 
-							// 构建响应结果
-							generalResponse.TaskStatus = "succeed"
-							generalResponse.Message = "Video generated successfully."
-							generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
-
-							// 设置所有视频结果
-							generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
-							for i, uri := range processedVideoURIs {
-								generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
-							}
-						} else {
-							// 没有被过滤但也没有找到视频
-							log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
-							log.Printf("[VEO查询] Response字段内容: %+v", response)
-
-							generalResponse.TaskStatus = "failed"
-							generalResponse.Message = "Operation completed, but no video result was found."
-						}
-					}
-				} else {
-					// 没有过滤信息，直接尝试提取视频URI
-					videoURIs := extractVeoVideoURIs(response)
-					if len(videoURIs) > 0 {
-						var processedVideoURIs []string
-						responseFormat := c.GetString("response_format")
-
-						// 处理每个视频URI - 并发上传优化
-						if responseFormat == "url" {
-							// 使用并发上传
-							processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
-						} else {
-							// 如果不需要上传，直接使用原始URI
-							processedVideoURIs = videoURIs
-						}
-
 						// 构建响应结果
 						generalResponse.TaskStatus = "succeed"
 						generalResponse.Message = "Video generated successfully."
@@ -4416,28 +4384,64 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 						for i, uri := range processedVideoURIs {
 							generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
 						}
+
+						// 保存视频URL到数据库
+						var storeUrl string
+						if len(processedVideoURIs) == 1 {
+							storeUrl = processedVideoURIs[0]
+						} else {
+							urlsJSON, _ := json.Marshal(processedVideoURIs)
+							storeUrl = string(urlsJSON)
+						}
+						if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, storeUrl); updateErr != nil {
+							log.Printf("[VEO] 保存视频URL失败 - 任务:%s, 错误:%v", taskId, updateErr)
+						}
 					} else {
-						// 完成了，但未找到视频URI也未找到错误
-						log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
-						log.Printf("[VEO查询] Response字段内容: %+v", response)
-
-						// 检查response中的具体字段
-						if videos, hasVideos := response["videos"]; hasVideos {
-							log.Printf("[VEO查询] Response.videos字段: %+v", videos)
-						} else {
-							log.Printf("[VEO查询] Response中缺少videos字段")
-						}
-
-						if generatedSamples, hasSamples := response["generatedSamples"]; hasSamples {
-							log.Printf("[VEO查询] Response.generatedSamples字段: %+v", generatedSamples)
-						} else {
-							log.Printf("[VEO查询] Response中缺少generatedSamples字段")
-						}
-
 						generalResponse.TaskStatus = "failed"
 						generalResponse.Message = "Operation completed, but no video result was found."
 					}
 				}
+			} else {
+				// 没有过滤信息，直接尝试提取视频URI
+				videoURIs := extractVeoVideoURIs(response)
+				if len(videoURIs) > 0 {
+					var processedVideoURIs []string
+					responseFormat := c.GetString("response_format")
+
+					// 处理每个视频URI - 并发上传优化
+					if responseFormat == "url" {
+						processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
+					} else {
+						processedVideoURIs = videoURIs
+					}
+
+					// 构建响应结果
+					generalResponse.TaskStatus = "succeed"
+					generalResponse.Message = "Video generated successfully."
+					generalResponse.VideoResult = processedVideoURIs[0]
+
+					// 设置所有视频结果
+					generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
+					for i, uri := range processedVideoURIs {
+						generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
+					}
+
+					// 保存视频URL到数据库
+					var storeUrl string
+					if len(processedVideoURIs) == 1 {
+						storeUrl = processedVideoURIs[0]
+					} else {
+						urlsJSON, _ := json.Marshal(processedVideoURIs)
+						storeUrl = string(urlsJSON)
+					}
+					if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, storeUrl); updateErr != nil {
+						log.Printf("[VEO] 保存视频URL失败 - 任务:%s, 错误:%v", taskId, updateErr)
+					}
+				} else {
+					generalResponse.TaskStatus = "failed"
+					generalResponse.Message = "Operation completed, but no video result was found."
+				}
+			}
 			} else {
 				// 完成了，但没有response和error字段
 				generalResponse.TaskStatus = "failed"

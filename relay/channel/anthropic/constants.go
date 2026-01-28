@@ -1,6 +1,23 @@
 package anthropic
 
-import "github.com/songquanpeng/one-api/relay/model"
+import (
+	"strings"
+
+	"github.com/songquanpeng/one-api/relay/model"
+)
+
+// IsThinkingModel 判断模型是否是 thinking 模型
+func IsThinkingModel(modelName string) bool {
+	return strings.HasSuffix(modelName, "-thinking")
+}
+
+// GetBaseModelName 获取基础模型名称（去除 -thinking 后缀）
+func GetBaseModelName(modelName string) string {
+	if IsThinkingModel(modelName) {
+		return strings.TrimSuffix(modelName, "-thinking")
+	}
+	return modelName
+}
 
 var ModelList = []string{
 	"claude-3-haiku-20240307",

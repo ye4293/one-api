@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -78,14 +79,47 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		maxTokens = textRequest.MaxCompletionTokens
 	}
 
+	// 判断是否是 thinking 模型
+	isThinking := IsThinkingModel(textRequest.Model)
+	// 获取实际模型名称（去除 -thinking 后缀）
+	actualModel := GetBaseModelName(textRequest.Model)
+
 	claudeRequest := Request{
-		Model:       textRequest.Model,
+		Model:       actualModel,
 		MaxTokens:   maxTokens,
 		Temperature: textRequest.Temperature,
 		TopP:        textRequest.TopP,
 		TopK:        textRequest.TopK,
 		Stream:      textRequest.Stream,
 		Tools:       claudeTools,
+	}
+
+	// 为 thinking 模型添加 thinking 配置
+	if isThinking && config.ClaudeThinkingEnabled {
+		// 1. 如果用户未传 max_tokens，使用配置的默认值
+		if claudeRequest.MaxTokens == 0 {
+			claudeRequest.MaxTokens = common.GetClaudeDefaultMaxTokens(textRequest.Model)
+		}
+
+		// 2. 获取 thinking budget 百分比
+		budgetRatio := config.ClaudeThinkingBudgetRatio
+		if textRequest.ReasoningEffort != "" {
+			budgetRatio = common.GetClaudeThinkingBudgetRatio(textRequest.ReasoningEffort)
+		}
+
+		// 3. 计算 thinking budget（至少 1024，none 时直接使用 1024）
+		thinkingBudget := int(float64(claudeRequest.MaxTokens) * budgetRatio)
+		if thinkingBudget < 1024 {
+			thinkingBudget = 1024
+		}
+
+		claudeRequest.Thinking = &ThinkingConfig{
+			Type:         "enabled",
+			BudgetTokens: thinkingBudget,
+		}
+		// thinking 模式不支持 temperature 修改，设置为 0 表示使用默认值
+		claudeRequest.Temperature = 0
+		claudeRequest.TopK = 0
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}
@@ -200,6 +234,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCompletionsStreamResponse, *Response) {
 	var response *Response
 	var responseText string
+	var reasoningContent string
 	var stopReason string
 	tools := make([]model.Tool, 0)
 
@@ -208,8 +243,13 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 		return nil, claudeResponse.Message
 	case "content_block_start":
 		if claudeResponse.ContentBlock != nil {
-			responseText = claudeResponse.ContentBlock.Text
-			if claudeResponse.ContentBlock.Type == "tool_use" {
+			switch claudeResponse.ContentBlock.Type {
+			case "text":
+				responseText = claudeResponse.ContentBlock.Text
+			case "thinking":
+				// thinking block 开始
+				reasoningContent = claudeResponse.ContentBlock.Thinking
+			case "tool_use":
 				tools = append(tools, model.Tool{
 					Id:   claudeResponse.ContentBlock.Id,
 					Type: "function",
@@ -222,8 +262,13 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 		}
 	case "content_block_delta":
 		if claudeResponse.Delta != nil {
-			responseText = claudeResponse.Delta.Text
-			if claudeResponse.Delta.Type == "input_json_delta" {
+			switch claudeResponse.Delta.Type {
+			case "text_delta":
+				responseText = claudeResponse.Delta.Text
+			case "thinking_delta":
+				// thinking delta，将内容作为 reasoning_content
+				reasoningContent = claudeResponse.Delta.Thinking
+			case "input_json_delta":
 				tools = append(tools, model.Tool{
 					Function: model.Function{
 						Arguments: claudeResponse.Delta.PartialJson,
@@ -243,6 +288,10 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 	}
 	var choice openai.ChatCompletionsStreamResponseChoice
 	choice.Delta.Content = responseText
+	// 设置 reasoning_content
+	if reasoningContent != "" {
+		choice.Delta.ReasoningContent = reasoningContent
+	}
 	if len(tools) > 0 {
 		choice.Delta.Content = nil // compatible with other OpenAI derivative applications, like LobeOpenAICompatibleFactory ...
 		choice.Delta.ToolCalls = tools
@@ -260,12 +309,29 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 
 func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 	var responseText string
-	if len(claudeResponse.Content) > 0 {
-		responseText = claudeResponse.Content[0].Text
-	}
+	var reasoningContent string
+	var thoughtSignature string
+
 	tools := make([]model.Tool, 0)
+
+	// 遍历所有 content blocks，提取文本和 thinking 内容
 	for _, v := range claudeResponse.Content {
-		if v.Type == "tool_use" {
+		switch v.Type {
+		case "text":
+			responseText += v.Text
+		case "thinking":
+			// 提取 thinking 内容作为 reasoning_content
+			if v.Thinking != "" {
+				if reasoningContent != "" {
+					reasoningContent += "\n"
+				}
+				reasoningContent += v.Thinking
+			}
+			// 保存签名
+			if v.Signature != "" {
+				thoughtSignature = v.Signature
+			}
+		case "tool_use":
 			args, _ := json.Marshal(v.Input)
 			tools = append(tools, model.Tool{
 				Id:   v.Id,
@@ -277,13 +343,16 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 			})
 		}
 	}
+
 	choice := openai.TextResponseChoice{
 		Index: 0,
 		Message: model.Message{
-			Role:      "assistant",
-			Content:   responseText,
-			Name:      nil,
-			ToolCalls: tools,
+			Role:             "assistant",
+			Content:          responseText,
+			Name:             nil,
+			ToolCalls:        tools,
+			ReasoningContent: reasoningContent,
+			ThoughtSignature: thoughtSignature,
 		},
 		FinishReason: stopReasonClaude2OpenAI(claudeResponse.StopReason),
 	}
@@ -381,7 +450,9 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 					content = contentStr
 				}
 			}
-			if content != "" && firstWordTime == nil {
+			// 也检查 reasoning_content
+			reasoningContent := choice.Delta.ReasoningContent
+			if (content != "" || reasoningContent != "") && firstWordTime == nil {
 				// 记录首字时间
 				now := time.Now()
 				firstWordTime = &now

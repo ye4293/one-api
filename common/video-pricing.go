@@ -54,11 +54,13 @@ func VideoPricingRules2JSONString() string {
 func UpdateVideoPricingRulesByJSONString(jsonStr string) error {
 	var rules []VideoPricingRule
 	if err := json.Unmarshal([]byte(jsonStr), &rules); err != nil {
+		log.Printf("[VideoPricing] 解析规则JSON失败: %v", err)
 		return err
 	}
 	videoPricingMutex.Lock()
 	defer videoPricingMutex.Unlock()
 	VideoPricingRules = rules
+	log.Printf("[VideoPricing] 成功加载 %d 条视频计费规则", len(rules))
 	return nil
 }
 
@@ -88,11 +90,12 @@ func AddNewMissingVideoPricingRules(oldRules string) string {
 }
 
 // matchPattern 通配符匹配
-// pattern: 规则中的模式 (如 "wan*", "standard", "*")
+// pattern: 规则中的模式 (如 "wan*", "standard", "*", "" 空字符串也当作通配符)
 // value: 实际值 (如 "wan2.5-i2v", "standard", "")
 func matchPattern(pattern, value string) bool {
-	// pattern 是通配符，匹配任何值（包括空）
-	if pattern == "*" {
+	// pattern 是通配符或空字符串，匹配任何值（包括空）
+	// 空字符串表示"不关心这个字段"，等同于 "*"
+	if pattern == "*" || pattern == "" {
 		return true
 	}
 
@@ -131,19 +134,11 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 		rule := &VideoPricingRules[i]
 
 		// 检查所有条件是否匹配
-		if !matchPattern(rule.Model, model) {
-			continue
-		}
-		if !matchPattern(rule.Type, videoType) {
-			continue
-		}
-		if !matchPattern(rule.Mode, mode) {
-			continue
-		}
-		if !matchPattern(rule.Duration, duration) {
-			continue
-		}
-		if !matchPattern(rule.Resolution, resolution) {
+		if !matchPattern(rule.Model, model) ||
+			!matchPattern(rule.Type, videoType) ||
+			!matchPattern(rule.Mode, mode) ||
+			!matchPattern(rule.Duration, duration) ||
+			!matchPattern(rule.Resolution, resolution) {
 			continue
 		}
 
@@ -156,20 +151,12 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 
 	// 没找到规则，降级到 DefaultModelPrice
 	if matchedRule == nil {
-		log.Printf("No video pricing rule found: model=%s, type=%s, mode=%s, duration=%s, resolution=%s",
-			model, videoType, mode, duration, resolution)
-
 		// 尝试从 DefaultModelPrice 获取
 		if price, ok := DefaultModelPrice[model]; ok {
-			quota := int64(price * config.QuotaPerUnit)
-			log.Printf("Using DefaultModelPrice for %s: price=%.4f, quota=%d", model, price, quota)
-			return quota
+			return int64(price * config.QuotaPerUnit)
 		}
-
 		// 最终兜底
-		defaultQuota := int64(0.1 * config.QuotaPerUnit)
-		log.Printf("Using fallback price for %s: quota=%d", model, defaultQuota)
-		return defaultQuota
+		return int64(0.1 * config.QuotaPerUnit)
 	}
 
 	// 计算价格
@@ -179,7 +166,6 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 	if strings.ToUpper(matchedRule.Currency) == "CNY" {
 		usdPrice, err := ConvertCNYToUSD(basePrice)
 		if err != nil {
-			// 转换失败，使用默认汇率
 			usdPrice = basePrice * DefaultCNYToUSDRate
 		}
 		basePrice = usdPrice
@@ -196,14 +182,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 		totalPrice = basePrice
 	}
 
-	quota := int64(totalPrice * config.QuotaPerUnit)
-
-	log.Printf("Video pricing: model=%s, type=%s, mode=%s, duration=%s, resolution=%s -> rule=%s:%s:%s:%s, pricing_type=%s, price=%.4f %s, total_usd=%.4f, quota=%d",
-		model, videoType, mode, duration, resolution,
-		matchedRule.Model, matchedRule.Mode, matchedRule.Duration, matchedRule.Resolution,
-		matchedRule.PricingType, matchedRule.Price, matchedRule.Currency, totalPrice, quota)
-
-	return quota
+	return int64(totalPrice * config.QuotaPerUnit)
 }
 
 // GetVideoPricingRuleInfo 获取匹配的规则信息（用于调试）
