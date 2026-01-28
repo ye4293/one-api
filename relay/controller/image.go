@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -4029,13 +4030,28 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 
 // downloadImageToBase64 从URL下载图片并转换为base64
 func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data string, mimeType string, err error) {
-	// 设置HTTP客户端，包含超时和大小限制
+	// 为图片下载创建独立的超时上下文，不受全局 RELAY_TIMEOUT 影响
+	// 图片下载最多等待 60 秒，避免单张图片阻塞整个请求
+	downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// 设置HTTP客户端，包含更细粒度的超时控制
 	client := &http.Client{
-		Timeout: 60 * time.Second, // 1分钟超时
+		Timeout: 60 * time.Second, // 整体超时 60 秒
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second, // 连接超时 15 秒（适应复杂网络环境）
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,  // TLS 握手超时 15 秒
+			ResponseHeaderTimeout: 30 * time.Second,  // 等待响应头超时 30 秒
+			IdleConnTimeout:       90 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 
-	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
+	// 创建请求，使用独立的下载超时上下文
+	req, err := http.NewRequestWithContext(downloadCtx, "GET", imageURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("create request failed: %w", err)
 	}
