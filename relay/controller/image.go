@@ -45,6 +45,33 @@ const (
 	ModalityText  = "TEXT"
 )
 
+// 图片下载专用 HTTP 客户端（复用连接，提高性能）
+var imageDownloadClient *http.Client
+var imageDownloadClientOnce sync.Once
+
+// getImageDownloadClient 获取图片下载专用的 HTTP 客户端（单例模式）
+func getImageDownloadClient() *http.Client {
+	imageDownloadClientOnce.Do(func() {
+		imageDownloadClient = &http.Client{
+			Timeout: 60 * time.Second, // 整体超时 60 秒
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   15 * time.Second, // 连接超时 15 秒
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				TLSHandshakeTimeout:   15 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+			},
+		}
+	})
+	return imageDownloadClient
+}
+
 // GeminiUsageDetails 用于存储从 Gemini UsageMetadata 提取的详细使用信息
 type GeminiUsageDetails struct {
 	InputTextTokens   int
@@ -626,6 +653,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
+			// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
+			actualModelName := imageRequest.Model
 			if meta.ChannelType == common.ChannelTypeVertexAI {
 				// 为VertexAI构建URL
 				keyIndex := 0
@@ -679,13 +708,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
 				if region == "global" {
-					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
 				} else {
-					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
 				}
 			} else {
 				// 原有的Gemini官方API URL
-				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, actualModelName)
 			}
 		}
 
@@ -3096,7 +3125,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	}
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
-	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
+	// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
+	actualModelName := imageRequest.Model
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		// 为VertexAI构建URL
 		keyIndex := 0
@@ -3150,13 +3180,13 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
 		if region == "global" {
-			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
 		} else {
-			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
 		}
 	} else {
 		// 原有的Gemini官方API URL
-		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, actualModelName)
 	}
 
 	// 创建请求
@@ -4030,64 +4060,72 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 
 // downloadImageToBase64 从URL下载图片并转换为base64
 func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data string, mimeType string, err error) {
+	startTime := time.Now()
+
 	// 为图片下载创建独立的超时上下文，不受全局 RELAY_TIMEOUT 影响
 	// 图片下载最多等待 60 秒，避免单张图片阻塞整个请求
 	downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// 设置HTTP客户端，包含更细粒度的超时控制
-	client := &http.Client{
-		Timeout: 60 * time.Second, // 整体超时 60 秒
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   15 * time.Second, // 连接超时 15 秒（适应复杂网络环境）
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,  // TLS 握手超时 15 秒
-			ResponseHeaderTimeout: 30 * time.Second,  // 等待响应头超时 30 秒
-			IdleConnTimeout:       90 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-	}
+	// 获取复用的 HTTP 客户端
+	client := getImageDownloadClient()
 
 	// 创建请求，使用独立的下载超时上下文
 	req, err := http.NewRequestWithContext(downloadCtx, "GET", imageURL, nil)
 	if err != nil {
+		logger.Errorf(ctx, "Failed to create request for URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
 		return "", "", fmt.Errorf("create request failed: %w", err)
 	}
 
-	// 设置User-Agent，一些网站需要这个
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Gemini-Image-Processor/1.0)")
+	// 设置请求头，模拟浏览器行为，避免被 CDN 拦截
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+	// 注意：不设置 Accept-Encoding，让 Go HTTP 客户端自动处理压缩
 
 	// 发起请求
+	logger.Debugf(ctx, "Starting image download from URL: %s", imageURL)
 	resp, err := client.Do(req)
 	if err != nil {
+		logger.Errorf(ctx, "Failed to download image from URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
 		return "", "", fmt.Errorf("download request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	logger.Debugf(ctx, "Image download response received: URL=%s, Status=%d, ContentLength=%d (elapsed: %v)",
+		imageURL, resp.StatusCode, resp.ContentLength, time.Since(startTime))
+
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK {
+		logger.Errorf(ctx, "Image download failed with status %d for URL %s (elapsed: %v)", resp.StatusCode, imageURL, time.Since(startTime))
 		return "", "", fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
 	}
 
 	// 设置最大下载大小（50MB）
 	const maxImageSize = 50 * 1024 * 1024
-	limitedReader := &io.LimitedReader{
-		R: resp.Body,
-		N: maxImageSize,
-	}
+	// 使用 maxImageSize + 1 作为限制，这样如果读取了超过 maxImageSize 字节就说明超限了
+	limitedReader := io.LimitReader(resp.Body, maxImageSize+1)
 
 	// 读取图片内容
 	imageBytes, err := io.ReadAll(limitedReader)
 	if err != nil {
+		logger.Errorf(ctx, "Failed to read image data from URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
 		return "", "", fmt.Errorf("read image data failed: %w", err)
 	}
 
-	// 检查是否超出大小限制
-	if limitedReader.N <= 0 {
+	// 检查是否超出大小限制（如果读取了超过 maxImageSize 字节，说明图片太大）
+	if len(imageBytes) > maxImageSize {
+		logger.Errorf(ctx, "Image size exceeds limit for URL %s: size > %d bytes (elapsed: %v)", imageURL, maxImageSize, time.Since(startTime))
 		return "", "", fmt.Errorf("image size exceeds maximum limit of %d bytes", maxImageSize)
 	}
+
+	// 检查是否下载到了有效数据
+	if len(imageBytes) == 0 {
+		logger.Errorf(ctx, "Downloaded empty image from URL %s (elapsed: %v)", imageURL, time.Since(startTime))
+		return "", "", fmt.Errorf("downloaded image is empty")
+	}
+
+	logger.Debugf(ctx, "Image data read successfully: URL=%s, Size=%d bytes (elapsed: %v)", imageURL, len(imageBytes), time.Since(startTime))
 
 	// 获取Content-Type
 	contentType := resp.Header.Get("Content-Type")
