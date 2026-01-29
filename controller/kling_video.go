@@ -464,8 +464,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota：$1 = 500 quota
-						newQuota = int64(usdAmount * float64(common.USD))
+						// 转换为 quota：$1 = 500000 quota
+						newQuota = int64(usdAmount * 500000)
 						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
@@ -518,8 +518,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota：$1 = 500 quota
-						newQuota = int64(usdAmount * float64(common.USD))
+						// 转换为 quota：$1 = 500000 quota
+						newQuota = int64(usdAmount * 500000)
 						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
