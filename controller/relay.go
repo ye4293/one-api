@@ -10,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -2744,4 +2748,370 @@ func RelayResponse(c *gin.Context) {
 			},
 		})
 	}
+}
+
+// CountTokensRequest Claude count_tokens 请求结构
+type CountTokensRequest struct {
+	Model    string          `json:"model"`
+	Messages json.RawMessage `json:"messages"`
+	System   json.RawMessage `json:"system,omitempty"`
+	Tools    json.RawMessage `json:"tools,omitempty"`
+}
+
+// CountTokensResponse Claude count_tokens 响应结构
+type CountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}
+
+// RelayClaudeCountTokens 处理 Claude count_tokens 请求
+// 该接口用于在发送消息前计算 token 数量
+func RelayClaudeCountTokens(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// 1. 读取并解析请求体
+	bodyBytes, err := common.GetRequestBody(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Failed to read request body: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	var req CountTokensRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Invalid request format: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	if req.Model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Model is required",
+			},
+		})
+		return
+	}
+
+	// 2. 获取用户信息和分组
+	userId := c.GetInt("id")
+	group, err := dbmodel.CacheGetUserGroup(userId)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get user group for user %d: %v", userId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to get user group",
+			},
+		})
+		return
+	}
+
+	// 3. 使用带能力筛选的渠道选择，只选择支持 count_tokens 的渠道
+	channel, err := dbmodel.CacheGetRandomSatisfiedChannelWithCapability(
+		group,
+		req.Model,
+		dbmodel.FilterSupportCountTokens,
+		0,  // skipPriorityLevels
+		"", // responseID
+	)
+	if err != nil {
+		logger.Errorf(ctx, "No channel available with count_tokens support for model %s: %v", req.Model, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "No channel available with count_tokens support: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	logger.Infof(ctx, "Selected channel #%d (%s) for count_tokens request, model: %s", channel.Id, channel.Name, req.Model)
+
+	// 4. 根据渠道类型转发请求
+	switch channel.Type {
+	case common.ChannelTypeAnthropic:
+		relayAnthropicCountTokens(c, channel, bodyBytes)
+	case common.ChannelTypeAwsClaude:
+		relayAwsCountTokens(c, channel, bodyBytes, req.Model)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": fmt.Sprintf("Channel type %d does not support count_tokens", channel.Type),
+			},
+		})
+	}
+}
+
+// relayAnthropicCountTokens 处理 Anthropic 原生 API 的 count_tokens 请求
+func relayAnthropicCountTokens(c *gin.Context, channel *dbmodel.Channel, requestBody []byte) {
+	// 构建请求 URL
+	baseURL := channel.GetBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com"
+	}
+	targetURL := baseURL + "/v1/messages/count_tokens"
+
+	// 创建代理请求
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to create request: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 获取实际使用的 key
+	key := channel.Key
+	if channel.MultiKeyInfo.IsMultiKey {
+		var keyIndex int
+		key, keyIndex, err = channel.GetNextAvailableKey()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "api_error",
+					"message": "Failed to get available key: " + err.Error(),
+				},
+			})
+			return
+		}
+		logger.Infof(c.Request.Context(), "Using key index %d for count_tokens request on channel #%d", keyIndex, channel.Id)
+	}
+
+	// 设置请求头
+	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-api-key", key)
+	proxyReq.Header.Set("anthropic-version", "2023-06-01")
+
+	// 发送请求
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to send request: " + err.Error(),
+			},
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to read response: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 转发响应
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
+}
+
+// relayAwsCountTokens 处理 AWS Bedrock 的 count_tokens 请求
+func relayAwsCountTokens(c *gin.Context, channel *dbmodel.Channel, requestBody []byte, modelName string) {
+	ctx := c.Request.Context()
+
+	// 1. 解析 AWS 凭证
+	key := channel.Key
+	if channel.MultiKeyInfo.IsMultiKey {
+		var keyIndex int
+		var err error
+		key, keyIndex, err = channel.GetNextAvailableKey()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "api_error",
+					"message": "Failed to get available key: " + err.Error(),
+				},
+			})
+			return
+		}
+		logger.Infof(ctx, "Using key index %d for AWS count_tokens request on channel #%d", keyIndex, channel.Id)
+	}
+
+	parts := strings.Split(key, "|")
+	var accessKey, secretKey, region string
+
+	if len(parts) == 3 {
+		accessKey = parts[0]
+		secretKey = parts[1]
+		region = parts[2]
+	} else {
+		cfg, _ := channel.LoadConfig()
+		accessKey = cfg.AK
+		secretKey = cfg.SK
+		region = cfg.Region
+	}
+
+	if accessKey == "" || secretKey == "" || region == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "AWS credentials not properly configured",
+			},
+		})
+		return
+	}
+
+	// 2. 创建 AWS Bedrock Runtime Client
+	awsClient := bedrockruntime.New(bedrockruntime.Options{
+		Region:      region,
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	})
+
+	// 3. 获取 AWS 模型 ID
+	awsModelId := getAwsModelIdForCountTokens(modelName)
+
+	// 4. 构建 AWS Bedrock 格式的请求体
+	// 需要将 Anthropic 格式转换为 AWS Bedrock 格式
+	awsRequestBody, err := convertToAwsBedrockFormat(requestBody)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to convert request to AWS format: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Failed to convert request format: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 5. 构建 CountTokens 请求
+	// AWS CountTokens API 使用 InvokeModel 格式的输入
+	countTokensInput := &bedrockruntime.CountTokensInput{
+		ModelId: aws.String(awsModelId),
+		Input: &types.CountTokensInputMemberInvokeModel{
+			Value: types.InvokeModelTokensRequest{
+				Body: awsRequestBody,
+			},
+		},
+	}
+
+	// 6. 调用 CountTokens API
+	result, err := awsClient.CountTokens(ctx, countTokensInput)
+	if err != nil {
+		logger.Errorf(ctx, "AWS CountTokens API error: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "AWS CountTokens API error: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 7. 返回结果（与 Anthropic 格式兼容）
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": aws.ToInt32(result.InputTokens),
+	})
+}
+
+// convertToAwsBedrockFormat 将 Anthropic 请求格式转换为 AWS Bedrock 格式
+// 注意：AWS Bedrock CountTokens API 使用 InvokeModel 格式，但只需要计算 token 相关的字段
+func convertToAwsBedrockFormat(requestBody []byte) ([]byte, error) {
+	// 解析原始请求
+	var anthropicReq struct {
+		Model    string          `json:"model"`
+		Messages json.RawMessage `json:"messages"`
+		System   json.RawMessage `json:"system,omitempty"`
+		Tools    json.RawMessage `json:"tools,omitempty"`
+	}
+	if err := json.Unmarshal(requestBody, &anthropicReq); err != nil {
+		return nil, err
+	}
+
+	// 构建 AWS Bedrock 格式的请求
+	// AWS Bedrock CountTokens API 需要 InvokeModel 格式的 body
+	// 参考: https://docs.aws.amazon.com/bedrock/latest/userguide/count-tokens.html
+	awsReq := map[string]interface{}{
+		"anthropic_version": "bedrock-2023-05-31",
+		// max_tokens 是 InvokeModel 的必需字段，设置最小值
+		// CountTokens 只计算输入 token，不会实际生成输出
+		"max_tokens": 1,
+	}
+
+	if anthropicReq.Messages != nil {
+		awsReq["messages"] = json.RawMessage(anthropicReq.Messages)
+	}
+
+	if anthropicReq.System != nil && len(anthropicReq.System) > 0 {
+		awsReq["system"] = json.RawMessage(anthropicReq.System)
+	}
+
+	if anthropicReq.Tools != nil && len(anthropicReq.Tools) > 0 {
+		awsReq["tools"] = json.RawMessage(anthropicReq.Tools)
+	}
+
+	return json.Marshal(awsReq)
+}
+
+// getAwsModelIdForCountTokens 获取用于 CountTokens 的 AWS 模型 ID
+func getAwsModelIdForCountTokens(requestModel string) string {
+	// AWS 模型 ID 映射表
+	awsModelIDMap := map[string]string{
+		"claude-instant-1.2":                  "anthropic.claude-instant-v1",
+		"claude-2.0":                          "anthropic.claude-v2",
+		"claude-2.1":                          "anthropic.claude-v2:1",
+		"claude-3-sonnet-20240229":            "anthropic.claude-3-sonnet-20240229-v1:0",
+		"claude-3-opus-20240229":              "anthropic.claude-3-opus-20240229-v1:0",
+		"claude-3-haiku-20240307":             "anthropic.claude-3-haiku-20240307-v1:0",
+		"claude-3-5-sonnet-20240620":          "anthropic.claude-3-5-sonnet-20240620-v1:0",
+		"claude-3-5-sonnet-20241022":          "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"claude-3-5-haiku-20241022":           "anthropic.claude-3-5-haiku-20241022-v1:0",
+		"claude-3-7-sonnet-20250219":          "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"claude-sonnet-4-20250514":            "anthropic.claude-sonnet-4-20250514-v1:0",
+		"claude-opus-4-20250514":              "anthropic.claude-opus-4-20250514-v1:0",
+		"claude-opus-4-1-20250805":            "anthropic.claude-opus-4-1-20250805-v1:0",
+		"claude-sonnet-4-5-20250929":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"claude-haiku-4-5-20251001":           "anthropic.claude-haiku-4-5-20251001-v1:0",
+		"claude-opus-4-5-20251101":            "anthropic.claude-opus-4-5-20251101-v1:0",
+		"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
+		"claude-opus-4-20250514-thinking":     "anthropic.claude-opus-4-20250514-v1:0",
+		"claude-opus-4-1-20250805-thinking":   "anthropic.claude-opus-4-1-20250805-v1:0",
+		"claude-sonnet-4-5-20250929-thinking": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
+		"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
+	}
+
+	if awsModelID, ok := awsModelIDMap[requestModel]; ok {
+		return awsModelID
+	}
+	// 如果已经是 AWS 模型 ID 格式，直接返回
+	if strings.Contains(requestModel, "anthropic.") {
+		return requestModel
+	}
+	return requestModel
 }

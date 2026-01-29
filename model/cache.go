@@ -439,6 +439,133 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	return nil, errors.New("unable to select a channel based on weight")
 }
 
+// ChannelCapabilityFilter 渠道能力过滤器类型
+type ChannelCapabilityFilter func(channel *Channel, config ChannelConfig) bool
+
+// FilterSupportCountTokens 过滤支持 count_tokens 的渠道
+var FilterSupportCountTokens ChannelCapabilityFilter = func(channel *Channel, config ChannelConfig) bool {
+	return config.SupportCountTokens
+}
+
+// CacheGetRandomSatisfiedChannelWithCapability 带能力筛选的渠道选择
+// 此函数在 CacheGetRandomSatisfiedChannel 基础上增加能力过滤
+func CacheGetRandomSatisfiedChannelWithCapability(
+	group string,
+	model string,
+	capabilityFilter ChannelCapabilityFilter,
+	skipPriorityLevels int,
+	responseID string,
+	excludeChannelIds ...[]int,
+) (*Channel, error) {
+	groupCol := "`group`"
+	trueVal := "1"
+	if common.UsingPostgreSQL {
+		groupCol = `"group"`
+		trueVal = "true"
+	}
+
+	// 解析排除的渠道ID列表
+	var excludeIds []int
+	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
+		excludeIds = excludeChannelIds[0]
+	}
+
+	// 构建基础查询条件
+	baseQuery := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?",
+			group, model, trueVal, common.ChannelStatusEnabled)
+
+	if len(excludeIds) > 0 {
+		baseQuery = baseQuery.Where("channels.id NOT IN ?", excludeIds)
+	}
+
+	// 获取所有优先级
+	var priorities []int
+	err := baseQuery.Pluck("DISTINCT abilities.priority", &priorities).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
+	}
+
+	if len(priorities) == 0 {
+		return nil, errors.New("no priorities available")
+	}
+
+	// 按优先级排序（从大到小）
+	sort.Slice(priorities, func(i, j int) bool {
+		return priorities[i] > priorities[j]
+	})
+
+	// 遍历优先级，寻找支持指定能力的渠道
+	for priorityIdx := skipPriorityLevels; priorityIdx < len(priorities); priorityIdx++ {
+		priorityToUse := priorities[priorityIdx]
+
+		// 获取该优先级的所有渠道
+		var channels []Channel
+		channelQuery := DB.Table("channels").
+			Joins("JOIN abilities ON channels.id = abilities.channel_id").
+			Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?",
+				group, model, trueVal, priorityToUse, common.ChannelStatusEnabled)
+
+		if len(excludeIds) > 0 {
+			channelQuery = channelQuery.Where("channels.id NOT IN ?", excludeIds)
+		}
+
+		err = channelQuery.Find(&channels).Error
+		if err != nil {
+			continue
+		}
+
+		// 应用能力过滤器
+		var filteredChannels []Channel
+		for _, channel := range channels {
+			cfg, err := channel.LoadConfig()
+			if err != nil {
+				continue
+			}
+			if capabilityFilter(&channel, cfg) {
+				filteredChannels = append(filteredChannels, channel)
+			}
+		}
+
+		if len(filteredChannels) == 0 {
+			continue // 尝试下一个优先级
+		}
+
+		// 按权重随机选择
+		totalWeight := 0
+		for _, channel := range filteredChannels {
+			weight := int(*channel.Weight)
+			if weight <= 0 {
+				weight = 1
+			}
+			totalWeight += weight
+		}
+
+		if totalWeight == 0 {
+			continue
+		}
+
+		randSource := rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(10000)))
+		randGen := rand.New(randSource)
+		weightThreshold := randGen.Intn(totalWeight) + 1
+
+		currentWeight := 0
+		for _, channel := range filteredChannels {
+			weight := int(*channel.Weight)
+			if weight <= 0 {
+				weight = 1
+			}
+			currentWeight += weight
+			if currentWeight >= weightThreshold {
+				return &channel, nil
+			}
+		}
+	}
+
+	return nil, errors.New("no channels available with required capability")
+}
+
 func CacheGetChannel(id int) (*Channel, error) {
 	if !config.MemoryCacheEnabled {
 		return GetChannelById(id, true)
