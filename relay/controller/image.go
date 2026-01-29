@@ -799,10 +799,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 设置Content-Type
 		// 注意：不手动设置Content-Length，让Go的http.Client自动计算
-		req.Header.Set("Content-Type", contentType)
+		// 对于 Gemini 模型，由于我们已经将请求体转换为 Gemini 格式的 JSON，
+		// 需要显式设置 Content-Type 为 application/json，而不是使用原始请求的 Content-Type
+		if strings.HasPrefix(imageRequest.Model, "gemini") {
+			req.Header.Set("Content-Type", "application/json")
+			logger.Debugf(ctx, "Gemini request: Content-Type set to application/json")
+		} else {
+			req.Header.Set("Content-Type", contentType)
+		}
 
 		// 记录JSON请求体大小用于调试，但不设置header
-		if strings.Contains(contentType, "application/json") {
+		if strings.Contains(req.Header.Get("Content-Type"), "application/json") {
 			if bodyBuffer, ok := requestBody.(*bytes.Buffer); ok {
 				logger.Debugf(ctx, "JSON request body size: %d bytes", bodyBuffer.Len())
 			}
