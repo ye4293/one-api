@@ -25,7 +25,7 @@ import (
 // Vertex AI API 要求必须指定 role 字段（值为 "user" 或 "model"），而 Gemini 原生 API 可以省略
 // 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
 
-// RelayGeminiNative 处理 Gemini 原生 API 请求
+// RelayOpenaiResponseNative 处理 openai 原生 API 请求
 func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now()
@@ -362,6 +362,10 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
 	util.IOCopyBytesGracefully(c, resp, responseBody)
+	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
+	// 缓存 response_id 到 Redis
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), "OpenAI Response Cache")
+
 	return openaiResponse.Usage, nil
 }
 
@@ -408,6 +412,10 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				if streamResponse.Response.Usage != nil {
 					lastUsageMetadata = streamResponse.Response.Usage
 				}
+
+				// 缓存 response_id 到 Redis
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), "OpenAI Response Cache Stream")
+
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {
 						if output.Type == "image_generation_call" {

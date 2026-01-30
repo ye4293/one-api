@@ -62,7 +62,6 @@ type Channel struct {
 	ModelMapping       *string `json:"model_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
-	ChannelRatio       float64 `json:"channel_ratio" gorm:"default:1"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
@@ -156,6 +155,8 @@ type ChannelConfig struct {
 	// Vertex AI 新增配置
 	VertexKeyType     VertexKeyType     `json:"vertex_key_type,omitempty"`     // 密钥类型: json 或 api_key
 	VertexModelRegion map[string]string `json:"vertex_model_region,omitempty"` // 模型专用区域映射，如 {"gemini-2.5-pro": "us-central1"}
+	// Claude count_tokens 功能支持
+	SupportCountTokens bool `json:"support_count_tokens,omitempty"` // 是否支持 count_tokens 接口（默认 false）
 }
 
 func (channel *Channel) LoadConfig() (ChannelConfig, error) {

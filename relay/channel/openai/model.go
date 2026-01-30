@@ -83,6 +83,7 @@ type UsageOrResponseText struct {
 }
 
 type SlimTextResponse struct {
+	Id          string               `json:"id"` // response ID (chatcmpl-xxx 或 cmpl-xxx)
 	Choices     []TextResponseChoice `json:"choices"`
 	model.Usage `json:"usage"`
 	Error       model.Error `json:"error"`
@@ -149,6 +150,10 @@ type ChatCompletionsStreamResponse struct {
 }
 
 type CompletionsStreamResponse struct {
+	Id      string `json:"id"`      // response ID (cmpl-xxx)
+	Object  string `json:"object"`  // 对象类型
+	Created int64  `json:"created"` // 时间戳
+	Model   string `json:"model"`   // 模型名称
 	Choices []struct {
 		Text         string `json:"text"`
 		FinishReason string `json:"finish_reason"`

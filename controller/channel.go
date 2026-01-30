@@ -367,9 +367,6 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 	if source.Status != 0 {
 		target.Status = source.Status
 	}
-	if source.ChannelRatio != 0 {
-		target.ChannelRatio = source.ChannelRatio
-	}
 
 	// 允许空值的字符串字段
 	stringFields := []struct {
