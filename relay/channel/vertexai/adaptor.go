@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -299,15 +298,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to setup request headers: %w", err)
 	}
 
-	// 执行请求（设置超时，流式请求使用较长超时）
-	timeout := 60 * time.Second
-	if meta.IsStream {
-		timeout = 5 * time.Minute
-	}
-	client := &http.Client{
-		Timeout: timeout,
-	}
-	resp, err := client.Do(req)
+	// 执行请求（使用全局 HTTP 客户端，避免每次创建新客户端）
+	// 注意：不要在这里设置短超时，图像生成等请求可能需要几分钟
+	// 超时由全局 HTTPClient 或 LongRunningHTTPClient 控制
+	resp, err := util.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
