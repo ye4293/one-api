@@ -118,6 +118,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/styles", controller.RelayRecraft)
 		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/messages", controller.RelayClaude)
+		relayV1Router.POST("/messages/count_tokens", controller.RelayClaudeCountTokens) // Claude count_tokens 接口
 		relayV1Router.POST("/responses", controller.RelayResponse)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {

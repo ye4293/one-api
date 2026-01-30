@@ -155,6 +155,8 @@ type ChannelConfig struct {
 	// Vertex AI 新增配置
 	VertexKeyType     VertexKeyType     `json:"vertex_key_type,omitempty"`     // 密钥类型: json 或 api_key
 	VertexModelRegion map[string]string `json:"vertex_model_region,omitempty"` // 模型专用区域映射，如 {"gemini-2.5-pro": "us-central1"}
+	// Claude count_tokens 功能支持
+	SupportCountTokens bool `json:"support_count_tokens,omitempty"` // 是否支持 count_tokens 接口（默认 false）
 }
 
 func (channel *Channel) LoadConfig() (ChannelConfig, error) {

@@ -899,7 +899,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
 
-	resp, err := util.HTTPClient.Do(req)
+	// 发送请求
+	// 对于 Gemini 模型，使用专用的长时间运行客户端，避免外部上下文超时
+	var resp *http.Response
+	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Debugf(ctx, "Gemini image generation: using LongRunningHTTPClient with independent context")
+		resp, err = util.DoLongRunningRequest(req)
+	} else {
+		resp, err = util.HTTPClient.Do(req)
+	}
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
@@ -3224,8 +3232,9 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		req.Header.Set("x-goog-api-key", meta.APIKey)
 	}
 
-	// 发送请求
-	resp, err := util.HTTPClient.Do(req)
+	// 发送请求 - 使用专用的长时间运行客户端，避免外部上下文超时
+	logger.Debugf(ctx, "Gemini Form image generation: using LongRunningHTTPClient with independent context")
+	resp, err := util.DoLongRunningRequest(req)
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
