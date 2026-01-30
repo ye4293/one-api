@@ -656,61 +656,83 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
 			actualModelName := imageRequest.Model
 			if meta.ChannelType == common.ChannelTypeVertexAI {
-				// 为VertexAI构建URL
-				keyIndex := 0
-				if meta.KeyIndex != nil {
-					keyIndex = *meta.KeyIndex
-				}
-
-				// 安全检查：确保keyIndex不为负数
-				if keyIndex < 0 {
-					logger.Errorf(ctx, "VertexAI keyIndex为负数: %d，重置为0", keyIndex)
-					keyIndex = 0
-				}
-
-				projectID := ""
-
-				// 尝试从Key字段解析项目ID（支持多密钥）
-				if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-					// 多密钥模式：从指定索引的密钥解析
-					var credentials vertexai.Credentials
-					if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
-						projectID = credentials.ProjectID
-					} else {
-						logger.Errorf(ctx, "VertexAI 从多密钥解析ProjectID失败: %v", err)
-					}
-				} else if meta.ActualAPIKey != "" {
-					// 单密钥模式：从ActualAPIKey解析
-					var credentials vertexai.Credentials
-					if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
-						projectID = credentials.ProjectID
-					} else {
-						logger.Errorf(ctx, "VertexAI 从ActualAPIKey解析ProjectID失败: %v", err)
-					}
-				} else {
-					logger.Warnf(ctx, "VertexAI 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d", meta.IsMultiKey, len(meta.Keys))
-				}
-
-				// 回退：尝试从Config获取项目ID
-				if projectID == "" && meta.Config.VertexAIProjectID != "" {
-					projectID = meta.Config.VertexAIProjectID
-				}
-
-				if projectID == "" {
-					logger.Errorf(ctx, "VertexAI 无法获取ProjectID")
-					return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
-				}
+				// 检查是否是 API Key 模式
+				isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
 
 				region := meta.Config.Region
 				if region == "" {
 					region = "global"
 				}
 
-				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-				if region == "global" {
-					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+				if isAPIKeyMode {
+					// API Key 模式：不需要 Project ID，使用简化的 URL，key 作为 URL 参数
+					apiKey := meta.ActualAPIKey
+					if meta.IsMultiKey && len(meta.Keys) > 0 {
+						keyIndex := 0
+						if meta.KeyIndex != nil && *meta.KeyIndex >= 0 && *meta.KeyIndex < len(meta.Keys) {
+							keyIndex = *meta.KeyIndex
+						}
+						apiKey = meta.Keys[keyIndex]
+					}
+
+					if region == "global" {
+						fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", actualModelName, apiKey)
+					} else {
+						fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", region, actualModelName, apiKey)
+					}
+					logger.Debugf(ctx, "VertexAI API Key 模式: 使用简化 URL（无 ProjectID）")
 				} else {
-					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+					// JSON 凭证模式：需要 Project ID
+					keyIndex := 0
+					if meta.KeyIndex != nil {
+						keyIndex = *meta.KeyIndex
+					}
+
+					// 安全检查：确保keyIndex不为负数
+					if keyIndex < 0 {
+						logger.Errorf(ctx, "VertexAI keyIndex为负数: %d，重置为0", keyIndex)
+						keyIndex = 0
+					}
+
+					projectID := ""
+
+					// 尝试从Key字段解析项目ID（支持多密钥）
+					if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+						// 多密钥模式：从指定索引的密钥解析
+						var credentials vertexai.Credentials
+						if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+							projectID = credentials.ProjectID
+						} else {
+							logger.Errorf(ctx, "VertexAI 从多密钥解析ProjectID失败: %v", err)
+						}
+					} else if meta.ActualAPIKey != "" {
+						// 单密钥模式：从ActualAPIKey解析
+						var credentials vertexai.Credentials
+						if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+							projectID = credentials.ProjectID
+						} else {
+							logger.Errorf(ctx, "VertexAI 从ActualAPIKey解析ProjectID失败: %v", err)
+						}
+					} else {
+						logger.Warnf(ctx, "VertexAI 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d", meta.IsMultiKey, len(meta.Keys))
+					}
+
+					// 回退：尝试从Config获取项目ID
+					if projectID == "" && meta.Config.VertexAIProjectID != "" {
+						projectID = meta.Config.VertexAIProjectID
+					}
+
+					if projectID == "" {
+						logger.Errorf(ctx, "VertexAI 无法获取ProjectID")
+						return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+					}
+
+					// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+					if region == "global" {
+						fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+					} else {
+						fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+					}
 				}
 			} else {
 				// 原有的Gemini官方API URL
@@ -871,24 +893,32 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		req.Header.Set("api-key", token)
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
 		if meta.ChannelType == common.ChannelTypeVertexAI {
-			// 为VertexAI使用Bearer token认证 - 复用已有的adaptor实例
-			var vertexAIAdaptor *vertexai.Adaptor
-			if va, ok := adaptor.(*vertexai.Adaptor); ok {
-				vertexAIAdaptor = va
+			// 检查是否是 API Key 模式
+			isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
+
+			if isAPIKeyMode {
+				// API Key 模式：key 已经在 URL 中，不需要 Authorization header
+				logger.Debugf(ctx, "VertexAI API Key 模式: 跳过 Bearer token 认证（key 已在 URL 中）")
 			} else {
-				// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
-				vertexAIAdaptor = &vertexai.Adaptor{}
-				vertexAIAdaptor.Init(meta)
-				logger.Warnf(ctx, "VertexAI adaptor类型不匹配，创建新实例")
-			}
+				// JSON 凭证模式：使用 Bearer token 认证
+				var vertexAIAdaptor *vertexai.Adaptor
+				if va, ok := adaptor.(*vertexai.Adaptor); ok {
+					vertexAIAdaptor = va
+				} else {
+					// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
+					vertexAIAdaptor = &vertexai.Adaptor{}
+					vertexAIAdaptor.Init(meta)
+					logger.Warnf(ctx, "VertexAI adaptor类型不匹配，创建新实例")
+				}
 
-			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
-			if err != nil {
-				logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
-				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
-			}
+				accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+				if err != nil {
+					logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
+					return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+				}
 
-			req.Header.Set("Authorization", "Bearer "+accessToken)
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+			}
 		} else {
 			// For Gemini, set the API key in the x-goog-api-key header
 			req.Header.Set("x-goog-api-key", meta.APIKey)
@@ -3143,61 +3173,83 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
 	actualModelName := imageRequest.Model
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		// 为VertexAI构建URL
-		keyIndex := 0
-		if meta.KeyIndex != nil {
-			keyIndex = *meta.KeyIndex
-		}
-
-		// 安全检查：确保keyIndex不为负数
-		if keyIndex < 0 {
-			logger.Errorf(ctx, "VertexAI Form请求 keyIndex为负数: %d，重置为0", keyIndex)
-			keyIndex = 0
-		}
-
-		projectID := ""
-
-		// 尝试从Key字段解析项目ID（支持多密钥）
-		if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-			// 多密钥模式：从指定索引的密钥解析
-			var credentials vertexai.Credentials
-			if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
-				projectID = credentials.ProjectID
-			} else {
-				logger.Errorf(ctx, "VertexAI Form请求 从多密钥解析ProjectID失败: %v", err)
-			}
-		} else if meta.ActualAPIKey != "" {
-			// 单密钥模式：从ActualAPIKey解析
-			var credentials vertexai.Credentials
-			if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
-				projectID = credentials.ProjectID
-			} else {
-				logger.Errorf(ctx, "VertexAI Form请求 从ActualAPIKey解析ProjectID失败: %v", err)
-			}
-		} else {
-			logger.Warnf(ctx, "VertexAI Form请求 无法获取密钥信息")
-		}
-
-		// 回退：尝试从Config获取项目ID
-		if projectID == "" && meta.Config.VertexAIProjectID != "" {
-			projectID = meta.Config.VertexAIProjectID
-		}
-
-		if projectID == "" {
-			logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
-			return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
-		}
+		// 检查是否是 API Key 模式
+		isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
 
 		region := meta.Config.Region
 		if region == "" {
 			region = "global"
 		}
 
-		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-		if region == "global" {
-			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+		if isAPIKeyMode {
+			// API Key 模式：不需要 Project ID，使用简化的 URL，key 作为 URL 参数
+			apiKey := meta.ActualAPIKey
+			if meta.IsMultiKey && len(meta.Keys) > 0 {
+				keyIndex := 0
+				if meta.KeyIndex != nil && *meta.KeyIndex >= 0 && *meta.KeyIndex < len(meta.Keys) {
+					keyIndex = *meta.KeyIndex
+				}
+				apiKey = meta.Keys[keyIndex]
+			}
+
+			if region == "global" {
+				fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", actualModelName, apiKey)
+			} else {
+				fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", region, actualModelName, apiKey)
+			}
+			logger.Debugf(ctx, "VertexAI Form请求 API Key 模式: 使用简化 URL（无 ProjectID）")
 		} else {
-			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+			// JSON 凭证模式：需要 Project ID
+			keyIndex := 0
+			if meta.KeyIndex != nil {
+				keyIndex = *meta.KeyIndex
+			}
+
+			// 安全检查：确保keyIndex不为负数
+			if keyIndex < 0 {
+				logger.Errorf(ctx, "VertexAI Form请求 keyIndex为负数: %d，重置为0", keyIndex)
+				keyIndex = 0
+			}
+
+			projectID := ""
+
+			// 尝试从Key字段解析项目ID（支持多密钥）
+			if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+				// 多密钥模式：从指定索引的密钥解析
+				var credentials vertexai.Credentials
+				if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+					projectID = credentials.ProjectID
+				} else {
+					logger.Errorf(ctx, "VertexAI Form请求 从多密钥解析ProjectID失败: %v", err)
+				}
+			} else if meta.ActualAPIKey != "" {
+				// 单密钥模式：从ActualAPIKey解析
+				var credentials vertexai.Credentials
+				if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+					projectID = credentials.ProjectID
+				} else {
+					logger.Errorf(ctx, "VertexAI Form请求 从ActualAPIKey解析ProjectID失败: %v", err)
+				}
+			} else {
+				logger.Warnf(ctx, "VertexAI Form请求 无法获取密钥信息")
+			}
+
+			// 回退：尝试从Config获取项目ID
+			if projectID == "" && meta.Config.VertexAIProjectID != "" {
+				projectID = meta.Config.VertexAIProjectID
+			}
+
+			if projectID == "" {
+				logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
+				return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+			}
+
+			// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+			if region == "global" {
+				fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+			} else {
+				fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+			}
 		}
 	} else {
 		// 原有的Gemini官方API URL
@@ -3216,17 +3268,25 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	req.Header.Set("Accept", "application/json")
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		// 为VertexAI使用Bearer token认证 - 创建新的adaptor实例（Form请求处理时没有预先创建的adaptor）
-		vertexAIAdaptor := &vertexai.Adaptor{}
-		vertexAIAdaptor.Init(meta)
+		// 检查是否是 API Key 模式
+		isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
 
-		accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
-		if err != nil {
-			logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
-			return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+		if isAPIKeyMode {
+			// API Key 模式：key 已经在 URL 中，不需要 Authorization header
+			logger.Debugf(ctx, "VertexAI Form请求 API Key 模式: 跳过 Bearer token 认证（key 已在 URL 中）")
+		} else {
+			// JSON 凭证模式：使用 Bearer token 认证
+			vertexAIAdaptor := &vertexai.Adaptor{}
+			vertexAIAdaptor.Init(meta)
+
+			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+			if err != nil {
+				logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
+				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+			}
+
+			req.Header.Set("Authorization", "Bearer "+accessToken)
 		}
-
-		req.Header.Set("Authorization", "Bearer "+accessToken)
 	} else {
 		// Gemini API 正确的 header 格式
 		req.Header.Set("x-goog-api-key", meta.APIKey)
