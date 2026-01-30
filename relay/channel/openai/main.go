@@ -51,6 +51,10 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 	}
 
 	var firstWordTime *time.Time
+	// ===== 新增：追踪 response ID 和缓存状态 =====
+	var responseId string
+	var idCached bool = false
+	// ===== 新增结束 =====
 
 	go func() {
 		for scanner.Scan() {
@@ -72,6 +76,35 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						logger.SysError("error unmarshalling stream response: " + err.Error())
 						continue // just ignore the error
 					}
+
+					// ===== 新增：提取 Chat Completions 的 response ID 并缓存 =====
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+					}
+					// 在收到第一个非空内容时缓存（确保响应正常）
+					if responseId != "" && !idCached {
+						for _, choice := range streamResponse.Choices {
+							content := conv.AsString(choice.Delta.Content)
+							if content != "" {
+								// 第一次有内容输出时缓存 ID
+								channelId := c.GetInt("channel_id")
+								if channelId > 0 {
+									expireMinutes := int64(1440)
+									if writeErr := dbmodel.SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
+										logger.SysLog(fmt.Sprintf("[Chat Completions Stream Cache] Failed to cache response_id=%s to channel_id=%d: %v",
+											responseId, channelId, writeErr))
+									} else {
+										logger.SysLog(fmt.Sprintf("[Chat Completions Stream Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
+											responseId, channelId))
+									}
+								}
+								idCached = true
+								break // 已缓存，跳出循环
+							}
+						}
+					}
+					// ===== 新增结束 =====
+
 					for _, choice := range streamResponse.Choices {
 						content := conv.AsString(choice.Delta.Content)
 						if content != "" && firstWordTime == nil {
@@ -91,6 +124,34 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						logger.SysError("error unmarshalling stream response: " + err.Error())
 						continue
 					}
+
+					// ===== 新增：提取 Completions 的 response ID 并缓存 =====
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+					}
+					// 在收到第一个非空文本时缓存（确保响应正常）
+					if responseId != "" && !idCached {
+						for _, choice := range streamResponse.Choices {
+							if choice.Text != "" {
+								// 第一次有内容输出时缓存 ID
+								channelId := c.GetInt("channel_id")
+								if channelId > 0 {
+									expireMinutes := int64(1440)
+									if writeErr := dbmodel.SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
+										logger.SysLog(fmt.Sprintf("[Text Completions Stream Cache] Failed to cache response_id=%s to channel_id=%d: %v",
+											responseId, channelId, writeErr))
+									} else {
+										logger.SysLog(fmt.Sprintf("[Text Completions Stream Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
+											responseId, channelId))
+									}
+								}
+								idCached = true
+								break // 已缓存，跳出循环
+							}
+						}
+					}
+					// ===== 新增结束 =====
+
 					for _, choice := range streamResponse.Choices {
 						if choice.Text != "" && firstWordTime == nil {
 							// 记录首字时间
