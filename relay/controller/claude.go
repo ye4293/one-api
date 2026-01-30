@@ -60,6 +60,19 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	if err := json.Unmarshal(originRequestBody, &claudeReq); err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse claude request: %w", err), "failed_to_parse_request", http.StatusInternalServerError)
 	}
+
+	// 处理 X-Response-ID header：如果存在且请求体中没有 id，则设置到请求体
+	if responseID := c.GetHeader("X-Response-ID"); responseID != "" && claudeReq.Id == "" {
+		claudeReq.Id = responseID
+		// 重新序列化请求体
+		if modifiedBody, marshalErr := json.Marshal(claudeReq); marshalErr == nil {
+			originRequestBody = modifiedBody
+			logger.SysLog(fmt.Sprintf("[Claude API] Set id from X-Response-ID header: %s", responseID))
+		} else {
+			logger.SysError(fmt.Sprintf("[Claude API] Failed to marshal modified request: %v", marshalErr))
+		}
+	}
+
 	meta.IsStream = claudeReq.Stream
 	// 计算预消费配额
 	groupRatio := common.GetGroupRatio(group)

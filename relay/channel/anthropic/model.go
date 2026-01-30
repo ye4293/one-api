@@ -262,6 +262,7 @@ type ThinkingConfig struct {
 // Request Claude API 请求结构
 type Request struct {
 	Model         string          `json:"model"`                    // 模型名称
+	Id            string          `json:"id,omitempty"`             // 响应 ID（用于定向路由）
 	Messages      []Message       `json:"messages,omitempty"`       // 消息列表
 	System        interface{}     `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
 	MaxTokens     int             `json:"max_tokens"`               // 最大输出token数

@@ -34,6 +34,13 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		logger.Errorf(ctx, "getAndValidateTextRequest failed: %s", err.Error())
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
 	}
+
+	// 处理 X-Response-ID header：如果存在且请求体中没有 id，则设置到请求体
+	if responseID := c.GetHeader("X-Response-ID"); responseID != "" && textRequest.Id == "" {
+		textRequest.Id = responseID
+		logger.SysLog(fmt.Sprintf("[Chat Completions] Set id from X-Response-ID header: %s", responseID))
+	}
+
 	meta.IsStream = textRequest.Stream
 
 	// 只有流式请求才解析 stream_options.include_usage
