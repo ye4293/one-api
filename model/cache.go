@@ -634,3 +634,32 @@ func GetClaudeCacheIdFromRedis(id string) (string, error) {
 	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取成功 - Key: %s, ChannelID: %s", cacheKey, channel))
 	return channel, nil
 }
+
+// CacheResponseIdToChannel 缓存 response_id 到 channel_id 的映射（通用辅助函数）
+// 适用于所有需要缓存 response_id 的场景（OpenAI, Claude, 等）
+//
+// 参数:
+//   - responseId: 响应 ID（如 chatcmpl-xxx, resp_xxx, msg_xxx, cmpl-xxx 等）
+//   - channelId: 渠道 ID（整数）
+//   - logPrefix: 日志前缀，用于区分不同的调用场景
+//
+// 功能:
+//   - 使用 24 小时 TTL 写入 Redis
+//   - Redis 写入失败不影响主流程，仅记录日志
+//   - 如果 responseId 为空或 channelId <= 0，则跳过
+func CacheResponseIdToChannel(responseId string, channelId int, logPrefix string) {
+	if responseId == "" || channelId <= 0 {
+		return
+	}
+
+	// 使用 24 小时 TTL (1440 分钟)
+	expireMinutes := int64(1440)
+	if err := SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); err != nil {
+		// Redis 写入失败不影响主流程，只记录日志
+		logger.SysLog(fmt.Sprintf("[%s] Failed to cache response_id=%s to channel_id=%d: %v",
+			logPrefix, responseId, channelId, err))
+	} else {
+		logger.SysLog(fmt.Sprintf("[%s] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
+			logPrefix, responseId, channelId))
+	}
+}
