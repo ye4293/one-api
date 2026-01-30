@@ -362,7 +362,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
 	util.IOCopyBytesGracefully(c, resp, responseBody)
-
+	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
 	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), "OpenAI Response Cache")
 
