@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -77,7 +76,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						continue // just ignore the error
 					}
 
-					// ===== 新增：提取 Chat Completions 的 response ID 并缓存 =====
+					// 提取 Chat Completions 的 response ID 并缓存
 					if streamResponse.Id != "" && responseId == "" {
 						responseId = streamResponse.Id
 					}
@@ -87,23 +86,12 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 							content := conv.AsString(choice.Delta.Content)
 							if content != "" {
 								// 第一次有内容输出时缓存 ID
-								channelId := c.GetInt("channel_id")
-								if channelId > 0 {
-									expireMinutes := int64(1440)
-									if writeErr := dbmodel.SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
-										logger.SysLog(fmt.Sprintf("[Chat Completions Stream Cache] Failed to cache response_id=%s to channel_id=%d: %v",
-											responseId, channelId, writeErr))
-									} else {
-										logger.SysLog(fmt.Sprintf("[Chat Completions Stream Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-											responseId, channelId))
-									}
-								}
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Chat Completions Stream Cache")
 								idCached = true
 								break // 已缓存，跳出循环
 							}
 						}
 					}
-					// ===== 新增结束 =====
 
 					for _, choice := range streamResponse.Choices {
 						content := conv.AsString(choice.Delta.Content)
@@ -125,7 +113,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						continue
 					}
 
-					// ===== 新增：提取 Completions 的 response ID 并缓存 =====
+					// 提取 Completions 的 response ID 并缓存
 					if streamResponse.Id != "" && responseId == "" {
 						responseId = streamResponse.Id
 					}
@@ -134,23 +122,12 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						for _, choice := range streamResponse.Choices {
 							if choice.Text != "" {
 								// 第一次有内容输出时缓存 ID
-								channelId := c.GetInt("channel_id")
-								if channelId > 0 {
-									expireMinutes := int64(1440)
-									if writeErr := dbmodel.SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
-										logger.SysLog(fmt.Sprintf("[Text Completions Stream Cache] Failed to cache response_id=%s to channel_id=%d: %v",
-											responseId, channelId, writeErr))
-									} else {
-										logger.SysLog(fmt.Sprintf("[Text Completions Stream Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-											responseId, channelId))
-									}
-								}
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Text Completions Stream Cache")
 								idCached = true
 								break // 已缓存，跳出循环
 							}
 						}
 					}
-					// ===== 新增结束 =====
 
 					for _, choice := range streamResponse.Choices {
 						if choice.Text != "" && firstWordTime == nil {
@@ -246,23 +223,8 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		}
 	}
 
-	// ===== 新增：缓存 response_id 到 Redis =====
-	if textResponse.Id != "" {
-		channelId := c.GetInt("channel_id")
-		if channelId > 0 {
-			// 使用 24 小时 TTL (1440 分钟)
-			expireMinutes := int64(1440)
-			if writeErr := dbmodel.SetClaudeCacheIdToRedis(textResponse.Id, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
-				// Redis 写入失败不影响主流程，只记录日志
-				logger.SysLog(fmt.Sprintf("[Text Completions Cache] Failed to cache response_id=%s to channel_id=%d: %v",
-					textResponse.Id, channelId, writeErr))
-			} else {
-				logger.SysLog(fmt.Sprintf("[Text Completions Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-					textResponse.Id, channelId))
-			}
-		}
-	}
-	// ===== 新增结束 =====
+	// 缓存 response_id 到 Redis
+	dbmodel.CacheResponseIdToChannel(textResponse.Id, c.GetInt("channel_id"), "Text Completions Cache")
 
 	return nil, &textResponse.Usage
 }

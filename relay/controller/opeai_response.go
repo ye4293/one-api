@@ -363,23 +363,8 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	}
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 
-	// ===== 新增：写入 response_id 到 Redis =====
-	if openaiResponse.ID != "" {
-		channelId := c.GetInt("channel_id")
-		if channelId > 0 {
-			// 使用 24 小时 TTL (1440 分钟)
-			expireMinutes := int64(1440)
-			if writeErr := dbmodel.SetClaudeCacheIdToRedis(openaiResponse.ID, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
-				// Redis 写入失败不影响主流程，只记录日志
-				logger.SysLog(fmt.Sprintf("[OpenAI Response Cache] Failed to cache response_id=%s to channel_id=%d: %v",
-					openaiResponse.ID, channelId, writeErr))
-			} else {
-				logger.SysLog(fmt.Sprintf("[OpenAI Response Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-					openaiResponse.ID, channelId))
-			}
-		}
-	}
-	// ===== 新增结束 =====
+	// 缓存 response_id 到 Redis
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), "OpenAI Response Cache")
 
 	return openaiResponse.Usage, nil
 }
@@ -428,23 +413,8 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 					lastUsageMetadata = streamResponse.Response.Usage
 				}
 
-				// ===== 新增：写入 response_id 到 Redis =====
-				if streamResponse.Response.ID != "" {
-					channelId := c.GetInt("channel_id")
-					if channelId > 0 {
-						// 使用 24 小时 TTL (1440 分钟)
-						expireMinutes := int64(1440)
-						if writeErr := dbmodel.SetClaudeCacheIdToRedis(streamResponse.Response.ID, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
-							// Redis 写入失败不影响主流程，只记录日志
-							logger.SysLog(fmt.Sprintf("[OpenAI Response Cache Stream] Failed to cache response_id=%s to channel_id=%d: %v",
-								streamResponse.Response.ID, channelId, writeErr))
-						} else {
-							logger.SysLog(fmt.Sprintf("[OpenAI Response Cache Stream] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-								streamResponse.Response.ID, channelId))
-						}
-					}
-				}
-				// ===== 新增结束 =====
+				// 缓存 response_id 到 Redis
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), "OpenAI Response Cache Stream")
 
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {
