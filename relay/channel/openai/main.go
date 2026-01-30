@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/conv"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
 )
@@ -182,5 +184,24 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 			TotalTokens:      promptTokens + completionTokens,
 		}
 	}
+
+	// ===== 新增：缓存 response_id 到 Redis =====
+	if textResponse.Id != "" {
+		channelId := c.GetInt("channel_id")
+		if channelId > 0 {
+			// 使用 24 小时 TTL (1440 分钟)
+			expireMinutes := int64(1440)
+			if writeErr := dbmodel.SetClaudeCacheIdToRedis(textResponse.Id, fmt.Sprintf("%d", channelId), expireMinutes); writeErr != nil {
+				// Redis 写入失败不影响主流程，只记录日志
+				logger.SysLog(fmt.Sprintf("[Text Completions Cache] Failed to cache response_id=%s to channel_id=%d: %v",
+					textResponse.Id, channelId, writeErr))
+			} else {
+				logger.SysLog(fmt.Sprintf("[Text Completions Cache] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
+					textResponse.Id, channelId))
+			}
+		}
+	}
+	// ===== 新增结束 =====
+
 	return nil, &textResponse.Usage
 }
