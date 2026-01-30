@@ -206,6 +206,7 @@ type OpeanaiResaponseRequest struct {
 	Background        bool           `json:"background,omitempty"`          // 是否后台运行
 	Conversation      interface{}    `json:"conversation,omitempty"`        // 对话上下文
 	FrequencyPenalty  float64        `json:"frequency_penalty,omitempty"`   // 频率惩罚
+	Id                string         `json:"id,omitempty"`                  // 响应 ID（用于定向路由）
 	Include           []string       `json:"include,omitempty"`             // 包含的字段
 	Input             interface{}    `json:"input,omitempty"`               // 输入内容（可以是字符串或消息数组）
 	Instructions      string         `json:"instructions,omitempty"`        // 系统指令
