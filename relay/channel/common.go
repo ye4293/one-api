@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -31,11 +32,38 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	// 应用渠道自定义请求头覆盖（优先级最高，覆盖用户传递和默认的header）
+	ApplyHeadersOverride(req, meta)
+
 	resp, err := DoRequest(c, req)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
+}
+
+// ApplyHeadersOverride 应用渠道自定义请求头覆盖
+// 支持变量替换: {api_key} 会被替换为实际的 API Key
+// 渠道配置的 header 会覆盖用户传递的和默认的 header（优先级最高）
+func ApplyHeadersOverride(req *http.Request, meta *util.RelayMeta) {
+	if len(meta.HeadersOverride) == 0 {
+		return
+	}
+
+	for key, value := range meta.HeadersOverride {
+		// 支持变量替换
+		processedValue := value
+		if strings.Contains(processedValue, "{api_key}") {
+			// 优先使用 ActualAPIKey，如果为空则使用 APIKey
+			apiKey := meta.ActualAPIKey
+			if apiKey == "" {
+				apiKey = meta.APIKey
+			}
+			processedValue = strings.ReplaceAll(processedValue, "{api_key}", apiKey)
+		}
+		// 设置请求头（覆盖已有的）
+		req.Header.Set(key, processedValue)
+	}
 }
 
 func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {

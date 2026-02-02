@@ -69,6 +69,8 @@ type Channel struct {
 	AutoDisabledReason *string `json:"auto_disabled_reason" gorm:"type:text"`
 	AutoDisabledTime   *int64  `json:"auto_disabled_time" gorm:"bigint"`
 	AutoDisabledModel  *string `json:"auto_disabled_model" gorm:"type:varchar(255)"`
+	// 自定义请求头覆盖，JSON格式，用于在请求转发时添加或覆盖HTTP请求头
+	HeaderOverride *string `json:"header_override" gorm:"type:text"`
 }
 
 // 多Key聚合信息结构
@@ -474,6 +476,21 @@ func (channel *Channel) GetModelMapping() map[string]string {
 		return nil
 	}
 	return modelMapping
+}
+
+// GetHeaderOverride 获取渠道的自定义请求头配置
+// 返回解析后的 map[string]string，如果配置为空或解析失败则返回 nil
+func (channel *Channel) GetHeaderOverride() map[string]string {
+	if channel.HeaderOverride == nil || *channel.HeaderOverride == "" || *channel.HeaderOverride == "{}" {
+		return nil
+	}
+	headerOverride := make(map[string]string)
+	err := json.Unmarshal([]byte(*channel.HeaderOverride), &headerOverride)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("failed to unmarshal header override for channel %d, error: %s", channel.Id, err.Error()))
+		return nil
+	}
+	return headerOverride
 }
 
 func (channel *Channel) Insert() error {

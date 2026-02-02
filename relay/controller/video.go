@@ -25,6 +25,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
@@ -627,6 +628,8 @@ func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, b
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+channel.Key)
 	req.Header.Set("X-DashScope-Async", "enable") // 启用异步模式
+	// 应用渠道自定义请求头覆盖
+	relaychannel.ApplyHeadersOverride(req, meta)
 
 	// 发送请求
 	client := &http.Client{}

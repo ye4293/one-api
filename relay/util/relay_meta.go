@@ -44,6 +44,8 @@ type RelayMeta struct {
 	DisablePing  bool
 	// 流式响应是否包含 usage 信息
 	ShouldIncludeUsage bool
+	// 自定义请求头覆盖
+	HeadersOverride map[string]string
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）
@@ -105,6 +107,12 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	cfg, ok := c.Get("Config")
 	if ok {
 		meta.Config = cfg.(model.ChannelConfig)
+	}
+	// 获取自定义请求头覆盖配置
+	if headersOverride, exists := c.Get("headers_override"); exists {
+		if headers, ok := headersOverride.(map[string]string); ok {
+			meta.HeadersOverride = headers
+		}
 	}
 	if meta.BaseURL == "" {
 		meta.BaseURL = common.ChannelBaseURLs[meta.ChannelType]

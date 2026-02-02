@@ -28,6 +28,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -490,6 +491,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 设置Content-Type为multipart/form-data
 			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", writer.FormDataContentType())
+			// 应用渠道自定义请求头覆盖
+			channel.ApplyHeadersOverride(req, meta)
 			// 记录实际body大小用于调试，但不设置header
 			logger.Debugf(ctx, "Multipart form body size: %d bytes", body.Len())
 
@@ -532,6 +535,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 设置Content-Type
 			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			// 应用渠道自定义请求头覆盖
+			channel.ApplyHeadersOverride(req, meta)
 			// 记录实际数据大小用于调试，但不设置header
 			logger.Debugf(ctx, "Form urlencoded data size: %d bytes", len(encodedFormData))
 		}
@@ -829,6 +834,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		} else {
 			req.Header.Set("Content-Type", contentType)
 		}
+
+		// 应用渠道自定义请求头覆盖
+		channel.ApplyHeadersOverride(req, meta)
 
 		// 记录JSON请求体大小用于调试，但不设置header
 		if strings.Contains(req.Header.Get("Content-Type"), "application/json") {

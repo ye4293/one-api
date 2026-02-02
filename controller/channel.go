@@ -135,6 +135,19 @@ func AddChannel(c *gin.Context) {
 
 	channel.CreatedTime = helper.GetTimestamp()
 
+	// 验证 HeaderOverride 字段的 JSON 格式
+	if channel.HeaderOverride != nil && *channel.HeaderOverride != "" {
+		trimmed := strings.TrimSpace(*channel.HeaderOverride)
+		if trimmed != "" && !json.Valid([]byte(trimmed)) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "自定义请求头覆盖必须是合法的 JSON 格式",
+			})
+			return
+		}
+		channel.HeaderOverride = &trimmed
+	}
+
 	logger.SysLog(fmt.Sprintf("AddChannel: Received request for channel type %d", channel.Type))
 	logger.SysLog(fmt.Sprintf("AddChannel: Comparing with VertexAI type %d. Is VertexAI? %v", common.ChannelTypeVertexAI, channel.Type == common.ChannelTypeVertexAI))
 
@@ -376,6 +389,7 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 	}{
 		{source.BaseURL, &target.BaseURL, "base_url"},
 		{source.ModelMapping, &target.ModelMapping, "model_mapping"},
+		{source.HeaderOverride, &target.HeaderOverride, "header_override"},
 	}
 
 	for _, field := range stringFields {
@@ -564,6 +578,19 @@ func UpdateChannel(c *gin.Context) {
 
 	// 智能更新字段
 	updateChannelFields(&channel, &requestData.Channel, rawBody)
+
+	// 验证 HeaderOverride 字段的 JSON 格式
+	if channel.HeaderOverride != nil && *channel.HeaderOverride != "" {
+		trimmed := strings.TrimSpace(*channel.HeaderOverride)
+		if trimmed != "" && !json.Valid([]byte(trimmed)) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "自定义请求头覆盖必须是合法的 JSON 格式",
+			})
+			return
+		}
+		channel.HeaderOverride = &trimmed
+	}
 
 	logger.SysLog(fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
 	logger.SysLog(fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
