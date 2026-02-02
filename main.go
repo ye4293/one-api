@@ -118,7 +118,12 @@ func main() {
 	if err != nil {
 		logger.FatalLog("failed to initialize Redis: " + err.Error())
 	}
-
+    common.RedisSet("test", "test", 0)
+    value, err := common.RedisGet("test")
+    if err != nil {
+        logger.FatalLog("failed to set value to Redis: " + err.Error())
+    }
+    logger.SysLog("value: " + value)
 	// Initialize options
 	model.InitOptionMap()
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
