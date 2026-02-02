@@ -155,8 +155,30 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	return ConvertRequest(*request)
 }
 
+// DoRequest implements channel.Adaptor.
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
-	return channelhelper.DoRequestHelper(a, c, meta, requestBody)
+	// 使用 LongRunningHTTPClient 以支持长时间运行的任务（如 Gemini 1.5 Pro / Ultra）
+	// 这避免了默认 HTTPClient 可能存在的超时限制
+	fullRequestURL, err := a.GetRequestURL(meta)
+	if err != nil {
+		return nil, fmt.Errorf("get request url failed: %w", err)
+	}
+
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("new request failed: %w", err)
+	}
+
+	if err := a.SetupRequestHeader(c, req, meta); err != nil {
+		return nil, fmt.Errorf("setup request header failed: %w", err)
+	}
+
+	// 应用渠道自定义请求头覆盖
+	channelhelper.ApplyHeadersOverride(req, meta)
+
+	// 使用 util.DoLongRunningRequest 执行请求
+	// 它的 ResponseHeaderTimeout 是 30 分钟，总超时也是 30 分钟
+	return util.DoLongRunningRequest(req)
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {

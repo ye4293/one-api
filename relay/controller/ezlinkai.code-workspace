@@ -14,6 +14,9 @@
 		},
 		{
 			"path": "../../../test"
+		},
+		{
+			"path": "../../../../Downloads/claude_cache_test"
 		}
 	],
 	"settings": {}
