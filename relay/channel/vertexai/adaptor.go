@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
-	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -24,8 +23,8 @@ type Adaptor struct {
 
 // Init implements channel.Adaptor.
 func (a *Adaptor) Init(meta *util.RelayMeta) {
-	// 检查认证模式
-	a.IsAPIKeyMode = meta.Config.VertexKeyType == dbmodel.VertexKeyTypeAPIKey
+	// 检查认证模式（使用统一的检测方法）
+	a.IsAPIKeyMode = meta.IsVertexAIAPIKeyMode()
 
 	if a.IsAPIKeyMode {
 		// API Key 模式：直接使用 API Key

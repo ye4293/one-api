@@ -666,7 +666,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			actualModelName := imageRequest.Model
 			if meta.ChannelType == common.ChannelTypeVertexAI {
 				// 检查是否是 API Key 模式
-				isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
+				isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
+				logger.Debugf(ctx, "VertexAI 配置检查: VertexKeyType=%q, isAPIKeyMode=%v",
+					meta.Config.VertexKeyType, isAPIKeyMode)
 
 				region := meta.Config.Region
 				if region == "" {
@@ -906,7 +908,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
 		if meta.ChannelType == common.ChannelTypeVertexAI {
 			// 检查是否是 API Key 模式
-			isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
+			isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
 
 			if isAPIKeyMode {
 				// API Key 模式：key 已经在 URL 中，不需要 Authorization header
@@ -3190,7 +3192,9 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	actualModelName := imageRequest.Model
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		// 检查是否是 API Key 模式
-		isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
+		isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
+		logger.Debugf(ctx, "VertexAI Form请求 配置检查: VertexKeyType=%q, isAPIKeyMode=%v",
+			meta.Config.VertexKeyType, isAPIKeyMode)
 
 		region := meta.Config.Region
 		if region == "" {
@@ -3285,7 +3289,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
 		// 检查是否是 API Key 模式
-		isAPIKeyMode := meta.Config.VertexKeyType == model.VertexKeyTypeAPIKey
+		isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
 
 		if isAPIKeyMode {
 			// API Key 模式：key 已经在 URL 中，不需要 Authorization header
