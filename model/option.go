@@ -99,6 +99,7 @@ func InitOptionMap() {
 	config.OptionMap["CfFileAccessKey"] = config.CfFileAccessKey
 	config.OptionMap["CfFileSecretKey"] = config.CfFileSecretKey
 	config.OptionMap["CfFileEndpoint"] = config.CfFileEndpoint
+	config.OptionMap["CfFilePublicUrl"] = config.CfFilePublicUrl
 
 	config.OptionMap["CfBucketImageName"] = config.CfBucketImageName
 	config.OptionMap["CfImageAccessKey"] = config.CfImageAccessKey
@@ -338,6 +339,8 @@ func updateOptionMap(key string, value string) (err error) {
 		if value != "" {
 			config.CfFileEndpoint = value
 		}
+	case "CfFilePublicUrl":
+		config.CfFilePublicUrl = value // 允许为空，为空时使用 Endpoint
 	case "CfBucketImageName":
 		if value != "" {
 			config.CfBucketImageName = value

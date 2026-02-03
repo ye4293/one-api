@@ -118,9 +118,12 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("failed to upload video to R2: %w", err)
 	}
 
-	// 生成文件URL（Path-Style 格式：endpoint/bucket/key）
-	fileUrl := config.CfFileEndpoint
-	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	if config.CfFilePublicUrl != "" {
+		return fmt.Sprintf("%s/%s", config.CfFilePublicUrl, filename), nil
+	}
+	return fmt.Sprintf("%s/%s/%s", config.CfFileEndpoint, config.CfBucketFileName, filename), nil
 }
 
 func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode {

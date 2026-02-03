@@ -260,9 +260,14 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
 	}
 
-	// 生成文件 URL（Path-Style 格式：endpoint/bucket/key）
-	fileUrl := config.CfFileEndpoint
-	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	if config.CfFilePublicUrl != "" {
+		// 公共 URL 格式：publicUrl/key（不包含 bucket，因为自定义域通常直接映射到 bucket）
+		return fmt.Sprintf("%s/%s", config.CfFilePublicUrl, filename), nil
+	}
+	// 回退到 S3 Endpoint（Path-Style 格式：endpoint/bucket/key）
+	return fmt.Sprintf("%s/%s/%s", config.CfFileEndpoint, config.CfBucketFileName, filename), nil
 }
 
 // calculateGeminiImageQuota 计算 Gemini 图片生成的配额
@@ -955,7 +960,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	}
 	apiReqDuration := time.Since(apiReqStart)
 	logger.Infof(ctx, "Model API request took %v", apiReqDuration)
-	
+
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
@@ -4184,7 +4189,7 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	connectStart := time.Now()
 	resp, err := client.Do(req)
 	connectDuration := time.Since(connectStart)
-	
+
 	if err != nil {
 		logger.Errorf(ctx, "Failed to download image from URL %s: %v (connect: %v, total: %v)", imageURL, err, connectDuration, time.Since(startTime))
 		return "", "", fmt.Errorf("download request failed: %w", err)
@@ -4209,14 +4214,14 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	readStart := time.Now()
 	imageBytes, err := io.ReadAll(limitedReader)
 	readDuration := time.Since(readStart)
-	
+
 	if err != nil {
 		logger.Errorf(ctx, "Failed to read image data from URL %s: %v (read: %v, total: %v)", imageURL, err, readDuration, time.Since(startTime))
 		return "", "", fmt.Errorf("read image data failed: %w", err)
 	}
 
 	totalDuration := time.Since(startTime)
-	logger.Infof(ctx, "Image download stats for %s: Connect=%v, Read=%v, Total=%v, Size=%d bytes", 
+	logger.Infof(ctx, "Image download stats for %s: Connect=%v, Read=%v, Total=%v, Size=%d bytes",
 		imageURL, connectDuration, readDuration, totalDuration, len(imageBytes))
 
 	// 检查是否超出大小限制（如果读取了超过 maxImageSize 字节，说明图片太大）

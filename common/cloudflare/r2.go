@@ -105,10 +105,15 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 		return "", fmt.Errorf("failed to upload to R2: %v", err)
 	}
 
-	// 返回公开访问 URL（Path-Style 格式：endpoint/bucket/key）
-	fileUrl := commonConfig.CfFileEndpoint
-	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s/%s/%s (size: %d bytes)", fileUrl, bucketName, objectKey, len(imageData)))
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	var resultUrl string
+	if commonConfig.CfFilePublicUrl != "" {
+		resultUrl = fmt.Sprintf("%s/%s", commonConfig.CfFilePublicUrl, objectKey)
+	} else {
+		resultUrl = fmt.Sprintf("%s/%s/%s", commonConfig.CfFileEndpoint, bucketName, objectKey)
+	}
+	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s (size: %d bytes)", resultUrl, len(imageData)))
 
-	// 返回完整 URL（包含 bucket 名称）
-	return fmt.Sprintf("%s/%s/%s", fileUrl, bucketName, objectKey), nil
+	return resultUrl, nil
 }
