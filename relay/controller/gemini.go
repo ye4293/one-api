@@ -171,6 +171,7 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 		go func(index int, t urlDownloadTask) {
 			defer wg.Done()
 
+			startTime := time.Now()
 			logger.Infof(ctx, "Downloading URL [%d/%d]: %s", index+1, len(downloadTasks), t.url)
 
 			// 使用现有的图片处理函数下载并转换
@@ -206,8 +207,9 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 				err:        nil,
 			}
 
-			logger.Infof(ctx, "Successfully downloaded URL [%d/%d]: mediaType=%s, mimeType=%s, size=%d bytes",
-				index+1, len(downloadTasks), mediaType, mimeType, len(base64Data))
+			downloadDuration := time.Since(startTime)	
+			logger.Infof(ctx, "gemini: Successfully downloaded URL [%d/%d]: mediaType=%s, mimeType=%s, size=%d bytes, duration=%v",
+				index+1, len(downloadTasks), mediaType, mimeType, len(base64Data), downloadDuration)
 		}(idx, task)
 	}
 
@@ -771,7 +773,7 @@ func processGeminiResponseImages(ctx context.Context, responseBody []byte) ([]by
 			candidate["content"] = content
 			candidates[i] = candidate
 
-			logger.Infof(ctx, "Successfully replaced image with base64-encoded R2 URL: %s", url)
+			logger.Infof(ctx, "gemini: Successfully replaced image with base64-encoded R2 URL: %s", url)
 			modified = true
 		}
 	}

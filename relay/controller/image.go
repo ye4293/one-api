@@ -219,7 +219,7 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 	rand.Read(randomBytes)
 	timestamp := time.Now().Unix()
 	filename := fmt.Sprintf("gemini-image/%d_%d_%x.%s", userId, timestamp, randomBytes, ext)
-
+	startTime := time.Now()
 	// 创建带超时的上下文
 	uploadCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -258,8 +258,10 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 	if err != nil {
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
 	}
-
+	uploadDuration := time.Since(startTime)	
 	// 生成文件 URL（Path-Style 格式：endpoint/bucket/key）
+	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s/%s/%s (size: %d bytes, duration: %v)", config.CfFileEndpoint, config.CfBucketFileName, filename, len(imageData), uploadDuration))
+
 	fileUrl := config.CfFileEndpoint
 	return fmt.Sprintf("%s/%s/%s", fileUrl, config.CfBucketFileName, filename), nil
 }
