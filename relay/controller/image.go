@@ -121,10 +121,12 @@ func extractGeminiUsageDetails(
 
 // buildGeminiUsageMap 构建包含详细使用信息的 usage map
 func buildGeminiUsageMap(totalTokens, inputTokens, outputTokens int, details GeminiUsageDetails) map[string]interface{} {
+	// 如果有 reasoning_tokens，加到 output_tokens 中
+	finalOutputTokens := outputTokens + details.ReasoningTokens
 	return map[string]interface{}{
 		"total_tokens":  totalTokens,
 		"input_tokens":  inputTokens,
-		"output_tokens": outputTokens,
+		"output_tokens": finalOutputTokens,
 		"input_tokens_details": map[string]int{
 			"text_tokens":  details.InputTextTokens,
 			"image_tokens": details.InputImageTokens,
@@ -1766,31 +1768,31 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					ImageTokens     int `json:"image_tokens"`
 					ReasoningTokens int `json:"reasoning_tokens"`
 				} `json:"output_tokens_details"`
+		}{
+			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
+			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
+			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			InputTokensDetails: struct {
+				TextTokens  int `json:"text_tokens"`
+				ImageTokens int `json:"image_tokens"`
 			}{
-				TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
-				InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
-				OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
-				InputTokensDetails: struct {
-					TextTokens  int `json:"text_tokens"`
-					ImageTokens int `json:"image_tokens"`
-				}{
-					TextTokens:  usageDetails.InputTextTokens,
-					ImageTokens: usageDetails.InputImageTokens,
-				},
-				OutputTokensDetails: struct {
-					TextTokens      int `json:"text_tokens"`
-					ImageTokens     int `json:"image_tokens"`
-					ReasoningTokens int `json:"reasoning_tokens"`
-				}{
-					TextTokens:      0,
-					ImageTokens:     usageDetails.OutputImageTokens,
-					ReasoningTokens: usageDetails.ReasoningTokens,
-				},
+				TextTokens:  usageDetails.InputTextTokens,
+				ImageTokens: usageDetails.InputImageTokens,
 			},
-		}
+			OutputTokensDetails: struct {
+				TextTokens      int `json:"text_tokens"`
+				ImageTokens     int `json:"image_tokens"`
+				ReasoningTokens int `json:"reasoning_tokens"`
+			}{
+				TextTokens:      0,
+				ImageTokens:     usageDetails.OutputImageTokens,
+				ReasoningTokens: usageDetails.ReasoningTokens,
+			},
+		},
+	}
 
-		// Re-marshal to the OpenAI format with usage information
-		responseBody, err = json.Marshal(imageResponseWithUsage)
+	// Re-marshal to the OpenAI format with usage information
+	responseBody, err = json.Marshal(imageResponseWithUsage)
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
@@ -3858,7 +3860,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		}{
 			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
 			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
-			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
+			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
 			InputTokensDetails: struct {
 				TextTokens  int `json:"text_tokens"`
 				ImageTokens int `json:"image_tokens"`
