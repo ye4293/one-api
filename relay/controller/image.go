@@ -54,15 +54,15 @@ var imageDownloadClientOnce sync.Once
 func getImageDownloadClient() *http.Client {
 	imageDownloadClientOnce.Do(func() {
 		imageDownloadClient = &http.Client{
-			Timeout: 60 * time.Second, // 整体超时 60 秒
+			Timeout: 120 * time.Second, // 整体超时 120 秒
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
-					Timeout:   15 * time.Second, // 连接超时 15 秒
+					Timeout:   30 * time.Second, // 连接超时 30 秒
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				ForceAttemptHTTP2:     true,
-				TLSHandshakeTimeout:   15 * time.Second,
-				ResponseHeaderTimeout: 30 * time.Second,
+				TLSHandshakeTimeout:   30 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
 				IdleConnTimeout:       90 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 				MaxIdleConns:          100,
@@ -641,7 +641,11 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 
 			// 并发处理所有找到的图片
+			preProcessStart := time.Now()
 			imageParts, _, imgErr := processImagesConcurrently(ctx, imageInputs)
+			preProcessDuration := time.Since(preProcessStart)
+			logger.Infof(ctx, "Image pre-processing (download & conversion) took %v for %d images", preProcessDuration, len(imageInputs))
+
 			if imgErr != nil {
 				return openai.ErrorWrapper(imgErr, "image_download_failed", http.StatusBadRequest)
 			}
@@ -940,12 +944,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 发送请求
 	// 对于 Gemini 模型，使用专用的长时间运行客户端，避免外部上下文超时
 	var resp *http.Response
+	apiReqStart := time.Now()
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
 		logger.Debugf(ctx, "Gemini image generation: using LongRunningHTTPClient with independent context")
 		resp, err = util.DoLongRunningRequest(req)
 	} else {
 		resp, err = util.HTTPClient.Do(req)
 	}
+	apiReqDuration := time.Since(apiReqStart)
+	logger.Infof(ctx, "Model API request took %v", apiReqDuration)
+	
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
@@ -4147,8 +4155,8 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	startTime := time.Now()
 
 	// 为图片下载创建独立的超时上下文，不受全局 RELAY_TIMEOUT 影响
-	// 图片下载最多等待 60 秒，避免单张图片阻塞整个请求
-	downloadCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// 图片下载最多等待 120 秒，避免单张图片阻塞整个请求
+	downloadCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	// 获取复用的 HTTP 客户端
@@ -4168,16 +4176,19 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	// 注意：不设置 Accept-Encoding，让 Go HTTP 客户端自动处理压缩
 
 	// 发起请求
-	logger.Debugf(ctx, "Starting image download from URL: %s", imageURL)
+	logger.Infof(ctx, "Starting image download from URL: %s", imageURL)
+	connectStart := time.Now()
 	resp, err := client.Do(req)
+	connectDuration := time.Since(connectStart)
+	
 	if err != nil {
-		logger.Errorf(ctx, "Failed to download image from URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
+		logger.Errorf(ctx, "Failed to download image from URL %s: %v (connect: %v, total: %v)", imageURL, err, connectDuration, time.Since(startTime))
 		return "", "", fmt.Errorf("download request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	logger.Debugf(ctx, "Image download response received: URL=%s, Status=%d, ContentLength=%d (elapsed: %v)",
-		imageURL, resp.StatusCode, resp.ContentLength, time.Since(startTime))
+	logger.Debugf(ctx, "Image download response received: URL=%s, Status=%d, ContentLength=%d (connect: %v, total: %v)",
+		imageURL, resp.StatusCode, resp.ContentLength, connectDuration, time.Since(startTime))
 
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK {
@@ -4191,11 +4202,18 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 	limitedReader := io.LimitReader(resp.Body, maxImageSize+1)
 
 	// 读取图片内容
+	readStart := time.Now()
 	imageBytes, err := io.ReadAll(limitedReader)
+	readDuration := time.Since(readStart)
+	
 	if err != nil {
-		logger.Errorf(ctx, "Failed to read image data from URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
+		logger.Errorf(ctx, "Failed to read image data from URL %s: %v (read: %v, total: %v)", imageURL, err, readDuration, time.Since(startTime))
 		return "", "", fmt.Errorf("read image data failed: %w", err)
 	}
+
+	totalDuration := time.Since(startTime)
+	logger.Infof(ctx, "Image download stats for %s: Connect=%v, Read=%v, Total=%v, Size=%d bytes", 
+		imageURL, connectDuration, readDuration, totalDuration, len(imageBytes))
 
 	// 检查是否超出大小限制（如果读取了超过 maxImageSize 字节，说明图片太大）
 	if len(imageBytes) > maxImageSize {

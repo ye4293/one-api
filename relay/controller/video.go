@@ -261,12 +261,17 @@ func handleSoraRemixRequest(c *gin.Context, ctx context.Context, meta *util.Rela
 
 	log.Printf("sora-remix: using original channel_id=%d, channel_name=%s", videoTask.ChannelId, originalChannel.Name)
 
-	// 构建请求 URL
+	// 构建请求 URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := *originalChannel.BaseURL
 	if baseUrl == "" {
 		baseUrl = "https://api.openai.com"
 	}
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	var fullRequestUrl string
+	if originalChannel.Type == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	}
 
 	// 构建请求体（只需要 prompt，去掉 model 和 video_id 参数）
 	requestBody := map[string]string{
@@ -285,9 +290,13 @@ func handleSoraRemixRequest(c *gin.Context, ctx context.Context, meta *util.Rela
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 使用原渠道的 key
+	// 使用原渠道的 key，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+originalChannel.Key)
+	if originalChannel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", originalChannel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+originalChannel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -712,9 +721,14 @@ func sendRequestAndHandleSoraVideoResponseFormData(c *gin.Context, ctx context.C
 		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := meta.BaseURL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+	var fullRequestUrl string
+	if meta.ChannelType == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", baseUrl)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", baseUrl)
+	}
 
 	// 重新构建 multipart form
 	body := &bytes.Buffer{}
@@ -753,9 +767,13 @@ func sendRequestAndHandleSoraVideoResponseFormData(c *gin.Context, ctx context.C
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if meta.ChannelType == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -805,9 +823,14 @@ func sendRequestAndHandleSoraVideoResponseJSON(c *gin.Context, ctx context.Conte
 		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := meta.BaseURL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+	var fullRequestUrl string
+	if meta.ChannelType == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", baseUrl)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", baseUrl)
+	}
 
 	// 创建 multipart form
 	body := &bytes.Buffer{}
@@ -845,9 +868,13 @@ func sendRequestAndHandleSoraVideoResponseJSON(c *gin.Context, ctx context.Conte
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if meta.ChannelType == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -3540,12 +3567,16 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		baseUrl := *channel.BaseURL
 		fullRequestUrl = fmt.Sprintf("%s/api/v1/tasks/%s", baseUrl, taskId)
 	case "sora":
-		// Sora 视频状态查询
+		// Sora 视频状态查询，Azure 渠道需要添加 /openai 前缀
 		baseUrl := *channel.BaseURL
 		if baseUrl == "" {
 			baseUrl = "https://api.openai.com"
 		}
-		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskId)
+		if channel.Type == common.ChannelTypeAzure {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s", baseUrl, taskId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskId)
+		}
 	default:
 		return openai.ErrorWrapper(
 			fmt.Errorf("unsupported model type:"),
@@ -3682,6 +3713,10 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
+	} else if videoTask.Provider == "sora" && channel.Type == common.ChannelTypeAzure {
+		// Sora + Azure 渠道使用 Api-key header
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Api-key", channel.Key)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
