@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,9 +19,9 @@ import (
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
-	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -138,77 +137,6 @@ func GetAwsErrorStatusCode(err error) int {
 	return http.StatusInternalServerError
 }
 
-// cleanAwsRequest 清理 AWS 请求中的 nil 值，避免序列化为 null
-// AWS Bedrock API 不接受 null 值，需要完全省略这些字段
-// 注意：Go 中 interface{}((*Type)(nil)) != nil，所以需要使用 reflect 检查
-func cleanAwsRequest(req *Request) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	result["anthropic_version"] = req.AnthropicVersion
-
-	if len(req.AnthropicBeta) > 0 {
-		result["anthropic_beta"] = req.AnthropicBeta
-	}
-
-	if len(req.Messages) > 0 {
-		result["messages"] = req.Messages
-	}
-
-	if !isNilValue(req.System) {
-		result["system"] = req.System
-	}
-
-	if req.MaxTokens > 0 {
-		result["max_tokens"] = req.MaxTokens
-	}
-
-	if req.Temperature != nil {
-		result["temperature"] = *req.Temperature
-	}
-
-	if req.TopP > 0 {
-		result["top_p"] = req.TopP
-	}
-
-	if req.TopK > 0 {
-		result["top_k"] = req.TopK
-	}
-
-	if len(req.StopSequences) > 0 {
-		result["stop_sequences"] = req.StopSequences
-	}
-
-	if len(req.Tools) > 0 {
-		result["tools"] = req.Tools
-	}
-
-	// 使用 reflect 检查 ToolChoice 是否真正为 nil
-	// 因为 interface{}((*Type)(nil)) != nil 在 Go 中是 true
-	if !isNilValue(req.ToolChoice) {
-		result["tool_choice"] = req.ToolChoice
-	}
-
-	if !isNilValue(req.Thinking) {
-		result["thinking"] = req.Thinking
-	}
-
-	return result
-}
-
-// isNilValue 检查 interface{} 值是否真正为 nil
-// 处理 Go 中 interface{}((*Type)(nil)) != nil 的问题
-func isNilValue(v interface{}) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Chan, reflect.Func:
-		return rv.IsNil()
-	}
-	return false
-}
-
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求
 func parseNativeClaudeRequest(c *gin.Context) (*Request, error) {
 	requestBody, err := common.GetRequestBody(c)
@@ -272,9 +200,8 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -336,9 +263,8 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		}
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -468,9 +394,8 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -527,9 +452,8 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}

@@ -48,6 +48,7 @@ func SearchChannels(c *gin.Context) {
 	pageStr := c.Query("page")
 	pageSizeStr := c.Query("pagesize")
 	statusStr := c.Query("status") // 获取status参数
+	typeStr := c.Query("type")     // 获取type参数
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
@@ -67,8 +68,16 @@ func SearchChannels(c *gin.Context) {
 		}
 	}
 
+	var channelType *int
+	if typeStr != "" {
+		typeInt, err := strconv.Atoi(typeStr)
+		if err == nil {
+			channelType = &typeInt
+		}
+	}
+
 	currentPage := page
-	channels, total, err := model.SearchChannelsAndCount(keyword, status, page, pagesize)
+	channels, total, typeCounts, err := model.SearchChannelsAndCount(keyword, status, channelType, page, pagesize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -84,6 +93,7 @@ func SearchChannels(c *gin.Context) {
 			"currentPage": currentPage,
 			"pageSize":    pagesize,
 			"total":       total,
+			"type_counts": typeCounts,
 		},
 	})
 }

@@ -117,9 +117,8 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 			Type:         "enabled",
 			BudgetTokens: thinkingBudget,
 		}
-		// thinking 模式不支持 temperature 修改，设置为 0 表示使用默认值
-		claudeRequest.Temperature = 0
-		claudeRequest.TopK = 0
+		// thinking 模式的 temperature、top_p、top_k 参数处理交由下游适配器决定
+		// 这里保持用户原始请求，不做修改
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}
