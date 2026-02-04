@@ -264,21 +264,76 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 			}
 		}
 	}
+
+	// Build a mapping from tool_call_id to function name
+	// This is needed because OpenAI tool responses only have tool_call_id, but Gemini requires function name
+	toolCallIdToFuncName := make(map[string]string)
+	for _, message := range messages {
+		if len(message.ToolCalls) > 0 {
+			for _, toolCall := range message.ToolCalls {
+				if toolCall.Id != "" {
+					toolCallIdToFuncName[toolCall.Id] = toolCall.Function.Name
+				}
+			}
+		}
+	}
+
 	for _, message := range messages {
 		// Handle tool role messages (function responses)
 		if message.Role == "tool" {
 			// Parse the content as function response
+			// IMPORTANT: Gemini requires response to be an object (Struct), NOT an array
 			var responseData any
-			contentStr := message.StringContent()
-			if err := json.Unmarshal([]byte(contentStr), &responseData); err != nil {
-				// If not valid JSON, use as string
-				responseData = contentStr
+
+			// Check if content is already structured data (array or object)
+			switch v := message.Content.(type) {
+			case string:
+				// Try to parse string as JSON
+				var parsed any
+				if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+					// If not valid JSON, wrap string in object
+					responseData = map[string]any{"result": v}
+				} else {
+					// Check if parsed result is array - Gemini requires object
+					if arr, isArray := parsed.([]any); isArray {
+						responseData = map[string]any{"result": arr}
+					} else {
+						responseData = parsed
+					}
+				}
+			case []any:
+				// Array must be wrapped in object for Gemini
+				responseData = map[string]any{"result": v}
+			case map[string]any:
+				// Object can be used directly
+				responseData = v
+			default:
+				// For any other type, try StringContent as fallback
+				contentStr := message.StringContent()
+				if contentStr != "" {
+					var parsed any
+					if err := json.Unmarshal([]byte(contentStr), &parsed); err != nil {
+						responseData = map[string]any{"result": contentStr}
+					} else if arr, isArray := parsed.([]any); isArray {
+						responseData = map[string]any{"result": arr}
+					} else {
+						responseData = parsed
+					}
+				} else {
+					// If all else fails, use empty object (Gemini requires Struct type)
+					responseData = map[string]any{}
+				}
 			}
 
-			// Get function name from the message
+			// Get function name from the message or from tool_call_id mapping
 			funcName := ""
-			if message.Name != nil {
+			if message.Name != nil && *message.Name != "" {
 				funcName = *message.Name
+			} else if message.ToolCallId != "" {
+				// Look up function name from tool_call_id
+				if name, ok := toolCallIdToFuncName[message.ToolCallId]; ok {
+					funcName = name
+				}
 			}
 
 			content := ChatContent{

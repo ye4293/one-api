@@ -286,8 +286,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to get request URL: %w", err)
 	}
 
-	// 创建HTTP请求
-	req, err := http.NewRequest("POST", url, requestBody)
+	// 创建HTTP请求，绑定客户端上下文以支持取消
+	// 这样当客户端断开连接时，请求会被正确取消，避免内存泄漏
+	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -297,15 +298,8 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to setup request headers: %w", err)
 	}
 
-	// 应用渠道自定义请求头覆盖
-	// 注意：channelhelper 包可能需要引入，原文件可能使用的是 github.com/songquanpeng/one-api/relay/channel 但别名为 channelhelper 的情况较少见，
-	// 这里假设 Vertex AI 适配器可能没有引入 channelhelper，需要检查 imports。
-	// 但 util.RelayMeta 结构体本身包含了 HeadersOverride，我们可以手动实现或者引入包。
-	// 简单起见，我们直接调用 util.DoLongRunningRequest，它处理超时。
-	
-	// 使用 util.DoLongRunningRequest 执行请求
-	// 它的 ResponseHeaderTimeout 是 30 分钟，总超时也是 30 分钟
-	return util.DoLongRunningRequest(req)
+	// 使用标准 HTTPClient 执行请求，超时由 RELAY_TIMEOUT 环境变量控制
+	return util.HTTPClient.Do(req)
 }
 
 // DoResponse implements channel.Adaptor.
