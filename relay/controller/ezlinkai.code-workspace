@@ -17,6 +17,9 @@
 		},
 		{
 			"path": "../../../../Downloads/claude_cache_test"
+		},
+		{
+			"path": "../../../key-provider"
 		}
 	],
 	"settings": {}

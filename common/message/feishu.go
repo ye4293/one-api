@@ -21,8 +21,14 @@ func SendFeishuNotification(title string, content string) error {
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
+	// 在标题前加入系统名称标识，方便区分不同站点
+	titleWithSystem := title
+	if config.SystemName != "" {
+		titleWithSystem = fmt.Sprintf("[%s] %s", config.SystemName, title)
+	}
+
 	// 构建飞书卡片消息
-	feishuMsg := buildFeishuCardMessage(title, content, "red")
+	feishuMsg := buildFeishuCardMessage(titleWithSystem, content, "red")
 
 	return sendToFeishuWebhooks(feishuMsg)
 }
@@ -33,7 +39,7 @@ func SendFeishuChannelDisableNotification(channelId int, channelName string, sta
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
-	title := fmt.Sprintf("🚨 渠道「%s」(#%d) 已被禁用", channelName, channelId)
+	title := fmt.Sprintf("[%s] 🚨 渠道「%s」(#%d) 已被禁用", config.SystemName, channelName, channelId)
 
 	// 构建详细内容
 	content := fmt.Sprintf(
@@ -61,7 +67,7 @@ func SendFeishuKeyDisableNotification(channelId int, channelName string, keyInde
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
-	title := fmt.Sprintf("⚠️ 渠道「%s」(#%d) 中的 Key 已被禁用", channelName, channelId)
+	title := fmt.Sprintf("[%s] ⚠️ 渠道「%s」(#%d) 中的 Key 已被禁用", config.SystemName, channelName, channelId)
 
 	// 构建详细内容
 	content := fmt.Sprintf(
@@ -90,7 +96,7 @@ func SendFeishuChannelFullDisableNotification(channelId int, channelName string,
 		return nil // 未配置飞书 Webhook，静默返回
 	}
 
-	title := fmt.Sprintf("🔴 多Key渠道「%s」(#%d) 已被完全禁用", channelName, channelId)
+	title := fmt.Sprintf("[%s] 🔴 多Key渠道「%s」(#%d) 已被完全禁用", config.SystemName, channelName, channelId)
 
 	// 构建详细内容
 	content := fmt.Sprintf(

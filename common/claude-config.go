@@ -12,27 +12,29 @@ var claudeConfigMutex sync.RWMutex
 
 // 默认的 Claude MaxTokens 配置
 var defaultClaudeDefaultMaxTokens = map[string]int{
-	"default":                              8192,
-	"claude-3-haiku-20240307":              4096,
-	"claude-3-sonnet-20240229":             4096,
-	"claude-3-opus-20240229":               4096,
-	"claude-3-5-sonnet-20240620":           8192,
-	"claude-3-5-sonnet-20241022":           8192,
-	"claude-3-5-haiku-20241022":            8192,
-	"claude-3-7-sonnet-20250219":           8192,
-	"claude-3-7-sonnet-20250219-thinking":  16000,
-	"claude-opus-4-20250514":               8192,
-	"claude-opus-4-20250514-thinking":      16000,
-	"claude-sonnet-4-20250514":             8192,
-	"claude-sonnet-4-20250514-thinking":    16000,
-	"claude-opus-4-1-20250805":             8192,
-	"claude-opus-4-1-20250805-thinking":    16000,
-	"claude-haiku-4-5-20251001":            8192,
-	"claude-haiku-4-5-20251001-thinking":   16000,
-	"claude-sonnet-4-5-20250929":           8192,
-	"claude-sonnet-4-5-20250929-thinking":  16000,
-	"claude-opus-4-5-20251101":             8192,
-	"claude-opus-4-5-20251101-thinking":    16000,
+	"default":                             8192,
+	"claude-3-haiku-20240307":             4096,
+	"claude-3-sonnet-20240229":            4096,
+	"claude-3-opus-20240229":              4096,
+	"claude-3-5-sonnet-20240620":          8192,
+	"claude-3-5-sonnet-20241022":          8192,
+	"claude-3-5-haiku-20241022":           8192,
+	"claude-3-7-sonnet-20250219":          8192,
+	"claude-3-7-sonnet-20250219-thinking": 64000,
+	"claude-opus-4-20250514":              8192,
+	"claude-opus-4-20250514-thinking":     32000,
+	"claude-sonnet-4-20250514":            8192,
+	"claude-sonnet-4-20250514-thinking":   64000,
+	"claude-opus-4-1-20250805":            8192,
+	"claude-opus-4-1-20250805-thinking":   64000,
+	"claude-haiku-4-5-20251001":           8192,
+	"claude-haiku-4-5-20251001-thinking":  64000,
+	"claude-sonnet-4-5-20250929":          8192,
+	"claude-sonnet-4-5-20250929-thinking": 64000,
+	"claude-opus-4-5-20251101":            8192,
+	"claude-opus-4-5-20251101-thinking":   128000,
+	"claude-opus-4-6":                     8192,
+	"claude-opus-4-6-thinking":            128000,
 }
 
 // 默认的 ReasoningEffort 到百分比的映射
@@ -129,6 +131,42 @@ func ClaudeRequestHeaders2JSONString() string {
 	jsonBytes, err := json.Marshal(config.ClaudeRequestHeaders)
 	if err != nil {
 		return "{}"
+	}
+	return string(jsonBytes)
+}
+
+// AddNewMissingClaudeDefaultMaxTokens 将代码中新增的模型默认 MaxTokens 合并到数据库值中
+func AddNewMissingClaudeDefaultMaxTokens(jsonStr string) string {
+	var dbMap map[string]int
+	if err := json.Unmarshal([]byte(jsonStr), &dbMap); err != nil {
+		return jsonStr
+	}
+	for k, v := range defaultClaudeDefaultMaxTokens {
+		if _, ok := dbMap[k]; !ok {
+			dbMap[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(dbMap)
+	if err != nil {
+		return jsonStr
+	}
+	return string(jsonBytes)
+}
+
+// AddNewMissingClaudeReasoningEffortMap 将代码中新增的 ReasoningEffort 映射合并到数据库值中
+func AddNewMissingClaudeReasoningEffortMap(jsonStr string) string {
+	var dbMap map[string]float64
+	if err := json.Unmarshal([]byte(jsonStr), &dbMap); err != nil {
+		return jsonStr
+	}
+	for k, v := range defaultClaudeReasoningEffortMap {
+		if _, ok := dbMap[k]; !ok {
+			dbMap[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(dbMap)
+	if err != nil {
+		return jsonStr
 	}
 	return string(jsonBytes)
 }

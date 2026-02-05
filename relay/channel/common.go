@@ -24,9 +24,9 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
 	}
-	// ✅ 关键修复：使用 NewRequestWithContext 绑定客户端上下文
-	// 这样当客户端断开连接时，请求会被正确取消，避免内存泄漏
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, fullRequestURL, requestBody)
+	// 不绑定客户端 context，避免客户端断开连接时取消正在进行的上游请求
+	// 超时由 HTTPClient.Timeout（RELAY_TIMEOUT）统一控制
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
