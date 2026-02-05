@@ -268,3 +268,20 @@ func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
 
 	return nil
 }
+
+// UpdateVideoCredentials 更新视频任务的凭证信息（用于保存 API Key）
+func UpdateVideoCredentials(taskId string, credentials string) error {
+	result := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("credentials", credentials)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update credentials for task_id %s: %w", taskId, result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
+}
