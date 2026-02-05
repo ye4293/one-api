@@ -117,8 +117,11 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 			Type:         "enabled",
 			BudgetTokens: thinkingBudget,
 		}
-		// thinking 模式的 temperature、top_p、top_k 参数处理交由下游适配器决定
-		// 这里保持用户原始请求，不做修改
+		// thinking 模式要求 temperature 必须为 1，且不能设置 top_p 和 top_k
+		// https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
+		claudeRequest.Temperature = 1.0
+		claudeRequest.TopP = 0
+		claudeRequest.TopK = 0
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}

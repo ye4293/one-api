@@ -200,6 +200,12 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 	}
 
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
 	// 直接序列化请求，let omitempty handle zero values
 	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
@@ -261,6 +267,12 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		if err != nil {
 			return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 		}
+	}
+
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
 	}
 
 	// 直接序列化请求，let omitempty handle zero values
@@ -394,6 +406,12 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 	}
 
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
 	// 直接序列化请求，let omitempty handle zero values
 	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
@@ -450,6 +468,12 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 	awsClaudeReq, err := parseNativeClaudeRequest(c)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
+	}
+
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
 	}
 
 	// 直接序列化请求，let omitempty handle zero values
