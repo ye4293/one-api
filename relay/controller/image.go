@@ -953,10 +953,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 发送请求
 	// 对于 Gemini 模型，使用专用的长时间运行客户端，避免外部上下文超时
 	var resp *http.Response
+	var cancelFunc context.CancelFunc
 	apiReqStart := time.Now()
 	if strings.HasPrefix(imageRequest.Model, "gemini") {
 		logger.Debugf(ctx, "Gemini image generation: using LongRunningHTTPClient with independent context")
-		resp, err = util.DoLongRunningRequest(req)
+		resp, cancelFunc, err = util.DoLongRunningRequest(req)
+		if cancelFunc != nil {
+			defer cancelFunc() // 确保在函数返回时取消 context
+		}
 	} else {
 		resp, err = util.HTTPClient.Do(req)
 	}
@@ -3321,11 +3325,14 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 	// 发送请求 - 使用专用的长时间运行客户端，避免外部上下文超时
 	logger.Debugf(ctx, "Gemini Form image generation: using LongRunningHTTPClient with independent context")
-	resp, err := util.DoLongRunningRequest(req)
+	resp, cancelFunc, err := util.DoLongRunningRequest(req)
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 	defer resp.Body.Close()
+	if cancelFunc != nil {
+		defer cancelFunc() // 在读取完响应体后取消 context
+	}
 
 	// 处理响应
 	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota, startTime)

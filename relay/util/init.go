@@ -102,15 +102,21 @@ func GetRelayTimeout() time.Duration {
 
 // DoLongRunningRequest 执行请求，使用 RelayTimeout 控制超时
 // 保留原始上下文的取消能力，同时添加超时控制
-func DoLongRunningRequest(req *http.Request) (*http.Response, error) {
+// 注意：调用者必须在读取完 resp.Body 后调用返回的 cancel 函数
+func DoLongRunningRequest(req *http.Request) (*http.Response, context.CancelFunc, error) {
 	// 获取基于 RelayTimeout 的超时时间
 	timeout := GetRelayTimeout()
 
 	// 创建带超时的上下文，但保留原始上下文的取消能力
 	// 这样当客户端断开连接时，请求可以被正确取消，避免内存泄漏
 	ctx, cancel := context.WithTimeout(req.Context(), timeout)
-	defer cancel()
 
 	reqWithCtx := req.WithContext(ctx)
-	return HTTPClient.Do(reqWithCtx)
+	resp, err := HTTPClient.Do(reqWithCtx)
+	if err != nil {
+		cancel() // 请求失败时立即取消
+		return nil, nil, err
+	}
+	// 返回 cancel 函数，调用者在读取完 resp.Body 后必须调用
+	return resp, cancel, nil
 }
