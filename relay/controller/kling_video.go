@@ -348,16 +348,17 @@ func DoAdvancedLipSync(c *gin.Context) {
 	c.JSON(http.StatusOK, klingResp)
 }
 
-// GetKlingVideoResult 查询 Kling 视频任务结果（从数据库读取）
-// 适用于 kling-advanced-lip-sync 和 identify-face 任务
+// GetKlingVideoResult 查询 Kling 任务结果（从数据库读取）
+// 统一支持 Video 和 Image 任务查询
 func GetKlingVideoResult(c *gin.Context, taskID string) {
 	if taskID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id 参数缺失"})
 		return
 	}
 
-	// 从数据库获取任务信息
-	video, err := dbmodel.GetVideoTaskById(taskID)
+	// 使用 TaskManager 统一查询（自动 Fallback Video->Image）
+	taskManager := kling.NewTaskManager()
+	task, err := taskManager.FindTaskByTaskID(taskID)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
 		c.JSON(http.StatusNotFound, gin.H{
@@ -368,19 +369,40 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 		return
 	}
 
+	// 获取任务基本信息
+	var result string
+	var status string
+	var failReason string
+	var createdAt int64
+	var updatedAt int64
+
+	if video := task.GetVideo(); video != nil {
+		result = video.Result
+		status = video.Status
+		failReason = video.FailReason
+		createdAt = video.CreatedAt
+		updatedAt = video.UpdatedAt
+	} else if image := task.GetImage(); image != nil {
+		result = image.Result
+		status = image.Status
+		failReason = image.FailReason
+		createdAt = image.CreatedAt
+		updatedAt = image.UpdatedAt
+	}
+
 	// 如果 result 字段为空，返回基本状态信息
-	if video.Result == "" {
+	if result == "" {
 		// 构建基本的查询响应（任务尚未完成回调）
 		response := kling.QueryTaskResponse{
 			Code:      0,
 			Message:   "success",
 			RequestID: fmt.Sprintf("query-%s", taskID),
 			Data: kling.TaskData{
-				TaskID:        video.TaskId,
-				TaskStatus:    video.Status,
-				TaskStatusMsg: video.FailReason,
-				CreatedAt:     video.CreatedAt * 1000, // 转换为毫秒
-				UpdatedAt:     video.UpdatedAt * 1000, // 转换为毫秒
+				TaskID:        taskID,
+				TaskStatus:    status,
+				TaskStatusMsg: failReason,
+				CreatedAt:     createdAt * 1000, // 转换为毫秒
+				UpdatedAt:     updatedAt * 1000, // 转换为毫秒
 				TaskResult: kling.TaskResult{
 					Videos: []kling.Video{},
 				},
@@ -393,7 +415,7 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 	// 从 result 字段解析查询响应数据
 	// 先尝试解析为 CallbackNotification（回调保存的格式）
 	var notification kling.CallbackNotification
-	if err := json.Unmarshal([]byte(video.Result), &notification); err == nil {
+	if err := json.Unmarshal([]byte(result), &notification); err == nil {
 		// 成功解析为 CallbackNotification，转换为 QueryTaskResponse
 		response := kling.QueryTaskResponse{
 			Code:      0,
@@ -415,7 +437,7 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 
 	// 如果不是 CallbackNotification，尝试解析为 QueryTaskResponse（兼容旧格式）
 	var queryResponse kling.QueryTaskResponse
-	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
+	if err := json.Unmarshal([]byte(result), &queryResponse); err != nil {
 		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
