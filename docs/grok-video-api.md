@@ -18,7 +18,7 @@ Grok 视频 API 支持两种模式：
 
 ### 查询任务结果
 
-**GET** `/v1/video/generations/result?taskId={request_id}`
+**GET** `/v1/video/generations/result?taskid={request_id}`
 
 ---
 
@@ -210,7 +210,7 @@ curl -X POST "https://api.ezlinkai.com/v1/video/generations" \
 ### 5. 查询任务结果
 
 ```bash
-curl -X GET "https://api.ezlinkai.com/v1/video/generations/result?taskId=YOUR_TASK_ID" \
+curl -X GET "https://api.ezlinkai.com/v1/video/generations/result?taskid=YOUR_TASK_ID" \
   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
@@ -258,7 +258,7 @@ while True:
     response = requests.get(
         f"{API_BASE}/v1/video/generations/result",
         headers=headers,
-        params={"taskId": task_id}
+        params={"taskid": task_id}
     )
     result = response.json()
     status = result["task_status"]

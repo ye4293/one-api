@@ -24,8 +24,10 @@ type Request struct {
 	// ToolChoice 使用指针类型以确保 omitempty 能正确处理 nil 值
 	// 使用 any 类型时，copier.Copy 会复制为"有类型的 nil 指针"，导致序列化为 null
 	ToolChoice *anthropic.ToolChoice `json:"tool_choice,omitempty"`
-	// Thinking 扩展思考配置（用于 Claude 3.5+ thinking 模式）
+	// Thinking 扩展思考配置（enabled/disabled/adaptive）
 	Thinking *anthropic.ThinkingConfig `json:"thinking,omitempty"`
+	// OutputConfig 输出配置（effort + format）
+	OutputConfig *anthropic.OutputConfig `json:"output_config,omitempty"`
 }
 
 // AwsModelCanCrossRegionMap 定义哪些模型支持跨区域调用
@@ -81,7 +83,7 @@ var AwsModelCanCrossRegionMap = map[string]map[string]bool{
 		"ap": true,
 		"eu": true,
 	},
-	"anthropic.claude-opus-4-6-v1:0": {
+	"anthropic.claude-opus-4-6-v1": {
 		"us": true,
 	},
 	"anthropic.claude-haiku-4-5-20251001-v1:0": {

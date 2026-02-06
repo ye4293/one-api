@@ -148,7 +148,7 @@ func Relay(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	
+
 	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
 	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
 		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
@@ -3097,7 +3097,7 @@ func getAwsModelIdForCountTokens(requestModel string) string {
 		"claude-sonnet-4-5-20250929":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"claude-haiku-4-5-20251001":           "anthropic.claude-haiku-4-5-20251001-v1:0",
 		"claude-opus-4-5-20251101":            "anthropic.claude-opus-4-5-20251101-v1:0",
-		"claude-opus-4-6":                     "anthropic.claude-opus-4-6-v1:0",
+		"claude-opus-4-6":                     "anthropic.claude-opus-4-6-v1",
 		"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
 		"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
 		"claude-opus-4-20250514-thinking":     "anthropic.claude-opus-4-20250514-v1:0",
@@ -3105,7 +3105,7 @@ func getAwsModelIdForCountTokens(requestModel string) string {
 		"claude-sonnet-4-5-20250929-thinking": "anthropic.claude-sonnet-4-5-20250929-v1:0",
 		"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 		"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
-		"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1:0",
+		"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
 	}
 
 	if awsModelID, ok := awsModelIDMap[requestModel]; ok {

@@ -35,6 +35,12 @@ func stopReasonClaude2OpenAI(reason *string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "pause_turn":
+		// 长时间运行的 turn 被暂停，可将响应原样传回以继续
+		return "stop"
+	case "refusal":
+		// 流式分类器干预，处理潜在的策略违规
+		return "stop"
 	default:
 		return *reason
 	}
@@ -92,6 +98,16 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		TopK:        textRequest.TopK,
 		Stream:      textRequest.Stream,
 		Tools:       claudeTools,
+	}
+
+	// 转换 OpenAI response_format 到 Claude output_config
+	if textRequest.ResponseFormat != nil && textRequest.ResponseFormat.Type == "json_schema" {
+		claudeRequest.OutputConfig = &OutputConfig{
+			Format: &JSONOutputFormat{
+				Type:   "json_schema",
+				Schema: textRequest.ResponseFormat.JSONSchema,
+			},
+		}
 	}
 
 	// 为 thinking 模型添加 thinking 配置

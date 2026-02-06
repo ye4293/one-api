@@ -948,17 +948,7 @@ func (channel *Channel) BatchImportKeys(newKeys []string, mode BatchImportMode) 
 	channel.Key = strings.Join(finalKeys, "\n")
 
 	// 更新多Key信息
-	// 保护原有多key渠道：只在追加模式下保护，覆盖模式允许改变
-	wasMultiKey := channel.MultiKeyInfo.IsMultiKey
-	originalKeyCount := channel.MultiKeyInfo.KeyCount
-
-	if mode == BatchImportOverride {
-		// 覆盖模式：严格按照当前key数量设置
-		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
-	} else {
-		// 追加模式：保护原有多key渠道状态
-		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1 || (wasMultiKey && originalKeyCount > 1)
-	}
+	channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
 	channel.MultiKeyInfo.KeyCount = len(finalKeys)
 	channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
 	channel.MultiKeyInfo.BatchImportMode = mode

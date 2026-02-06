@@ -4016,7 +4016,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	defer resp.Body.Close()
 	// log.Printf("video response body: %+v", resp)
 	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
+	// Grok 视频任务进行中返回 202，需要放行到 provider 专用处理逻辑
+	if resp.StatusCode != http.StatusOK &&
+		!(videoTask.Provider == "grok" && (resp.StatusCode == http.StatusAccepted || resp.StatusCode >= 400)) {
 		body, _ := io.ReadAll(resp.Body)
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", string(body)),
