@@ -181,10 +181,10 @@ func (tw *TaskWrapper) getQuota() int64 {
 func (tw *TaskWrapper) SetTaskID(taskID string) {
 	if tw.video != nil {
 		tw.video.TaskId = taskID
-		tw.video.VideoId = taskID
+		// video_id 在回调成功时才设置为真实视频ID，此处保持为空
 	} else {
 		tw.image.TaskId = taskID
-		tw.image.ImageId = taskID
+		// image_id 在回调成功时才设置为真实图片ID，此处保持为空
 	}
 }
 
