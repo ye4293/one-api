@@ -77,7 +77,8 @@ func awsModelID(requestModel string) (string, error) {
 	// 2. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
 	//    支持格式：anthropic.xxx, us.anthropic.xxx, eu.anthropic.xxx, apac.anthropic.xxx, global.anthropic.xxx
 	if strings.Contains(requestModel, "anthropic.") {
-		return requestModel, nil
+		// 去掉 -thinking 后缀，AWS Bedrock 不识别该后缀，thinking 模式通过请求参数启用
+		return strings.TrimSuffix(requestModel, "-thinking"), nil
 	}
 
 	// 3. 都不匹配则返回错误
