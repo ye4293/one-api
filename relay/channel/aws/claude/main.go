@@ -36,43 +36,27 @@ var AwsModelIDMap = map[string]string{
 	// Claude 3 models
 	"claude-3-sonnet-20240229":   "anthropic.claude-3-sonnet-20240229-v1:0",
 	"claude-3-opus-20240229":     "anthropic.claude-3-opus-20240229-v1:0",
-	"claude-3-opus-latest":       "anthropic.claude-3-opus-20240229-v1:0",
 	"claude-3-haiku-20240307":    "anthropic.claude-3-haiku-20240307-v1:0",
 	"claude-3-5-sonnet-20240620": "anthropic.claude-3-5-sonnet-20240620-v1:0",
 	"claude-3-5-sonnet-20241022": "anthropic.claude-3-5-sonnet-20241022-v2:0",
 	"claude-3-5-haiku-20241022":  "anthropic.claude-3-5-haiku-20241022-v1:0",
-	"claude-3-5-haiku-latest":    "anthropic.claude-3-5-haiku-20241022-v1:0",
 	"claude-3-7-sonnet-20250219": "anthropic.claude-3-7-sonnet-20250219-v1:0",
-	"claude-3-7-sonnet-latest":   "anthropic.claude-3-7-sonnet-20250219-v1:0",
 	// Claude 4 models
 	"claude-sonnet-4-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
-	"claude-sonnet-4-0":          "anthropic.claude-sonnet-4-20250514-v1:0",
-	"claude-4-sonnet-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
 	"claude-opus-4-20250514":     "anthropic.claude-opus-4-20250514-v1:0",
-	"claude-opus-4-0":            "anthropic.claude-opus-4-20250514-v1:0",
-	"claude-4-opus-20250514":     "anthropic.claude-opus-4-20250514-v1:0",
 	"claude-opus-4-1-20250805":   "anthropic.claude-opus-4-1-20250805-v1:0",
 	"claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-	"claude-sonnet-4-5":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
-	"claude-haiku-4-5":           "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
-	"claude-opus-4-5":            "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
 	// Claude models with thinking (extended thinking) - 使用相同的模型ID，通过请求参数启用思考模式
 	"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
-	"claude-3-7-sonnet-latest-thinking":   "anthropic.claude-3-7-sonnet-20250219-v1:0",
 	"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
-	"claude-sonnet-4-0-thinking":          "anthropic.claude-sonnet-4-20250514-v1:0",
 	"claude-opus-4-20250514-thinking":     "anthropic.claude-opus-4-20250514-v1:0",
-	"claude-opus-4-0-thinking":            "anthropic.claude-opus-4-20250514-v1:0",
 	"claude-opus-4-1-20250805-thinking":   "anthropic.claude-opus-4-1-20250805-v1:0",
 	"claude-sonnet-4-5-20250929-thinking": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-	"claude-sonnet-4-5-thinking":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
-	"claude-haiku-4-5-thinking":           "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
-	"claude-opus-4-5-thinking":            "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
 }
 
@@ -142,17 +126,6 @@ func getAwsModelIdWithRegion(c *gin.Context, requestModel string) (string, error
 	}
 
 	return awsModelId, nil
-}
-
-// GetAwsErrorStatusCode 从 AWS SDK 错误中提取 HTTP 状态码
-func GetAwsErrorStatusCode(err error) int {
-	// 检查是否包含 HTTP 状态码的错误
-	var httpErr interface{ HTTPStatusCode() int }
-	if errors.As(err, &httpErr) {
-		return httpErr.HTTPStatusCode()
-	}
-	// 默认返回 500
-	return http.StatusInternalServerError
 }
 
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求

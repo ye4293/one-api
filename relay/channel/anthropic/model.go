@@ -261,11 +261,6 @@ type ToolChoice struct {
 }
 
 // ThinkingConfig 扩展思考配置
-// 用于启用 Claude 的扩展思考能力
-// 支持三种模式:
-//   - ThinkingConfigEnabled:  { type: "enabled", budget_tokens: N } - 启用思考，需指定 token 预算（最小 1024）
-//   - ThinkingConfigDisabled: { type: "disabled" } - 禁用思考
-//   - ThinkingConfigAdaptive: { type: "adaptive" } - 自适应思考，模型自行决定是否思考及思考量
 type ThinkingConfig struct {
 	Type         string `json:"type"`                    // "enabled", "disabled", "adaptive"
 	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考 token 预算，最小 1024（仅 type="enabled" 时使用）
@@ -287,7 +282,7 @@ type Request struct {
 	ToolChoice    *ToolChoice     `json:"tool_choice,omitempty"`    // 工具选择策略
 	Metadata      *Metadata       `json:"metadata,omitempty"`       // 元数据
 	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`  // 输出配置（effort + format）
-	Thinking      *ThinkingConfig `json:"thinking,omitempty"`       // 扩展思考配置（enabled/disabled/adaptive）
+	Thinking      *ThinkingConfig `json:"thinking,omitempty"`       // 扩展思考配置
 	ServiceTier   string          `json:"service_tier,omitempty"`   // 服务层级: "auto", "standard_only"
 	InferenceGeo  string          `json:"inference_geo,omitempty"`  // 推理地理区域
 }
@@ -609,7 +604,7 @@ for event := range streamEvents {
 6. 结构化输出 (Structured Outputs) - 保证返回符合 schema 的 JSON：
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("Extract info from: John Smith (john@example.com) wants Enterprise plan")),
     },
@@ -635,7 +630,7 @@ request := Request{
 8. 输出配置 - 设置推理努力程度：
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("What is 2+2?")),
     },
@@ -643,10 +638,10 @@ request := Request{
     OutputConfig: NewEffortOutputConfig("low"),
 }
 
-9. 自适应思考模式 (Adaptive Thinking) - 模型自行决定是否思考：
+9. Thinking type 设为 adaptive，模型自行决定是否思考：
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("Solve this complex math problem...")),
     },
@@ -678,7 +673,7 @@ tools := []Tool{{
 }}
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("Find flights to Paris next month")),
     },
