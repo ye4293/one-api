@@ -5261,42 +5261,78 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 // downloadAndUploadSoraVideo 下载 Sora 视频并上传到 R2
 func downloadAndUploadSoraVideo(channel *dbmodel.Channel, videoId string, userId int) (string, error) {
-	// 构建下载 URL
+	// 构建下载 URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := *channel.BaseURL
 	if baseUrl == "" {
 		baseUrl = "https://api.openai.com"
 	}
-	downloadUrl := fmt.Sprintf("%s/v1/videos/%s/content", baseUrl, videoId)
+	var downloadUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		downloadUrl = fmt.Sprintf("%s/openai/v1/videos/%s/content", baseUrl, videoId)
+	} else {
+		downloadUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseUrl, videoId)
+	}
 
 	log.Printf("Downloading Sora video: %s", downloadUrl)
 
-	// 创建下载请求
-	req, err := http.NewRequest("GET", downloadUrl, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create download request: %w", err)
-	}
-
-	// 设置授权头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
-
-	// 发送请求
 	client := &http.Client{
 		Timeout: 5 * time.Minute, // 5分钟超时，视频下载可能需要时间
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to download video: %w", err)
+
+	// 重试逻辑：视频状态为completed后，内容端点可能还需要短暂时间才能可用
+	maxRetries := 5
+	var resp *http.Response
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			waitSeconds := time.Duration(attempt*3) * time.Second // 3s, 6s, 9s, 12s, 15s
+			log.Printf("Sora video content not ready yet, retrying in %v (attempt %d/%d): %s", waitSeconds, attempt, maxRetries, videoId)
+			time.Sleep(waitSeconds)
+		}
+
+		// 创建下载请求（每次重试都需要新建request）
+		req, err := http.NewRequest("GET", downloadUrl, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to create download request: %w", err)
+		}
+
+		// 设置授权头，Azure 渠道使用 api-key，其他渠道使用 Bearer token
+		if channel.Type == common.ChannelTypeAzure {
+			req.Header.Set("api-key", channel.Key)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+channel.Key)
+		}
+
+		resp, lastErr = client.Do(req)
+		if lastErr != nil {
+			lastErr = fmt.Errorf("failed to download video: %w", lastErr)
+			continue
+		}
+
+		// 如果是404，说明内容还未就绪，关闭响应体后重试
+		if resp.StatusCode == 404 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("video not ready yet (404)")
+			continue
+		}
+
+		// 非404错误，直接返回
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// 成功，跳出重试循环
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("download failed after %d retries: %w", maxRetries, lastErr)
 	}
 	defer resp.Body.Close()
-
-	// 检查状态码
-	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("video not ready yet (404)")
-	}
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
-	}
 
 	// 读取视频数据
 	videoData, err := io.ReadAll(resp.Body)
