@@ -1025,6 +1025,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		if geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
 			completionTokens += geminiResponse.UsageMetadata.ThoughtsTokenCount
 		}
+		promptTokens = geminiResponse.UsageMetadata.PromptTokenCount
 	}
 
 	usage := model.Usage{
