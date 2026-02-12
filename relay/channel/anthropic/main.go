@@ -181,13 +181,34 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 	} else if claudeRequest.Model == "claude-2" {
 		claudeRequest.Model = "claude-2.1"
 	}
+	// 标记是否已经出现过 user/assistant 消息（用于判断 system/developer 是否在对话开头）
+	conversationStarted := false
 	for _, message := range textRequest.Messages {
-		if message.Role == "system" && claudeRequest.System == nil {
-			claudeRequest.System = message.StringContent()
-			continue
+		if message.Role == "system" || message.Role == "developer" {
+			if !conversationStarted {
+				// 对话开始前的 system/developer 消息，合并到顶层 system 参数
+				if claudeRequest.System == nil {
+					claudeRequest.System = message.StringContent()
+				} else if existing, ok := claudeRequest.System.(string); ok {
+					claudeRequest.System = existing + "\n" + message.StringContent()
+				}
+				continue
+			}
+			// 对话中间穿插的 system/developer 消息，转为 user role
+			// 不能转 assistant，否则会与前一条真实 assistant 回复合并，导致语义错误
+			message.Role = "user"
 		}
+
+		if message.Role == "user" || message.Role == "assistant" || message.Role == "tool" {
+			conversationStarted = true
+		}
+
 		claudeMessage := Message{
 			Role: message.Role,
+		}
+		// tool role 统一转为 user（Claude 不支持 tool role）
+		if message.Role == "tool" {
+			claudeMessage.Role = "user"
 		}
 		if message.IsStringContent() {
 			var contentBlocks []ContentBlockParam
@@ -196,7 +217,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				Text: message.StringContent(),
 			}
 			if message.Role == "tool" {
-				claudeMessage.Role = "user"
 				content = ContentBlockParam{
 					Type:      "tool_result",
 					ToolUseID: message.ToolCallId,
@@ -217,34 +237,57 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				})
 			}
 			claudeMessage.Content = contentBlocks
-			claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
-			continue
-		}
-		var contents []ContentBlockParam
-		openaiContent := message.ParseContent()
-		for _, part := range openaiContent {
-			var content ContentBlockParam
-			if part.Type == model.ContentTypeText {
-				content.Type = "text"
-				content.Text = part.Text
-			} else if part.Type == model.ContentTypeImageURL {
-				content.Type = "image"
-				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
-				if err != nil {
-					logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
-					continue
+		} else {
+			var contents []ContentBlockParam
+			openaiContent := message.ParseContent()
+			for _, part := range openaiContent {
+				var content ContentBlockParam
+				if part.Type == model.ContentTypeText {
+					content.Type = "text"
+					content.Text = part.Text
+				} else if part.Type == model.ContentTypeImageURL {
+					content.Type = "image"
+					mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
+					if err != nil {
+						logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
+						continue
+					}
+					content.Source = Base64ImageSource{
+						Type:      "base64",
+						MediaType: mimeType,
+						Data:      data,
+					}
 				}
-				content.Source = Base64ImageSource{
-					Type:      "base64",
-					MediaType: mimeType,
-					Data:      data,
+				contents = append(contents, content)
+			}
+			claudeMessage.Content = contents
+		}
+
+		// 合并连续相同 role 的消息（Claude 要求 user/assistant 严格交替）
+		if len(claudeRequest.Messages) > 0 {
+			lastMsg := &claudeRequest.Messages[len(claudeRequest.Messages)-1]
+			if lastMsg.Role == claudeMessage.Role {
+				if lastBlocks, ok := lastMsg.Content.([]ContentBlockParam); ok {
+					if newBlocks, ok := claudeMessage.Content.([]ContentBlockParam); ok {
+						lastMsg.Content = append(lastBlocks, newBlocks...)
+						continue
+					}
 				}
 			}
-			contents = append(contents, content)
 		}
-		claudeMessage.Content = contents
+
 		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
 	}
+
+	// Claude 要求第一条消息必须是 user，如果不是则补一条占位消息
+	if len(claudeRequest.Messages) > 0 && claudeRequest.Messages[0].Role != "user" {
+		placeholder := Message{
+			Role:    "user",
+			Content: []ContentBlockParam{{Type: "text", Text: "..."}},
+		}
+		claudeRequest.Messages = append([]Message{placeholder}, claudeRequest.Messages...)
+	}
+
 	return &claudeRequest
 }
 
