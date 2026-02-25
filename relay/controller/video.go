@@ -2317,7 +2317,7 @@ func sendRequestGrokAndHandleResponse(c *gin.Context, ctx context.Context, fullR
 // handleGrokVideoResponse 处理 Grok 视频响应
 func handleGrokVideoResponse(c *gin.Context, ctx context.Context, grokResponse xai.GrokVideoResponse, body []byte, meta *util.RelayMeta, modelName string, videoType string) *model.ErrorWithStatusCode {
 	switch grokResponse.StatusCode {
-	case 200:
+	case 200, 202:
 		// 从 context 获取计费参数
 		duration := 6
 		resolution := "480p"

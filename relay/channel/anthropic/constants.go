@@ -36,6 +36,7 @@ var ModelList = []string{
 	"claude-sonnet-4-5-20250929",
 	"claude-opus-4-5-20251101",
 	"claude-opus-4-6",
+	"claude-sonnet-4-6",
 	// Claude thinking models
 	"claude-3-7-sonnet-20250219-thinking",
 	"claude-sonnet-4-20250514-thinking",
@@ -45,6 +46,7 @@ var ModelList = []string{
 	"claude-sonnet-4-5-20250929-thinking",
 	"claude-opus-4-5-20251101-thinking",
 	"claude-opus-4-6-thinking",
+	"claude-sonnet-4-6-thinking",
 }
 
 var ModelDetails = []model.APIModel{

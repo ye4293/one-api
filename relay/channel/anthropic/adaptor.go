@@ -35,17 +35,18 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	channel.SetupCommonRequestHeader(c, req, meta)
 	isClaude := strings.Contains(strings.ToLower(meta.ActualModelName), "claude")
 	if isClaude {
-		// Claude 模型：使用 Anthropic 标准认证方式和版本头
+		// Claude 模型：使用 Anthropic 标准认证方式 x-api-key
 		req.Header.Set("x-api-key", meta.APIKey)
-		anthropicVersion := c.Request.Header.Get("anthropic-version")
-		if anthropicVersion == "" {
-			anthropicVersion = "2023-06-01"
-		}
-		req.Header.Set("anthropic-version", anthropicVersion)
 	} else {
 		// 非 Claude 模型：使用 Bearer 认证，避免 OpenRouter 等服务因 x-api-key 强制路由到 Anthropic
 		req.Header.Set("Authorization", "Bearer "+meta.APIKey)
 	}
+	// 始终设置 anthropic-version，第三方服务需要该头识别 Claude 格式请求体
+	anthropicVersion := c.Request.Header.Get("anthropic-version")
+	if anthropicVersion == "" {
+		anthropicVersion = "2023-06-01"
+	}
+	req.Header.Set("anthropic-version", anthropicVersion)
 	anthropicBeta := c.Request.Header.Get("anthropic-beta")
 	if anthropicBeta != "" {
 		req.Header.Set("anthropic-beta", anthropicBeta)
