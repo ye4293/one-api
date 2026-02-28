@@ -197,14 +197,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		}
 	}
 
-	// 如果响应不是200，处理错误
+	// 如果响应不是200，处理错误（不写入客户端响应，由调用方决定是否重试）
 	if resp.StatusCode != http.StatusOK {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
 
 		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
 
 		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errorMessage))
-		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: resp.StatusCode,
 			Error:      relaymodel.Error{Message: errorMessage},
@@ -216,8 +215,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	if err := json.Unmarshal(body, &fluxResp); err != nil {
 		logger.Errorf(c, "解析 Flux 响应失败: %v, body: %s", err, string(body))
 		a.updateRecordToFailed(c, fmt.Sprintf("解析响应失败: %v", err))
-		// 即使解析失败，也要透传响应给客户端
-		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusInternalServerError,
 			Error:      relaymodel.Error{Message: fmt.Sprintf("解析响应失败: %v", err)},
@@ -228,7 +225,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	if fluxResp.Error != "" {
 		logger.Errorf(c, "Flux API 返回错误: %s", fluxResp.Error)
 		a.updateRecordToFailed(c, fluxResp.Error)
-		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
 			Error:      relaymodel.Error{Message: fluxResp.Error},
