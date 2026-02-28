@@ -8,8 +8,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
+	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
@@ -57,7 +59,7 @@ func RelayFlux(c *gin.Context) {
 	_, errResp := adaptor.DoResponse(c, resp, meta)
 	if errResp != nil {
 		logger.Errorf(c, "Flux 响应处理失败: user_id=%d, error=%v", meta.UserId, errResp.Error.Message)
-		// DoResponse 内部已经处理了响应的写入和记录更新
+		processFluxChannelError(c, meta, errResp)
 		return
 	}
 
@@ -171,4 +173,39 @@ func GetFlux(c *gin.Context) {
 	// 8. 透传源站响应给客户端
 	c.Data(statusCode, "application/json", responseBody)
 	logger.Infof(c, "Flux 查询完成（源站）: task_id=%s, status=%d", taskID, statusCode)
+}
+
+// processFluxChannelError 处理 Flux 渠道错误，触发自动禁用逻辑
+func processFluxChannelError(c *gin.Context, meta *util.RelayMeta, errResp *relaymodel.ErrorWithStatusCode) {
+	if !util.ShouldDisableChannel(&errResp.Error, errResp.StatusCode) {
+		monitor.Emit(meta.ChannelId, false)
+		return
+	}
+
+	channel, err := model.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		logger.Errorf(c, "Flux auto-disable: failed to get channel %d: %v", meta.ChannelId, err)
+		monitor.Emit(meta.ChannelId, false)
+		return
+	}
+
+	keyIndex := 0
+	if meta.KeyIndex != nil {
+		keyIndex = *meta.KeyIndex
+	}
+
+	if channel.MultiKeyInfo.IsMultiKey || channel.MultiKeyInfo.KeyCount > 1 {
+		keyErr := channel.HandleKeyError(keyIndex, errResp.Error.Message, errResp.StatusCode, meta.OriginModelName)
+		if keyErr != nil {
+			logger.Errorf(c, "Flux auto-disable: failed to handle key error for channel %d, key %d: %v",
+				channel.Id, keyIndex, keyErr)
+		}
+	} else {
+		if channel.AutoDisabled {
+			monitor.DisableChannelWithStatusCode(meta.ChannelId, channel.Name, errResp.Error.Message, meta.OriginModelName, errResp.StatusCode)
+		} else {
+			logger.Infof(c, "Flux: channel #%d (%s) should be disabled but auto-disable is turned off", meta.ChannelId, channel.Name)
+		}
+	}
+	monitor.Emit(meta.ChannelId, false)
 }

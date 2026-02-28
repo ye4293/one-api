@@ -200,13 +200,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	// 如果响应不是200，处理错误
 	if resp.StatusCode != http.StatusOK {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
-		// 更新记录为失败状态
-		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
-		// 透传错误响应给客户端
+
+		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
+
+		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errorMessage))
 		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: resp.StatusCode,
-			Error:      relaymodel.Error{Message: fmt.Sprintf("Flux API 返回错误状态: %d", resp.StatusCode)},
+			Error:      relaymodel.Error{Message: errorMessage},
 		}
 	}
 
@@ -293,6 +294,24 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	// Flux 不计算 token usage，返回 nil
 	return nil, nil
+}
+
+// extractFluxErrorMessage 从 Flux API 错误响应中提取错误消息
+// Flux API 可能返回多种格式: {"detail": "..."}, {"error": "..."}, {"message": "..."}
+func extractFluxErrorMessage(body []byte, statusCode int) string {
+	var errMap map[string]any
+	if err := json.Unmarshal(body, &errMap); err == nil {
+		if detail, ok := errMap["detail"].(string); ok && detail != "" {
+			return detail
+		}
+		if errMsg, ok := errMap["error"].(string); ok && errMsg != "" {
+			return errMsg
+		}
+		if msg, ok := errMap["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	return fmt.Sprintf("Flux API 返回错误状态: %d", statusCode)
 }
 
 // updateRecordToFailed 更新记录为失败状态
