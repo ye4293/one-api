@@ -2520,6 +2520,10 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			41: "/v1/videos/multi-image2video",
 			0:  "/kling/v1/videos/multi-image2video",
 		},
+		"omni-video": {
+			41: "/v1/videos/omni-video",
+			0:  "/kling/v1/videos/omni-video",
+		},
 	}
 
 	// 确定请求类型和URL
@@ -2547,28 +2551,42 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		// 对口型任务请求 - 使用独立的处理逻辑
 		DoAdvancedLipSync(c)
 		return nil
-	} else {
-		// 检查是否为多图生视频请求或单图生视频请求
-		var imageCheck struct {
-			Image     string `json:"image,omitempty"`
-			Mode      string `json:"mode,omitempty"`
-			Duration  any    `json:"duration,omitempty"`
-			ImageTail string `json:"image_tail,omitempty"`
-			ImageList []struct {
-				Image string `json:"image"`
-			} `json:"image_list,omitempty"`
+	} else if meta.OriginModelName == "kling-video-o1" || meta.OriginModelName == "kling-v3-omni" {
+		requestType = "omni-video"
+		videoType = "omni-video"
+		var requestMap map[string]interface{}
+		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 		}
-		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
+		if modeVal, ok := requestMap["mode"].(string); ok {
+			mode = modeVal
+		}
+		if durVal := requestMap["duration"]; durVal != nil {
+			switch v := durVal.(type) {
+			case float64:
+				duration = strconv.Itoa(int(v))
+			case string:
+				duration = v
+			}
+		}
+		if modelVal, hasModel := requestMap["model"]; hasModel {
+			requestMap["model_name"] = modelVal
+			delete(requestMap, "model")
+		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
+			requestMap["model_name"] = meta.OriginModelName
+		}
+		requestBody = requestMap
+	} else {
+		var requestMap map[string]interface{}
+		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		}
 
-		// 只有当请求体中包含这些字段时才设置它们
-		if imageCheck.Mode != "" {
-			mode = imageCheck.Mode
+		if modeVal, ok := requestMap["mode"].(string); ok {
+			mode = modeVal
 		}
-
-		if imageCheck.Duration != nil {
-			switch v := imageCheck.Duration.(type) {
+		if durVal := requestMap["duration"]; durVal != nil {
+			switch v := durVal.(type) {
 			case float64:
 				duration = strconv.Itoa(int(v))
 			case string:
@@ -2576,77 +2594,38 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			}
 		}
 
-		// 检查是否为多图生视频请求
-		if len(imageCheck.ImageList) > 0 {
+		if modelVal, hasModel := requestMap["model"]; hasModel {
+			requestMap["model_name"] = modelVal
+			delete(requestMap, "model")
+		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
+			requestMap["model_name"] = meta.OriginModelName
+		}
+
+		hasImageList := false
+		if listVal, ok := requestMap["image_list"].([]interface{}); ok && len(listVal) > 0 {
+			hasImageList = true
+		}
+		hasImage := false
+		if imgVal, ok := requestMap["image"].(string); ok && imgVal != "" {
+			hasImage = true
+		}
+		hasImageTail := false
+		if tailVal, ok := requestMap["image_tail"].(string); ok && tailVal != "" {
+			hasImageTail = true
+		}
+
+		if hasImageList {
 			requestType = "multi-image-to-video"
 			videoType = "multi-image-to-video"
-			var multiImageToVideoReq keling.MultiImageToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &multiImageToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				multiImageToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				multiImageToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelName
-			if multiImageToVideoReq.Model != "" {
-				multiImageToVideoReq.ModelName = multiImageToVideoReq.Model
-				multiImageToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = multiImageToVideoReq
-		} else if imageCheck.Image != "" || imageCheck.ImageTail != "" {
+		} else if hasImage || hasImageTail {
 			requestType = "image-to-video"
 			videoType = "image-to-video"
-			var imageToVideoReq keling.ImageToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				imageToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				imageToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelNames
-			if imageToVideoReq.Model != "" {
-				imageToVideoReq.ModelName = imageToVideoReq.Model
-				imageToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = imageToVideoReq
 		} else {
 			requestType = "text-to-video"
 			videoType = "text-to-video"
-			var textToVideoReq keling.TextToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &textToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				textToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				textToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelName
-			if textToVideoReq.Model != "" {
-				textToVideoReq.ModelName = textToVideoReq.Model
-				textToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = textToVideoReq
 		}
+
+		requestBody = requestMap
 	}
 
 	// 构建完整URL
@@ -3731,6 +3710,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				fullRequestUrl = fmt.Sprintf("%s/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
 			} else {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
+			}
+		} else if videoTask.Type == "omni-video" {
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
 			}
 		}
 
