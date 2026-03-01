@@ -77,14 +77,20 @@ func awsModelID(requestModel string) (string, error) {
 		return awsModelID, nil
 	}
 
-	// 2. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
+	// 2. 如果是 ARN 格式（通过模型重定向配置的 inference profile），直接使用
+	//    去掉 -thinking 后缀，thinking 模式通过请求参数启用，ARN 本身不区分
+	if strings.HasPrefix(requestModel, "arn:") {
+		return strings.TrimSuffix(requestModel, "-thinking"), nil
+	}
+
+	// 3. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
 	//    支持格式：anthropic.xxx, us.anthropic.xxx, eu.anthropic.xxx, apac.anthropic.xxx, global.anthropic.xxx
 	if strings.Contains(requestModel, "anthropic.") {
 		// 去掉 -thinking 后缀，AWS Bedrock 不识别该后缀，thinking 模式通过请求参数启用
 		return strings.TrimSuffix(requestModel, "-thinking"), nil
 	}
 
-	// 3. 都不匹配则返回错误
+	// 4. 都不匹配则返回错误
 	return "", errors.Errorf("model %s not found in mapping and is not a valid AWS model ID", requestModel)
 }
 

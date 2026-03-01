@@ -33,6 +33,10 @@ func GetAdaptor(model string) utils.AwsAdapter {
 		if strings.Contains(model, "anthropic.") {
 			return &claude.Adaptor{}
 		}
+		// 支持 ARN 格式（通过模型重定向配置的 inference profile）
+		if strings.HasPrefix(model, "arn:") {
+			return &claude.Adaptor{}
+		}
 		return nil
 	}
 }
