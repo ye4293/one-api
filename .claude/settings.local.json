@@ -4,7 +4,15 @@
       "Bash(grep:*)",
       "Bash(xargs ls:*)",
       "Bash(go build:*)",
-      "WebFetch(domain:app.klingai.com)"
+      "WebFetch(domain:app.klingai.com)",
+      "Skill(superpowers:executing-plans)",
+      "mcp__web-reader__webReader",
+      "mcp__chrome-devtools__new_page",
+      "mcp__chrome-devtools__wait_for",
+      "mcp__chrome-devtools__click",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__select_page",
+      "mcp__chrome-devtools__list_pages"
     ],
     "deny": [],
     "ask": []
