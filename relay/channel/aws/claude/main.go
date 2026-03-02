@@ -49,6 +49,8 @@ var AwsModelIDMap = map[string]string{
 	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
+	"claude-sonnet-4-6":          "anthropic.claude-sonnet-4-6",
+
 	// Claude models with thinking (extended thinking) - 使用相同的模型ID，通过请求参数启用思考模式
 	"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
 	"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
@@ -58,6 +60,7 @@ var AwsModelIDMap = map[string]string{
 	"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
+	"claude-sonnet-4-6-thinking":          "anthropic.claude-sonnet-4-6",
 }
 
 // GetAwsModelID 获取 AWS 模型ID，如果没有映射则返回原始模型名
@@ -74,14 +77,20 @@ func awsModelID(requestModel string) (string, error) {
 		return awsModelID, nil
 	}
 
-	// 2. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
+	// 2. 如果是 ARN 格式（通过模型重定向配置的 inference profile），直接使用
+	//    去掉 -thinking 后缀，thinking 模式通过请求参数启用，ARN 本身不区分
+	if strings.HasPrefix(requestModel, "arn:") {
+		return strings.TrimSuffix(requestModel, "-thinking"), nil
+	}
+
+	// 3. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
 	//    支持格式：anthropic.xxx, us.anthropic.xxx, eu.anthropic.xxx, apac.anthropic.xxx, global.anthropic.xxx
 	if strings.Contains(requestModel, "anthropic.") {
 		// 去掉 -thinking 后缀，AWS Bedrock 不识别该后缀，thinking 模式通过请求参数启用
 		return strings.TrimSuffix(requestModel, "-thinking"), nil
 	}
 
-	// 3. 都不匹配则返回错误
+	// 4. 都不匹配则返回错误
 	return "", errors.Errorf("model %s not found in mapping and is not a valid AWS model ID", requestModel)
 }
 
