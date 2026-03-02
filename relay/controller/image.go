@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -1199,6 +1200,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 	}()
 
+	// 豆包图片流式请求：直接透传 SSE 给客户端，不缓冲全量 body
+	if meta.ChannelType == 40 && imageRequest.Stream && resp.StatusCode == http.StatusOK {
+		billingJSON, streamErr := proxyDoubaoImageSSE(c, ctx, resp)
+		// 把解析到的计费 JSON 写入 responseBody，让外层 defer 完成计费
+		if billingJSON != nil {
+			responseBody = billingJSON
+		}
+		return streamErr
+	}
+
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
@@ -1804,6 +1815,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
 		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
+	} else if meta.ChannelType == 40 && imageRequest.Stream {
+		// 豆包图片流式响应（SSE）→ 标准 JSON
+		logger.Debugf(ctx, "Doubao image stream raw response (len=%d):\n%s", len(responseBody), string(responseBody))
+		converted, parseErr := parseDoubaoImageSSEToJSON(responseBody)
+		if parseErr != nil {
+			return openai.ErrorWrapper(parseErr, "parse_doubao_stream_failed", http.StatusInternalServerError)
+		}
+		responseBody = converted
+		err = json.Unmarshal(responseBody, &imageResponse)
+		if err != nil {
+			return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+		}
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {
@@ -1905,10 +1928,227 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 记录响应体大小用于调试
 	logger.Debugf(ctx, "Response body size: %d bytes", len(responseBody))
 
+	// 豆包图片流式请求已将 SSE 转换为 JSON，需要强制覆盖 Content-Type
+	// 否则上游返回的 text/event-stream 会被透传，客户端误以为是流式响应
+	respContentType := c.Writer.Header().Get("Content-Type")
+	if meta.ChannelType == 40 && imageRequest.Stream {
+		respContentType = "application/json"
+		c.Writer.Header().Set("Content-Type", respContentType)
+	}
+
 	// 使用c.Data()让Gin自动处理Content-Length和响应写入
-	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
+	c.Data(resp.StatusCode, respContentType, responseBody)
 
 	return nil
+}
+
+// proxyDoubaoImageSSE 将上游豆包图片生成的 SSE 流直接透传给客户端，
+// 同时从 completed 事件中提取图片数量，返回供计费使用的 JSON。
+func proxyDoubaoImageSSE(c *gin.Context, ctx context.Context, resp *http.Response) ([]byte, *relaymodel.ErrorWithStatusCode) {
+	// 透传上游响应头（保留 text/event-stream 等 SSE 相关头）
+	for k, v := range resp.Header {
+		if strings.ToLower(k) != "content-length" {
+			c.Writer.Header().Set(k, v[0])
+		}
+	}
+	c.Writer.WriteHeader(http.StatusOK)
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 最大 1MB 行（防止大 base64）
+
+	var modelName string
+	var generatedImages int
+	var outputTokens, totalTokens int
+
+	type sseUsage struct {
+		GeneratedImages int `json:"generated_images"`
+		OutputTokens    int `json:"output_tokens"`
+		TotalTokens     int `json:"total_tokens"`
+	}
+	type sseData struct {
+		Type    string    `json:"type"`
+		Model   string    `json:"model"`
+		URL     string    `json:"url,omitempty"`
+		B64Json string    `json:"b64_json,omitempty"`
+		Usage   *sseUsage `json:"usage,omitempty"`
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 透传每一行
+		fmt.Fprintf(c.Writer, "%s\n", line)
+		if canFlush {
+			flusher.Flush()
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var ev sseData
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		if modelName == "" {
+			modelName = ev.Model
+		}
+		// 有 URL/b64 → 图片事件，计数
+		if ev.URL != "" || ev.B64Json != "" {
+			generatedImages++
+		}
+		// completed 事件：以 usage 字段为准（更准确）
+		if ev.Usage != nil {
+			generatedImages = ev.Usage.GeneratedImages
+			outputTokens = ev.Usage.OutputTokens
+			totalTokens = ev.Usage.TotalTokens
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(ctx, "proxyDoubaoImageSSE scanner error: %v", err)
+	}
+
+	if generatedImages == 0 {
+		generatedImages = 1
+	}
+
+	// 构造计费 JSON，格式与豆包非流式响应兼容，供外层 defer 解析
+	type billingJSON struct {
+		Model string `json:"model"`
+		Usage struct {
+			GeneratedImages int `json:"generated_images"`
+			OutputTokens    int `json:"output_tokens"`
+			TotalTokens     int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	b := billingJSON{Model: modelName}
+	b.Usage.GeneratedImages = generatedImages
+	b.Usage.OutputTokens = outputTokens
+	b.Usage.TotalTokens = totalTokens
+	billingBytes, _ := json.Marshal(b)
+
+	logger.Infof(ctx, "proxyDoubaoImageSSE done: generated_images=%d", generatedImages)
+	return billingBytes, nil
+}
+
+// parseDoubaoImageSSEToJSON 将豆包图片生成的 SSE 流式响应转为标准 JSON。
+// SSE 格式：
+//
+//	event: image_generation
+//	data: {"type":"generating","model":"...","url":"...","size":"...","image_index":0,...}
+//
+//	event: image_generation
+//	data: {"type":"completed","model":"...","usage":{"generated_images":2,...},...}
+//
+//	data: [DONE]
+//
+// 输出 JSON 同时兼容 openai.ImageResponse（data[].url/b64_json）
+// 以及豆包计费逻辑所需的 usage.generated_images 字段。
+func parseDoubaoImageSSEToJSON(sseBody []byte) ([]byte, error) {
+	type sseEvent struct {
+		Type       string  `json:"type"`
+		Model      string  `json:"model"`
+		URL        string  `json:"url,omitempty"`
+		B64Json    string  `json:"b64_json,omitempty"`
+		Size       string  `json:"size,omitempty"`
+		ImageIndex int     `json:"image_index"`
+		CreatedAt  int64   `json:"created_at,omitempty"`
+		Error      *struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error,omitempty"`
+		Usage *struct {
+			GeneratedImages int `json:"generated_images"`
+			OutputTokens    int `json:"output_tokens"`
+			TotalTokens     int `json:"total_tokens"`
+		} `json:"usage,omitempty"`
+	}
+
+	type imageItem struct {
+		Url     string `json:"url,omitempty"`
+		B64Json string `json:"b64_json,omitempty"`
+	}
+
+	type doubaoUsage struct {
+		GeneratedImages int `json:"generated_images"`
+		OutputTokens    int `json:"output_tokens"`
+		TotalTokens     int `json:"total_tokens"`
+	}
+
+	type outJSON struct {
+		Model     string      `json:"model,omitempty"`
+		Created   int64       `json:"created,omitempty"`
+		Data      []imageItem `json:"data"`
+		Usage     doubaoUsage `json:"usage"`
+	}
+
+	var images []imageItem
+	var modelName string
+	var createdAt int64
+	var usage doubaoUsage
+
+	// 兼容 \r\n 和 \n 行尾
+	rawText := strings.ReplaceAll(string(sseBody), "\r\n", "\n")
+	for _, line := range strings.Split(rawText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var ev sseEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+
+		if modelName == "" {
+			modelName = ev.Model
+		}
+		if ev.CreatedAt > 0 {
+			createdAt = ev.CreatedAt
+		}
+
+		// 按字段内容判断事件类型，兼容 partial_succeeded / generating 等各种命名
+		hasImage := ev.URL != "" || ev.B64Json != ""
+		noError := ev.Error == nil || ev.Error.Code == ""
+		if hasImage && noError {
+			images = append(images, imageItem{Url: ev.URL, B64Json: ev.B64Json})
+		}
+		if ev.Usage != nil {
+			usage = doubaoUsage{
+				GeneratedImages: ev.Usage.GeneratedImages,
+				OutputTokens:    ev.Usage.OutputTokens,
+				TotalTokens:     ev.Usage.TotalTokens,
+			}
+		}
+	}
+
+	if len(images) == 0 {
+		return nil, fmt.Errorf("doubao stream: no images found in SSE response")
+	}
+
+	// 如果 completed 事件没有 usage，用实际图片数兜底
+	if usage.GeneratedImages == 0 {
+		usage.GeneratedImages = len(images)
+	}
+
+	out := outJSON{
+		Model:   modelName,
+		Created: createdAt,
+		Data:    images,
+		Usage:   usage,
+	}
+	return json.Marshal(out)
 }
 
 // 计算最大公约数

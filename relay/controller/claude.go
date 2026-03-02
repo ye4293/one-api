@@ -82,7 +82,15 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 
 	meta.PromptTokens = prePromptTokens
-	//先写死透传
+
+	// 确保 max_tokens 存在（Claude API 必填字段），透传时用户可能未传
+	if claudeReq.MaxTokens == 0 {
+		var rawBody map[string]interface{}
+		if jsonErr := json.Unmarshal(originRequestBody, &rawBody); jsonErr == nil {
+			rawBody["max_tokens"] = 4096
+			originRequestBody, _ = json.Marshal(rawBody)
+		}
+	}
 
 	adaptor.Init(meta)
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewBuffer(originRequestBody))

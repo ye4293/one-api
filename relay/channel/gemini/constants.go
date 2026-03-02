@@ -19,6 +19,8 @@ var ModelList = []string{
 	"gemini-3-pro-preview", "gemini-3-pro-preview-thinking", "gemini-3-pro-image-preview",
 	"gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts", "gemini-2.5-flash-tts", "gemini-2.5-pro-tts",
 	"gemini-3-flash-preview-thinking", "gemini-3-flash-preview", "gemini-3-flash-preview-nothinking",
+	"gemini-3.1-pro-preview-thinking", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-nothinking",
+	"gemini-3.1-flash-image-preview",
 }
 
 var ModelDetails = []model.APIModel{

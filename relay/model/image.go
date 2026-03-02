@@ -25,12 +25,18 @@ type ImageRequest struct {
 	// Image 字段支持字符串或字符串数组
 	Image interface{} `json:"image,omitempty"`
 
-	// 新增字段：顺序图像生成相关
+	// 顺序图像生成相关
 	SequentialImageGeneration        string                            `json:"sequential_image_generation,omitempty"`
 	SequentialImageGenerationOptions *SequentialImageGenerationOptions `json:"sequential_image_generation_options,omitempty"`
 
-	// 新增字段：流式响应
+	// 流式响应
 	Stream bool `json:"stream,omitempty"`
+
+	// 火山引擎方舟图片生成 API 字段
+	Watermark             *bool                  `json:"watermark,omitempty"`
+	GuidanceScale         float64                `json:"guidance_scale,omitempty"`
+	OptimizePrompt        *bool                  `json:"optimize_prompt,omitempty"`
+	OptimizePromptOptions *OptimizePromptOptions `json:"optimize_prompt_options,omitempty"`
 }
 
 type Controls struct {
@@ -41,4 +47,10 @@ type Controls struct {
 // SequentialImageGenerationOptions 顺序图像生成选项
 type SequentialImageGenerationOptions struct {
 	MaxImages int `json:"max_images,omitempty"`
+}
+
+// OptimizePromptOptions 提示词优化选项（火山引擎方舟）
+type OptimizePromptOptions struct {
+	Thinking string `json:"thinking,omitempty"`
+	Mode     string `json:"mode,omitempty"`
 }
