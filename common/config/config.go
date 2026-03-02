@@ -59,6 +59,7 @@ var CfBucketFileName = "ezlinkai-file"
 var CfFileAccessKey = "GQwDfmzqBlTMsBjf"
 var CfFileSecretKey = "JrL2Sy9ojWemCKv45iJukOKKrlBw64"
 var CfFileEndpoint = "https://hua.cn-nb1.rains3.com"
+var CfFilePublicUrl = "" // 公共访问 URL（如自定义域），为空时使用 Endpoint
 
 var CfBucketImageName = ""
 var CfImageAccessKey = ""

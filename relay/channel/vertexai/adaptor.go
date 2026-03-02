@@ -6,11 +6,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
-	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -25,8 +23,8 @@ type Adaptor struct {
 
 // Init implements channel.Adaptor.
 func (a *Adaptor) Init(meta *util.RelayMeta) {
-	// 检查认证模式
-	a.IsAPIKeyMode = meta.Config.VertexKeyType == dbmodel.VertexKeyTypeAPIKey
+	// 检查认证模式（使用统一的检测方法）
+	a.IsAPIKeyMode = meta.IsVertexAIAPIKeyMode()
 
 	if a.IsAPIKeyMode {
 		// API Key 模式：直接使用 API Key
@@ -288,8 +286,9 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to get request URL: %w", err)
 	}
 
-	// 创建HTTP请求
-	req, err := http.NewRequest("POST", url, requestBody)
+	// 创建HTTP请求，绑定客户端上下文以支持取消
+	// 这样当客户端断开连接时，请求会被正确取消，避免内存泄漏
+	req, err := http.NewRequestWithContext(c.Request.Context(), "POST", url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -299,20 +298,8 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		return nil, fmt.Errorf("failed to setup request headers: %w", err)
 	}
 
-	// 执行请求（设置超时，流式请求使用较长超时）
-	timeout := 60 * time.Second
-	if meta.IsStream {
-		timeout = 5 * time.Minute
-	}
-	client := &http.Client{
-		Timeout: timeout,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	return resp, nil
+	// 使用标准 HTTPClient 执行请求，超时由 RELAY_TIMEOUT 环境变量控制
+	return util.HTTPClient.Do(req)
 }
 
 // DoResponse implements channel.Adaptor.

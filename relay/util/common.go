@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"bytes"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -183,6 +184,13 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 
 // RelayErrorHandlerWithAdaptor 使用 adaptor 特定的错误处理逻辑
 func RelayErrorHandlerWithAdaptor(resp *http.Response, adaptor interface{}) (ErrorWithStatusCode *relaymodel.ErrorWithStatusCode) {
+	// ✅ 关键修复：确保响应体一定会被关闭，避免内存泄漏
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
 	// 首先尝试使用 adaptor 的错误处理方法（如果它实现了 ErrorHandler 接口）
 	if errorHandler, ok := adaptor.(interface {
 		HandleErrorResponse(resp *http.Response) *relaymodel.ErrorWithStatusCode
@@ -192,7 +200,7 @@ func RelayErrorHandlerWithAdaptor(resp *http.Response, adaptor interface{}) (Err
 		}
 	}
 
-	// 如果 adaptor 无法处理，回退到通用处理器
+	// 如果 adaptor 无法处理，回退到通用处理器（注意：RelayErrorHandler 内部也会关闭响应体，但多次关闭是安全的）
 	return RelayErrorHandler(resp)
 }
 

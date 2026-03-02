@@ -35,6 +35,12 @@ func stopReasonClaude2OpenAI(reason *string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "pause_turn":
+		// 长时间运行的 turn 被暂停，可将响应原样传回以继续
+		return "stop"
+	case "refusal":
+		// 流式分类器干预，处理潜在的策略违规
+		return "stop"
 	default:
 		return *reason
 	}
@@ -94,6 +100,16 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		Tools:       claudeTools,
 	}
 
+	// 转换 OpenAI response_format 到 Claude output_config
+	if textRequest.ResponseFormat != nil && textRequest.ResponseFormat.Type == "json_schema" {
+		claudeRequest.OutputConfig = &OutputConfig{
+			Format: &JSONOutputFormat{
+				Type:   "json_schema",
+				Schema: textRequest.ResponseFormat.JSONSchema,
+			},
+		}
+	}
+
 	// 为 thinking 模型添加 thinking 配置
 	if isThinking && config.ClaudeThinkingEnabled {
 		// 1. 如果用户未传 max_tokens，使用配置的默认值
@@ -117,8 +133,10 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 			Type:         "enabled",
 			BudgetTokens: thinkingBudget,
 		}
-		// thinking 模式不支持 temperature 修改，设置为 0 表示使用默认值
-		claudeRequest.Temperature = 0
+		// thinking 模式要求 temperature 必须为 1，且不能设置 top_p 和 top_k
+		// https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
+		claudeRequest.Temperature = 1.0
+		claudeRequest.TopP = 0
 		claudeRequest.TopK = 0
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
@@ -163,13 +181,34 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 	} else if claudeRequest.Model == "claude-2" {
 		claudeRequest.Model = "claude-2.1"
 	}
+	// 标记是否已经出现过 user/assistant 消息（用于判断 system/developer 是否在对话开头）
+	conversationStarted := false
 	for _, message := range textRequest.Messages {
-		if message.Role == "system" && claudeRequest.System == nil {
-			claudeRequest.System = message.StringContent()
-			continue
+		if message.Role == "system" || message.Role == "developer" {
+			if !conversationStarted {
+				// 对话开始前的 system/developer 消息，合并到顶层 system 参数
+				if claudeRequest.System == nil {
+					claudeRequest.System = message.StringContent()
+				} else if existing, ok := claudeRequest.System.(string); ok {
+					claudeRequest.System = existing + "\n" + message.StringContent()
+				}
+				continue
+			}
+			// 对话中间穿插的 system/developer 消息，转为 user role
+			// 不能转 assistant，否则会与前一条真实 assistant 回复合并，导致语义错误
+			message.Role = "user"
 		}
+
+		if message.Role == "user" || message.Role == "assistant" || message.Role == "tool" {
+			conversationStarted = true
+		}
+
 		claudeMessage := Message{
 			Role: message.Role,
+		}
+		// tool role 统一转为 user（Claude 不支持 tool role）
+		if message.Role == "tool" {
+			claudeMessage.Role = "user"
 		}
 		if message.IsStringContent() {
 			var contentBlocks []ContentBlockParam
@@ -178,7 +217,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				Text: message.StringContent(),
 			}
 			if message.Role == "tool" {
-				claudeMessage.Role = "user"
 				content = ContentBlockParam{
 					Type:      "tool_result",
 					ToolUseID: message.ToolCallId,
@@ -199,34 +237,57 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				})
 			}
 			claudeMessage.Content = contentBlocks
-			claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
-			continue
-		}
-		var contents []ContentBlockParam
-		openaiContent := message.ParseContent()
-		for _, part := range openaiContent {
-			var content ContentBlockParam
-			if part.Type == model.ContentTypeText {
-				content.Type = "text"
-				content.Text = part.Text
-			} else if part.Type == model.ContentTypeImageURL {
-				content.Type = "image"
-				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
-				if err != nil {
-					logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
-					continue
+		} else {
+			var contents []ContentBlockParam
+			openaiContent := message.ParseContent()
+			for _, part := range openaiContent {
+				var content ContentBlockParam
+				if part.Type == model.ContentTypeText {
+					content.Type = "text"
+					content.Text = part.Text
+				} else if part.Type == model.ContentTypeImageURL {
+					content.Type = "image"
+					mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
+					if err != nil {
+						logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
+						continue
+					}
+					content.Source = Base64ImageSource{
+						Type:      "base64",
+						MediaType: mimeType,
+						Data:      data,
+					}
 				}
-				content.Source = Base64ImageSource{
-					Type:      "base64",
-					MediaType: mimeType,
-					Data:      data,
+				contents = append(contents, content)
+			}
+			claudeMessage.Content = contents
+		}
+
+		// 合并连续相同 role 的消息（Claude 要求 user/assistant 严格交替）
+		if len(claudeRequest.Messages) > 0 {
+			lastMsg := &claudeRequest.Messages[len(claudeRequest.Messages)-1]
+			if lastMsg.Role == claudeMessage.Role {
+				if lastBlocks, ok := lastMsg.Content.([]ContentBlockParam); ok {
+					if newBlocks, ok := claudeMessage.Content.([]ContentBlockParam); ok {
+						lastMsg.Content = append(lastBlocks, newBlocks...)
+						continue
+					}
 				}
 			}
-			contents = append(contents, content)
 		}
-		claudeMessage.Content = contents
+
 		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
 	}
+
+	// Claude 要求第一条消息必须是 user，如果不是则补一条占位消息
+	if len(claudeRequest.Messages) > 0 && claudeRequest.Messages[0].Role != "user" {
+		placeholder := Message{
+			Role:    "user",
+			Content: []ContentBlockParam{{Type: "text", Text: "..."}},
+		}
+		claudeRequest.Messages = append([]Message{placeholder}, claudeRequest.Messages...)
+	}
+
 	return &claudeRequest
 }
 

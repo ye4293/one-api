@@ -95,6 +95,30 @@ func GetVideoTaskByVideoId(videoId string) (*Video, error) {
 	return &video, nil
 }
 
+func GetVideoTaskByIdAndUserId(taskId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("task_id = ? AND user_id = ?", taskId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for task_id: %s and user_id: %d", taskId, userId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
+func GetVideoTaskByVideoIdAndUserId(videoId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("video_id = ? AND user_id = ?", videoId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for video_id: %s and user_id: %d", videoId, userId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
 // UpdateVideoTaskStatusWithCondition 原子性更新视频任务状态，防止并发冲突
 // 只有当当前状态等于expectedStatus时才更新为newStatus
 func UpdateVideoTaskStatusWithCondition(taskId string, expectedStatus string, newStatus string, quota int64) bool {
@@ -260,6 +284,23 @@ func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to update store_url for task_id %s: %w", taskId, result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
+}
+
+// UpdateVideoCredentials 更新视频任务的凭证信息（用于保存 API Key）
+func UpdateVideoCredentials(taskId string, credentials string) error {
+	result := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("credentials", credentials)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update credentials for task_id %s: %w", taskId, result.Error)
 	}
 
 	if result.RowsAffected == 0 {

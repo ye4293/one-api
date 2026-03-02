@@ -203,6 +203,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("channel_name", channel.Name)
 	c.Set("model_mapping", channel.GetModelMapping())
 	c.Set("original_model", modelName) // for retry
+	// 设置自定义请求头覆盖配置
+	if headersOverride := channel.GetHeaderOverride(); headersOverride != nil {
+		c.Set("headers_override", headersOverride)
+	}
 
 	// 获取实际使用的Key（支持多Key聚合）
 	var actualKey string

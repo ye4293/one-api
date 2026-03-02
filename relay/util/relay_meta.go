@@ -44,6 +44,8 @@ type RelayMeta struct {
 	DisablePing  bool
 	// 流式响应是否包含 usage 信息
 	ShouldIncludeUsage bool
+	// 自定义请求头覆盖
+	HeadersOverride map[string]string
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）
@@ -106,6 +108,12 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	if ok {
 		meta.Config = cfg.(model.ChannelConfig)
 	}
+	// 获取自定义请求头覆盖配置
+	if headersOverride, exists := c.Get("headers_override"); exists {
+		if headers, ok := headersOverride.(map[string]string); ok {
+			meta.HeadersOverride = headers
+		}
+	}
 	if meta.BaseURL == "" {
 		meta.BaseURL = common.ChannelBaseURLs[meta.ChannelType]
 	}
@@ -123,4 +131,28 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
 	return &meta
+}
+
+// IsVertexAIAPIKeyMode 检测 VertexAI 是否使用 API Key 模式
+// 支持多种判断方式：1. 配置中明确指定 api_key 2. 密钥不是 JSON 格式（即普通 API Key）
+func (m *RelayMeta) IsVertexAIAPIKeyMode() bool {
+	// 配置中明确指定为 API Key 模式
+	if m.Config.VertexKeyType == model.VertexKeyTypeAPIKey {
+		return true
+	}
+
+	// 如果配置未明确指定，尝试通过密钥格式自动检测
+	if m.Config.VertexKeyType == "" {
+		// 检查密钥是否是 JSON 格式（服务账号凭证）
+		testKey := m.ActualAPIKey
+		if m.IsMultiKey && len(m.Keys) > 0 {
+			testKey = m.Keys[0]
+		}
+		// 如果密钥不是以 { 开头，则认为是 API Key 模式
+		if testKey != "" && !strings.HasPrefix(strings.TrimSpace(testKey), "{") {
+			return true
+		}
+	}
+
+	return false
 }

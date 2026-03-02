@@ -107,7 +107,7 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 
 	// 返回公开访问 URL（Path-Style 格式：endpoint/bucket/key）
 	fileUrl := commonConfig.CfFileEndpoint
-	uploadDuration := time.Since(startTime)	
+	uploadDuration := time.Since(startTime)
 	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s/%s/%s (size: %d bytes, duration: %v)", fileUrl, bucketName, objectKey, len(imageData), uploadDuration))
 
 	// 返回完整 URL（包含 bucket 名称）

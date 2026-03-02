@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"reflect"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,9 +19,9 @@ import (
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
-	"github.com/songquanpeng/one-api/relay/cache"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -49,6 +48,7 @@ var AwsModelIDMap = map[string]string{
 	"claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
 	// Claude models with thinking (extended thinking) - 使用相同的模型ID，通过请求参数启用思考模式
 	"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
 	"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
@@ -57,6 +57,7 @@ var AwsModelIDMap = map[string]string{
 	"claude-sonnet-4-5-20250929-thinking": "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
 }
 
 // GetAwsModelID 获取 AWS 模型ID，如果没有映射则返回原始模型名
@@ -76,7 +77,8 @@ func awsModelID(requestModel string) (string, error) {
 	// 2. 如果不在映射中，检查是否已经是 AWS 模型 ID 格式
 	//    支持格式：anthropic.xxx, us.anthropic.xxx, eu.anthropic.xxx, apac.anthropic.xxx, global.anthropic.xxx
 	if strings.Contains(requestModel, "anthropic.") {
-		return requestModel, nil
+		// 去掉 -thinking 后缀，AWS Bedrock 不识别该后缀，thinking 模式通过请求参数启用
+		return strings.TrimSuffix(requestModel, "-thinking"), nil
 	}
 
 	// 3. 都不匹配则返回错误
@@ -125,88 +127,6 @@ func getAwsModelIdWithRegion(c *gin.Context, requestModel string) (string, error
 	}
 
 	return awsModelId, nil
-}
-
-// GetAwsErrorStatusCode 从 AWS SDK 错误中提取 HTTP 状态码
-func GetAwsErrorStatusCode(err error) int {
-	// 检查是否包含 HTTP 状态码的错误
-	var httpErr interface{ HTTPStatusCode() int }
-	if errors.As(err, &httpErr) {
-		return httpErr.HTTPStatusCode()
-	}
-	// 默认返回 500
-	return http.StatusInternalServerError
-}
-
-// cleanAwsRequest 清理 AWS 请求中的 nil 值，避免序列化为 null
-// AWS Bedrock API 不接受 null 值，需要完全省略这些字段
-// 注意：Go 中 interface{}((*Type)(nil)) != nil，所以需要使用 reflect 检查
-func cleanAwsRequest(req *Request) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	result["anthropic_version"] = req.AnthropicVersion
-
-	if len(req.AnthropicBeta) > 0 {
-		result["anthropic_beta"] = req.AnthropicBeta
-	}
-
-	if len(req.Messages) > 0 {
-		result["messages"] = req.Messages
-	}
-
-	if !isNilValue(req.System) {
-		result["system"] = req.System
-	}
-
-	if req.MaxTokens > 0 {
-		result["max_tokens"] = req.MaxTokens
-	}
-
-	if req.Temperature != nil {
-		result["temperature"] = *req.Temperature
-	}
-
-	if req.TopP > 0 {
-		result["top_p"] = req.TopP
-	}
-
-	if req.TopK > 0 {
-		result["top_k"] = req.TopK
-	}
-
-	if len(req.StopSequences) > 0 {
-		result["stop_sequences"] = req.StopSequences
-	}
-
-	if len(req.Tools) > 0 {
-		result["tools"] = req.Tools
-	}
-
-	// 使用 reflect 检查 ToolChoice 是否真正为 nil
-	// 因为 interface{}((*Type)(nil)) != nil 在 Go 中是 true
-	if !isNilValue(req.ToolChoice) {
-		result["tool_choice"] = req.ToolChoice
-	}
-
-	if !isNilValue(req.Thinking) {
-		result["thinking"] = req.Thinking
-	}
-
-	return result
-}
-
-// isNilValue 检查 interface{} 值是否真正为 nil
-// 处理 Go 中 interface{}((*Type)(nil)) != nil 的问题
-func isNilValue(v interface{}) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface, reflect.Chan, reflect.Func:
-		return rv.IsNil()
-	}
-	return false
 }
 
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求
@@ -272,9 +192,14 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -336,9 +261,14 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		}
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -468,9 +398,14 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}
@@ -527,9 +462,14 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
 	}
 
-	// 使用清理函数避免 null 值被序列化
-	cleanedReq := cleanAwsRequest(awsClaudeReq)
-	awsReq.Body, err = json.Marshal(cleanedReq)
+	// thinking 模式要求 temperature 必须为 1
+	if awsClaudeReq.Thinking != nil {
+		temperatureOne := 1.0
+		awsClaudeReq.Temperature = &temperatureOne
+	}
+
+	// 直接序列化请求，let omitempty handle zero values
+	awsReq.Body, err = json.Marshal(awsClaudeReq)
 	if err != nil {
 		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
 	}

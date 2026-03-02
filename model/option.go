@@ -99,12 +99,20 @@ func InitOptionMap() {
 	config.OptionMap["CfFileAccessKey"] = config.CfFileAccessKey
 	config.OptionMap["CfFileSecretKey"] = config.CfFileSecretKey
 	config.OptionMap["CfFileEndpoint"] = config.CfFileEndpoint
+	config.OptionMap["CfFilePublicUrl"] = config.CfFilePublicUrl
 
 	config.OptionMap["CfBucketImageName"] = config.CfBucketImageName
 	config.OptionMap["CfImageAccessKey"] = config.CfImageAccessKey
 	config.OptionMap["CfImageSecretKey"] = config.CfImageSecretKey
 	config.OptionMap["CfImageEndpoint"] = config.CfImageEndpoint
 	config.OptionMap["FeishuWebhookUrls"] = ""
+
+	// Claude Thinking 模型配置
+	config.OptionMap["ClaudeThinkingEnabled"] = strconv.FormatBool(config.ClaudeThinkingEnabled)
+	config.OptionMap["ClaudeThinkingBudgetRatio"] = strconv.FormatFloat(config.ClaudeThinkingBudgetRatio, 'f', -1, 64)
+	config.OptionMap["ClaudeDefaultMaxTokens"] = common.ClaudeDefaultMaxTokens2JSONString()
+	config.OptionMap["ClaudeReasoningEffortMap"] = common.ClaudeReasoningEffortMap2JSONString()
+	config.OptionMap["ClaudeRequestHeaders"] = common.ClaudeRequestHeaders2JSONString()
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -138,6 +146,12 @@ func loadOptionsFromDatabase() {
 		}
 		if option.Key == "VideoPricingRules" {
 			option.Value = common.AddNewMissingVideoPricingRules(option.Value)
+		}
+		if option.Key == "ClaudeDefaultMaxTokens" {
+			option.Value = common.AddNewMissingClaudeDefaultMaxTokens(option.Value)
+		}
+		if option.Key == "ClaudeReasoningEffortMap" {
+			option.Value = common.AddNewMissingClaudeReasoningEffortMap(option.Value)
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
@@ -338,6 +352,8 @@ func updateOptionMap(key string, value string) (err error) {
 		if value != "" {
 			config.CfFileEndpoint = value
 		}
+	case "CfFilePublicUrl":
+		config.CfFilePublicUrl = value // 允许为空，为空时使用 Endpoint
 	case "CfBucketImageName":
 		if value != "" {
 			config.CfBucketImageName = value

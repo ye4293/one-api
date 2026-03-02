@@ -93,7 +93,7 @@ POST https://api.ezlinkai.com/v1/video/generations
 | image | object | 是 | 参考图片对象 |
 | image.bytesBase64Encoded | string | 是 | Base64 编码的图片 |
 | image.mimeType | string | 是 | 图片类型 |
-| referenceType | string | 是 | 参考类型：`REFERENCE_TYPE_STYLE`（风格参考）或 `REFERENCE_TYPE_ASSET`（资产参考） |
+| referenceType | string | 是 | 参考类型：`style`（风格参考）或 `asset`（资产参考） |
 
 #### parameters 对象
 
@@ -169,7 +169,7 @@ POST https://api.ezlinkai.com/v1/video/generations
             "bytesBase64Encoded": "/9j/4AAQSkZJRg...(Base64编码的风格参考图)",
             "mimeType": "image/jpeg"
           },
-          "referenceType": "REFERENCE_TYPE_STYLE"
+          "referenceType": "asset"
         }
       ]
     }

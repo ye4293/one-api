@@ -20,8 +20,17 @@ var ImpatientHTTPClient *http.Client
 var LongRunningHTTPClient *http.Client
 
 func init() {
+	// 获取超时配置（优先使用 RELAY_TIMEOUT 环境变量）
+	var relayTimeout time.Duration
+	if config.RelayTimeout > 0 {
+		relayTimeout = time.Duration(config.RelayTimeout) * time.Second
+	} else {
+		// 默认 5 分钟（合理的请求超时时间）
+		relayTimeout = 5 * time.Minute
+	}
+
 	// Configure HTTP transport with optimized settings
-	// 注意：Gemini 图像生成等场景需要较长的超时时间
+	// 超时由 RELAY_TIMEOUT 环境变量统一控制
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
@@ -37,55 +46,23 @@ func init() {
 		}).DialContext,
 		ForceAttemptHTTP2:     true,             // 强制尝试 HTTP/2，确保正确处理 HTTP/2 协议
 		TLSHandshakeTimeout:   15 * time.Second, // TLS握手超时：15秒（增加以适应网络延迟）
-		ResponseHeaderTimeout: 15 * time.Minute, // 响应头超时：15分钟（适配图像生成等长响应）
+		ResponseHeaderTimeout: relayTimeout,     // 响应头超时：使用 RELAY_TIMEOUT 配置
 		ExpectContinueTimeout: 1 * time.Second,  // Expect-Continue超时：1秒
 	}
 
-	// 超时时间配置：
-	// - 如果 RelayTimeout > 0，使用配置的秒数
-	// - 如果 RelayTimeout == 0，使用默认 30 分钟（与常见 nginx 配置一致）
-	var defaultTimeout time.Duration
-	if config.RelayTimeout > 0 {
-		defaultTimeout = time.Duration(config.RelayTimeout) * time.Second
-	} else {
-		// 默认 30 分钟，与常见 nginx 超时配置一致
-		defaultTimeout = 30 * time.Minute
-	}
-
 	httpClient = &http.Client{
-		Timeout:   defaultTimeout,
+		Timeout:   relayTimeout,
 		Transport: transport,
 	}
 	HTTPClient = &http.Client{
-		Timeout:   defaultTimeout,
+		Timeout:   relayTimeout,
 		Transport: transport,
 	}
 
-	// 专用于长时间运行请求的客户端（如 Gemini 图像生成）
-	// 使用独立的 Transport 实例，避免连接复用问题
-	// 不设置客户端级别的 Timeout，只依赖 Transport 级别的超时控制
-	longRunningTransport := &http.Transport{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     120 * time.Second, // 更长的空闲超时
-		DisableKeepAlives:   false,
-		MaxConnsPerHost:     0,
-		WriteBufferSize:     64 * 1024, // 更大的写缓冲区
-		ReadBufferSize:      64 * 1024, // 更大的读缓冲区
-		DialContext: (&net.Dialer{
-			Timeout:   60 * time.Second, // 更长的连接超时
-			KeepAlive: 60 * time.Second, // 更长的 KeepAlive
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   30 * time.Second,  // 更长的 TLS 握手超时
-		ResponseHeaderTimeout: 30 * time.Minute,  // 响应头超时：30分钟（足够 Gemini 图像生成）
-		ExpectContinueTimeout: 2 * time.Second,
-	}
-
-	// 设置 30 分钟超时，与 nginx 配置一致
+	// LongRunningHTTPClient 复用主配置，超时由 RELAY_TIMEOUT 统一控制
 	LongRunningHTTPClient = &http.Client{
-		Timeout:   30 * time.Minute,
-		Transport: longRunningTransport,
+		Timeout:   relayTimeout,
+		Transport: transport,
 	}
 
 	// Separate transport for impatient client (用于快速查询等场景)
@@ -113,12 +90,33 @@ func GetHttpClient() *http.Client {
 	return httpClient
 }
 
-// DoLongRunningRequest 执行长时间运行的请求，使用独立的上下文
-// 这可以避免 gin 请求上下文超时导致的问题
-func DoLongRunningRequest(req *http.Request) (*http.Response, error) {
-	// 使用独立的 background 上下文，不继承外部上下文的超时限制
-	// 这样可以避免 nginx/反向代理等外部超时导致的 context deadline exceeded 错误
-	// 超时由 LongRunningHTTPClient 的 Timeout (30分钟) 控制
-	reqWithCtx := req.WithContext(context.Background())
-	return LongRunningHTTPClient.Do(reqWithCtx)
+// GetRelayTimeout 获取 RelayTimeout 配置的超时时间
+// 如果 RelayTimeout > 0，返回配置的秒数；否则返回默认 5 分钟
+func GetRelayTimeout() time.Duration {
+	if config.RelayTimeout > 0 {
+		return time.Duration(config.RelayTimeout) * time.Second
+	}
+	// 默认 5 分钟（合理的请求超时时间）
+	return 5 * time.Minute
+}
+
+// DoLongRunningRequest 执行请求，使用 RelayTimeout 控制超时
+// 保留原始上下文的取消能力，同时添加超时控制
+// 注意：调用者必须在读取完 resp.Body 后调用返回的 cancel 函数
+func DoLongRunningRequest(req *http.Request) (*http.Response, context.CancelFunc, error) {
+	// 获取基于 RelayTimeout 的超时时间
+	timeout := GetRelayTimeout()
+
+	// 创建带超时的上下文，但保留原始上下文的取消能力
+	// 这样当客户端断开连接时，请求可以被正确取消，避免内存泄漏
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+
+	reqWithCtx := req.WithContext(ctx)
+	resp, err := HTTPClient.Do(reqWithCtx)
+	if err != nil {
+		cancel() // 请求失败时立即取消
+		return nil, nil, err
+	}
+	// 返回 cancel 函数，调用者在读取完 resp.Body 后必须调用
+	return resp, cancel, nil
 }

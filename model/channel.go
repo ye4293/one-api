@@ -44,7 +44,7 @@ var ChannelDisableNotificationChan = make(chan ChannelDisableNotification, 100)
 
 type Channel struct {
 	Id                 int     `json:"id"`
-	Type               int     `json:"type" gorm:"default:0"`
+	Type               int     `json:"type" gorm:"default:0;index"`
 	Key                string  `json:"key" gorm:"type:mediumtext"`
 	Status             int     `json:"status" gorm:"default:1"`
 	Name               string  `json:"name" gorm:"index"`
@@ -69,6 +69,8 @@ type Channel struct {
 	AutoDisabledReason *string `json:"auto_disabled_reason" gorm:"type:text"`
 	AutoDisabledTime   *int64  `json:"auto_disabled_time" gorm:"bigint"`
 	AutoDisabledModel  *string `json:"auto_disabled_model" gorm:"type:varchar(255)"`
+	// 自定义请求头覆盖，JSON格式，用于在请求转发时添加或覆盖HTTP请求头
+	HeaderOverride *string `json:"header_override" gorm:"type:text"`
 }
 
 // 多Key聚合信息结构
@@ -292,24 +294,47 @@ func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, err
 	return channels, err
 }
 
-func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int) (channels []*Channel, total int64, err error) {
+func SearchChannelsAndCount(keyword string, status *int, channelType *int, page int, pageSize int) (channels []*Channel, total int64, typeCounts map[int]int64, err error) {
 	keyCol := "`key`"
 
 	// 用于LIKE查询的关键词格式
 	likeKeyword := "%" + keyword + "%"
 
-	// 构建基础查询
-	baseQuery := DB.Model(&Channel{}).Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?)", helper.String2Int(keyword), likeKeyword, keyword)
+	// 构建基础查询（不含类型筛选，用于统计）
+	baseQueryForCount := DB.Model(&Channel{}).Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?)", helper.String2Int(keyword), likeKeyword, keyword)
+	if status != nil {
+		baseQueryForCount = baseQueryForCount.Where("status = ?", *status)
+	}
 
-	// 如果status不为nil，加入status作为查询条件
+	// 查询各类型的渠道数量
+	var typeCountResults []struct {
+		Type  int
+		Count int64
+	}
+	err = baseQueryForCount.Select("type, count(*) as count").Group("type").Find(&typeCountResults).Error
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	// 构建类型统计map
+	typeCounts = make(map[int]int64)
+	for _, r := range typeCountResults {
+		typeCounts[r.Type] = r.Count
+	}
+
+	// 构建实际查询（含类型筛选）
+	baseQuery := DB.Model(&Channel{}).Where("(id = ? OR name LIKE ? OR "+keyCol+" = ?)", helper.String2Int(keyword), likeKeyword, keyword)
 	if status != nil {
 		baseQuery = baseQuery.Where("status = ?", *status)
+	}
+	if channelType != nil {
+		baseQuery = baseQuery.Where("type = ?", *channelType)
 	}
 
 	// 计算满足条件的频道总数
 	err = baseQuery.Count(&total).Error
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, typeCounts, err
 	}
 
 	// 计算分页的偏移量
@@ -318,7 +343,7 @@ func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int)
 	// 获取满足条件的频道列表（包含所有字段，因为只有管理员可以访问）
 	err = baseQuery.Order("id DESC").Offset(offset).Limit(pageSize).Find(&channels).Error
 	if err != nil {
-		return nil, total, err
+		return nil, total, typeCounts, err
 	}
 
 	// 为多Key渠道计算可用Key统计信息
@@ -393,8 +418,8 @@ func SearchChannelsAndCount(keyword string, status *int, page int, pageSize int)
 		channels[stats.index].MultiKeyInfo.EnabledKeyCount = stats.enabledCount
 	}
 
-	// 返回频道列表的子集、总数以及可能的错误信息
-	return channels, total, nil
+	// 返回频道列表的子集、总数、类型统计以及可能的错误信息
+	return channels, total, typeCounts, nil
 }
 
 func SearchChannels(keyword string) (channels []*Channel, err error) {
@@ -474,6 +499,21 @@ func (channel *Channel) GetModelMapping() map[string]string {
 		return nil
 	}
 	return modelMapping
+}
+
+// GetHeaderOverride 获取渠道的自定义请求头配置
+// 返回解析后的 map[string]string，如果配置为空或解析失败则返回 nil
+func (channel *Channel) GetHeaderOverride() map[string]string {
+	if channel.HeaderOverride == nil || *channel.HeaderOverride == "" || *channel.HeaderOverride == "{}" {
+		return nil
+	}
+	headerOverride := make(map[string]string)
+	err := json.Unmarshal([]byte(*channel.HeaderOverride), &headerOverride)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("failed to unmarshal header override for channel %d, error: %s", channel.Id, err.Error()))
+		return nil
+	}
+	return headerOverride
 }
 
 func (channel *Channel) Insert() error {
@@ -908,17 +948,7 @@ func (channel *Channel) BatchImportKeys(newKeys []string, mode BatchImportMode) 
 	channel.Key = strings.Join(finalKeys, "\n")
 
 	// 更新多Key信息
-	// 保护原有多key渠道：只在追加模式下保护，覆盖模式允许改变
-	wasMultiKey := channel.MultiKeyInfo.IsMultiKey
-	originalKeyCount := channel.MultiKeyInfo.KeyCount
-
-	if mode == BatchImportOverride {
-		// 覆盖模式：严格按照当前key数量设置
-		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
-	} else {
-		// 追加模式：保护原有多key渠道状态
-		channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1 || (wasMultiKey && originalKeyCount > 1)
-	}
+	channel.MultiKeyInfo.IsMultiKey = len(finalKeys) > 1
 	channel.MultiKeyInfo.KeyCount = len(finalKeys)
 	channel.MultiKeyInfo.LastBatchImportTime = helper.GetTimestamp()
 	channel.MultiKeyInfo.BatchImportMode = mode
