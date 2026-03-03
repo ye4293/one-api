@@ -95,6 +95,30 @@ func GetVideoTaskByVideoId(videoId string) (*Video, error) {
 	return &video, nil
 }
 
+func GetVideoTaskByIdAndUserId(taskId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("task_id = ? AND user_id = ?", taskId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for task_id: %s and user_id: %d", taskId, userId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
+func GetVideoTaskByVideoIdAndUserId(videoId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("video_id = ? AND user_id = ?", videoId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for video_id: %s and user_id: %d", videoId, userId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
 // UpdateVideoTaskStatusWithCondition 原子性更新视频任务状态，防止并发冲突
 // 只有当当前状态等于expectedStatus时才更新为newStatus
 func UpdateVideoTaskStatusWithCondition(taskId string, expectedStatus string, newStatus string, quota int64) bool {

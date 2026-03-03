@@ -109,6 +109,17 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 		return nil, fmt.Errorf("get channel error: %w", err)
 	}
 
+	// 资源感知渠道覆盖：当请求携带 element_id 或 voice_id 时，
+	// 自动路由到创建该资源的渠道，避免多渠道场景下资源不存在的错误
+	if boundChannel := resolveChannelForBoundResource(requestParams, meta.UserId); boundChannel != nil {
+		if boundChannel.Id != channel.Id {
+			logger.Info(c, fmt.Sprintf("Channel override for bound resource: original_channel=%d, bound_channel=%d",
+				channel.Id, boundChannel.Id))
+			channel = boundChannel
+			meta.ChannelId = boundChannel.Id
+		}
+	}
+
 	meta.APIKey = channel.Key
 	if channel.BaseURL != nil && *channel.BaseURL != "" {
 		meta.BaseURL = *channel.BaseURL
@@ -141,6 +152,84 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 func respondError(c *gin.Context, err error, errType string, statusCode int) {
 	errResp := openai.ErrorWrapper(err, errType, statusCode)
 	c.JSON(errResp.StatusCode, errResp.Error)
+}
+
+// extractResourceID 从请求参数中提取资源 ID，兼容数字（float64）和字符串两种 JSON 格式
+func extractResourceID(params map[string]interface{}, key string) string {
+	val, ok := params[key]
+	if !ok || val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%d", int64(v))
+	}
+	return ""
+}
+
+// resolveChannelForBoundResource 检测请求是否携带归属特定渠道的资源 ID，
+// 依次检查 video_id、element_id、voice_id，若找到则返回该资源所属渠道。
+func resolveChannelForBoundResource(params map[string]interface{}, userID int) *dbmodel.Channel {
+	// 1. video_id → 查 Video.video_id 字段（video-extend、motion-control、effects 等场景）
+	if videoID := extractResourceID(params, "video_id"); videoID != "" {
+		if video, err := dbmodel.GetVideoTaskByVideoIdAndUserId(videoID, userID); err == nil && video != nil && video.ChannelId != 0 {
+			if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+				return ch
+			}
+		}
+	}
+
+	// 2. session_id / element_id / voice_id → 查 Video.task_id 字段
+	taskID := extractResourceID(params, "session_id")
+	if taskID == "" {
+		taskID = extractResourceID(params, "element_id")
+	}
+	if taskID == "" {
+		taskID = extractResourceID(params, "voice_id")
+	}
+	if taskID == "" {
+		return nil
+	}
+	if video, err := dbmodel.GetVideoTaskByIdAndUserId(taskID, userID); err == nil && video != nil && video.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	return nil
+}
+
+// resolveChannelForTaskQuery 从 URL path 末段提取 task_id，
+// 依次在 Video 和 Image 表中查找对应的渠道（用于 GET 查询路由）
+func resolveChannelForTaskQuery(urlPath string, userID int) *dbmodel.Channel {
+	parts := strings.Split(strings.TrimRight(urlPath, "/"), "/")
+	if len(parts) == 0 {
+		return nil
+	}
+	taskID := parts[len(parts)-1]
+	if taskID == "" || !looksLikeTaskID(taskID) {
+		return nil
+	}
+	// 先查 Video 表
+	if video, err := dbmodel.GetVideoTaskByIdAndUserId(taskID, userID); err == nil && video != nil && video.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	// 再查 Image 表
+	if image, err := dbmodel.GetImageByTaskIdAndUserId(taskID, userID); err == nil && image != nil && image.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(image.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	return nil
+}
+
+// looksLikeTaskID 排除路由固定段（如 "text2video"、"custom-elements"），
+// Kling task_id 通常为长数字串或含连字符的 UUID
+func looksLikeTaskID(s string) bool {
+	return strings.Contains(s, "-") || len(s) > 10
 }
 
 // buildCallbackURL 构建回调URL
@@ -615,6 +704,37 @@ func RelayKlingTransparent(c *gin.Context) {
 			meta.UserId, meta.ChannelId, err))
 		respondError(c, err, "get_channel_error", http.StatusInternalServerError)
 		return
+	}
+
+	// GET 查询：从 URL 末段提取 task_id，路由到任务所属渠道
+	if c.Request.Method == http.MethodGet {
+		if boundChannel := resolveChannelForTaskQuery(c.Request.URL.Path, meta.UserId); boundChannel != nil {
+			if boundChannel.Id != channel.Id {
+				logger.Info(c, fmt.Sprintf("Transparent channel override: path=%s, original_channel=%d, bound_channel=%d",
+					c.Request.URL.Path, channel.Id, boundChannel.Id))
+				channel = boundChannel
+				meta.ChannelId = boundChannel.Id
+			}
+		}
+	}
+
+	// POST 请求：从 body 中的资源 ID（video_id / session_id / element_id / voice_id）路由到该资源所属渠道
+	if c.Request.Method == http.MethodPost {
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err == nil {
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			var params map[string]interface{}
+			if json.Unmarshal(bodyBytes, &params) == nil {
+				if boundChannel := resolveChannelForBoundResource(params, meta.UserId); boundChannel != nil {
+					if boundChannel.Id != channel.Id {
+						logger.Info(c, fmt.Sprintf("Transparent channel override (POST): path=%s, original_channel=%d, bound_channel=%d",
+							c.Request.URL.Path, channel.Id, boundChannel.Id))
+						channel = boundChannel
+						meta.ChannelId = boundChannel.Id
+					}
+				}
+			}
+		}
 	}
 
 	meta.APIKey = channel.Key
