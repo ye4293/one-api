@@ -35,8 +35,7 @@ type User struct {
 	AffCode                 string `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	InviterId               int    `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	UserRemindThreshold     int64  `json:"user_remind_threshold"`
-	UserLastNoticeTime      int64  `json:"user_last_notice_time" gorm:"default:0"`
-	UserChannelTypeRatioMap string `json:"user_channel_type_ratio_map" gorm:"type:text"`
+	UserLastNoticeTime int64 `json:"user_last_notice_time" gorm:"default:0"`
 }
 
 func GetMaxUserId() int {
@@ -493,21 +492,6 @@ func updateUserRequestCount(id int, count int) {
 func GetUsernameById(id int) (username string) {
 	DB.Model(&User{}).Where("id = ?", id).Select("username").Find(&username)
 	return username
-}
-
-// UpdateUserChannelTypeRatio 更新数据库中的用户通道类型比例
-func UpdateUserChannelTypeRatio(userId int, channelTypeRatio string) error {
-	return DB.Model(&User{}).Where("id = ?", userId).Update("user_channel_type_ratio", channelTypeRatio).Error
-}
-
-// GetUserChannelTypeRatio 从数据库获取用户的通道类型比例
-func GetUserChannelTypeRatioMap(userId int) (string, error) {
-	var user User
-	err := DB.Where("id = ?", userId).Select("user_channel_type_ratio_map").First(&user).Error
-	if err != nil {
-		return "", err
-	}
-	return user.UserChannelTypeRatioMap, nil
 }
 
 // CompensateVideoTaskQuota 补偿视频任务失败时的用户配额

@@ -13,6 +13,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/conv"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
 )
@@ -49,6 +50,10 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 	}
 
 	var firstWordTime *time.Time
+	// ===== 新增：追踪 response ID 和缓存状态 =====
+	var responseId string
+	var idCached bool = false
+	// ===== 新增结束 =====
 
 	go func() {
 		for scanner.Scan() {
@@ -70,6 +75,24 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						logger.SysError("error unmarshalling stream response: " + err.Error())
 						continue // just ignore the error
 					}
+
+					// 提取 Chat Completions 的 response ID 并缓存
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+					}
+					// 在收到第一个非空内容时缓存（确保响应正常）
+					if responseId != "" && !idCached {
+						for _, choice := range streamResponse.Choices {
+							content := conv.AsString(choice.Delta.Content)
+							if content != "" {
+								// 第一次有内容输出时缓存 ID
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Chat Completions Stream Cache")
+								idCached = true
+								break // 已缓存，跳出循环
+							}
+						}
+					}
+
 					for _, choice := range streamResponse.Choices {
 						content := conv.AsString(choice.Delta.Content)
 						if content != "" && firstWordTime == nil {
@@ -89,6 +112,23 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						logger.SysError("error unmarshalling stream response: " + err.Error())
 						continue
 					}
+
+					// 提取 Completions 的 response ID 并缓存
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+					}
+					// 在收到第一个非空文本时缓存（确保响应正常）
+					if responseId != "" && !idCached {
+						for _, choice := range streamResponse.Choices {
+							if choice.Text != "" {
+								// 第一次有内容输出时缓存 ID
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Text Completions Stream Cache")
+								idCached = true
+								break // 已缓存，跳出循环
+							}
+						}
+					}
+
 					for _, choice := range streamResponse.Choices {
 						if choice.Text != "" && firstWordTime == nil {
 							// 记录首字时间
@@ -182,5 +222,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 			TotalTokens:      promptTokens + completionTokens,
 		}
 	}
+
+	// 缓存 response_id 到 Redis
+	dbmodel.CacheResponseIdToChannel(textResponse.Id, c.GetInt("channel_id"), "Text Completions Cache")
+
 	return nil, &textResponse.Usage
 }

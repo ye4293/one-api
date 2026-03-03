@@ -155,7 +155,9 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	return ConvertRequest(*request)
 }
 
+// DoRequest implements channel.Adaptor.
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
+	// 使用通用的请求助手，超时由 RELAY_TIMEOUT 环境变量控制
 	return channelhelper.DoRequestHelper(a, c, meta, requestBody)
 }
 

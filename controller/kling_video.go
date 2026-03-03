@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ type klingRequest struct {
 	Model         string
 	Mode          string
 	Duration      string
+	Sound         string // 是否有声：on/off（视频V2.6模型）
+	VoiceList     string // 指定的音色列表（JSON格式，视频V2.6模型）
 	Quota         int64
 	CallbackUrl   string
 	Meta          *util.RelayMeta
@@ -69,6 +72,25 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 		callbackUrl = cbUrl
 	}
 
+	// 提取视频V2.6模型的声音参数（可选）
+	var sound string
+	if soundVal, ok := requestParams["sound"].(string); ok {
+		sound = soundVal
+	} else if soundBool, ok := requestParams["sound"].(bool); ok {
+		if soundBool {
+			sound = "on"
+		} else {
+			sound = "off"
+		}
+	}
+
+	// 提取音色列表（可选）
+	var voiceList string
+	if voiceListVal, ok := requestParams["voice_list"]; ok && voiceListVal != nil {
+		voiceListBytes, _ := json.Marshal(voiceListVal)
+		voiceList = string(voiceListBytes)
+	}
+
 	// 计算预估费用
 	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
 
@@ -85,6 +107,17 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
 		return nil, fmt.Errorf("get channel error: %w", err)
+	}
+
+	// 资源感知渠道覆盖：当请求携带 element_id 或 voice_id 时，
+	// 自动路由到创建该资源的渠道，避免多渠道场景下资源不存在的错误
+	if boundChannel := resolveChannelForBoundResource(requestParams, meta.UserId); boundChannel != nil {
+		if boundChannel.Id != channel.Id {
+			logger.Info(c, fmt.Sprintf("Channel override for bound resource: original_channel=%d, bound_channel=%d",
+				channel.Id, boundChannel.Id))
+			channel = boundChannel
+			meta.ChannelId = boundChannel.Id
+		}
 	}
 
 	meta.APIKey = channel.Key
@@ -105,6 +138,8 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 		Model:         model,
 		Mode:          mode,
 		Duration:      duration,
+		Sound:         sound,
+		VoiceList:     voiceList,
 		Quota:         quota,
 		CallbackUrl:   callbackUrl,
 		Meta:          meta,
@@ -117,6 +152,84 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 func respondError(c *gin.Context, err error, errType string, statusCode int) {
 	errResp := openai.ErrorWrapper(err, errType, statusCode)
 	c.JSON(errResp.StatusCode, errResp.Error)
+}
+
+// extractResourceID 从请求参数中提取资源 ID，兼容数字（float64）和字符串两种 JSON 格式
+func extractResourceID(params map[string]interface{}, key string) string {
+	val, ok := params[key]
+	if !ok || val == nil {
+		return ""
+	}
+	switch v := val.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%d", int64(v))
+	}
+	return ""
+}
+
+// resolveChannelForBoundResource 检测请求是否携带归属特定渠道的资源 ID，
+// 依次检查 video_id、element_id、voice_id，若找到则返回该资源所属渠道。
+func resolveChannelForBoundResource(params map[string]interface{}, userID int) *dbmodel.Channel {
+	// 1. video_id → 查 Video.video_id 字段（video-extend、motion-control、effects 等场景）
+	if videoID := extractResourceID(params, "video_id"); videoID != "" {
+		if video, err := dbmodel.GetVideoTaskByVideoIdAndUserId(videoID, userID); err == nil && video != nil && video.ChannelId != 0 {
+			if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+				return ch
+			}
+		}
+	}
+
+	// 2. session_id / element_id / voice_id → 查 Video.task_id 字段
+	taskID := extractResourceID(params, "session_id")
+	if taskID == "" {
+		taskID = extractResourceID(params, "element_id")
+	}
+	if taskID == "" {
+		taskID = extractResourceID(params, "voice_id")
+	}
+	if taskID == "" {
+		return nil
+	}
+	if video, err := dbmodel.GetVideoTaskByIdAndUserId(taskID, userID); err == nil && video != nil && video.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	return nil
+}
+
+// resolveChannelForTaskQuery 从 URL path 末段提取 task_id，
+// 依次在 Video 和 Image 表中查找对应的渠道（用于 GET 查询路由）
+func resolveChannelForTaskQuery(urlPath string, userID int) *dbmodel.Channel {
+	parts := strings.Split(strings.TrimRight(urlPath, "/"), "/")
+	if len(parts) == 0 {
+		return nil
+	}
+	taskID := parts[len(parts)-1]
+	if taskID == "" || !looksLikeTaskID(taskID) {
+		return nil
+	}
+	// 先查 Video 表
+	if video, err := dbmodel.GetVideoTaskByIdAndUserId(taskID, userID); err == nil && video != nil && video.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(video.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	// 再查 Image 表
+	if image, err := dbmodel.GetImageByTaskIdAndUserId(taskID, userID); err == nil && image != nil && image.ChannelId != 0 {
+		if ch, err := dbmodel.GetChannelById(image.ChannelId, true); err == nil {
+			return ch
+		}
+	}
+	return nil
+}
+
+// looksLikeTaskID 排除路由固定段（如 "text2video"、"custom-elements"），
+// Kling task_id 通常为长数字串或含连字符的 UUID
+func looksLikeTaskID(s string) bool {
+	return strings.Contains(s, "-") || len(s) > 10
 }
 
 // buildCallbackURL 构建回调URL
@@ -172,6 +285,8 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		Type:        req.RequestType,
 		Mode:        req.Mode,
 		Duration:    req.Duration,
+		Sound:       req.Sound,
+		VoiceList:   req.VoiceList,
 		Prompt:      kling.GetPromptFromRequest(req.RequestParams),
 		Detail:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
@@ -249,6 +364,8 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 		Model:       req.Model,
 		Type:        req.RequestType,
 		Mode:        req.Mode,
+		Sound:       req.Sound,
+		VoiceList:   req.VoiceList,
 		Prompt:      kling.GetPromptFromRequest(req.RequestParams),
 		Quota:       req.Quota,
 		RequestType: req.RequestType,
@@ -416,9 +533,43 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				actualDuration := notification.TaskResult.Videos[0].Duration
 				video.Duration = actualDuration
 
-				// 重新计算费用（按次计费的接口会返回固定价格，按时长计费的接口会根据实际时长计算）
+				// 计算费用
 				oldQuota := video.Quota
-				newQuota := common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+				var newQuota int64
+
+				// 优先使用 Kling 官方返回的计费金额（人民币）
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to system billing",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500000 quota
+						newQuota = int64(usdAmount * 500000)
+						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用系统规则
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+						logger.Info(c, fmt.Sprintf("Using system billing rules (zero amount): task_id=%s, duration=%s, quota=%d",
+							taskID, actualDuration, newQuota))
+					}
+				} else {
+					// 使用系统配置的计费规则重新计算
+					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					logger.Info(c, fmt.Sprintf("Using system billing rules: task_id=%s, duration=%s, quota=%d",
+						taskID, actualDuration, newQuota))
+				}
+
 				video.Quota = newQuota
 
 				// 扣费
@@ -426,8 +577,8 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				if err != nil {
 					logger.Error(c, fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, type=%s, model=%s, task_id=%s",
-						video.UserId, oldQuota, newQuota, actualDuration, video.Type, video.Model, taskID))
+					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, final_unit_deduction=%s, type=%s, model=%s, task_id=%s",
+						video.UserId, oldQuota, newQuota, actualDuration, notification.FinalUnitDeduction, video.Type, video.Model, taskID))
 				}
 
 				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
@@ -436,13 +587,48 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				image.StoreUrl = notification.TaskResult.Videos[0].URL
 				image.ImageId = notification.TaskResult.Videos[0].ID
 
-				// 扣费
-				err := dbmodel.DecreaseUserQuota(image.UserId, image.Quota)
-				if err != nil {
-					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, image.Quota, err))
+				// 计算费用
+				oldQuota := image.Quota
+				var newQuota int64
+
+				// 优先使用 Kling 官方返回的计费金额（人民币）
+				if notification.FinalUnitDeduction != "" {
+					// 解析字符串为 float64
+					cnyAmount, parseErr := strconv.ParseFloat(notification.FinalUnitDeduction, 64)
+					if parseErr != nil {
+						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to original quota",
+							notification.FinalUnitDeduction, parseErr))
+						// 解析失败，使用原有 quota
+						newQuota = image.Quota
+					} else if cnyAmount > 0 {
+						// 转换人民币为美元
+						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
+						if convErr != nil {
+							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+								cnyAmount, convErr))
+						}
+						// 转换为 quota：$1 = 500000 quota
+						newQuota = int64(usdAmount * 500000)
+						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
+					} else {
+						// 金额为 0，使用原有 quota
+						newQuota = image.Quota
+					}
 				} else {
-					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, quota=%d, task_id=%s",
-						image.UserId, image.Quota, taskID))
+					// 使用原有的 quota（图片任务通常已经计算好）
+					newQuota = image.Quota
+				}
+
+				image.Quota = newQuota
+
+				// 扣费
+				err := dbmodel.DecreaseUserQuota(image.UserId, newQuota)
+				if err != nil {
+					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, newQuota, err))
+				} else {
+					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, old_quota=%d, new_quota=%d, final_unit_deduction=%s, task_id=%s",
+						image.UserId, oldQuota, newQuota, notification.FinalUnitDeduction, taskID))
 				}
 
 				image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
@@ -518,6 +704,37 @@ func RelayKlingTransparent(c *gin.Context) {
 			meta.UserId, meta.ChannelId, err))
 		respondError(c, err, "get_channel_error", http.StatusInternalServerError)
 		return
+	}
+
+	// GET 查询：从 URL 末段提取 task_id，路由到任务所属渠道
+	if c.Request.Method == http.MethodGet {
+		if boundChannel := resolveChannelForTaskQuery(c.Request.URL.Path, meta.UserId); boundChannel != nil {
+			if boundChannel.Id != channel.Id {
+				logger.Info(c, fmt.Sprintf("Transparent channel override: path=%s, original_channel=%d, bound_channel=%d",
+					c.Request.URL.Path, channel.Id, boundChannel.Id))
+				channel = boundChannel
+				meta.ChannelId = boundChannel.Id
+			}
+		}
+	}
+
+	// POST 请求：从 body 中的资源 ID（video_id / session_id / element_id / voice_id）路由到该资源所属渠道
+	if c.Request.Method == http.MethodPost {
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err == nil {
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			var params map[string]interface{}
+			if json.Unmarshal(bodyBytes, &params) == nil {
+				if boundChannel := resolveChannelForBoundResource(params, meta.UserId); boundChannel != nil {
+					if boundChannel.Id != channel.Id {
+						logger.Info(c, fmt.Sprintf("Transparent channel override (POST): path=%s, original_channel=%d, bound_channel=%d",
+							c.Request.URL.Path, channel.Id, boundChannel.Id))
+						channel = boundChannel
+						meta.ChannelId = boundChannel.Id
+					}
+				}
+			}
+		}
 	}
 
 	meta.APIKey = channel.Key

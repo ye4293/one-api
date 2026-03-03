@@ -18,7 +18,12 @@ func SendEmail(subject string, receiver string, content string) error {
 	if config.SMTPFrom == "" { // for compatibility
 		config.SMTPFrom = config.SMTPAccount
 	}
-	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
+	// 在邮件主题前加入系统名称标识，方便区分不同站点
+	subjectWithSystem := subject
+	if config.SystemName != "" {
+		subjectWithSystem = fmt.Sprintf("[%s] %s", config.SystemName, subject)
+	}
+	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subjectWithSystem)))
 
 	// Extract domain from SMTPFrom
 	parts := strings.Split(config.SMTPFrom, "@")

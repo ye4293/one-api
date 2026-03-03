@@ -32,7 +32,8 @@ type FunctionResponse struct {
 type Part struct {
 	Text             string            `json:"text,omitempty"`
 	InlineData       *InlineData       `json:"inlineData,omitempty"`
-	ThoughtSignature string            `json:"thoughtSignature,omitempty"`
+	Thought          bool              `json:"thought,omitempty"`          // 标识是否为思考内容
+	ThoughtSignature string            `json:"thoughtSignature,omitempty"` // 思考签名（用于多轮对话）
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 }

@@ -335,7 +335,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 更新 Video 记录
 	video.TaskId = klingResp.GetTaskID()
 	video.Status = klingResp.GetTaskStatus()
-	video.VideoId = klingResp.GetTaskID()
+	// video_id 在回调成功时才设置为真实视频ID，此处保持为空
 	if err := video.Update(); err != nil {
 		logger.SysError(fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v",
 			video.Id, video.TaskId, err))
@@ -348,16 +348,17 @@ func DoAdvancedLipSync(c *gin.Context) {
 	c.JSON(http.StatusOK, klingResp)
 }
 
-// GetKlingVideoResult 查询 Kling 视频任务结果（从数据库读取）
-// 适用于 kling-advanced-lip-sync 和 identify-face 任务
+// GetKlingVideoResult 查询 Kling 任务结果（从数据库读取）
+// 统一支持 Video 和 Image 任务查询
 func GetKlingVideoResult(c *gin.Context, taskID string) {
 	if taskID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id 参数缺失"})
 		return
 	}
 
-	// 从数据库获取任务信息
-	video, err := dbmodel.GetVideoTaskById(taskID)
+	// 使用 TaskManager 统一查询（自动 Fallback Video->Image）
+	taskManager := kling.NewTaskManager()
+	task, err := taskManager.FindTaskByTaskID(taskID)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
 		c.JSON(http.StatusNotFound, gin.H{
@@ -368,19 +369,40 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 		return
 	}
 
+	// 获取任务基本信息
+	var result string
+	var status string
+	var failReason string
+	var createdAt int64
+	var updatedAt int64
+
+	if video := task.GetVideo(); video != nil {
+		result = video.Result
+		status = video.Status
+		failReason = video.FailReason
+		createdAt = video.CreatedAt
+		updatedAt = video.UpdatedAt
+	} else if image := task.GetImage(); image != nil {
+		result = image.Result
+		status = image.Status
+		failReason = image.FailReason
+		createdAt = image.CreatedAt
+		updatedAt = image.UpdatedAt
+	}
+
 	// 如果 result 字段为空，返回基本状态信息
-	if video.Result == "" {
+	if result == "" {
 		// 构建基本的查询响应（任务尚未完成回调）
 		response := kling.QueryTaskResponse{
 			Code:      0,
 			Message:   "success",
 			RequestID: fmt.Sprintf("query-%s", taskID),
 			Data: kling.TaskData{
-				TaskID:        video.TaskId,
-				TaskStatus:    video.Status,
-				TaskStatusMsg: video.FailReason,
-				CreatedAt:     video.CreatedAt * 1000, // 转换为毫秒
-				UpdatedAt:     video.UpdatedAt * 1000, // 转换为毫秒
+				TaskID:        taskID,
+				TaskStatus:    status,
+				TaskStatusMsg: failReason,
+				CreatedAt:     createdAt * 1000, // 转换为毫秒
+				UpdatedAt:     updatedAt * 1000, // 转换为毫秒
 				TaskResult: kling.TaskResult{
 					Videos: []kling.Video{},
 				},
@@ -390,10 +412,11 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 		return
 	}
 
-	// 从 result 字段解析查询响应数据
-	// 先尝试解析为 CallbackNotification（回调保存的格式）
+	// 从 result 字段解析查询响应数据（支持多种格式）
+
+	// 1. 先尝试解析为 CallbackNotification（回调保存的格式）
 	var notification kling.CallbackNotification
-	if err := json.Unmarshal([]byte(video.Result), &notification); err == nil {
+	if err := json.Unmarshal([]byte(result), &notification); err == nil && notification.TaskID != "" {
 		// 成功解析为 CallbackNotification，转换为 QueryTaskResponse
 		response := kling.QueryTaskResponse{
 			Code:      0,
@@ -413,18 +436,47 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 		return
 	}
 
-	// 如果不是 CallbackNotification，尝试解析为 QueryTaskResponse（兼容旧格式）
+	// 2. 尝试解析为 KlingResponse（任务创建时保存的格式）
+	var klingResp kling.KlingResponse
+	if err := json.Unmarshal([]byte(result), &klingResp); err == nil && klingResp.GetTaskID() != "" {
+		// 成功解析为 KlingResponse，从 data 中提取 TaskData
+		taskData, dataErr := klingResp.GetTaskData()
+		if dataErr == nil {
+			response := kling.QueryTaskResponse{
+				Code:      0,
+				Message:   "success",
+				RequestID: fmt.Sprintf("query-%s", taskID),
+				Data:      *taskData,
+			}
+			c.JSON(http.StatusOK, response)
+			return
+		}
+	}
+
+	// 3. 尝试解析为 QueryTaskResponse（兼容旧格式）
 	var queryResponse kling.QueryTaskResponse
-	if err := json.Unmarshal([]byte(video.Result), &queryResponse); err != nil {
-		logger.SysError(fmt.Sprintf("解析查询结果失败: task_id=%s, error=%v", taskID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "解析查询结果失败",
-			"error":   err.Error(),
-		})
+	if err := json.Unmarshal([]byte(result), &queryResponse); err == nil && queryResponse.Data.TaskID != "" {
+		c.JSON(http.StatusOK, queryResponse)
 		return
 	}
 
-	// 返回查询响应
-	c.JSON(http.StatusOK, queryResponse)
+	// 所有格式都解析失败，尝试返回原始数据
+	logger.SysError(fmt.Sprintf("解析查询结果失败，返回原始数据: task_id=%s", taskID))
+
+	// 尝试将 result 解析为通用 JSON 对象并返回
+	var rawData interface{}
+	if err := json.Unmarshal([]byte(result), &rawData); err == nil {
+		c.JSON(http.StatusOK, rawData)
+		return
+	}
+
+	// 如果连 JSON 都不是，仍然返回成功状态码，附带原始字符串
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "success",
+		"data": gin.H{
+			"task_id":     taskID,
+			"task_result": result,
+		},
+	})
 }

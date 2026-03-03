@@ -95,16 +95,24 @@ func InitOptionMap() {
 	config.OptionMap["StripeEndpointKey"] = ""
 
 	config.OptionMap["CfR2storeEnabled"] = strconv.FormatBool(config.CfR2storeEnabled)
-	config.OptionMap["CfBucketFileName"] = ""
-	config.OptionMap["CfFileAccessKey"] = ""
-	config.OptionMap["CfFileSecretKey"] = ""
-	config.OptionMap["CfFileEndpoint"] = ""
+	config.OptionMap["CfBucketFileName"] = config.CfBucketFileName
+	config.OptionMap["CfFileAccessKey"] = config.CfFileAccessKey
+	config.OptionMap["CfFileSecretKey"] = config.CfFileSecretKey
+	config.OptionMap["CfFileEndpoint"] = config.CfFileEndpoint
+	config.OptionMap["CfFilePublicUrl"] = config.CfFilePublicUrl
 
-	config.OptionMap["CfBucketImageName"] = ""
-	config.OptionMap["CfImageAccessKey"] = ""
-	config.OptionMap["CfImageSecretKey"] = ""
-	config.OptionMap["CfImageEndpoint"] = ""
+	config.OptionMap["CfBucketImageName"] = config.CfBucketImageName
+	config.OptionMap["CfImageAccessKey"] = config.CfImageAccessKey
+	config.OptionMap["CfImageSecretKey"] = config.CfImageSecretKey
+	config.OptionMap["CfImageEndpoint"] = config.CfImageEndpoint
 	config.OptionMap["FeishuWebhookUrls"] = ""
+
+	// Claude Thinking 模型配置
+	config.OptionMap["ClaudeThinkingEnabled"] = strconv.FormatBool(config.ClaudeThinkingEnabled)
+	config.OptionMap["ClaudeThinkingBudgetRatio"] = strconv.FormatFloat(config.ClaudeThinkingBudgetRatio, 'f', -1, 64)
+	config.OptionMap["ClaudeDefaultMaxTokens"] = common.ClaudeDefaultMaxTokens2JSONString()
+	config.OptionMap["ClaudeReasoningEffortMap"] = common.ClaudeReasoningEffortMap2JSONString()
+	config.OptionMap["ClaudeRequestHeaders"] = common.ClaudeRequestHeaders2JSONString()
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -138,6 +146,12 @@ func loadOptionsFromDatabase() {
 		}
 		if option.Key == "VideoPricingRules" {
 			option.Value = common.AddNewMissingVideoPricingRules(option.Value)
+		}
+		if option.Key == "ClaudeDefaultMaxTokens" {
+			option.Value = common.AddNewMissingClaudeDefaultMaxTokens(option.Value)
+		}
+		if option.Key == "ClaudeReasoningEffortMap" {
+			option.Value = common.AddNewMissingClaudeReasoningEffortMap(option.Value)
 		}
 		err := updateOptionMap(option.Key, option.Value)
 		if err != nil {
@@ -323,25 +337,54 @@ func updateOptionMap(key string, value string) (err error) {
 	case "StripeEndpointSecret":
 		config.StripeEndpointSecret = value
 	case "CfBucketFileName":
-		config.CfBucketFileName = value
+		if value != "" {
+			config.CfBucketFileName = value
+		}
 	case "CfFileAccessKey":
-		config.CfFileAccessKey = value
+		if value != "" {
+			config.CfFileAccessKey = value
+		}
 	case "CfFileSecretKey":
-		config.CfFileSecretKey = value
+		if value != "" {
+			config.CfFileSecretKey = value
+		}
 	case "CfFileEndpoint":
-		config.CfFileEndpoint = value
+		if value != "" {
+			config.CfFileEndpoint = value
+		}
+	case "CfFilePublicUrl":
+		config.CfFilePublicUrl = value // 允许为空，为空时使用 Endpoint
 	case "CfBucketImageName":
-		config.CfBucketImageName = value
+		if value != "" {
+			config.CfBucketImageName = value
+		}
 	case "CfImageAccessKey":
-		config.CfImageAccessKey = value
+		if value != "" {
+			config.CfImageAccessKey = value
+		}
 	case "CfImageSecretKey":
-		config.CfImageSecretKey = value
+		if value != "" {
+			config.CfImageSecretKey = value
+		}
 	case "CfImageEndpoint":
-		config.CfImageEndpoint = value
+		if value != "" {
+			config.CfImageEndpoint = value
+		}
 	case "FeishuWebhookUrls":
 		config.FeishuWebhookUrls = value
 	case "PingIntervalSeconds":
-		config.PingIntervalSeconds,_ = strconv.Atoi(value)
+		config.PingIntervalSeconds, _ = strconv.Atoi(value)
+	// Claude Thinking 模型配置
+	case "ClaudeThinkingEnabled":
+		config.ClaudeThinkingEnabled = value == "true"
+	case "ClaudeThinkingBudgetRatio":
+		config.ClaudeThinkingBudgetRatio, _ = strconv.ParseFloat(value, 64)
+	case "ClaudeDefaultMaxTokens":
+		err = common.UpdateClaudeDefaultMaxTokensByJSONString(value)
+	case "ClaudeReasoningEffortMap":
+		err = common.UpdateClaudeReasoningEffortMapByJSONString(value)
+	case "ClaudeRequestHeaders":
+		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	}
 	return err
 }

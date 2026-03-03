@@ -97,7 +97,9 @@ func testChannel(channel *model.Channel, specifiedModel string) (err error, open
 	}
 	request := buildTestRequest()
 	request.Model = modelName
-	meta.OriginModelName, meta.ActualModelName = modelName, modelName
+	meta.OriginModelName = modelName
+	request.Model, _ = util.GetMappedModelName(modelName, meta.ModelMapping)
+	meta.ActualModelName = request.Model
 	convertedRequest, err := adaptor.ConvertRequest(c, constant.RelayModeChatCompletions, request)
 	if err != nil {
 		return err, nil, modelName, keyIndex

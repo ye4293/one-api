@@ -36,6 +36,8 @@ type Video struct {
 	CallbackStatus string `json:"callback_status"`                 // 回调状态：pending/success/failed/none
 	CallbackTime   int64  `json:"callback_time"`                   // 回调时间戳
 	CallbackError  string `json:"callback_error" gorm:"type:text"` // 回调失败原因
+	Sound          string `json:"sound"`                           // 是否有声：on/off（视频V2.6模型）
+	VoiceList      string `json:"voice_list" gorm:"type:text"`     // 指定的音色列表（JSON格式，视频V2.6模型）
 }
 
 func (video *Video) Insert() error {
@@ -87,6 +89,30 @@ func GetVideoTaskByVideoId(videoId string) (*Video, error) {
 	if result.Error != nil {
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("no record found for video_id: %s", videoId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
+func GetVideoTaskByIdAndUserId(taskId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("task_id = ? AND user_id = ?", taskId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for task_id: %s and user_id: %d", taskId, userId)
+		}
+		return nil, result.Error
+	}
+	return &video, nil
+}
+
+func GetVideoTaskByVideoIdAndUserId(videoId string, userId int) (*Video, error) {
+	var video Video
+	result := DB.Where("video_id = ? AND user_id = ?", videoId, userId).First(&video)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no record found for video_id: %s and user_id: %d", videoId, userId)
 		}
 		return nil, result.Error
 	}
@@ -258,6 +284,23 @@ func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to update store_url for task_id %s: %w", taskId, result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
+}
+
+// UpdateVideoCredentials 更新视频任务的凭证信息（用于保存 API Key）
+func UpdateVideoCredentials(taskId string, credentials string) error {
+	result := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("credentials", credentials)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update credentials for task_id %s: %w", taskId, result.Error)
 	}
 
 	if result.RowsAffected == 0 {

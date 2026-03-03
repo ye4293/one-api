@@ -1,8 +1,26 @@
 package anthropic
 
-import "github.com/songquanpeng/one-api/relay/model"
+import (
+	"strings"
+
+	"github.com/songquanpeng/one-api/relay/model"
+)
+
+// IsThinkingModel 判断模型是否是 thinking 模型
+func IsThinkingModel(modelName string) bool {
+	return strings.HasSuffix(modelName, "-thinking")
+}
+
+// GetBaseModelName 获取基础模型名称（去除 -thinking 后缀）
+func GetBaseModelName(modelName string) string {
+	if IsThinkingModel(modelName) {
+		return strings.TrimSuffix(modelName, "-thinking")
+	}
+	return modelName
+}
 
 var ModelList = []string{
+	// Claude 3 models
 	"claude-3-haiku-20240307",
 	"claude-3-sonnet-20240229",
 	"claude-3-opus-20240229",
@@ -10,19 +28,25 @@ var ModelList = []string{
 	"claude-3-5-sonnet-20241022",
 	"claude-3-5-haiku-20241022",
 	"claude-3-7-sonnet-20250219",
-	"claude-opus-4-20250514",
+	// Claude 4 models
 	"claude-sonnet-4-20250514",
-	"claude-3-7-sonnet-20250219-thinking",
-	"claude-opus-4-20250514-thinking",
-	"claude-sonnet-4-20250514-thinking",
+	"claude-opus-4-20250514",
 	"claude-opus-4-1-20250805",
-	"claude-opus-4-1-20250805-thinking",
 	"claude-haiku-4-5-20251001",
+	"claude-sonnet-4-5-20250929",
+	"claude-opus-4-5-20251101",
+	"claude-opus-4-6",
+	"claude-sonnet-4-6",
+	// Claude thinking models
+	"claude-3-7-sonnet-20250219-thinking",
+	"claude-sonnet-4-20250514-thinking",
+	"claude-opus-4-20250514-thinking",
+	"claude-opus-4-1-20250805-thinking",
 	"claude-haiku-4-5-20251001-thinking",
 	"claude-sonnet-4-5-20250929-thinking",
-	"claude-sonnet-4-5-20250929",
 	"claude-opus-4-5-20251101-thinking",
-	"claude-opus-4-5-20251101",
+	"claude-opus-4-6-thinking",
+	"claude-sonnet-4-6-thinking",
 }
 
 var ModelDetails = []model.APIModel{

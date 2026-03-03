@@ -1,6 +1,8 @@
 package aws
 
 import (
+	"strings"
+
 	claude "github.com/songquanpeng/one-api/relay/channel/aws/claude"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
 )
@@ -27,6 +29,14 @@ func GetAdaptor(model string) utils.AwsAdapter {
 	case AwsClaude:
 		return &claude.Adaptor{}
 	default:
+		// 支持 AWS 原生模型 ID 格式，如 anthropic.xxx, us.anthropic.xxx, global.anthropic.xxx 等
+		if strings.Contains(model, "anthropic.") {
+			return &claude.Adaptor{}
+		}
+		// 支持 ARN 格式（通过模型重定向配置的 inference profile）
+		if strings.HasPrefix(model, "arn:") {
+			return &claude.Adaptor{}
+		}
 		return nil
 	}
 }

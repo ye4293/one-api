@@ -14,10 +14,9 @@ func CalculateQuota(cost float64, groupRatio float64) int64 {
 	actualCostUSD := cost / 100.0
 
 	// 配额计算公式: 实际费用 * 500000 * 分组倍率
-	// common.USD = 500，表示 $1 = 500 quota
 	// 但这里我们需要用 500000，因为 $1 = 500 quota，所以 $0.002 = 1 quota
 	// 因此 $1 = 500 quota，所以计算时要用 500
-	quota := actualCostUSD * float64(common.USD) * groupRatio
+	quota := actualCostUSD * 500000 * groupRatio
 
 	return int64(quota)
 }

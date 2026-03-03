@@ -14,14 +14,19 @@ import (
 
 // ModelPriceInfo 模型价格信息
 type ModelPriceInfo struct {
-	ModelName       string  `json:"model_name"`
-	ModelRatio      float64 `json:"model_ratio"`       // 模型基础倍率
-	CompletionRatio float64 `json:"completion_ratio"`  // 补全倍率
-	FixedPrice      float64 `json:"fixed_price"`       // 按次计费价格（元）
-	InputPrice      float64 `json:"input_price"`       // 输入价格 ($/1M tokens)
-	OutputPrice     float64 `json:"output_price"`      // 输出价格 ($/1M tokens)
-	PriceType       string  `json:"price_type"`        // 计费类型: "ratio" 或 "fixed"
-	HasRatio        bool    `json:"has_ratio"`         // 是否已配置倍率
+	ModelName        string  `json:"model_name"`
+	ModelRatio       float64 `json:"model_ratio"`
+	CompletionRatio  float64 `json:"completion_ratio"`
+	FixedPrice       float64 `json:"fixed_price"`
+	InputPrice       float64 `json:"input_price"`
+	OutputPrice      float64 `json:"output_price"`
+	PriceType        string  `json:"price_type"`
+	HasRatio         bool    `json:"has_ratio"`
+	CacheRatio       float64 `json:"cache_ratio"`
+	ImageInputRatio  float64 `json:"image_input_ratio"`
+	ImageOutputRatio float64 `json:"image_output_ratio"`
+	AudioInputRatio  float64 `json:"audio_input_ratio"`
+	AudioOutputRatio float64 `json:"audio_output_ratio"`
 }
 
 // GetModelPrices 获取所有模型的价格信息
@@ -491,14 +496,19 @@ func getAllModelPrices() []ModelPriceInfo {
 		outputPricePerM := inputPricePerM * completionRatio
 
 		prices = append(prices, ModelPriceInfo{
-			ModelName:       modelName,
-			ModelRatio:      ratio,
-			CompletionRatio: completionRatio,
-			FixedPrice:      0,
-			InputPrice:      inputPricePerM,
-			OutputPrice:     outputPricePerM,
-			PriceType:       "ratio",
-			HasRatio:        true,
+			ModelName:        modelName,
+			ModelRatio:       ratio,
+			CompletionRatio:  completionRatio,
+			FixedPrice:       0,
+			InputPrice:       inputPricePerM,
+			OutputPrice:      outputPricePerM,
+			PriceType:        "ratio",
+			HasRatio:         true,
+			CacheRatio:       common.GetCacheRatio(modelName),
+			ImageInputRatio:  common.GetImageInputRatio(modelName),
+			ImageOutputRatio: common.GetImageOutputRatio(modelName),
+			AudioInputRatio:  common.GetAudioInputRatio(modelName),
+			AudioOutputRatio: common.GetAudioOutputRatio(modelName),
 		})
 	}
 

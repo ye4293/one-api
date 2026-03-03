@@ -31,11 +31,11 @@ type Log struct {
 	ChannelId        int     `json:"channel" gorm:"index"`
 	Duration         float64 `json:"duration" gorm:"default:0"`
 	Speed            float64 `json:"speed" gorm:"default:0"`
-	Title            string  `json:"title"`
-	HttpReferer      string  `json:"http_referer"`
-	Provider         string  `json:"provider"`
-	XRequestID       string  `json:"x_request_id"`
-	XResponseID      string  `json:"x_response_id"`
+	Title            string  `json:"title" gorm:"type:varchar(200)"`
+	HttpReferer      string  `json:"http_referer" gorm:"type:varchar(200)"`
+	Provider         string  `json:"provider" gorm:"type:varchar(200)"`
+	XRequestID       string  `json:"x_request_id" gorm:"type:varchar(200)"`
+	XResponseID      string  `json:"x_response_id" gorm:"type:varchar(200)"`
 	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
 	VideoTaskId      string  `json:"video_task_id" gorm:"type:varchar(200);index:idx_video_task_id;default:''"`
 	IsStream         bool    `json:"is_stream" gorm:"default:false"`

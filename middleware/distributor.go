@@ -160,14 +160,8 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 		// 判断是查询接口还是生成接口
 		// 查询接口格式: /kling/v1/videos/{task_id} (GET)
 		// 生成接口格式: /kling/v1/videos/text2video 等 (POST)
-		if c.Request.Method == "GET" {
-			// GET 请求是查询接口，从查询参数中读取 model_name 或 model
-			if modelName := c.Query("model_name"); modelName != "" {
-				modelRequest.Model = modelName
-			} else if model := c.Query("model"); model != "" {
-				modelRequest.Model = model
-			}
-		} else {
+		modelRequest.Model = "kling-v1"
+		if c.Request.Method == "POST" {
 			// POST 请求是视频生成接口，解析请求体中的 model 字段
 			_ = common.UnmarshalBodyReusable(c, &modelRequest)
 			if modelRequest.ModelName != "" {
@@ -203,6 +197,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("channel_name", channel.Name)
 	c.Set("model_mapping", channel.GetModelMapping())
 	c.Set("original_model", modelName) // for retry
+	// 设置自定义请求头覆盖配置
+	if headersOverride := channel.GetHeaderOverride(); headersOverride != nil {
+		c.Set("headers_override", headersOverride)
+	}
 
 	// 获取实际使用的Key（支持多Key聚合）
 	var actualKey string

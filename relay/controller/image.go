@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -27,6 +29,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -43,6 +46,33 @@ const (
 	ModalityImage = "IMAGE"
 	ModalityText  = "TEXT"
 )
+
+// 图片下载专用 HTTP 客户端（复用连接，提高性能）
+var imageDownloadClient *http.Client
+var imageDownloadClientOnce sync.Once
+
+// getImageDownloadClient 获取图片下载专用的 HTTP 客户端（单例模式）
+func getImageDownloadClient() *http.Client {
+	imageDownloadClientOnce.Do(func() {
+		imageDownloadClient = &http.Client{
+			Timeout: 120 * time.Second, // 整体超时 120 秒
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second, // 连接超时 30 秒
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				TLSHandshakeTimeout:   30 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+			},
+		}
+	})
+	return imageDownloadClient
+}
 
 // GeminiUsageDetails 用于存储从 Gemini UsageMetadata 提取的详细使用信息
 type GeminiUsageDetails struct {
@@ -92,10 +122,12 @@ func extractGeminiUsageDetails(
 
 // buildGeminiUsageMap 构建包含详细使用信息的 usage map
 func buildGeminiUsageMap(totalTokens, inputTokens, outputTokens int, details GeminiUsageDetails) map[string]interface{} {
+	// 如果有 reasoning_tokens，加到 output_tokens 中
+	finalOutputTokens := outputTokens + details.ReasoningTokens
 	return map[string]interface{}{
 		"total_tokens":  totalTokens,
 		"input_tokens":  inputTokens,
-		"output_tokens": outputTokens,
+		"output_tokens": finalOutputTokens,
 		"input_tokens_details": map[string]int{
 			"text_tokens":  details.InputTextTokens,
 			"image_tokens": details.InputImageTokens,
@@ -215,8 +247,10 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 		return "", fmt.Errorf("failed to load AWS config: %v", err)
 	}
 
-	// 创建 S3 客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建 S3 客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传图片到 R2
 	_, err = client.PutObject(uploadCtx, &s3.PutObjectInput{
@@ -229,9 +263,14 @@ func uploadImageBase64ToS3(ctx context.Context, base64Data string, mimeType stri
 		return "", fmt.Errorf("failed to upload image to R2: %v", err)
 	}
 
-	// 生成文件 URL（与 video.go 保持一致）
-	fileUrl := "https://file.ezlinkai.com"
-	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	if config.CfFilePublicUrl != "" {
+		// 公共 URL 格式：publicUrl/key（不包含 bucket，因为自定义域通常直接映射到 bucket）
+		return fmt.Sprintf("%s/%s", config.CfFilePublicUrl, filename), nil
+	}
+	// 回退到 S3 Endpoint（Path-Style 格式：endpoint/bucket/key）
+	return fmt.Sprintf("%s/%s/%s", config.CfFileEndpoint, config.CfBucketFileName, filename), nil
 }
 
 // calculateGeminiImageQuota 计算 Gemini 图片生成的配额
@@ -409,7 +448,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					if err == nil {
 						// 获取文件的MIME类型
 						mimeType := fileHeader.Header.Get("Content-Type")
-						if mimeType == "" || mimeType == "application/octet-stream" {
+						if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" || mimeType == "text/plain" {
 							ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 							switch ext {
 							case ".png":
@@ -460,6 +499,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 设置Content-Type为multipart/form-data
 			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", writer.FormDataContentType())
+			// 应用渠道自定义请求头覆盖
+			channel.ApplyHeadersOverride(req, meta)
 			// 记录实际body大小用于调试，但不设置header
 			logger.Debugf(ctx, "Multipart form body size: %d bytes", body.Len())
 
@@ -502,6 +543,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 设置Content-Type
 			// 注意：不手动设置Content-Length，让Go的http.Client自动计算
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			// 应用渠道自定义请求头覆盖
+			channel.ApplyHeadersOverride(req, meta)
 			// 记录实际数据大小用于调试，但不设置header
 			logger.Debugf(ctx, "Form urlencoded data size: %d bytes", len(encodedFormData))
 		}
@@ -606,7 +649,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			}
 
 			// 并发处理所有找到的图片
-			imageParts, _ := processImagesConcurrently(ctx, imageInputs)
+			preProcessStart := time.Now()
+			imageParts, _, imgErr := processImagesConcurrently(ctx, imageInputs)
+			preProcessDuration := time.Since(preProcessStart)
+			logger.Infof(ctx, "Image pre-processing (download & conversion) took %v for %d images", preProcessDuration, len(imageInputs))
+
+			if imgErr != nil {
+				return openai.ErrorWrapper(imgErr, "image_download_failed", http.StatusBadRequest)
+			}
 
 			// 将成功处理的图片添加到Gemini请求中
 			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, imageParts...)
@@ -620,66 +670,92 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			requestBody = bytes.NewBuffer(jsonStr)
 
 			// Update URL for Gemini API
+			// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
+			actualModelName := imageRequest.Model
 			if meta.ChannelType == common.ChannelTypeVertexAI {
-				// 为VertexAI构建URL
-				keyIndex := 0
-				if meta.KeyIndex != nil {
-					keyIndex = *meta.KeyIndex
-				}
-
-				// 安全检查：确保keyIndex不为负数
-				if keyIndex < 0 {
-					logger.Errorf(ctx, "VertexAI keyIndex为负数: %d，重置为0", keyIndex)
-					keyIndex = 0
-				}
-
-				projectID := ""
-
-				// 尝试从Key字段解析项目ID（支持多密钥）
-				if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-					// 多密钥模式：从指定索引的密钥解析
-					var credentials vertexai.Credentials
-					if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
-						projectID = credentials.ProjectID
-					} else {
-						logger.Errorf(ctx, "VertexAI 从多密钥解析ProjectID失败: %v", err)
-					}
-				} else if meta.ActualAPIKey != "" {
-					// 单密钥模式：从ActualAPIKey解析
-					var credentials vertexai.Credentials
-					if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
-						projectID = credentials.ProjectID
-					} else {
-						logger.Errorf(ctx, "VertexAI 从ActualAPIKey解析ProjectID失败: %v", err)
-					}
-				} else {
-					logger.Warnf(ctx, "VertexAI 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d", meta.IsMultiKey, len(meta.Keys))
-				}
-
-				// 回退：尝试从Config获取项目ID
-				if projectID == "" && meta.Config.VertexAIProjectID != "" {
-					projectID = meta.Config.VertexAIProjectID
-				}
-
-				if projectID == "" {
-					logger.Errorf(ctx, "VertexAI 无法获取ProjectID")
-					return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
-				}
+				// 检查是否是 API Key 模式
+				isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
+				logger.Debugf(ctx, "VertexAI 配置检查: VertexKeyType=%q, isAPIKeyMode=%v",
+					meta.Config.VertexKeyType, isAPIKeyMode)
 
 				region := meta.Config.Region
 				if region == "" {
 					region = "global"
 				}
 
-				// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-				if region == "global" {
-					fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+				if isAPIKeyMode {
+					// API Key 模式：不需要 Project ID，使用简化的 URL，key 作为 URL 参数
+					apiKey := meta.ActualAPIKey
+					if meta.IsMultiKey && len(meta.Keys) > 0 {
+						keyIndex := 0
+						if meta.KeyIndex != nil && *meta.KeyIndex >= 0 && *meta.KeyIndex < len(meta.Keys) {
+							keyIndex = *meta.KeyIndex
+						}
+						apiKey = meta.Keys[keyIndex]
+					}
+
+					if region == "global" {
+						fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", actualModelName, apiKey)
+					} else {
+						fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", region, actualModelName, apiKey)
+					}
+					logger.Debugf(ctx, "VertexAI API Key 模式: 使用简化 URL（无 ProjectID）")
 				} else {
-					fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+					// JSON 凭证模式：需要 Project ID
+					keyIndex := 0
+					if meta.KeyIndex != nil {
+						keyIndex = *meta.KeyIndex
+					}
+
+					// 安全检查：确保keyIndex不为负数
+					if keyIndex < 0 {
+						logger.Errorf(ctx, "VertexAI keyIndex为负数: %d，重置为0", keyIndex)
+						keyIndex = 0
+					}
+
+					projectID := ""
+
+					// 尝试从Key字段解析项目ID（支持多密钥）
+					if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+						// 多密钥模式：从指定索引的密钥解析
+						var credentials vertexai.Credentials
+						if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+							projectID = credentials.ProjectID
+						} else {
+							logger.Errorf(ctx, "VertexAI 从多密钥解析ProjectID失败: %v", err)
+						}
+					} else if meta.ActualAPIKey != "" {
+						// 单密钥模式：从ActualAPIKey解析
+						var credentials vertexai.Credentials
+						if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+							projectID = credentials.ProjectID
+						} else {
+							logger.Errorf(ctx, "VertexAI 从ActualAPIKey解析ProjectID失败: %v", err)
+						}
+					} else {
+						logger.Warnf(ctx, "VertexAI 无法获取密钥信息，IsMultiKey: %v, Keys长度: %d", meta.IsMultiKey, len(meta.Keys))
+					}
+
+					// 回退：尝试从Config获取项目ID
+					if projectID == "" && meta.Config.VertexAIProjectID != "" {
+						projectID = meta.Config.VertexAIProjectID
+					}
+
+					if projectID == "" {
+						logger.Errorf(ctx, "VertexAI 无法获取ProjectID")
+						return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+					}
+
+					// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+					if region == "global" {
+						fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+					} else {
+						fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+					}
 				}
 			} else {
 				// 原有的Gemini官方API URL
-				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+				fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, actualModelName)
 			}
 		}
 
@@ -764,10 +840,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 设置Content-Type
 		// 注意：不手动设置Content-Length，让Go的http.Client自动计算
-		req.Header.Set("Content-Type", contentType)
+		// 对于 Gemini 模型，由于我们已经将请求体转换为 Gemini 格式的 JSON，
+		// 需要显式设置 Content-Type 为 application/json，而不是使用原始请求的 Content-Type
+		if strings.HasPrefix(imageRequest.Model, "gemini") {
+			req.Header.Set("Content-Type", "application/json")
+			logger.Debugf(ctx, "Gemini request: Content-Type set to application/json")
+		} else {
+			req.Header.Set("Content-Type", contentType)
+		}
+
+		// 应用渠道自定义请求头覆盖
+		channel.ApplyHeadersOverride(req, meta)
 
 		// 记录JSON请求体大小用于调试，但不设置header
-		if strings.Contains(contentType, "application/json") {
+		if strings.Contains(req.Header.Get("Content-Type"), "application/json") {
 			if bodyBuffer, ok := requestBody.(*bytes.Buffer); ok {
 				logger.Debugf(ctx, "JSON request body size: %d bytes", bodyBuffer.Len())
 			}
@@ -829,24 +915,32 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		req.Header.Set("api-key", token)
 	} else if strings.HasPrefix(imageRequest.Model, "gemini") {
 		if meta.ChannelType == common.ChannelTypeVertexAI {
-			// 为VertexAI使用Bearer token认证 - 复用已有的adaptor实例
-			var vertexAIAdaptor *vertexai.Adaptor
-			if va, ok := adaptor.(*vertexai.Adaptor); ok {
-				vertexAIAdaptor = va
+			// 检查是否是 API Key 模式
+			isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
+
+			if isAPIKeyMode {
+				// API Key 模式：key 已经在 URL 中，不需要 Authorization header
+				logger.Debugf(ctx, "VertexAI API Key 模式: 跳过 Bearer token 认证（key 已在 URL 中）")
 			} else {
-				// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
-				vertexAIAdaptor = &vertexai.Adaptor{}
-				vertexAIAdaptor.Init(meta)
-				logger.Warnf(ctx, "VertexAI adaptor类型不匹配，创建新实例")
-			}
+				// JSON 凭证模式：使用 Bearer token 认证
+				var vertexAIAdaptor *vertexai.Adaptor
+				if va, ok := adaptor.(*vertexai.Adaptor); ok {
+					vertexAIAdaptor = va
+				} else {
+					// 如果不是VertexAI适配器，创建新实例（这种情况不应该发生）
+					vertexAIAdaptor = &vertexai.Adaptor{}
+					vertexAIAdaptor.Init(meta)
+					logger.Warnf(ctx, "VertexAI adaptor类型不匹配，创建新实例")
+				}
 
-			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
-			if err != nil {
-				logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
-				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
-			}
+				accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+				if err != nil {
+					logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
+					return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+				}
 
-			req.Header.Set("Authorization", "Bearer "+accessToken)
+				req.Header.Set("Authorization", "Bearer "+accessToken)
+			}
 		} else {
 			// For Gemini, set the API key in the x-goog-api-key header
 			req.Header.Set("x-goog-api-key", meta.APIKey)
@@ -857,7 +951,23 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	req.Header.Set("Accept", c.Request.Header.Get("Accept"))
 
-	resp, err := util.HTTPClient.Do(req)
+	// 发送请求
+	// 对于 Gemini 模型，使用专用的长时间运行客户端，避免外部上下文超时
+	var resp *http.Response
+	var cancelFunc context.CancelFunc
+	apiReqStart := time.Now()
+	if strings.HasPrefix(imageRequest.Model, "gemini") {
+		logger.Debugf(ctx, "Gemini image generation: using LongRunningHTTPClient with independent context")
+		resp, cancelFunc, err = util.DoLongRunningRequest(req)
+		if cancelFunc != nil {
+			defer cancelFunc() // 确保在函数返回时取消 context
+		}
+	} else {
+		resp, err = util.HTTPClient.Do(req)
+	}
+	apiReqDuration := time.Since(apiReqStart)
+	logger.Infof(ctx, "Model API request took %v", apiReqDuration)
+
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
@@ -1089,6 +1199,16 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			_ = resp.Body.Close()
 		}
 	}()
+
+	// 豆包图片流式请求：直接透传 SSE 给客户端，不缓冲全量 body
+	if meta.ChannelType == 40 && imageRequest.Stream && resp.StatusCode == http.StatusOK {
+		billingJSON, streamErr := proxyDoubaoImageSSE(c, ctx, resp)
+		// 把解析到的计费 JSON 写入 responseBody，让外层 defer 完成计费
+		if billingJSON != nil {
+			responseBody = billingJSON
+		}
+		return streamErr
+	}
 
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
@@ -1663,31 +1783,31 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					ImageTokens     int `json:"image_tokens"`
 					ReasoningTokens int `json:"reasoning_tokens"`
 				} `json:"output_tokens_details"`
+		}{
+			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
+			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
+			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
+			InputTokensDetails: struct {
+				TextTokens  int `json:"text_tokens"`
+				ImageTokens int `json:"image_tokens"`
 			}{
-				TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
-				InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
-				OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
-				InputTokensDetails: struct {
-					TextTokens  int `json:"text_tokens"`
-					ImageTokens int `json:"image_tokens"`
-				}{
-					TextTokens:  usageDetails.InputTextTokens,
-					ImageTokens: usageDetails.InputImageTokens,
-				},
-				OutputTokensDetails: struct {
-					TextTokens      int `json:"text_tokens"`
-					ImageTokens     int `json:"image_tokens"`
-					ReasoningTokens int `json:"reasoning_tokens"`
-				}{
-					TextTokens:      0,
-					ImageTokens:     usageDetails.OutputImageTokens,
-					ReasoningTokens: usageDetails.ReasoningTokens,
-				},
+				TextTokens:  usageDetails.InputTextTokens,
+				ImageTokens: usageDetails.InputImageTokens,
 			},
-		}
+			OutputTokensDetails: struct {
+				TextTokens      int `json:"text_tokens"`
+				ImageTokens     int `json:"image_tokens"`
+				ReasoningTokens int `json:"reasoning_tokens"`
+			}{
+				TextTokens:      0,
+				ImageTokens:     usageDetails.OutputImageTokens,
+				ReasoningTokens: usageDetails.ReasoningTokens,
+			},
+		},
+	}
 
-		// Re-marshal to the OpenAI format with usage information
-		responseBody, err = json.Marshal(imageResponseWithUsage)
+	// Re-marshal to the OpenAI format with usage information
+	responseBody, err = json.Marshal(imageResponseWithUsage)
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
@@ -1695,6 +1815,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
 		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
+	} else if meta.ChannelType == 40 && imageRequest.Stream {
+		// 豆包图片流式响应（SSE）→ 标准 JSON
+		logger.Debugf(ctx, "Doubao image stream raw response (len=%d):\n%s", len(responseBody), string(responseBody))
+		converted, parseErr := parseDoubaoImageSSEToJSON(responseBody)
+		if parseErr != nil {
+			return openai.ErrorWrapper(parseErr, "parse_doubao_stream_failed", http.StatusInternalServerError)
+		}
+		responseBody = converted
+		err = json.Unmarshal(responseBody, &imageResponse)
+		if err != nil {
+			return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError)
+		}
 	} else if meta.ChannelType == 27 {
 		// Handle channel type 27 response format conversion
 		var channelResponse struct {
@@ -1796,10 +1928,227 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	// 记录响应体大小用于调试
 	logger.Debugf(ctx, "Response body size: %d bytes", len(responseBody))
 
+	// 豆包图片流式请求已将 SSE 转换为 JSON，需要强制覆盖 Content-Type
+	// 否则上游返回的 text/event-stream 会被透传，客户端误以为是流式响应
+	respContentType := c.Writer.Header().Get("Content-Type")
+	if meta.ChannelType == 40 && imageRequest.Stream {
+		respContentType = "application/json"
+		c.Writer.Header().Set("Content-Type", respContentType)
+	}
+
 	// 使用c.Data()让Gin自动处理Content-Length和响应写入
-	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
+	c.Data(resp.StatusCode, respContentType, responseBody)
 
 	return nil
+}
+
+// proxyDoubaoImageSSE 将上游豆包图片生成的 SSE 流直接透传给客户端，
+// 同时从 completed 事件中提取图片数量，返回供计费使用的 JSON。
+func proxyDoubaoImageSSE(c *gin.Context, ctx context.Context, resp *http.Response) ([]byte, *relaymodel.ErrorWithStatusCode) {
+	// 透传上游响应头（保留 text/event-stream 等 SSE 相关头）
+	for k, v := range resp.Header {
+		if strings.ToLower(k) != "content-length" {
+			c.Writer.Header().Set(k, v[0])
+		}
+	}
+	c.Writer.WriteHeader(http.StatusOK)
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 最大 1MB 行（防止大 base64）
+
+	var modelName string
+	var generatedImages int
+	var outputTokens, totalTokens int
+
+	type sseUsage struct {
+		GeneratedImages int `json:"generated_images"`
+		OutputTokens    int `json:"output_tokens"`
+		TotalTokens     int `json:"total_tokens"`
+	}
+	type sseData struct {
+		Type    string    `json:"type"`
+		Model   string    `json:"model"`
+		URL     string    `json:"url,omitempty"`
+		B64Json string    `json:"b64_json,omitempty"`
+		Usage   *sseUsage `json:"usage,omitempty"`
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 透传每一行
+		fmt.Fprintf(c.Writer, "%s\n", line)
+		if canFlush {
+			flusher.Flush()
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var ev sseData
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		if modelName == "" {
+			modelName = ev.Model
+		}
+		// 有 URL/b64 → 图片事件，计数
+		if ev.URL != "" || ev.B64Json != "" {
+			generatedImages++
+		}
+		// completed 事件：以 usage 字段为准（更准确）
+		if ev.Usage != nil {
+			generatedImages = ev.Usage.GeneratedImages
+			outputTokens = ev.Usage.OutputTokens
+			totalTokens = ev.Usage.TotalTokens
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(ctx, "proxyDoubaoImageSSE scanner error: %v", err)
+	}
+
+	if generatedImages == 0 {
+		generatedImages = 1
+	}
+
+	// 构造计费 JSON，格式与豆包非流式响应兼容，供外层 defer 解析
+	type billingJSON struct {
+		Model string `json:"model"`
+		Usage struct {
+			GeneratedImages int `json:"generated_images"`
+			OutputTokens    int `json:"output_tokens"`
+			TotalTokens     int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	b := billingJSON{Model: modelName}
+	b.Usage.GeneratedImages = generatedImages
+	b.Usage.OutputTokens = outputTokens
+	b.Usage.TotalTokens = totalTokens
+	billingBytes, _ := json.Marshal(b)
+
+	logger.Infof(ctx, "proxyDoubaoImageSSE done: generated_images=%d", generatedImages)
+	return billingBytes, nil
+}
+
+// parseDoubaoImageSSEToJSON 将豆包图片生成的 SSE 流式响应转为标准 JSON。
+// SSE 格式：
+//
+//	event: image_generation
+//	data: {"type":"generating","model":"...","url":"...","size":"...","image_index":0,...}
+//
+//	event: image_generation
+//	data: {"type":"completed","model":"...","usage":{"generated_images":2,...},...}
+//
+//	data: [DONE]
+//
+// 输出 JSON 同时兼容 openai.ImageResponse（data[].url/b64_json）
+// 以及豆包计费逻辑所需的 usage.generated_images 字段。
+func parseDoubaoImageSSEToJSON(sseBody []byte) ([]byte, error) {
+	type sseEvent struct {
+		Type       string  `json:"type"`
+		Model      string  `json:"model"`
+		URL        string  `json:"url,omitempty"`
+		B64Json    string  `json:"b64_json,omitempty"`
+		Size       string  `json:"size,omitempty"`
+		ImageIndex int     `json:"image_index"`
+		CreatedAt  int64   `json:"created_at,omitempty"`
+		Error      *struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error,omitempty"`
+		Usage *struct {
+			GeneratedImages int `json:"generated_images"`
+			OutputTokens    int `json:"output_tokens"`
+			TotalTokens     int `json:"total_tokens"`
+		} `json:"usage,omitempty"`
+	}
+
+	type imageItem struct {
+		Url     string `json:"url,omitempty"`
+		B64Json string `json:"b64_json,omitempty"`
+	}
+
+	type doubaoUsage struct {
+		GeneratedImages int `json:"generated_images"`
+		OutputTokens    int `json:"output_tokens"`
+		TotalTokens     int `json:"total_tokens"`
+	}
+
+	type outJSON struct {
+		Model     string      `json:"model,omitempty"`
+		Created   int64       `json:"created,omitempty"`
+		Data      []imageItem `json:"data"`
+		Usage     doubaoUsage `json:"usage"`
+	}
+
+	var images []imageItem
+	var modelName string
+	var createdAt int64
+	var usage doubaoUsage
+
+	// 兼容 \r\n 和 \n 行尾
+	rawText := strings.ReplaceAll(string(sseBody), "\r\n", "\n")
+	for _, line := range strings.Split(rawText, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		var ev sseEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+
+		if modelName == "" {
+			modelName = ev.Model
+		}
+		if ev.CreatedAt > 0 {
+			createdAt = ev.CreatedAt
+		}
+
+		// 按字段内容判断事件类型，兼容 partial_succeeded / generating 等各种命名
+		hasImage := ev.URL != "" || ev.B64Json != ""
+		noError := ev.Error == nil || ev.Error.Code == ""
+		if hasImage && noError {
+			images = append(images, imageItem{Url: ev.URL, B64Json: ev.B64Json})
+		}
+		if ev.Usage != nil {
+			usage = doubaoUsage{
+				GeneratedImages: ev.Usage.GeneratedImages,
+				OutputTokens:    ev.Usage.OutputTokens,
+				TotalTokens:     ev.Usage.TotalTokens,
+			}
+		}
+	}
+
+	if len(images) == 0 {
+		return nil, fmt.Errorf("doubao stream: no images found in SSE response")
+	}
+
+	// 如果 completed 事件没有 usage，用实际图片数兜底
+	if usage.GeneratedImages == 0 {
+		usage.GeneratedImages = len(images)
+	}
+
+	out := outJSON{
+		Model:   modelName,
+		Created: createdAt,
+		Data:    images,
+		Usage:   usage,
+	}
+	return json.Marshal(out)
 }
 
 // 计算最大公约数
@@ -2985,7 +3334,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 				// 获取 MIME 类型
 				mimeType := fileHeader.Header.Get("Content-Type")
-				if mimeType == "" || mimeType == "application/octet-stream" {
+				if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" || mimeType == "application/x-octet-stream" || mimeType == "text/plain" {
 					// 根据文件扩展名推断 MIME 类型
 					ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 					switch ext {
@@ -3090,67 +3439,92 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	}
 
 	// 更新 URL 为 Gemini API（API key 应该在 header 中，不是 URL 参数）
-	// 对于 Gemini API，我们应该使用原始模型名称，而不是映射后的名称
+	// 使用映射后的模型名称（imageRequest.Model 已经过 ModelMapping 处理）
+	actualModelName := imageRequest.Model
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		// 为VertexAI构建URL
-		keyIndex := 0
-		if meta.KeyIndex != nil {
-			keyIndex = *meta.KeyIndex
-		}
-
-		// 安全检查：确保keyIndex不为负数
-		if keyIndex < 0 {
-			logger.Errorf(ctx, "VertexAI Form请求 keyIndex为负数: %d，重置为0", keyIndex)
-			keyIndex = 0
-		}
-
-		projectID := ""
-
-		// 尝试从Key字段解析项目ID（支持多密钥）
-		if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
-			// 多密钥模式：从指定索引的密钥解析
-			var credentials vertexai.Credentials
-			if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
-				projectID = credentials.ProjectID
-			} else {
-				logger.Errorf(ctx, "VertexAI Form请求 从多密钥解析ProjectID失败: %v", err)
-			}
-		} else if meta.ActualAPIKey != "" {
-			// 单密钥模式：从ActualAPIKey解析
-			var credentials vertexai.Credentials
-			if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
-				projectID = credentials.ProjectID
-			} else {
-				logger.Errorf(ctx, "VertexAI Form请求 从ActualAPIKey解析ProjectID失败: %v", err)
-			}
-		} else {
-			logger.Warnf(ctx, "VertexAI Form请求 无法获取密钥信息")
-		}
-
-		// 回退：尝试从Config获取项目ID
-		if projectID == "" && meta.Config.VertexAIProjectID != "" {
-			projectID = meta.Config.VertexAIProjectID
-		}
-
-		if projectID == "" {
-			logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
-			return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
-		}
+		// 检查是否是 API Key 模式
+		isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
+		logger.Debugf(ctx, "VertexAI Form请求 配置检查: VertexKeyType=%q, isAPIKeyMode=%v",
+			meta.Config.VertexKeyType, isAPIKeyMode)
 
 		region := meta.Config.Region
 		if region == "" {
 			region = "global"
 		}
 
-		// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
-		if region == "global" {
-			fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, meta.OriginModelName)
+		if isAPIKeyMode {
+			// API Key 模式：不需要 Project ID，使用简化的 URL，key 作为 URL 参数
+			apiKey := meta.ActualAPIKey
+			if meta.IsMultiKey && len(meta.Keys) > 0 {
+				keyIndex := 0
+				if meta.KeyIndex != nil && *meta.KeyIndex >= 0 && *meta.KeyIndex < len(meta.Keys) {
+					keyIndex = *meta.KeyIndex
+				}
+				apiKey = meta.Keys[keyIndex]
+			}
+
+			if region == "global" {
+				fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", actualModelName, apiKey)
+			} else {
+				fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:generateContent?key=%s", region, actualModelName, apiKey)
+			}
+			logger.Debugf(ctx, "VertexAI Form请求 API Key 模式: 使用简化 URL（无 ProjectID）")
 		} else {
-			fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, meta.OriginModelName)
+			// JSON 凭证模式：需要 Project ID
+			keyIndex := 0
+			if meta.KeyIndex != nil {
+				keyIndex = *meta.KeyIndex
+			}
+
+			// 安全检查：确保keyIndex不为负数
+			if keyIndex < 0 {
+				logger.Errorf(ctx, "VertexAI Form请求 keyIndex为负数: %d，重置为0", keyIndex)
+				keyIndex = 0
+			}
+
+			projectID := ""
+
+			// 尝试从Key字段解析项目ID（支持多密钥）
+			if meta.IsMultiKey && len(meta.Keys) > keyIndex && keyIndex >= 0 {
+				// 多密钥模式：从指定索引的密钥解析
+				var credentials vertexai.Credentials
+				if err := json.Unmarshal([]byte(meta.Keys[keyIndex]), &credentials); err == nil {
+					projectID = credentials.ProjectID
+				} else {
+					logger.Errorf(ctx, "VertexAI Form请求 从多密钥解析ProjectID失败: %v", err)
+				}
+			} else if meta.ActualAPIKey != "" {
+				// 单密钥模式：从ActualAPIKey解析
+				var credentials vertexai.Credentials
+				if err := json.Unmarshal([]byte(meta.ActualAPIKey), &credentials); err == nil {
+					projectID = credentials.ProjectID
+				} else {
+					logger.Errorf(ctx, "VertexAI Form请求 从ActualAPIKey解析ProjectID失败: %v", err)
+				}
+			} else {
+				logger.Warnf(ctx, "VertexAI Form请求 无法获取密钥信息")
+			}
+
+			// 回退：尝试从Config获取项目ID
+			if projectID == "" && meta.Config.VertexAIProjectID != "" {
+				projectID = meta.Config.VertexAIProjectID
+			}
+
+			if projectID == "" {
+				logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
+				return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
+			}
+
+			// 构建VertexAI API URL - 使用generateContent而不是predict用于图像生成
+			if region == "global" {
+				fullRequestURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, actualModelName)
+			} else {
+				fullRequestURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, actualModelName)
+			}
 		}
 	} else {
 		// 原有的Gemini官方API URL
-		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, meta.OriginModelName)
+		fullRequestURL = fmt.Sprintf("%s/v1beta/models/%s:generateContent", meta.BaseURL, actualModelName)
 	}
 
 	// 创建请求
@@ -3165,28 +3539,40 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	req.Header.Set("Accept", "application/json")
 
 	if meta.ChannelType == common.ChannelTypeVertexAI {
-		// 为VertexAI使用Bearer token认证 - 创建新的adaptor实例（Form请求处理时没有预先创建的adaptor）
-		vertexAIAdaptor := &vertexai.Adaptor{}
-		vertexAIAdaptor.Init(meta)
+		// 检查是否是 API Key 模式
+		isAPIKeyMode := meta.IsVertexAIAPIKeyMode()
 
-		accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
-		if err != nil {
-			logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
-			return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+		if isAPIKeyMode {
+			// API Key 模式：key 已经在 URL 中，不需要 Authorization header
+			logger.Debugf(ctx, "VertexAI Form请求 API Key 模式: 跳过 Bearer token 认证（key 已在 URL 中）")
+		} else {
+			// JSON 凭证模式：使用 Bearer token 认证
+			vertexAIAdaptor := &vertexai.Adaptor{}
+			vertexAIAdaptor.Init(meta)
+
+			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
+			if err != nil {
+				logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
+				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
+			}
+
+			req.Header.Set("Authorization", "Bearer "+accessToken)
 		}
-
-		req.Header.Set("Authorization", "Bearer "+accessToken)
 	} else {
 		// Gemini API 正确的 header 格式
 		req.Header.Set("x-goog-api-key", meta.APIKey)
 	}
 
-	// 发送请求
-	resp, err := util.HTTPClient.Do(req)
+	// 发送请求 - 使用专用的长时间运行客户端，避免外部上下文超时
+	logger.Debugf(ctx, "Gemini Form image generation: using LongRunningHTTPClient with independent context")
+	resp, cancelFunc, err := util.DoLongRunningRequest(req)
 	if err != nil {
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 	defer resp.Body.Close()
+	if cancelFunc != nil {
+		defer cancelFunc() // 在读取完响应体后取消 context
+	}
 
 	// 处理响应
 	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota, startTime)
@@ -3721,7 +4107,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 		}{
 			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
 			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
-			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
+			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
 			InputTokensDetails: struct {
 				TextTokens  int `json:"text_tokens"`
 				ImageTokens int `json:"image_tokens"`
@@ -4024,63 +4410,109 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 
 // downloadImageToBase64 从URL下载图片并转换为base64
 func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data string, mimeType string, err error) {
-	// 设置HTTP客户端，包含超时和大小限制
-	client := &http.Client{
-		Timeout: 60 * time.Second, // 1分钟超时
-	}
+	startTime := time.Now()
 
-	// 创建请求
-	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
+	// 为图片下载创建独立的超时上下文，不受全局 RELAY_TIMEOUT 影响
+	// 图片下载最多等待 120 秒，避免单张图片阻塞整个请求
+	downloadCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	// 获取复用的 HTTP 客户端
+	client := getImageDownloadClient()
+
+	// 创建请求，使用独立的下载超时上下文
+	req, err := http.NewRequestWithContext(downloadCtx, "GET", imageURL, nil)
 	if err != nil {
+		logger.Errorf(ctx, "Failed to create request for URL %s: %v (elapsed: %v)", imageURL, err, time.Since(startTime))
 		return "", "", fmt.Errorf("create request failed: %w", err)
 	}
 
-	// 设置User-Agent，一些网站需要这个
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Gemini-Image-Processor/1.0)")
+	// 设置请求头，模拟浏览器行为，避免被 CDN 拦截
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+	// 注意：不设置 Accept-Encoding，让 Go HTTP 客户端自动处理压缩
 
 	// 发起请求
+	logger.Infof(ctx, "Starting image download from URL: %s", imageURL)
+	connectStart := time.Now()
 	resp, err := client.Do(req)
+	connectDuration := time.Since(connectStart)
+
 	if err != nil {
+		logger.Errorf(ctx, "Failed to download image from URL %s: %v (connect: %v, total: %v)", imageURL, err, connectDuration, time.Since(startTime))
 		return "", "", fmt.Errorf("download request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	logger.Debugf(ctx, "Image download response received: URL=%s, Status=%d, ContentLength=%d (connect: %v, total: %v)",
+		imageURL, resp.StatusCode, resp.ContentLength, connectDuration, time.Since(startTime))
+
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK {
+		logger.Errorf(ctx, "Image download failed with status %d for URL %s (elapsed: %v)", resp.StatusCode, imageURL, time.Since(startTime))
 		return "", "", fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
 	}
 
+	// 设置最大下载大小（50MB）
+	const maxImageSize = 50 * 1024 * 1024
+	// 使用 maxImageSize + 1 作为限制，这样如果读取了超过 maxImageSize 字节就说明超限了
+	limitedReader := io.LimitReader(resp.Body, maxImageSize+1)
+
+	// 读取图片内容
+	readStart := time.Now()
+	imageBytes, err := io.ReadAll(limitedReader)
+	readDuration := time.Since(readStart)
+
+	if err != nil {
+		logger.Errorf(ctx, "Failed to read image data from URL %s: %v (read: %v, total: %v)", imageURL, err, readDuration, time.Since(startTime))
+		return "", "", fmt.Errorf("read image data failed: %w", err)
+	}
+
+	totalDuration := time.Since(startTime)
+	logger.Infof(ctx, "Image download stats for %s: Connect=%v, Read=%v, Total=%v, Size=%d bytes",
+		imageURL, connectDuration, readDuration, totalDuration, len(imageBytes))
+
+	// 检查是否超出大小限制（如果读取了超过 maxImageSize 字节，说明图片太大）
+	if len(imageBytes) > maxImageSize {
+		logger.Errorf(ctx, "Image size exceeds limit for URL %s: size > %d bytes (elapsed: %v)", imageURL, maxImageSize, time.Since(startTime))
+		return "", "", fmt.Errorf("image size exceeds maximum limit of %d bytes", maxImageSize)
+	}
+
+	// 检查是否下载到了有效数据
+	if len(imageBytes) == 0 {
+		logger.Errorf(ctx, "Downloaded empty image from URL %s (elapsed: %v)", imageURL, time.Since(startTime))
+		return "", "", fmt.Errorf("downloaded image is empty")
+	}
+
+	logger.Debugf(ctx, "Image data read successfully: URL=%s, Size=%d bytes (elapsed: %v)", imageURL, len(imageBytes), time.Since(startTime))
+
 	// 获取Content-Type
 	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		// 如果没有Content-Type，尝试从URL扩展名推断
-		contentType = inferContentTypeFromURL(imageURL)
-		if contentType == "" {
-			contentType = "application/octet-stream"
+
+	// 如果Content-Type为空或者是通用二进制类型，需要推断真实类型
+	// 常见的通用二进制类型：application/octet-stream, binary/octet-stream, application/x-octet-stream, text/plain
+	if contentType == "" || contentType == "application/octet-stream" || contentType == "binary/octet-stream" || contentType == "application/x-octet-stream" || contentType == "text/plain" {
+		// 优先尝试从URL扩展名推断
+		inferredType := inferContentTypeFromURL(imageURL)
+		if inferredType != "" {
+			logger.Debugf(ctx, "Content-Type is '%s', inferred from URL extension: %s", contentType, inferredType)
+			contentType = inferredType
+		} else {
+			// URL没有扩展名，尝试从图片数据的魔数推断
+			inferredType = detectImageTypeByMagicBytes(imageBytes)
+			if inferredType != "" {
+				logger.Debugf(ctx, "Content-Type is '%s', inferred from magic bytes: %s", contentType, inferredType)
+				contentType = inferredType
+			} else if contentType == "" {
+				contentType = "application/octet-stream"
+			}
 		}
 	}
 
 	// 不限制图片类型，直接使用获取到的Content-Type
 	// 把类型验证交给Gemini官方API处理
-	logger.Debugf(ctx, "Content-Type from response: %s", contentType)
-
-	// 设置最大下载大小（50MB）
-	const maxImageSize = 50 * 1024 * 1024
-	limitedReader := &io.LimitedReader{
-		R: resp.Body,
-		N: maxImageSize,
-	}
-
-	// 读取图片内容
-	imageBytes, err := io.ReadAll(limitedReader)
-	if err != nil {
-		return "", "", fmt.Errorf("read image data failed: %w", err)
-	}
-
-	// 检查是否超出大小限制
-	if limitedReader.N <= 0 {
-		return "", "", fmt.Errorf("image size exceeds maximum limit of %d bytes", maxImageSize)
-	}
+	logger.Debugf(ctx, "Final Content-Type for image: %s", contentType)
 
 	// 转换为base64
 	base64Data = base64.StdEncoding.EncodeToString(imageBytes)
@@ -4135,10 +4567,73 @@ func inferContentTypeFromURL(imageURL string) string {
 	}
 }
 
+// detectImageTypeByMagicBytes 通过检查文件魔数（Magic Bytes）来检测图片类型
+// 用于处理 OSS 等无扩展名 URL 的情况
+func detectImageTypeByMagicBytes(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+
+	// JPEG: FF D8 FF
+	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "image/jpeg"
+	}
+
+	// PNG: 89 50 4E 47 0D 0A 1A 0A
+	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
+		return "image/png"
+	}
+
+	// GIF: 47 49 46 38 (GIF8)
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
+		return "image/gif"
+	}
+
+	// WebP: 52 49 46 46 xx xx xx xx 57 45 42 50 (RIFF....WEBP)
+	if data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
+		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
+		return "image/webp"
+	}
+
+	// BMP: 42 4D (BM)
+	if data[0] == 0x42 && data[1] == 0x4D {
+		return "image/bmp"
+	}
+
+	// TIFF: 49 49 2A 00 (little endian) or 4D 4D 00 2A (big endian)
+	if (data[0] == 0x49 && data[1] == 0x49 && data[2] == 0x2A && data[3] == 0x00) ||
+		(data[0] == 0x4D && data[1] == 0x4D && data[2] == 0x00 && data[3] == 0x2A) {
+		return "image/tiff"
+	}
+
+	// HEIC/HEIF: 需要检查 ftyp box
+	if len(data) >= 12 && data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 {
+		// 检查具体的 brand
+		brand := string(data[8:12])
+		if brand == "heic" || brand == "heix" || brand == "hevc" || brand == "hevx" {
+			return "image/heic"
+		}
+		if brand == "mif1" || brand == "msf1" {
+			return "image/heif"
+		}
+		if brand == "avif" || brand == "avis" {
+			return "image/avif"
+		}
+	}
+
+	// ICO: 00 00 01 00
+	if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x00 {
+		return "image/x-icon"
+	}
+
+	return "" // 未知类型
+}
+
 // processImagesConcurrently 并发处理多个图片输入
-func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gemini.Part, int) {
+func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gemini.Part, int, error) {
 	if len(imageInputs) == 0 {
-		return []gemini.Part{}, 0
+		return []gemini.Part{}, 0, nil
 	}
 
 	// 设置最大并发数，避免创建过多goroutine
@@ -4181,7 +4676,7 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 
 	if validTasks == 0 {
 		logger.Infof(ctx, "No valid images to process")
-		return []gemini.Part{}, 0
+		return []gemini.Part{}, 0, nil
 	}
 
 	// 启动worker goroutines
@@ -4198,7 +4693,16 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 
 				var err error
 				if part.InlineData == nil {
-					err = fmt.Errorf("failed to parse image input")
+					// 生成更详细的错误信息
+					inputPreview := task.input
+					if len(inputPreview) > 100 {
+						inputPreview = inputPreview[:100] + "..."
+					}
+					if strings.HasPrefix(task.input, "http://") || strings.HasPrefix(task.input, "https://") {
+						err = fmt.Errorf("failed to download image from URL: %s", inputPreview)
+					} else {
+						err = fmt.Errorf("failed to parse image input (index %d)", task.index+1)
+					}
 					logger.Warnf(ctx, "Worker %d processing image %d: failed", workerID, task.index+1)
 				} else {
 					logger.Debugf(ctx, "Worker %d processing image %d: success (MIME: %s, size: %d bytes)",
@@ -4227,10 +4731,15 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 	// 创建一个临时map来存储结果，以便按原始顺序排列
 	resultMap := make(map[int]gemini.Part)
 
+	// 收集失败的错误信息
+	var failedErrors []string
+
 	for result := range resultChan {
 		if result.error == nil && result.part.InlineData != nil {
 			resultMap[result.index] = result.part
 			successCount++
+		} else if result.error != nil {
+			failedErrors = append(failedErrors, result.error.Error())
 		}
 	}
 
@@ -4245,7 +4754,12 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 	logger.Infof(ctx, "Concurrent image processing completed: %d/%d successful, duration: %v, workers: %d",
 		successCount, validTasks, duration, concurrency)
 
-	return results, successCount
+	// 如果有任何图片处理失败，返回错误
+	if len(failedErrors) > 0 {
+		return results, successCount, fmt.Errorf("failed to process %d image(s): %s", len(failedErrors), strings.Join(failedErrors, "; "))
+	}
+
+	return results, successCount, nil
 }
 
 // updateAliImageTaskStatusFromBody 更新阿里云图片任务状态到数据库

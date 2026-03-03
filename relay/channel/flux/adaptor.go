@@ -67,9 +67,17 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 }
 
 // SetupRequestHeader 设置请求头
+// 接收客户端请求时兼容两种认证方式：
+// 1. Authorization: Bearer <token> 或 Authorization: <token>
+// 2. x-key: <api-key>
+// 但向 Flux API 发送时统一使用官方的 x-key header
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	req.Header.Set("Content-Type", "application/json")
+	
+	// 使用渠道配置的 APIKey（meta.APIKey 已经在中间件中提取并验证）
+	// 统一使用官方的 x-key header 格式
 	req.Header.Set("x-key", meta.APIKey)
+	
 	return nil
 }
 
@@ -189,16 +197,16 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		}
 	}
 
-	// 如果响应不是200，处理错误
+	// 如果响应不是200，处理错误（不写入客户端响应，由调用方决定是否重试）
 	if resp.StatusCode != http.StatusOK {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
-		// 更新记录为失败状态
-		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
-		// 透传错误响应给客户端
-		c.Data(resp.StatusCode, "application/json", body)
+
+		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
+
+		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errorMessage))
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: resp.StatusCode,
-			Error:      relaymodel.Error{Message: fmt.Sprintf("Flux API 返回错误状态: %d", resp.StatusCode)},
+			Error:      relaymodel.Error{Message: errorMessage},
 		}
 	}
 
@@ -207,8 +215,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	if err := json.Unmarshal(body, &fluxResp); err != nil {
 		logger.Errorf(c, "解析 Flux 响应失败: %v, body: %s", err, string(body))
 		a.updateRecordToFailed(c, fmt.Sprintf("解析响应失败: %v", err))
-		// 即使解析失败，也要透传响应给客户端
-		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusInternalServerError,
 			Error:      relaymodel.Error{Message: fmt.Sprintf("解析响应失败: %v", err)},
@@ -219,7 +225,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	if fluxResp.Error != "" {
 		logger.Errorf(c, "Flux API 返回错误: %s", fluxResp.Error)
 		a.updateRecordToFailed(c, fluxResp.Error)
-		c.Data(resp.StatusCode, "application/json", body)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
 			Error:      relaymodel.Error{Message: fluxResp.Error},
@@ -285,6 +290,24 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	// Flux 不计算 token usage，返回 nil
 	return nil, nil
+}
+
+// extractFluxErrorMessage 从 Flux API 错误响应中提取错误消息
+// Flux API 可能返回多种格式: {"detail": "..."}, {"error": "..."}, {"message": "..."}
+func extractFluxErrorMessage(body []byte, statusCode int) string {
+	var errMap map[string]any
+	if err := json.Unmarshal(body, &errMap); err == nil {
+		if detail, ok := errMap["detail"].(string); ok && detail != "" {
+			return detail
+		}
+		if errMsg, ok := errMap["error"].(string); ok && errMsg != "" {
+			return errMsg
+		}
+		if msg, ok := errMap["message"].(string); ok && msg != "" {
+			return msg
+		}
+	}
+	return fmt.Sprintf("Flux API 返回错误状态: %d", statusCode)
 }
 
 // updateRecordToFailed 更新记录为失败状态
@@ -457,7 +480,7 @@ func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, api
 		return http.StatusInternalServerError, nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
-	// 3. 设置请求头
+	// 3. 设置请求头 - 使用官方的 x-key header
 	req.Header.Set("x-key", apiKey)
 
 	// 4. 发送请求

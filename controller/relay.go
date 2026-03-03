@@ -10,6 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
@@ -126,7 +130,6 @@ func Relay(c *gin.Context) {
 	originalModel := c.GetString("original_model")
 	keyIndex := c.GetInt("key_index") // 在异步调用前获取keyIndex
 	tokenName := c.GetString("token_name")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -140,11 +143,13 @@ func Relay(c *gin.Context) {
 	channelHistory = append(channelHistory, channelId)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
-	failedChannelIds := []int{channelId}
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	initialFailedChannelId := channelId
+	failedChannelIds := []int{}
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	
+
 	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
 	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
 		// xAI内容违规：直接记录扣费日志，不记录普通失败日志
@@ -160,12 +165,24 @@ func Relay(c *gin.Context) {
 	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
 	claudeResponseID := c.GetHeader("X-Response-ID")
 
+	var lastChannel *dbmodel.Channel
+
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastChannel.Id, retryTimes-i+1, retryTimes)
+			channel = lastChannel
+		}
+		lastChannel = channel
+
+		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+		if i == retryTimes {
+			failedChannelIds = append(failedChannelIds, initialFailedChannelId)
 		}
 
 		// 获取重试原因 - 直接使用原始错误消息
@@ -831,20 +848,31 @@ func RelayMidjourney(c *gin.Context) {
 	}
 
 	// 记录所有已失败的渠道ID，用于重试时排除
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	initialMjFailedId := channelId
 	failedChannelIds := []int{}
-	if channelId > 0 {
-		failedChannelIds = append(failedChannelIds, channelId)
-	}
+
+	var lastMjChannel *dbmodel.Channel
 
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
 			// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
 			if err != nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %+v (excludedChannels: %v)", err, failedChannelIds)
-				break
+				if lastMjChannel == nil {
+					logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %+v (excludedChannels: %v)", err, failedChannelIds)
+					break
+				}
+				logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastMjChannel.Id, retryTimes-i+1, retryTimes)
+				channel = lastMjChannel
 			}
+			lastMjChannel = channel
 			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
+
+			// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+			if i == retryTimes && initialMjFailedId > 0 {
+				failedChannelIds = append(failedChannelIds, initialMjFailedId)
+			}
 
 			// 将新渠道添加到已失败列表（因为如果本次失败，下次不应该再选它）
 			failedChannelIds = append(failedChannelIds, channel.Id)
@@ -867,7 +895,7 @@ func RelayMidjourney(c *gin.Context) {
 			// ShouldDisabelMidjourneyChannel(channelId, channelName, MjErr)
 		} else {
 			requestBody, err := common.GetRequestBody(c)
-			if err == nil {
+			if err != nil {
 				return
 			}
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
@@ -991,14 +1019,27 @@ func RelayVideoGenerate(c *gin.Context) {
 	channelHistory = append(channelHistory, originalChannelId)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
-	failedChannelIds := []int{originalChannelId}
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	failedChannelIds := []int{}
+
+	var lastVideoChannel *dbmodel.Channel
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastVideoChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastVideoChannel.Id, retryTimes-i+1, retryTimes)
+			channel = lastVideoChannel
+		}
+		lastVideoChannel = channel
+
+		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+		if i == retryTimes {
+			failedChannelIds = append(failedChannelIds, originalChannelId)
 		}
 
 		// 获取重试原因 - 直接使用原始错误消息
@@ -1269,14 +1310,28 @@ func RelayRecraft(c *gin.Context) {
 	channelHistory = append(channelHistory, channelId)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
-	failedChannelIds := []int{channelId}
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	initialRecraftFailedId := channelId
+	failedChannelIds := []int{}
+
+	var lastRecraftChannel *dbmodel.Channel
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastRecraftChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRecraftChannel.Id, retryTimes-i+1, retryTimes)
+			channel = lastRecraftChannel
+		}
+		lastRecraftChannel = channel
+
+		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+		if i == retryTimes {
+			failedChannelIds = append(failedChannelIds, initialRecraftFailedId)
 		}
 		logger.Infof(ctx, "Recraft retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
 			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
@@ -1628,14 +1683,28 @@ func RelayImageGenerateAsync(c *gin.Context) {
 	channelHistory = append(channelHistory, channelId)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
-	failedChannelIds := []int{channelId}
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	initialImageFailedId := channelId
+	failedChannelIds := []int{}
+
+	var lastImageChannel *dbmodel.Channel
 
 	for i := retryTimes; i > 0; i-- {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastImageChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastImageChannel.Id, retryTimes-i+1, retryTimes)
+			channel = lastImageChannel
+		}
+		lastImageChannel = channel
+
+		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+		if i == retryTimes {
+			failedChannelIds = append(failedChannelIds, initialImageFailedId)
 		}
 		logger.Infof(ctx, "Image retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
 			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
@@ -1771,7 +1840,10 @@ func RelayRunway(c *gin.Context) {
 	channelHistory = append(channelHistory, originalChannelId)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
-	failedChannelIds := []int{originalChannelId}
+	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
+	failedChannelIds := []int{}
+
+	var lastRunwayChannel *dbmodel.Channel
 
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
@@ -1779,8 +1851,18 @@ func RelayRunway(c *gin.Context) {
 		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
 		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
-			break
+			if lastRunwayChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRunwayChannel.Id, retryTimes-i+1, retryTimes)
+			channel = lastRunwayChannel
+		}
+		lastRunwayChannel = channel
+
+		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
+		if i == retryTimes {
+			failedChannelIds = append(failedChannelIds, originalChannelId)
 		}
 
 		// 获取重试原因 - 直接使用状态码
@@ -2744,4 +2826,372 @@ func RelayResponse(c *gin.Context) {
 			},
 		})
 	}
+}
+
+// CountTokensRequest Claude count_tokens 请求结构
+type CountTokensRequest struct {
+	Model    string          `json:"model"`
+	Messages json.RawMessage `json:"messages"`
+	System   json.RawMessage `json:"system,omitempty"`
+	Tools    json.RawMessage `json:"tools,omitempty"`
+}
+
+// CountTokensResponse Claude count_tokens 响应结构
+type CountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}
+
+// RelayClaudeCountTokens 处理 Claude count_tokens 请求
+// 该接口用于在发送消息前计算 token 数量
+func RelayClaudeCountTokens(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	// 1. 读取并解析请求体
+	bodyBytes, err := common.GetRequestBody(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Failed to read request body: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	var req CountTokensRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Invalid request format: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	if req.Model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Model is required",
+			},
+		})
+		return
+	}
+
+	// 2. 获取用户信息和分组
+	userId := c.GetInt("id")
+	group, err := dbmodel.CacheGetUserGroup(userId)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get user group for user %d: %v", userId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to get user group",
+			},
+		})
+		return
+	}
+
+	// 3. 使用带能力筛选的渠道选择，只选择支持 count_tokens 的渠道
+	channel, err := dbmodel.CacheGetRandomSatisfiedChannelWithCapability(
+		group,
+		req.Model,
+		dbmodel.FilterSupportCountTokens,
+		0,  // skipPriorityLevels
+		"", // responseID
+	)
+	if err != nil {
+		logger.Errorf(ctx, "No channel available with count_tokens support for model %s: %v", req.Model, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "No channel available with count_tokens support: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	logger.Infof(ctx, "Selected channel #%d (%s) for count_tokens request, model: %s", channel.Id, channel.Name, req.Model)
+
+	// 4. 根据渠道类型转发请求
+	switch channel.Type {
+	case common.ChannelTypeAnthropic:
+		relayAnthropicCountTokens(c, channel, bodyBytes)
+	case common.ChannelTypeAwsClaude:
+		relayAwsCountTokens(c, channel, bodyBytes, req.Model)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": fmt.Sprintf("Channel type %d does not support count_tokens", channel.Type),
+			},
+		})
+	}
+}
+
+// relayAnthropicCountTokens 处理 Anthropic 原生 API 的 count_tokens 请求
+func relayAnthropicCountTokens(c *gin.Context, channel *dbmodel.Channel, requestBody []byte) {
+	// 构建请求 URL
+	baseURL := channel.GetBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com"
+	}
+	targetURL := baseURL + "/v1/messages/count_tokens"
+
+	// 创建代理请求
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to create request: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 获取实际使用的 key
+	key := channel.Key
+	if channel.MultiKeyInfo.IsMultiKey {
+		var keyIndex int
+		key, keyIndex, err = channel.GetNextAvailableKey()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "api_error",
+					"message": "Failed to get available key: " + err.Error(),
+				},
+			})
+			return
+		}
+		logger.Infof(c.Request.Context(), "Using key index %d for count_tokens request on channel #%d", keyIndex, channel.Id)
+	}
+
+	// 设置请求头
+	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("x-api-key", key)
+	proxyReq.Header.Set("anthropic-version", "2023-06-01")
+
+	// 发送请求
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to send request: " + err.Error(),
+			},
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "Failed to read response: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 转发响应
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
+}
+
+// relayAwsCountTokens 处理 AWS Bedrock 的 count_tokens 请求
+func relayAwsCountTokens(c *gin.Context, channel *dbmodel.Channel, requestBody []byte, modelName string) {
+	ctx := c.Request.Context()
+
+	// 1. 解析 AWS 凭证
+	key := channel.Key
+	if channel.MultiKeyInfo.IsMultiKey {
+		var keyIndex int
+		var err error
+		key, keyIndex, err = channel.GetNextAvailableKey()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "api_error",
+					"message": "Failed to get available key: " + err.Error(),
+				},
+			})
+			return
+		}
+		logger.Infof(ctx, "Using key index %d for AWS count_tokens request on channel #%d", keyIndex, channel.Id)
+	}
+
+	parts := strings.Split(key, "|")
+	var accessKey, secretKey, region string
+
+	if len(parts) == 3 {
+		accessKey = parts[0]
+		secretKey = parts[1]
+		region = parts[2]
+	} else {
+		cfg, _ := channel.LoadConfig()
+		accessKey = cfg.AK
+		secretKey = cfg.SK
+		region = cfg.Region
+	}
+
+	if accessKey == "" || secretKey == "" || region == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "AWS credentials not properly configured",
+			},
+		})
+		return
+	}
+
+	// 2. 创建 AWS Bedrock Runtime Client
+	awsClient := bedrockruntime.New(bedrockruntime.Options{
+		Region:      region,
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	})
+
+	// 3. 获取 AWS 模型 ID
+	awsModelId := getAwsModelIdForCountTokens(modelName)
+
+	// 4. 构建 AWS Bedrock 格式的请求体
+	// 需要将 Anthropic 格式转换为 AWS Bedrock 格式
+	awsRequestBody, err := convertToAwsBedrockFormat(requestBody)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to convert request to AWS format: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Failed to convert request format: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 5. 构建 CountTokens 请求
+	// AWS CountTokens API 使用 InvokeModel 格式的输入
+	countTokensInput := &bedrockruntime.CountTokensInput{
+		ModelId: aws.String(awsModelId),
+		Input: &types.CountTokensInputMemberInvokeModel{
+			Value: types.InvokeModelTokensRequest{
+				Body: awsRequestBody,
+			},
+		},
+	}
+
+	// 6. 调用 CountTokens API
+	result, err := awsClient.CountTokens(ctx, countTokensInput)
+	if err != nil {
+		logger.Errorf(ctx, "AWS CountTokens API error: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "api_error",
+				"message": "AWS CountTokens API error: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	// 7. 返回结果（与 Anthropic 格式兼容）
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": aws.ToInt32(result.InputTokens),
+	})
+}
+
+// convertToAwsBedrockFormat 将 Anthropic 请求格式转换为 AWS Bedrock 格式
+// 注意：AWS Bedrock CountTokens API 使用 InvokeModel 格式，但只需要计算 token 相关的字段
+func convertToAwsBedrockFormat(requestBody []byte) ([]byte, error) {
+	// 解析原始请求
+	var anthropicReq struct {
+		Model    string          `json:"model"`
+		Messages json.RawMessage `json:"messages"`
+		System   json.RawMessage `json:"system,omitempty"`
+		Tools    json.RawMessage `json:"tools,omitempty"`
+	}
+	if err := json.Unmarshal(requestBody, &anthropicReq); err != nil {
+		return nil, err
+	}
+
+	// 构建 AWS Bedrock 格式的请求
+	// AWS Bedrock CountTokens API 需要 InvokeModel 格式的 body
+	// 参考: https://docs.aws.amazon.com/bedrock/latest/userguide/count-tokens.html
+	awsReq := map[string]interface{}{
+		"anthropic_version": "bedrock-2023-05-31",
+		// max_tokens 是 InvokeModel 的必需字段，设置最小值
+		// CountTokens 只计算输入 token，不会实际生成输出
+		"max_tokens": 1,
+	}
+
+	if anthropicReq.Messages != nil {
+		awsReq["messages"] = json.RawMessage(anthropicReq.Messages)
+	}
+
+	if anthropicReq.System != nil && len(anthropicReq.System) > 0 {
+		awsReq["system"] = json.RawMessage(anthropicReq.System)
+	}
+
+	if anthropicReq.Tools != nil && len(anthropicReq.Tools) > 0 {
+		awsReq["tools"] = json.RawMessage(anthropicReq.Tools)
+	}
+
+	return json.Marshal(awsReq)
+}
+
+// getAwsModelIdForCountTokens 获取用于 CountTokens 的 AWS 模型 ID
+func getAwsModelIdForCountTokens(requestModel string) string {
+	// AWS 模型 ID 映射表
+	awsModelIDMap := map[string]string{
+		"claude-instant-1.2":                  "anthropic.claude-instant-v1",
+		"claude-2.0":                          "anthropic.claude-v2",
+		"claude-2.1":                          "anthropic.claude-v2:1",
+		"claude-3-sonnet-20240229":            "anthropic.claude-3-sonnet-20240229-v1:0",
+		"claude-3-opus-20240229":              "anthropic.claude-3-opus-20240229-v1:0",
+		"claude-3-haiku-20240307":             "anthropic.claude-3-haiku-20240307-v1:0",
+		"claude-3-5-sonnet-20240620":          "anthropic.claude-3-5-sonnet-20240620-v1:0",
+		"claude-3-5-sonnet-20241022":          "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"claude-3-5-haiku-20241022":           "anthropic.claude-3-5-haiku-20241022-v1:0",
+		"claude-3-7-sonnet-20250219":          "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"claude-sonnet-4-20250514":            "anthropic.claude-sonnet-4-20250514-v1:0",
+		"claude-opus-4-20250514":              "anthropic.claude-opus-4-20250514-v1:0",
+		"claude-opus-4-1-20250805":            "anthropic.claude-opus-4-1-20250805-v1:0",
+		"claude-sonnet-4-5-20250929":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"claude-haiku-4-5-20251001":           "anthropic.claude-haiku-4-5-20251001-v1:0",
+		"claude-opus-4-5-20251101":            "anthropic.claude-opus-4-5-20251101-v1:0",
+		"claude-opus-4-6":                     "anthropic.claude-opus-4-6-v1",
+		"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		"claude-sonnet-4-20250514-thinking":   "anthropic.claude-sonnet-4-20250514-v1:0",
+		"claude-opus-4-20250514-thinking":     "anthropic.claude-opus-4-20250514-v1:0",
+		"claude-opus-4-1-20250805-thinking":   "anthropic.claude-opus-4-1-20250805-v1:0",
+		"claude-sonnet-4-5-20250929-thinking": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"claude-haiku-4-5-20251001-thinking":  "anthropic.claude-haiku-4-5-20251001-v1:0",
+		"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
+		"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
+	}
+
+	if awsModelID, ok := awsModelIDMap[requestModel]; ok {
+		return awsModelID
+	}
+	// 如果已经是 AWS 模型 ID 格式，直接返回
+	if strings.Contains(requestModel, "anthropic.") {
+		return requestModel
+	}
+	return requestModel
 }

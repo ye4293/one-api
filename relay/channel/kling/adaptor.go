@@ -13,8 +13,8 @@ import (
 )
 
 type Adaptor struct {
-	RequestType  string // text2video/omni-video/image2video/multi-image2video
-	FullPath     string // 透传模式下使用完整路径（包含 ID 等参数）
+	RequestType string // text2video/omni-video/image2video/multi-image2video
+	FullPath    string // 透传模式下使用完整路径（包含 ID 等参数）
 }
 
 func (a *Adaptor) Init(meta *util.RelayMeta) {
@@ -87,9 +87,9 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBo
 	}
 
 	// 注入外部任务ID（用于关联系统内部任务）
-	if externalTaskID > 0 {
-		requestBody["external_task_id"] = fmt.Sprintf("%d", externalTaskID)
-	}
+	// if externalTaskID > 0 {
+	// 	requestBody["external_task_id"] = fmt.Sprintf("%d", externalTaskID)
+	// }
 
 	return json.Marshal(requestBody)
 }

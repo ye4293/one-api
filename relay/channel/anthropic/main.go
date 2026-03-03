@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
@@ -34,6 +35,12 @@ func stopReasonClaude2OpenAI(reason *string) string {
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "pause_turn":
+		// 长时间运行的 turn 被暂停，可将响应原样传回以继续
+		return "stop"
+	case "refusal":
+		// 流式分类器干预，处理潜在的策略违规
+		return "stop"
 	default:
 		return *reason
 	}
@@ -78,14 +85,59 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		maxTokens = textRequest.MaxCompletionTokens
 	}
 
+	// 判断是否是 thinking 模型
+	isThinking := IsThinkingModel(textRequest.Model)
+	// 获取实际模型名称（去除 -thinking 后缀）
+	actualModel := GetBaseModelName(textRequest.Model)
+
 	claudeRequest := Request{
-		Model:       textRequest.Model,
+		Model:       actualModel,
 		MaxTokens:   maxTokens,
 		Temperature: textRequest.Temperature,
 		TopP:        textRequest.TopP,
 		TopK:        textRequest.TopK,
 		Stream:      textRequest.Stream,
 		Tools:       claudeTools,
+	}
+
+	// 转换 OpenAI response_format 到 Claude output_config
+	if textRequest.ResponseFormat != nil && textRequest.ResponseFormat.Type == "json_schema" {
+		claudeRequest.OutputConfig = &OutputConfig{
+			Format: &JSONOutputFormat{
+				Type:   "json_schema",
+				Schema: textRequest.ResponseFormat.JSONSchema,
+			},
+		}
+	}
+
+	// 为 thinking 模型添加 thinking 配置
+	if isThinking && config.ClaudeThinkingEnabled {
+		// 1. 如果用户未传 max_tokens，使用配置的默认值
+		if claudeRequest.MaxTokens == 0 {
+			claudeRequest.MaxTokens = common.GetClaudeDefaultMaxTokens(textRequest.Model)
+		}
+
+		// 2. 获取 thinking budget 百分比
+		budgetRatio := config.ClaudeThinkingBudgetRatio
+		if textRequest.ReasoningEffort != "" {
+			budgetRatio = common.GetClaudeThinkingBudgetRatio(textRequest.ReasoningEffort)
+		}
+
+		// 3. 计算 thinking budget（至少 1024，none 时直接使用 1024）
+		thinkingBudget := int(float64(claudeRequest.MaxTokens) * budgetRatio)
+		if thinkingBudget < 1024 {
+			thinkingBudget = 1024
+		}
+
+		claudeRequest.Thinking = &ThinkingConfig{
+			Type:         "enabled",
+			BudgetTokens: thinkingBudget,
+		}
+		// thinking 模式要求 temperature 必须为 1，且不能设置 top_p 和 top_k
+		// https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
+		claudeRequest.Temperature = 1.0
+		claudeRequest.TopP = 0
+		claudeRequest.TopK = 0
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}
@@ -129,13 +181,34 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 	} else if claudeRequest.Model == "claude-2" {
 		claudeRequest.Model = "claude-2.1"
 	}
+	// 标记是否已经出现过 user/assistant 消息（用于判断 system/developer 是否在对话开头）
+	conversationStarted := false
 	for _, message := range textRequest.Messages {
-		if message.Role == "system" && claudeRequest.System == nil {
-			claudeRequest.System = message.StringContent()
-			continue
+		if message.Role == "system" || message.Role == "developer" {
+			if !conversationStarted {
+				// 对话开始前的 system/developer 消息，合并到顶层 system 参数
+				if claudeRequest.System == nil {
+					claudeRequest.System = message.StringContent()
+				} else if existing, ok := claudeRequest.System.(string); ok {
+					claudeRequest.System = existing + "\n" + message.StringContent()
+				}
+				continue
+			}
+			// 对话中间穿插的 system/developer 消息，转为 user role
+			// 不能转 assistant，否则会与前一条真实 assistant 回复合并，导致语义错误
+			message.Role = "user"
 		}
+
+		if message.Role == "user" || message.Role == "assistant" || message.Role == "tool" {
+			conversationStarted = true
+		}
+
 		claudeMessage := Message{
 			Role: message.Role,
+		}
+		// tool role 统一转为 user（Claude 不支持 tool role）
+		if message.Role == "tool" {
+			claudeMessage.Role = "user"
 		}
 		if message.IsStringContent() {
 			var contentBlocks []ContentBlockParam
@@ -144,7 +217,6 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				Text: message.StringContent(),
 			}
 			if message.Role == "tool" {
-				claudeMessage.Role = "user"
 				content = ContentBlockParam{
 					Type:      "tool_result",
 					ToolUseID: message.ToolCallId,
@@ -165,34 +237,57 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 				})
 			}
 			claudeMessage.Content = contentBlocks
-			claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
-			continue
-		}
-		var contents []ContentBlockParam
-		openaiContent := message.ParseContent()
-		for _, part := range openaiContent {
-			var content ContentBlockParam
-			if part.Type == model.ContentTypeText {
-				content.Type = "text"
-				content.Text = part.Text
-			} else if part.Type == model.ContentTypeImageURL {
-				content.Type = "image"
-				mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
-				if err != nil {
-					logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
-					continue
+		} else {
+			var contents []ContentBlockParam
+			openaiContent := message.ParseContent()
+			for _, part := range openaiContent {
+				var content ContentBlockParam
+				if part.Type == model.ContentTypeText {
+					content.Type = "text"
+					content.Text = part.Text
+				} else if part.Type == model.ContentTypeImageURL {
+					content.Type = "image"
+					mimeType, data, err := image.GetImageFromUrl(part.ImageURL.Url)
+					if err != nil {
+						logger.SysError(fmt.Sprintf("Error getting image from URL: %v", err))
+						continue
+					}
+					content.Source = Base64ImageSource{
+						Type:      "base64",
+						MediaType: mimeType,
+						Data:      data,
+					}
 				}
-				content.Source = Base64ImageSource{
-					Type:      "base64",
-					MediaType: mimeType,
-					Data:      data,
+				contents = append(contents, content)
+			}
+			claudeMessage.Content = contents
+		}
+
+		// 合并连续相同 role 的消息（Claude 要求 user/assistant 严格交替）
+		if len(claudeRequest.Messages) > 0 {
+			lastMsg := &claudeRequest.Messages[len(claudeRequest.Messages)-1]
+			if lastMsg.Role == claudeMessage.Role {
+				if lastBlocks, ok := lastMsg.Content.([]ContentBlockParam); ok {
+					if newBlocks, ok := claudeMessage.Content.([]ContentBlockParam); ok {
+						lastMsg.Content = append(lastBlocks, newBlocks...)
+						continue
+					}
 				}
 			}
-			contents = append(contents, content)
 		}
-		claudeMessage.Content = contents
+
 		claudeRequest.Messages = append(claudeRequest.Messages, claudeMessage)
 	}
+
+	// Claude 要求第一条消息必须是 user，如果不是则补一条占位消息
+	if len(claudeRequest.Messages) > 0 && claudeRequest.Messages[0].Role != "user" {
+		placeholder := Message{
+			Role:    "user",
+			Content: []ContentBlockParam{{Type: "text", Text: "..."}},
+		}
+		claudeRequest.Messages = append([]Message{placeholder}, claudeRequest.Messages...)
+	}
+
 	return &claudeRequest
 }
 
@@ -200,6 +295,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCompletionsStreamResponse, *Response) {
 	var response *Response
 	var responseText string
+	var reasoningContent string
 	var stopReason string
 	tools := make([]model.Tool, 0)
 
@@ -208,8 +304,13 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 		return nil, claudeResponse.Message
 	case "content_block_start":
 		if claudeResponse.ContentBlock != nil {
-			responseText = claudeResponse.ContentBlock.Text
-			if claudeResponse.ContentBlock.Type == "tool_use" {
+			switch claudeResponse.ContentBlock.Type {
+			case "text":
+				responseText = claudeResponse.ContentBlock.Text
+			case "thinking":
+				// thinking block 开始
+				reasoningContent = claudeResponse.ContentBlock.Thinking
+			case "tool_use":
 				tools = append(tools, model.Tool{
 					Id:   claudeResponse.ContentBlock.Id,
 					Type: "function",
@@ -222,8 +323,13 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 		}
 	case "content_block_delta":
 		if claudeResponse.Delta != nil {
-			responseText = claudeResponse.Delta.Text
-			if claudeResponse.Delta.Type == "input_json_delta" {
+			switch claudeResponse.Delta.Type {
+			case "text_delta":
+				responseText = claudeResponse.Delta.Text
+			case "thinking_delta":
+				// thinking delta，将内容作为 reasoning_content
+				reasoningContent = claudeResponse.Delta.Thinking
+			case "input_json_delta":
 				tools = append(tools, model.Tool{
 					Function: model.Function{
 						Arguments: claudeResponse.Delta.PartialJson,
@@ -243,6 +349,10 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 	}
 	var choice openai.ChatCompletionsStreamResponseChoice
 	choice.Delta.Content = responseText
+	// 设置 reasoning_content
+	if reasoningContent != "" {
+		choice.Delta.ReasoningContent = reasoningContent
+	}
 	if len(tools) > 0 {
 		choice.Delta.Content = nil // compatible with other OpenAI derivative applications, like LobeOpenAICompatibleFactory ...
 		choice.Delta.ToolCalls = tools
@@ -260,12 +370,29 @@ func StreamResponseClaude2OpenAI(claudeResponse *StreamResponse) (*openai.ChatCo
 
 func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 	var responseText string
-	if len(claudeResponse.Content) > 0 {
-		responseText = claudeResponse.Content[0].Text
-	}
+	var reasoningContent string
+	var thoughtSignature string
+
 	tools := make([]model.Tool, 0)
+
+	// 遍历所有 content blocks，提取文本和 thinking 内容
 	for _, v := range claudeResponse.Content {
-		if v.Type == "tool_use" {
+		switch v.Type {
+		case "text":
+			responseText += v.Text
+		case "thinking":
+			// 提取 thinking 内容作为 reasoning_content
+			if v.Thinking != "" {
+				if reasoningContent != "" {
+					reasoningContent += "\n"
+				}
+				reasoningContent += v.Thinking
+			}
+			// 保存签名
+			if v.Signature != "" {
+				thoughtSignature = v.Signature
+			}
+		case "tool_use":
 			args, _ := json.Marshal(v.Input)
 			tools = append(tools, model.Tool{
 				Id:   v.Id,
@@ -277,13 +404,16 @@ func ResponseClaude2OpenAI(claudeResponse *Response) *openai.TextResponse {
 			})
 		}
 	}
+
 	choice := openai.TextResponseChoice{
 		Index: 0,
 		Message: model.Message{
-			Role:      "assistant",
-			Content:   responseText,
-			Name:      nil,
-			ToolCalls: tools,
+			Role:             "assistant",
+			Content:          responseText,
+			Name:             nil,
+			ToolCalls:        tools,
+			ReasoningContent: reasoningContent,
+			ThoughtSignature: thoughtSignature,
 		},
 		FinishReason: stopReasonClaude2OpenAI(claudeResponse.StopReason),
 	}
@@ -381,7 +511,9 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 					content = contentStr
 				}
 			}
-			if content != "" && firstWordTime == nil {
+			// 也检查 reasoning_content
+			reasoningContent := choice.Delta.ReasoningContent
+			if (content != "" || reasoningContent != "") && firstWordTime == nil {
 				// 记录首字时间
 				now := time.Now()
 				firstWordTime = &now

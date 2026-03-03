@@ -51,9 +51,15 @@ var StripeEndpointSecret = ""
 
 var CfR2storeEnabled = true
 var CfBucketFileName = "ezlinkai-file"
-var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
-var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
-var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+// var CfFileAccessKey = "42a3d63d1371f46956f7d3de36b3b9a5"
+// var CfFileSecretKey = "31db6128dbf10f3a4a823cea1e52af23934e77353d06f1d1f966288e217073f9"
+// var CfFileEndpoint = "https://f19328743901865dd8223e016b2ff78d.r2.cloudflarestorage.com"
+
+var CfFileAccessKey = "GQwDfmzqBlTMsBjf"
+var CfFileSecretKey = "JrL2Sy9ojWemCKv45iJukOKKrlBw64"
+var CfFileEndpoint = "https://hua.cn-nb1.rains3.com"
+var CfFilePublicUrl = "" // 公共访问 URL（如自定义域），为空时使用 Endpoint
 
 var CfBucketImageName = ""
 var CfImageAccessKey = ""
@@ -218,3 +224,10 @@ func getHostname() string {
 	}
 	return hostname
 }
+
+// Claude Thinking 模型配置
+var ClaudeThinkingEnabled = true                              // 是否启用 Claude 思考适配（-thinking 后缀）
+var ClaudeThinkingBudgetRatio = 0.8                           // 默认思考 token 百分比（80%）
+var ClaudeDefaultMaxTokens map[string]int                     // 模型默认 MaxTokens
+var ClaudeReasoningEffortMap map[string]float64               // reasoning_effort 到百分比的映射
+var ClaudeRequestHeaders map[string]map[string]string         // 请求头覆盖（模型名 -> 请求头键值对）

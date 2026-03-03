@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/songquanpeng/one-api/common/config"
+	"fmt"
 	"net/http"
+
+	"github.com/songquanpeng/one-api/common/config"
 )
 
 type request struct {
@@ -26,8 +28,13 @@ func SendMessage(title string, description string, content string) error {
 	if config.MessagePusherAddress == "" {
 		return errors.New("message pusher address is not set")
 	}
+	// 在标题前加入系统名称标识，方便区分不同站点
+	titleWithSystem := title
+	if config.SystemName != "" {
+		titleWithSystem = fmt.Sprintf("[%s] %s", config.SystemName, title)
+	}
 	req := request{
-		Title:       title,
+		Title:       titleWithSystem,
 		Description: description,
 		Content:     content,
 		Token:       config.MessagePusherToken,
@@ -41,6 +48,8 @@ func SendMessage(title string, description string, content string) error {
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
+
 	var res response
 	err = json.NewDecoder(resp.Body).Decode(&res)
 	if err != nil {

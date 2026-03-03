@@ -74,8 +74,16 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
 				ForceAttemptHTTP2:   true,
 				Proxy:               http.ProxyURL(parsedURL),
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second, // 连接超时：30秒
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   15 * time.Second, // TLS握手超时：15秒
+				ResponseHeaderTimeout: 15 * time.Minute, // 响应头超时：15分钟（适配图像生成等长响应）
+				ExpectContinueTimeout: 1 * time.Second,
 			},
 		}
 		client.Timeout = defaultTimeout
@@ -108,10 +116,14 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
+				IdleConnTimeout:     90 * time.Second,
 				ForceAttemptHTTP2:   true,
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 					return dialer.Dial(network, addr)
 				},
+				TLSHandshakeTimeout:   15 * time.Second, // TLS握手超时：15秒
+				ResponseHeaderTimeout: 15 * time.Minute, // 响应头超时：15分钟（适配图像生成等长响应）
+				ExpectContinueTimeout: 1 * time.Second,
 			},
 		}
 		client.Timeout = defaultTimeout

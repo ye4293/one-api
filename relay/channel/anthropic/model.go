@@ -222,13 +222,21 @@ type Message struct {
 	Content any    `json:"content"`
 }
 
-// OutputFormat 结构化输出格式
+// JSONOutputFormat 结构化输出格式
 // 基于 https://platform.claude.com/docs/en/build-with-claude/structured-outputs
-// Beta 功能，需要设置 header: anthropic-beta: structured-outputs-2025-11-13
 // 用于控制 Claude 的响应格式，确保返回符合 schema 的 JSON
-type OutputFormat struct {
+type JSONOutputFormat struct {
 	Type   string `json:"type"`   // "json_schema"
 	Schema any    `json:"schema"` // JSON Schema 定义
+}
+
+// OutputConfig 输出配置
+// 包含 effort 和 format 两个子字段
+type OutputConfig struct {
+	// Effort 控制模型推理努力程度: "low", "medium", "high", "max"
+	Effort string `json:"effort,omitempty"`
+	// Format 结构化输出格式
+	Format *JSONOutputFormat `json:"format,omitempty"`
 }
 
 // Tool 工具定义
@@ -252,21 +260,31 @@ type ToolChoice struct {
 	Name string `json:"name,omitempty"` // 当 type 为 "tool" 时指定工具名称
 }
 
+// ThinkingConfig 扩展思考配置
+type ThinkingConfig struct {
+	Type         string `json:"type"`                    // "enabled", "disabled", "adaptive"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考 token 预算，最小 1024（仅 type="enabled" 时使用）
+}
+
 // Request Claude API 请求结构
+// 基于 https://platform.claude.com/docs/en/api/messages/create
 type Request struct {
-	Model         string        `json:"model"`                    // 模型名称
-	Messages      []Message     `json:"messages,omitempty"`       // 消息列表
-	System        interface{}   `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
-	MaxTokens     int           `json:"max_tokens"`               // 最大输出token数
-	StopSequences []string      `json:"stop_sequences,omitempty"` // 停止序列
-	Stream        bool          `json:"stream,omitempty"`         // 是否流式输出
-	Temperature   float64       `json:"temperature,omitempty"`    // 温度参数
-	TopP          float64       `json:"top_p,omitempty"`          // Top-p 参数
-	TopK          int           `json:"top_k,omitempty"`          // Top-k 参数
-	Tools         []Tool        `json:"tools,omitempty"`          // 可用工具
-	ToolChoice    *ToolChoice   `json:"tool_choice,omitempty"`    // 工具选择策略
-	Metadata      *Metadata     `json:"metadata,omitempty"`       // 元数据
-	OutputFormat  *OutputFormat `json:"output_format,omitempty"`  // 结构化输出格式（Beta: structured-outputs-2025-11-13）
+	Model         string          `json:"model"`                    // 模型名称
+	Messages      []Message       `json:"messages,omitempty"`       // 消息列表
+	System        interface{}     `json:"system,omitempty"`         // 系统提示（支持字符串或数组格式，数组格式用于 prompt caching）
+	MaxTokens     int             `json:"max_tokens"`               // 最大输出token数
+	StopSequences []string        `json:"stop_sequences,omitempty"` // 停止序列
+	Stream        bool            `json:"stream,omitempty"`         // 是否流式输出
+	Temperature   float64         `json:"temperature,omitempty"`    // 温度参数
+	TopP          float64         `json:"top_p,omitempty"`          // Top-p 参数
+	TopK          int             `json:"top_k,omitempty"`          // Top-k 参数
+	Tools         []Tool          `json:"tools,omitempty"`          // 可用工具
+	ToolChoice    *ToolChoice     `json:"tool_choice,omitempty"`    // 工具选择策略
+	Metadata      *Metadata       `json:"metadata,omitempty"`       // 元数据
+	OutputConfig  *OutputConfig   `json:"output_config,omitempty"`  // 输出配置（effort + format）
+	Thinking      *ThinkingConfig `json:"thinking,omitempty"`       // 扩展思考配置
+	ServiceTier   string          `json:"service_tier,omitempty"`   // 服务层级: "auto", "standard_only"
+	InferenceGeo  string          `json:"inference_geo,omitempty"`  // 推理地理区域
 }
 
 // CacheCreation 缓存创建统计
@@ -288,8 +306,10 @@ type Usage struct {
 	CacheReadInputTokens        int              `json:"cache_read_input_tokens,omitempty"`     // 缓存读取输入token数
 	ClaudeCacheCreation5mTokens int              `json:"claude_cache_creation_5_m_tokens,omitempty"`
 	ClaudeCacheCreation1hTokens int              `json:"claude_cache_creation_1_h_tokens,omitempty"`
-	CacheCreation               *CacheCreation   `json:"cache_creation,omitempty"`  // 缓存创建详情
-	ServerToolUse               *ServerToolUsage `json:"server_tool_use,omitempty"` // 服务器工具使用统计
+	CacheCreation               *CacheCreation   `json:"cache_creation,omitempty"`   // 缓存创建详情
+	ServerToolUse               *ServerToolUsage `json:"server_tool_use,omitempty"`  // 服务器工具使用统计
+	InferenceGeo                string           `json:"inference_geo,omitempty"`    // 推理所在地理区域
+	ServiceTier                 string           `json:"service_tier,omitempty"`     // 服务层级: "standard", "priority", "batch"
 }
 
 // Error API 错误信息
@@ -471,13 +491,23 @@ func NewToolChoiceTool(name string) *ToolChoice {
 	}
 }
 
-// 辅助函数：创建 JSON Schema 输出格式
+// 辅助函数：创建带 JSON Schema 格式的输出配置
 // 用于 Structured Outputs 功能
 // schema 参数可以是 map[string]any 或其他符合 JSON Schema 规范的结构
-func NewJSONSchemaOutputFormat(schema any) *OutputFormat {
-	return &OutputFormat{
-		Type:   "json_schema",
-		Schema: schema,
+func NewJSONSchemaOutputConfig(schema any) *OutputConfig {
+	return &OutputConfig{
+		Format: &JSONOutputFormat{
+			Type:   "json_schema",
+			Schema: schema,
+		},
+	}
+}
+
+// 辅助函数：创建带 effort 的输出配置
+// effort 可选值: "low", "medium", "high", "max"
+func NewEffortOutputConfig(effort string) *OutputConfig {
+	return &OutputConfig{
+		Effort: effort,
 	}
 }
 
@@ -572,27 +602,52 @@ for event := range streamEvents {
 }
 
 6. 结构化输出 (Structured Outputs) - 保证返回符合 schema 的 JSON：
-   注意：需要设置 Beta header: anthropic-beta: structured-outputs-2025-11-13
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("Extract info from: John Smith (john@example.com) wants Enterprise plan")),
     },
     MaxTokens: 1024,
-    OutputFormat: &OutputFormat{
-        Type: "json_schema",
-        Schema: map[string]any{
-            "type": "object",
-            "properties": map[string]any{
-                "name":           map[string]any{"type": "string"},
-                "email":          map[string]any{"type": "string"},
-                "plan_interest":  map[string]any{"type": "string"},
-                "demo_requested": map[string]any{"type": "boolean"},
+    OutputConfig: &OutputConfig{
+        Format: &JSONOutputFormat{
+            Type: "json_schema",
+            Schema: map[string]any{
+                "type": "object",
+                "properties": map[string]any{
+                    "name":           map[string]any{"type": "string"},
+                    "email":          map[string]any{"type": "string"},
+                    "plan_interest":  map[string]any{"type": "string"},
+                    "demo_requested": map[string]any{"type": "boolean"},
+                },
+                "required":             []string{"name", "email", "plan_interest", "demo_requested"},
+                "additionalProperties": false,
             },
-            "required":             []string{"name", "email", "plan_interest", "demo_requested"},
-            "additionalProperties": false,
         },
+    },
+}
+
+8. 输出配置 - 设置推理努力程度：
+
+request := Request{
+    Model: "claude-sonnet-4-5-20250929",
+    Messages: []Message{
+        NewUserMessage(NewTextContent("What is 2+2?")),
+    },
+    MaxTokens: 1024,
+    OutputConfig: NewEffortOutputConfig("low"),
+}
+
+9. Thinking type 设为 adaptive，模型自行决定是否思考：
+
+request := Request{
+    Model: "claude-sonnet-4-5-20250929",
+    Messages: []Message{
+        NewUserMessage(NewTextContent("Solve this complex math problem...")),
+    },
+    MaxTokens: 16384,
+    Thinking: &ThinkingConfig{
+        Type: "adaptive",
     },
 }
 
@@ -618,7 +673,7 @@ tools := []Tool{{
 }}
 
 request := Request{
-    Model: "claude-sonnet-4-5",
+    Model: "claude-sonnet-4-5-20250929",
     Messages: []Message{
         NewUserMessage(NewTextContent("Find flights to Paris next month")),
     },

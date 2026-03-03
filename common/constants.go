@@ -153,6 +153,6 @@ const (
 )
 
 const (
-	CacheClaudeRsID   = "claude_cache_response_id_%s"
-	CacheClaudeLength = "claude_length_%s"
+	CacheClaudeRsID   = "cache_response_id_%s"  // 改为通用格式（原：claude_cache_response_id_%s）
+	CacheClaudeLength = "claude_length_%s"      // 保持不变，仅 Claude 使用
 )

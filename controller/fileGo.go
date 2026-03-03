@@ -89,8 +89,10 @@ func UploadToR2WithURL(ctx context.Context, imageData []byte, bucketName, object
 		return "", fmt.Errorf("failed to create config: %v", err)
 	}
 
-	// 创建 S3 客户端
-	s3Client := s3.NewFromConfig(cfg)
+	// 创建 S3 客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传对象
 	_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
@@ -127,7 +129,9 @@ func DeleteFileR2(ctx context.Context, filename string) error {
 		return fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	_, err = client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
 		Bucket: aws.String(commonConfig.CfBucketFileName),
@@ -167,7 +171,9 @@ func UploadFileR2WithUrl(ctx context.Context, file multipart.File, filename, con
 		return "", fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	_, err = client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:      aws.String(commonConfig.CfBucketFileName),
@@ -395,8 +401,10 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	// 创建S3客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建S3客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传视频到R2
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{

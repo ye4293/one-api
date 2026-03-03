@@ -25,6 +25,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
@@ -33,6 +34,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/vertexai"
+	"github.com/songquanpeng/one-api/relay/channel/xai"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -101,8 +103,10 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("unable to load SDK config: %w", err)
 	}
 
-	// 创建S3客户端
-	client := s3.NewFromConfig(cfg)
+	// 创建S3客户端（使用 Path-Style 避免虚拟主机风格的子域名 TLS 问题）
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
 
 	// 上传视频到R2
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
@@ -115,9 +119,12 @@ func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (s
 		return "", fmt.Errorf("failed to upload video to R2: %w", err)
 	}
 
-	// 生成文件URL
-	fileUrl := "https://file.ezlinkai.com"
-	return fmt.Sprintf("%s/%s", fileUrl, filename), nil
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	if config.CfFilePublicUrl != "" {
+		return fmt.Sprintf("%s/%s", config.CfFilePublicUrl, filename), nil
+	}
+	return fmt.Sprintf("%s/%s/%s", config.CfFileEndpoint, config.CfBucketFileName, filename), nil
 }
 
 func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode {
@@ -156,6 +163,9 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleSoraRemixRequest(c, ctx, meta)
 	} else if strings.HasPrefix(modelName, "sora") {
 		return handleSoraVideoRequest(c, ctx, videoRequest, meta)
+	} else if strings.HasPrefix(modelName, "grok-imagine-video") {
+		// Grok 视频模型：grok-imagine-video
+		return handleGrokVideoRequest(c, ctx, videoRequest, meta)
 	} else {
 		return openai.ErrorWrapper(fmt.Errorf("unsupported model"), "unsupported_model", http.StatusBadRequest)
 	}
@@ -258,12 +268,17 @@ func handleSoraRemixRequest(c *gin.Context, ctx context.Context, meta *util.Rela
 
 	log.Printf("sora-remix: using original channel_id=%d, channel_name=%s", videoTask.ChannelId, originalChannel.Name)
 
-	// 构建请求 URL
+	// 构建请求 URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := *originalChannel.BaseURL
 	if baseUrl == "" {
 		baseUrl = "https://api.openai.com"
 	}
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	var fullRequestUrl string
+	if originalChannel.Type == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s/remix", baseUrl, remixReq.VideoID)
+	}
 
 	// 构建请求体（只需要 prompt，去掉 model 和 video_id 参数）
 	requestBody := map[string]string{
@@ -282,9 +297,13 @@ func handleSoraRemixRequest(c *gin.Context, ctx context.Context, meta *util.Rela
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 使用原渠道的 key
+	// 使用原渠道的 key，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+originalChannel.Key)
+	if originalChannel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", originalChannel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+originalChannel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -625,6 +644,8 @@ func sendRequestAndHandleAliVideoResponse(c *gin.Context, ctx context.Context, b
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+channel.Key)
 	req.Header.Set("X-DashScope-Async", "enable") // 启用异步模式
+	// 应用渠道自定义请求头覆盖
+	relaychannel.ApplyHeadersOverride(req, meta)
 
 	// 发送请求
 	client := &http.Client{}
@@ -707,9 +728,14 @@ func sendRequestAndHandleSoraVideoResponseFormData(c *gin.Context, ctx context.C
 		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := meta.BaseURL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+	var fullRequestUrl string
+	if meta.ChannelType == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", baseUrl)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", baseUrl)
+	}
 
 	// 重新构建 multipart form
 	body := &bytes.Buffer{}
@@ -748,9 +774,13 @@ func sendRequestAndHandleSoraVideoResponseFormData(c *gin.Context, ctx context.C
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if meta.ChannelType == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -800,9 +830,14 @@ func sendRequestAndHandleSoraVideoResponseJSON(c *gin.Context, ctx context.Conte
 		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
 	}
 
-	// 构建请求URL
+	// 构建请求URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := meta.BaseURL
-	fullRequestUrl := fmt.Sprintf("%s/v1/videos", baseUrl) // Sora 官方地址
+	var fullRequestUrl string
+	if meta.ChannelType == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos", baseUrl)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos", baseUrl)
+	}
 
 	// 创建 multipart form
 	body := &bytes.Buffer{}
@@ -840,9 +875,13 @@ func sendRequestAndHandleSoraVideoResponseJSON(c *gin.Context, ctx context.Conte
 		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
 
-	// 设置请求头
+	// 设置请求头，Azure 渠道使用 Api-key header
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	if meta.ChannelType == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
 
 	// 发送请求
 	client := &http.Client{}
@@ -2145,6 +2184,227 @@ func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullR
 	return result
 }
 
+// handleGrokVideoRequest 处理 Grok 视频生成/编辑请求
+// 根据请求中是否包含 video 参数来判断是视频生成还是视频编辑
+// 请求体直接透传，不做序列化处理
+func handleGrokVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	baseUrl := meta.BaseURL
+	if baseUrl == "" {
+		baseUrl = "https://api.x.ai"
+	}
+
+	// 解析请求参数用于计费和路由判断
+	var grokParams struct {
+		Duration   int    `json:"duration"`
+		Resolution string `json:"resolution"` // 480p 或 720p
+		Video      *struct {
+			URL string `json:"url"`
+		} `json:"video,omitempty"`
+		Image *struct {
+			URL string `json:"url"`
+		} `json:"image,omitempty"`
+	}
+	if err := common.UnmarshalBodyReusable(c, &grokParams); err != nil {
+		return openai.ErrorWrapper(err, "invalid_video_request", http.StatusBadRequest)
+	}
+
+	// 设置默认 duration
+	duration := grokParams.Duration
+	if duration <= 0 {
+		duration = 6 // 默认 6 秒
+	}
+	if duration > 15 {
+		duration = 15 // 最大 15 秒
+	}
+
+	// 设置分辨率，默认 480p
+	resolution := grokParams.Resolution
+	if resolution == "" {
+		resolution = "480p"
+	}
+
+	// 判断输入类型
+	hasVideoInput := grokParams.Video != nil && grokParams.Video.URL != ""
+	hasImageInput := grokParams.Image != nil && grokParams.Image.URL != ""
+
+	// 根据是否有 video 参数判断请求类型
+	var fullRequestUrl string
+	var videoType string
+	if hasVideoInput {
+		// 视频编辑请求
+		fullRequestUrl = baseUrl + "/v1/videos/edits"
+		videoType = "video-edit"
+		log.Printf("[Grok Video] 视频编辑请求 - video_url=%s, duration=%d, resolution=%s", grokParams.Video.URL, duration, resolution)
+	} else {
+		// 视频生成请求
+		fullRequestUrl = baseUrl + "/v1/videos/generations"
+		if hasImageInput {
+			videoType = "video-generation+image"
+		} else {
+			videoType = "video-generation"
+		}
+		log.Printf("[Grok Video] 视频生成请求 - type=%s, duration=%d, resolution=%s", videoType, duration, resolution)
+	}
+
+	return sendRequestGrokAndHandleResponse(c, ctx, fullRequestUrl, meta, videoType, duration, resolution, hasVideoInput, hasImageInput)
+}
+
+// sendRequestGrokAndHandleResponse 发送 Grok 视频请求并处理响应
+// 请求体直接透传
+func sendRequestGrokAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, meta *util.RelayMeta, videoType string, duration int, resolution string, hasVideoInput bool, hasImageInput bool) *model.ErrorWithStatusCode {
+	// 计算预扣费用
+	quota := calculateGrokVideoQuota(duration, resolution, hasVideoInput, hasImageInput)
+	log.Printf("[Grok Video] 预扣费用 - duration=%d, resolution=%s, hasVideoInput=%v, hasImageInput=%v, quota=%d", duration, resolution, hasVideoInput, hasImageInput, quota)
+
+	// 存储计费参数到 context
+	c.Set("grok_duration", duration)
+	c.Set("grok_resolution", resolution)
+	c.Set("grok_has_video_input", hasVideoInput)
+	c.Set("grok_has_image_input", hasImageInput)
+
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	// 获取原始请求体（直接透传）
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_request_body_error", http.StatusInternalServerError)
+	}
+
+	// 创建请求
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
+	}
+
+	// 设置请求头
+	// 使用 meta.APIKey（系统已选择的单个 Key），而不是 channel.Key（多 Key 原始字符串）
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
+
+	// 发送请求
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
+	}
+
+	log.Printf("[Grok Video] 响应状态码: %d, 响应体: %s", resp.StatusCode, string(body))
+
+	// 解析响应
+	var grokResponse xai.GrokVideoResponse
+	if err := json.Unmarshal(body, &grokResponse); err != nil {
+		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
+	}
+	grokResponse.StatusCode = resp.StatusCode
+
+	// 处理响应
+	return handleGrokVideoResponse(c, ctx, grokResponse, body, meta, meta.ActualModelName, videoType)
+}
+
+// handleGrokVideoResponse 处理 Grok 视频响应
+func handleGrokVideoResponse(c *gin.Context, ctx context.Context, grokResponse xai.GrokVideoResponse, body []byte, meta *util.RelayMeta, modelName string, videoType string) *model.ErrorWithStatusCode {
+	switch grokResponse.StatusCode {
+	case 200, 202:
+		// 从 context 获取计费参数
+		duration := 6
+		resolution := "480p"
+		hasVideoInput := false
+		hasImageInput := false
+		if d, ok := c.Get("grok_duration"); ok {
+			duration = d.(int)
+		}
+		if r, ok := c.Get("grok_resolution"); ok {
+			resolution = r.(string)
+		}
+		if v, ok := c.Get("grok_has_video_input"); ok {
+			hasVideoInput = v.(bool)
+		}
+		if i, ok := c.Get("grok_has_image_input"); ok {
+			hasImageInput = i.(bool)
+		}
+
+		// 计算 quota
+		quota := calculateGrokVideoQuota(duration, resolution, hasVideoInput, hasImageInput)
+		log.Printf("[Grok Video] 任务创建成功 - taskId=%s, duration=%d, resolution=%s, quota=%d", grokResponse.RequestId, duration, resolution, quota)
+
+		// 创建视频任务日志（包含 resolution）
+		err := CreateVideoLog("grok", grokResponse.RequestId, meta, "", strconv.Itoa(duration), videoType, "", quota, resolution)
+		if err != nil {
+			log.Printf("[Grok Video] 创建视频日志失败: %v", err)
+		}
+
+		// 保存用于任务创建的 API Key（用于后续轮询）
+		if meta.APIKey != "" {
+			err = dbmodel.UpdateVideoCredentials(grokResponse.RequestId, meta.APIKey)
+			if err != nil {
+				log.Printf("[Grok Video] 保存 API Key 失败: %v", err)
+			}
+		}
+
+		// 创建统一响应
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     grokResponse.RequestId,
+			Message:    "Video generation task created successfully",
+			TaskStatus: "succeed",
+		}
+
+		// 序列化响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 发送响应
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
+
+	default:
+		// Grok API 错误格式: {"code": "...", "error": "..."}
+		errorCode := grokResponse.Code
+		errorMsg := grokResponse.Error
+		if errorMsg == "" {
+			errorMsg = string(body)
+		}
+		log.Printf("[Grok Video] API错误 - 状态码: %d, code: %s, error: %s", grokResponse.StatusCode, errorCode, errorMsg)
+
+		// 返回统一的 GeneralVideoResponse 格式
+		generalResponse := model.GeneralVideoResponse{
+			TaskId:     "",
+			TaskStatus: "failed",
+			Message:    fmt.Sprintf("%s: %s", errorCode, errorMsg),
+		}
+
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("Error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		c.Data(grokResponse.StatusCode, "application/json", jsonResponse)
+		return nil
+	}
+}
+
 func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 
 	baseUrl := meta.BaseURL
@@ -2260,6 +2520,10 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			41: "/v1/videos/multi-image2video",
 			0:  "/kling/v1/videos/multi-image2video",
 		},
+		"omni-video": {
+			41: "/v1/videos/omni-video",
+			0:  "/kling/v1/videos/omni-video",
+		},
 	}
 
 	// 确定请求类型和URL
@@ -2287,28 +2551,42 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 		// 对口型任务请求 - 使用独立的处理逻辑
 		DoAdvancedLipSync(c)
 		return nil
-	} else {
-		// 检查是否为多图生视频请求或单图生视频请求
-		var imageCheck struct {
-			Image     string `json:"image,omitempty"`
-			Mode      string `json:"mode,omitempty"`
-			Duration  any    `json:"duration,omitempty"`
-			ImageTail string `json:"image_tail,omitempty"`
-			ImageList []struct {
-				Image string `json:"image"`
-			} `json:"image_list,omitempty"`
+	} else if meta.OriginModelName == "kling-video-o1" || meta.OriginModelName == "kling-v3-omni" {
+		requestType = "omni-video"
+		videoType = "omni-video"
+		var requestMap map[string]interface{}
+		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
+			return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
 		}
-		if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
+		if modeVal, ok := requestMap["mode"].(string); ok {
+			mode = modeVal
+		}
+		if durVal := requestMap["duration"]; durVal != nil {
+			switch v := durVal.(type) {
+			case float64:
+				duration = strconv.Itoa(int(v))
+			case string:
+				duration = v
+			}
+		}
+		if modelVal, hasModel := requestMap["model"]; hasModel {
+			requestMap["model_name"] = modelVal
+			delete(requestMap, "model")
+		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
+			requestMap["model_name"] = meta.OriginModelName
+		}
+		requestBody = requestMap
+	} else {
+		var requestMap map[string]interface{}
+		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
 			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		}
 
-		// 只有当请求体中包含这些字段时才设置它们
-		if imageCheck.Mode != "" {
-			mode = imageCheck.Mode
+		if modeVal, ok := requestMap["mode"].(string); ok {
+			mode = modeVal
 		}
-
-		if imageCheck.Duration != nil {
-			switch v := imageCheck.Duration.(type) {
+		if durVal := requestMap["duration"]; durVal != nil {
+			switch v := durVal.(type) {
 			case float64:
 				duration = strconv.Itoa(int(v))
 			case string:
@@ -2316,77 +2594,38 @@ func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.Re
 			}
 		}
 
-		// 检查是否为多图生视频请求
-		if len(imageCheck.ImageList) > 0 {
+		if modelVal, hasModel := requestMap["model"]; hasModel {
+			requestMap["model_name"] = modelVal
+			delete(requestMap, "model")
+		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
+			requestMap["model_name"] = meta.OriginModelName
+		}
+
+		hasImageList := false
+		if listVal, ok := requestMap["image_list"].([]interface{}); ok && len(listVal) > 0 {
+			hasImageList = true
+		}
+		hasImage := false
+		if imgVal, ok := requestMap["image"].(string); ok && imgVal != "" {
+			hasImage = true
+		}
+		hasImageTail := false
+		if tailVal, ok := requestMap["image_tail"].(string); ok && tailVal != "" {
+			hasImageTail = true
+		}
+
+		if hasImageList {
 			requestType = "multi-image-to-video"
 			videoType = "multi-image-to-video"
-			var multiImageToVideoReq keling.MultiImageToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &multiImageToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				multiImageToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				multiImageToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelName
-			if multiImageToVideoReq.Model != "" {
-				multiImageToVideoReq.ModelName = multiImageToVideoReq.Model
-				multiImageToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = multiImageToVideoReq
-		} else if imageCheck.Image != "" || imageCheck.ImageTail != "" {
+		} else if hasImage || hasImageTail {
 			requestType = "image-to-video"
 			videoType = "image-to-video"
-			var imageToVideoReq keling.ImageToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &imageToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				imageToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				imageToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelNames
-			if imageToVideoReq.Model != "" {
-				imageToVideoReq.ModelName = imageToVideoReq.Model
-				imageToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = imageToVideoReq
 		} else {
 			requestType = "text-to-video"
 			videoType = "text-to-video"
-			var textToVideoReq keling.TextToVideoRequest
-			if err := common.UnmarshalBodyReusable(c, &textToVideoReq); err != nil {
-				return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-			}
-
-			// 只有当有值时才设置这些字段
-			if mode != "" {
-				textToVideoReq.Mode = mode
-			}
-			if duration != "" {
-				textToVideoReq.Duration = duration
-			}
-
-			// 如果 Model 有值，将其赋给 ModelName
-			if textToVideoReq.Model != "" {
-				textToVideoReq.ModelName = textToVideoReq.Model
-				textToVideoReq.Model = "" // 清除 Model 字段
-			}
-
-			requestBody = textToVideoReq
 		}
+
+		requestBody = requestMap
 	}
 
 	// 构建完整URL
@@ -3046,6 +3285,36 @@ func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse l
 	}
 }
 
+// calculateGrokVideoQuota 计算 Grok 视频的 quota
+// Grok 计费：
+//   - 输出 480p: $0.05/秒，720p: $0.07/秒
+//   - 输入图片: $0.002/张
+//   - 输入视频: $0.01/秒
+func calculateGrokVideoQuota(duration int, resolution string, hasVideoInput bool, hasImageInput bool) int64 {
+	var quotaPrice float64
+
+	// 输出费用：根据分辨率计费
+	var outputPricePerSecond float64
+	if resolution == "720p" {
+		outputPricePerSecond = 0.07
+	} else {
+		// 默认 480p
+		outputPricePerSecond = 0.05
+	}
+	quotaPrice = float64(duration) * outputPricePerSecond
+
+	// 输入费用
+	if hasVideoInput {
+		// 视频编辑：输入视频按输出 duration 估算，$0.01/秒
+		quotaPrice += float64(duration) * 0.01
+	} else if hasImageInput {
+		// 图片输入：$0.002/张
+		quotaPrice += 0.002
+	}
+
+	return int64(quotaPrice * config.QuotaPerUnit)
+}
+
 // 新增计算quota的函数
 func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duration string, c *gin.Context) int64 {
 	var modelPrice float64
@@ -3313,6 +3582,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		VideoId:     videoId,
 		Quota:       quota,
 		Credentials: credentialsJSON, // 保存完整的JSON凭证
+		Status:      "processing",    // 初始状态设置为处理中
 	}
 
 	// 调用 Insert 方法插入记录
@@ -3441,6 +3711,12 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			} else {
 				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
 			}
+		} else if videoTask.Type == "omni-video" {
+			if channel.Type == 41 {
+				fullRequestUrl = fmt.Sprintf("%s/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
+			} else {
+				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
+			}
 		}
 
 	case "runway":
@@ -3534,10 +3810,21 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		baseUrl := *channel.BaseURL
 		fullRequestUrl = fmt.Sprintf("%s/api/v1/tasks/%s", baseUrl, taskId)
 	case "sora":
-		// Sora 视频状态查询
+		// Sora 视频状态查询，Azure 渠道需要添加 /openai 前缀
 		baseUrl := *channel.BaseURL
 		if baseUrl == "" {
 			baseUrl = "https://api.openai.com"
+		}
+		if channel.Type == common.ChannelTypeAzure {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/%s", baseUrl, taskId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskId)
+		}
+	case "grok":
+		// Grok 视频结果查询
+		baseUrl := *channel.BaseURL
+		if baseUrl == "" {
+			baseUrl = "https://api.x.ai"
 		}
 		fullRequestUrl = fmt.Sprintf("%s/v1/videos/%s", baseUrl, taskId)
 	default:
@@ -3676,6 +3963,26 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+accessToken)
+	} else if videoTask.Provider == "sora" && channel.Type == common.ChannelTypeAzure {
+		// Sora + Azure 渠道使用 Api-key header
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Api-key", channel.Key)
+	} else if videoTask.Provider == "grok" {
+		// Grok：使用任务创建时保存的 API Key（支持多 Key 渠道）
+		apiKey := videoTask.Credentials
+		if apiKey == "" {
+			// 如果没有保存的凭证，回退到 channel.Key（兼容旧任务）
+			keys := strings.Split(channel.Key, "\n")
+			for _, k := range keys {
+				k = strings.TrimSpace(k)
+				if k != "" {
+					apiKey = k
+					break
+				}
+			}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	} else {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -3694,7 +4001,9 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 	defer resp.Body.Close()
 	// log.Printf("video response body: %+v", resp)
 	// 检查响应状态码
-	if resp.StatusCode != http.StatusOK {
+	// Grok 视频任务进行中返回 202，需要放行到 provider 专用处理逻辑
+	if resp.StatusCode != http.StatusOK &&
+		!(videoTask.Provider == "grok" && (resp.StatusCode == http.StatusAccepted || resp.StatusCode >= 400)) {
 		body, _ := io.ReadAll(resp.Body)
 		return openai.ErrorWrapper(
 			fmt.Errorf("API error: %s", string(body)),
@@ -4381,11 +4690,19 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 							for i, uri := range processedVideoURIs {
 								generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
 							}
-						} else {
-							// 没有被过滤但也没有找到视频
-							log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
-							log.Printf("[VEO查询] Response字段内容: %+v", response)
 
+							// 保存视频URL到数据库
+							var storeUrl string
+							if len(processedVideoURIs) == 1 {
+								storeUrl = processedVideoURIs[0]
+							} else {
+								urlsJSON, _ := json.Marshal(processedVideoURIs)
+								storeUrl = string(urlsJSON)
+							}
+							if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, storeUrl); updateErr != nil {
+								log.Printf("[VEO] 保存视频URL失败 - 任务:%s, 错误:%v", taskId, updateErr)
+							}
+						} else {
 							generalResponse.TaskStatus = "failed"
 							generalResponse.Message = "Operation completed, but no video result was found."
 						}
@@ -4399,41 +4716,34 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 						// 处理每个视频URI - 并发上传优化
 						if responseFormat == "url" {
-							// 使用并发上传
 							processedVideoURIs = processVideosConcurrently(videoURIs, videoTask.UserId, taskId)
 						} else {
-							// 如果不需要上传，直接使用原始URI
 							processedVideoURIs = videoURIs
 						}
 
 						// 构建响应结果
 						generalResponse.TaskStatus = "succeed"
 						generalResponse.Message = "Video generated successfully."
-						generalResponse.VideoResult = processedVideoURIs[0] // 保持兼容性，设置第一个视频
+						generalResponse.VideoResult = processedVideoURIs[0]
 
 						// 设置所有视频结果
 						generalResponse.VideoResults = make([]model.VideoResultItem, len(processedVideoURIs))
 						for i, uri := range processedVideoURIs {
 							generalResponse.VideoResults[i] = model.VideoResultItem{Url: uri}
 						}
+
+						// 保存视频URL到数据库
+						var storeUrl string
+						if len(processedVideoURIs) == 1 {
+							storeUrl = processedVideoURIs[0]
+						} else {
+							urlsJSON, _ := json.Marshal(processedVideoURIs)
+							storeUrl = string(urlsJSON)
+						}
+						if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, storeUrl); updateErr != nil {
+							log.Printf("[VEO] 保存视频URL失败 - 任务:%s, 错误:%v", taskId, updateErr)
+						}
 					} else {
-						// 完成了，但未找到视频URI也未找到错误
-						log.Printf("[VEO查询] ❌ 操作完成但未找到视频结果 - 任务:%s", taskId)
-						log.Printf("[VEO查询] Response字段内容: %+v", response)
-
-						// 检查response中的具体字段
-						if videos, hasVideos := response["videos"]; hasVideos {
-							log.Printf("[VEO查询] Response.videos字段: %+v", videos)
-						} else {
-							log.Printf("[VEO查询] Response中缺少videos字段")
-						}
-
-						if generatedSamples, hasSamples := response["generatedSamples"]; hasSamples {
-							log.Printf("[VEO查询] Response.generatedSamples字段: %+v", generatedSamples)
-						} else {
-							log.Printf("[VEO查询] Response中缺少generatedSamples字段")
-						}
-
 						generalResponse.TaskStatus = "failed"
 						generalResponse.Message = "Operation completed, but no video result was found."
 					}
@@ -4767,48 +5077,247 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 
 		c.Data(http.StatusOK, "application/json", jsonResponse)
 		return nil
+	} else if videoTask.Provider == "grok" {
+		defer resp.Body.Close()
+
+		// 首先检查数据库中是否已有存储的URL
+		if videoTask.StoreUrl != "" {
+			log.Printf("[Grok Video] 使用缓存的视频URL - taskId=%s, url=%s", taskId, videoTask.StoreUrl)
+
+			// 解析StoreUrl，可能是JSON数组格式或单个URL
+			var videoUrls []string
+			if err := json.Unmarshal([]byte(videoTask.StoreUrl), &videoUrls); err != nil {
+				videoUrls = []string{videoTask.StoreUrl}
+			}
+
+			videoResults := make([]model.VideoResultItem, len(videoUrls))
+			for i, url := range videoUrls {
+				videoResults[i] = model.VideoResultItem{Url: url}
+			}
+
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:       taskId,
+				VideoResult:  videoUrls[0],
+				VideoId:      taskId,
+				TaskStatus:   "succeed",
+				Message:      "Video retrieved from cache",
+				VideoResults: videoResults,
+				Duration:     videoTask.Duration,
+			}
+			jsonResponse, err := json.Marshal(generalResponse)
+			if err != nil {
+				return openai.ErrorWrapper(fmt.Errorf("error marshaling response: %s", err), "internal_error", http.StatusInternalServerError)
+			}
+			c.Data(http.StatusOK, "application/json", jsonResponse)
+			return nil
+		}
+
+		// 读取响应体
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to read response body: %v", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		log.Printf("[Grok Video] 查询响应 - taskId=%s, statusCode=%d, body=%s", taskId, resp.StatusCode, string(body))
+
+		// 解析 Grok 视频结果响应
+		var grokResult xai.GrokVideoResult
+		if err := json.Unmarshal(body, &grokResult); err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("failed to parse Grok response: %v", err),
+				"json_parse_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		// 处理非200响应（Grok 错误格式：{"code": "...", "error": "..."}）
+		if resp.StatusCode != 200 && resp.StatusCode != 202 {
+			errorCode := grokResult.Code
+			errorMsg := grokResult.Error
+			if errorMsg == "" {
+				errorMsg = string(body)
+			}
+			log.Printf("[Grok Video] 查询错误 - taskId=%s, code: %s, error: %s", taskId, errorCode, errorMsg)
+
+			failMessage := fmt.Sprintf("%s: %s", errorCode, errorMsg)
+
+			// 更新任务状态并处理退款
+			needRefund := UpdateVideoTaskStatus(taskId, "failed", failMessage)
+			if needRefund {
+				log.Printf("[Grok Video] 任务失败，补偿用户 - taskId=%s", taskId)
+				CompensateVideoTask(taskId)
+			}
+
+			// 返回统一的 GeneralFinalVideoResponse 格式
+			generalResponse := model.GeneralFinalVideoResponse{
+				TaskId:     taskId,
+				VideoId:    taskId,
+				TaskStatus: "failed",
+				Message:    failMessage,
+				Duration:   videoTask.Duration,
+			}
+
+			jsonResponse, err := json.Marshal(generalResponse)
+			if err != nil {
+				return openai.ErrorWrapper(
+					fmt.Errorf("Error marshaling response: %s", err),
+					"internal_error",
+					http.StatusInternalServerError,
+				)
+			}
+
+			c.Data(http.StatusOK, "application/json", jsonResponse)
+			return nil
+		}
+
+		// 创建初始响应
+		generalResponse := model.GeneralFinalVideoResponse{
+			TaskId:     taskId,
+			VideoId:    taskId,
+			TaskStatus: "processing",
+			Message:    "Video is still processing",
+			Duration:   videoTask.Duration,
+		}
+
+		// 根据响应内容判断状态
+		// 完成时: {"video": {...}, "model": "..."}
+		// 进行中: {"status": "pending"}
+		if grokResult.Video != nil && grokResult.Video.URL != "" {
+			// 视频已完成
+			log.Printf("[Grok Video] 视频完成 - taskId=%s, url=%s", taskId, grokResult.Video.URL)
+
+			// 保存URL到数据库
+			if updateErr := dbmodel.UpdateVideoStoreUrl(taskId, grokResult.Video.URL); updateErr != nil {
+				log.Printf("[Grok Video] 保存URL失败 - taskId=%s, error=%v", taskId, updateErr)
+			}
+
+			generalResponse.TaskStatus = "succeed"
+			generalResponse.Message = "Video generation completed"
+			generalResponse.VideoResult = grokResult.Video.URL
+			generalResponse.VideoResults = []model.VideoResultItem{{Url: grokResult.Video.URL}}
+
+			if grokResult.Video.Duration > 0 {
+				generalResponse.Duration = strconv.Itoa(grokResult.Video.Duration)
+			}
+		} else if grokResult.Status == "pending" {
+			// 进行中
+			generalResponse.TaskStatus = "processing"
+			generalResponse.Message = "Video generation in progress"
+		} else if grokResult.Error != "" {
+			// 有错误
+			generalResponse.TaskStatus = "failed"
+			generalResponse.Message = fmt.Sprintf("Video generation failed: %s", grokResult.Error)
+		} else {
+			// 未知状态
+			generalResponse.TaskStatus = "processing"
+			generalResponse.Message = fmt.Sprintf("Video status: %s", grokResult.Status)
+		}
+
+		// 更新数据库任务状态并在必要时处理退款
+		failReason := ""
+		if generalResponse.TaskStatus == "failed" {
+			failReason = generalResponse.Message
+		}
+		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
+		if needRefund {
+			log.Printf("[Grok Video] 任务失败，补偿用户 - taskId=%s", taskId)
+			CompensateVideoTask(taskId)
+		}
+
+		// 返回响应
+		jsonResponse, err := json.Marshal(generalResponse)
+		if err != nil {
+			return openai.ErrorWrapper(
+				fmt.Errorf("error marshaling response: %s", err),
+				"internal_error",
+				http.StatusInternalServerError,
+			)
+		}
+
+		c.Data(http.StatusOK, "application/json", jsonResponse)
+		return nil
 	}
 	return nil
 }
 
 // downloadAndUploadSoraVideo 下载 Sora 视频并上传到 R2
 func downloadAndUploadSoraVideo(channel *dbmodel.Channel, videoId string, userId int) (string, error) {
-	// 构建下载 URL
+	// 构建下载 URL，Azure 渠道需要添加 /openai 前缀
 	baseUrl := *channel.BaseURL
 	if baseUrl == "" {
 		baseUrl = "https://api.openai.com"
 	}
-	downloadUrl := fmt.Sprintf("%s/v1/videos/%s/content", baseUrl, videoId)
+	var downloadUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		downloadUrl = fmt.Sprintf("%s/openai/v1/videos/%s/content", baseUrl, videoId)
+	} else {
+		downloadUrl = fmt.Sprintf("%s/v1/videos/%s/content", baseUrl, videoId)
+	}
 
 	log.Printf("Downloading Sora video: %s", downloadUrl)
 
-	// 创建下载请求
-	req, err := http.NewRequest("GET", downloadUrl, nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to create download request: %w", err)
-	}
-
-	// 设置授权头
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
-
-	// 发送请求
 	client := &http.Client{
 		Timeout: 5 * time.Minute, // 5分钟超时，视频下载可能需要时间
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to download video: %w", err)
+
+	// 重试逻辑：视频状态为completed后，内容端点可能还需要短暂时间才能可用
+	maxRetries := 5
+	var resp *http.Response
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			waitSeconds := time.Duration(attempt*3) * time.Second // 3s, 6s, 9s, 12s, 15s
+			log.Printf("Sora video content not ready yet, retrying in %v (attempt %d/%d): %s", waitSeconds, attempt, maxRetries, videoId)
+			time.Sleep(waitSeconds)
+		}
+
+		// 创建下载请求（每次重试都需要新建request）
+		req, err := http.NewRequest("GET", downloadUrl, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to create download request: %w", err)
+		}
+
+		// 设置授权头，Azure 渠道使用 api-key，其他渠道使用 Bearer token
+		if channel.Type == common.ChannelTypeAzure {
+			req.Header.Set("api-key", channel.Key)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+channel.Key)
+		}
+
+		resp, lastErr = client.Do(req)
+		if lastErr != nil {
+			lastErr = fmt.Errorf("failed to download video: %w", lastErr)
+			continue
+		}
+
+		// 如果是404，说明内容还未就绪，关闭响应体后重试
+		if resp.StatusCode == 404 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("video not ready yet (404)")
+			continue
+		}
+
+		// 非404错误，直接返回
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// 成功，跳出重试循环
+		lastErr = nil
+		break
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("download failed after %d retries: %w", maxRetries, lastErr)
 	}
 	defer resp.Body.Close()
-
-	// 检查状态码
-	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("video not ready yet (404)")
-	}
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
-	}
 
 	// 读取视频数据
 	videoData, err := io.ReadAll(resp.Body)
