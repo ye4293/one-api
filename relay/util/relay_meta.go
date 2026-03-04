@@ -46,6 +46,8 @@ type RelayMeta struct {
 	ShouldIncludeUsage bool
 	// 自定义请求头覆盖
 	HeadersOverride map[string]string
+	// 渠道创建时间（用于 Azure 部署名是否移除小数点）
+	ChannelCreateTime int64
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）
@@ -89,6 +91,14 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		isFirstResponse: true,       // 初始化为 true，等待第一个响应
 	}
 
+	if v, ok := c.Get("channel_create_time"); ok {
+		switch t := v.(type) {
+		case int64:
+			meta.ChannelCreateTime = t
+		case int:
+			meta.ChannelCreateTime = int64(t)
+		}
+	}
 	// 处理多密钥索引
 	if keyIndexValue, exists := c.Get("key_index"); exists {
 		if keyIndex, ok := keyIndexValue.(int); ok {
