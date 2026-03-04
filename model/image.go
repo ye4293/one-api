@@ -42,6 +42,12 @@ func GetImageByTaskId(taskId string) (*Image, error) {
 	return &image, err
 }
 
+func GetImageByTaskIdAndUserId(taskId string, userId int) (*Image, error) {
+	var image Image
+	err := DB.Where("task_id = ? AND user_id = ?", taskId, userId).First(&image).Error
+	return &image, err
+}
+
 func GetImageById(id int64) (*Image, error) {
 	var image Image
 	err := DB.Where("id = ?", id).First(&image).Error
