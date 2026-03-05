@@ -186,7 +186,7 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 	other := buildClaudeOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0)
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
 }
 
 // buildClaudeOtherInfoWithUsageDetails 构建包含 adminInfo 和 Claude usageDetails 的 otherInfo 字符串
@@ -454,6 +454,10 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
 	}
 
+	if claudeResponse.Id != "" {
+		c.Set("x_response_id", claudeResponse.Id)
+	}
+
 	// 判断是否创建或读取了缓存，并记录到 redis 中
 	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 非流式响应处理 - ResponseID: %s, Usage是否为空: %v",
 		claudeResponse.Id, claudeResponse.Usage == nil))
@@ -516,6 +520,9 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		// 更新使用量统计
 		if claudeResponse.Type == "message_start" {
 			lastUsageMetadata = claudeResponse.Message.Usage
+			if claudeResponse.Message.Id != "" {
+				c.Set("x_response_id", claudeResponse.Message.Id)
+			}
 			logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 流式响应message_start - ResponseID: %s, Usage是否为空: %v",
 				claudeResponse.Message.Id, lastUsageMetadata == nil))
 

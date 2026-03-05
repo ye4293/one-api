@@ -345,6 +345,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 				if len(respMeta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
 					id = respMeta.Id
 					modelName = respMeta.Model
+					c.Set("x_response_id", id)
 					return true
 				} else { // finish_reason case
 					if len(lastToolCallChoice.Delta.ToolCalls) > 0 {
@@ -436,6 +437,9 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		TotalTokens:      claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens,
 	}
 
+	if claudeResponse.Id != "" {
+		c.Set("x_response_id", claudeResponse.Id)
+	}
 	if claudeResponse.Usage != nil {
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
@@ -513,6 +517,9 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				// 安全地获取 usage 信息，避免 nil 指针
 				if claudeResp.Type == "message_start" && claudeResp.Message != nil && claudeResp.Message.Usage != nil {
 					usage.PromptTokens = claudeResp.Message.Usage.InputTokens
+					if claudeResp.Message.Id != "" {
+						c.Set("x_response_id", claudeResp.Message.Id)
+					}
 					// 判断是否创建或读取了缓存，并记录到 redis 中
 					logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeStreamHandler 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d",
 						claudeResp.Message.Id, usage.TotalTokens))

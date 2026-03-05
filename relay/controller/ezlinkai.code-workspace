@@ -10,9 +10,6 @@
 			"path": "../../../monitor"
 		},
 		{
-			"path": "../../../new-api"
-		},
-		{
 			"path": "../../../test"
 		},
 		{
@@ -20,6 +17,9 @@
 		},
 		{
 			"path": "../../../key-provider"
+		},
+		{
+			"path": "../../../new-api"
 		}
 	],
 	"settings": {}
