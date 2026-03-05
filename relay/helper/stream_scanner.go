@@ -21,7 +21,7 @@ import (
 
 const (
 	InitialScannerBufferSize = 64 << 10 // 64KB (64*1024)
-	MaxScannerBufferSize     = 10 << 20 // 10MB (10*1024*1024)
+	MaxScannerBufferSize     = 50 << 20 // 50MB - large enough for base64 encoded images from Gemini
 	DefaultPingInterval      = 10 * time.Second
 )
 

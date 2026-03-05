@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/relay/channel"
+	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -35,7 +36,10 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 		requestURL = fmt.Sprintf("%s?api-version=%s", requestURL, meta.Config.APIVersion)
 		task := strings.TrimPrefix(requestURL, "/v1/")
 		model_ := meta.ActualModelName
-		model_ = strings.Replace(model_, ".", "", -1)
+		// 2025年5月10日后创建的渠道不移除. （与 new-api relay/channel/openai/adaptor.go 一致）
+		if meta.ChannelCreateTime < constant.AzureNoRemoveDotTime {
+			model_ = strings.Replace(model_, ".", "", -1)
+		}
 		//https://github.com/songquanpeng/one-api/issues/1191
 		// {your endpoint}/openai/deployments/{your azure_model}/chat/completions?api-version={api_version}
 		requestURL = fmt.Sprintf("/openai/deployments/%s/%s", model_, task)

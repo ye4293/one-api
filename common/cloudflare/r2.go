@@ -61,13 +61,15 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 	if err != nil {
 		return "", fmt.Errorf("failed to decode base64: %v", err)
 	}
-	startTime := time.Now()
-	// 生成文件名：timestamp-uuid.ext
-	timestamp := time.Now().Format("20060102-150405")
+
+	// 生成文件名，按日期文件夹分类：gemini-images/2024-01-15/150405-uuid.ext
+	now := time.Now()
+	dateFolder := now.Format("2006-01-02") // 日期文件夹：2024-01-15
+	timeStamp := now.Format("150405")      // 时间戳：150405
 	uuid := generateFileUUID()
 	ext := getExtensionFromMimeType(mimeType)
-	filename := fmt.Sprintf("%s-%s%s", timestamp, uuid, ext)
-	objectKey := path.Join("gemini-images", filename)
+	filename := fmt.Sprintf("%s-%s%s", timeStamp, uuid, ext)
+	objectKey := path.Join("gemini-images", dateFolder, filename)
 
 	// 加载 AWS 配置
 	cfg, err := config.LoadDefaultConfig(ctx,
@@ -105,11 +107,15 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 		return "", fmt.Errorf("failed to upload to R2: %v", err)
 	}
 
-	// 返回公开访问 URL（Path-Style 格式：endpoint/bucket/key）
-	fileUrl := commonConfig.CfFileEndpoint
-	uploadDuration := time.Since(startTime)
-	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s/%s/%s (size: %d bytes, duration: %v)", fileUrl, bucketName, objectKey, len(imageData), uploadDuration))
+	// 生成文件 URL
+	// 优先使用公共访问 URL（如自定义域），否则使用 S3 Endpoint（Path-Style 格式）
+	var resultUrl string
+	if commonConfig.CfFilePublicUrl != "" {
+		resultUrl = fmt.Sprintf("%s/%s", commonConfig.CfFilePublicUrl, objectKey)
+	} else {
+		resultUrl = fmt.Sprintf("%s/%s/%s", commonConfig.CfFileEndpoint, bucketName, objectKey)
+	}
+	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s (size: %d bytes)", resultUrl, len(imageData)))
 
-	// 返回完整 URL（包含 bucket 名称）
-	return fmt.Sprintf("%s/%s/%s", fileUrl, bucketName, objectKey), nil
+	return resultUrl, nil
 }
