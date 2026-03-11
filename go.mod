@@ -6,6 +6,7 @@ go 1.23
 toolchain go1.24.5
 
 require (
+	github.com/Calcium-Ion/go-epay v0.0.4
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.2
 	github.com/gin-contrib/gzip v0.0.6
 	github.com/gin-contrib/sessions v0.0.5
@@ -17,6 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/pkoukk/tiktoken-go v0.1.7
+	github.com/samber/lo v1.53.0
 	github.com/stretchr/testify v1.9.0
 	github.com/stripe/stripe-go/v78 v78.5.0
 	golang.org/x/crypto v0.22.0
@@ -46,8 +48,9 @@ require (
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
 	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
-	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 )
 
 require (
@@ -93,7 +96,7 @@ require (
 	golang.org/x/arch v0.7.0 // indirect
 	golang.org/x/net v0.24.0
 	golang.org/x/sys v0.19.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

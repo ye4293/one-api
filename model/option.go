@@ -94,6 +94,14 @@ func InitOptionMap() {
 	config.OptionMap["StripePublicKey"] = ""
 	config.OptionMap["StripeEndpointKey"] = ""
 
+	config.OptionMap["EpayPaymentEnabled"] = strconv.FormatBool(config.EpayPaymentEnabled)
+	config.OptionMap["EpayPayAddress"] = config.EpayPayAddress
+	config.OptionMap["EpayId"] = config.EpayId
+	config.OptionMap["EpayKey"] = ""
+	config.OptionMap["EpayPrice"] = strconv.FormatFloat(config.EpayPrice, 'f', -1, 64)
+	config.OptionMap["EpayMinTopUp"] = strconv.Itoa(config.EpayMinTopUp)
+	config.OptionMap["EpayCallbackAddress"] = config.EpayCallbackAddress
+
 	config.OptionMap["CfR2storeEnabled"] = strconv.FormatBool(config.CfR2storeEnabled)
 	config.OptionMap["CfBucketFileName"] = config.CfBucketFileName
 	config.OptionMap["CfFileAccessKey"] = config.CfFileAccessKey
@@ -229,6 +237,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.CfR2storeEnabled = boolValue
 		case "PingIntervalEnabled":
 			config.PingIntervalEnabled = boolValue
+		case "EpayPaymentEnabled":
+			config.EpayPaymentEnabled = boolValue
 		}
 		
 	}
@@ -372,6 +382,18 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	case "FeishuWebhookUrls":
 		config.FeishuWebhookUrls = value
+	case "EpayPayAddress":
+		config.EpayPayAddress = value
+	case "EpayId":
+		config.EpayId = value
+	case "EpayKey":
+		config.EpayKey = value
+	case "EpayPrice":
+		config.EpayPrice, _ = strconv.ParseFloat(value, 64)
+	case "EpayMinTopUp":
+		config.EpayMinTopUp, _ = strconv.Atoi(value)
+	case "EpayCallbackAddress":
+		config.EpayCallbackAddress = value
 	case "PingIntervalSeconds":
 		config.PingIntervalSeconds, _ = strconv.Atoi(value)
 	// Claude Thinking 模型配置
