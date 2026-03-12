@@ -38,6 +38,8 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/register", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.Register)
 			userRoute.POST("/login", middleware.CriticalRateLimit(), controller.Login)
 			userRoute.GET("/logout", controller.Logout)
+			userRoute.POST("/epay/notify", controller.EpayNotify)
+			userRoute.GET("/epay/notify", controller.EpayNotify)
 
 			selfRoute := userRoute.Group("/")
 			selfRoute.Use(middleware.UserAuth())
@@ -48,6 +50,10 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/token", controller.GenerateAccessToken)
 				selfRoute.GET("/aff", controller.GetAffCode)
 				selfRoute.POST("/topup", controller.TopUp)
+				selfRoute.GET("/topup/info", controller.GetEpayTopUpInfo)
+				selfRoute.GET("/topup/self", controller.GetUserTopUps)
+				selfRoute.POST("/pay", middleware.CriticalRateLimit(), controller.RequestEpay)
+				selfRoute.POST("/amount", controller.RequestAmount)
 			}
 
 			adminRoute := userRoute.Group("/")
@@ -61,6 +67,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.PUT("/", controller.UpdateUser)
 				adminRoute.POST("/batchdelete", controller.BatchDelteUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
+				adminRoute.GET("/topup", controller.GetAllTopUps)
 			}
 		}
 		optionRoute := apiRouter.Group("/option")
