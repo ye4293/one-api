@@ -98,6 +98,7 @@ func InitOptionMap() {
 	config.OptionMap["EpayPayAddress"] = config.EpayPayAddress
 	config.OptionMap["EpayId"] = config.EpayId
 	config.OptionMap["EpayKey"] = ""
+	config.OptionMap["EpayKeyConfigured"] = strconv.FormatBool(config.EpayKey != "")
 	config.OptionMap["EpayPrice"] = strconv.FormatFloat(config.EpayPrice, 'f', -1, 64)
 	config.OptionMap["EpayMinTopUp"] = strconv.Itoa(config.EpayMinTopUp)
 	config.OptionMap["EpayCallbackAddress"] = config.EpayCallbackAddress
@@ -182,12 +183,16 @@ func UpdateOption(key string, value string) error {
 		Key: key,
 	}
 	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
+	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+		return err
+	}
 	option.Value = value
 	// Save is a combination function.
 	// If save value does not contain primary key, it will execute Create,
 	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	if err := DB.Save(&option).Error; err != nil {
+		return err
+	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
 }
@@ -388,6 +393,7 @@ func updateOptionMap(key string, value string) (err error) {
 		config.EpayId = value
 	case "EpayKey":
 		config.EpayKey = value
+		config.OptionMap["EpayKeyConfigured"] = strconv.FormatBool(value != "")
 	case "EpayPrice":
 		config.EpayPrice, _ = strconv.ParseFloat(value, 64)
 	case "EpayMinTopUp":

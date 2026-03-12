@@ -41,17 +41,34 @@ func GetEpayClient() *epay.Client {
 	return withUrl
 }
 
+func getEpayAvailability() (bool, string) {
+	if !config.EpayPaymentEnabled {
+		return false, "管理员未开启易支付"
+	}
+	if config.EpayPayAddress == "" {
+		return false, "当前管理员未配置支付地址"
+	}
+	if config.EpayId == "" {
+		return false, "当前管理员未配置易支付 PID"
+	}
+	if config.EpayKey == "" {
+		return false, "当前管理员未配置易支付密钥"
+	}
+	return true, ""
+}
+
 func getPayMoney(amount int64) float64 {
 	return float64(amount) * config.EpayPrice
 }
 
 func GetEpayTopUpInfo(c *gin.Context) {
-	enabled := config.EpayPaymentEnabled && config.EpayPayAddress != "" && config.EpayId != "" && config.EpayKey != ""
+	enabled, reason := getEpayAvailability()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
 		"data": gin.H{
 			"enable_online_topup": enabled,
+			"enable_reason":       reason,
 			"min_topup":           config.EpayMinTopUp,
 			"price":               config.EpayPrice,
 			"quota_per_unit":      config.QuotaPerUnit,
@@ -66,8 +83,9 @@ func RequestEpay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if !config.EpayPaymentEnabled {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "管理员未开启易支付"})
+	enabled, reason := getEpayAvailability()
+	if !enabled {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": reason})
 		return
 	}
 	if req.Amount < int64(config.EpayMinTopUp) {
@@ -148,8 +166,9 @@ func RequestAmount(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if !config.EpayPaymentEnabled {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "管理员未开启易支付"})
+	enabled, reason := getEpayAvailability()
+	if !enabled {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": reason})
 		return
 	}
 	if req.Amount < int64(config.EpayMinTopUp) {
@@ -157,7 +176,7 @@ func RequestAmount(c *gin.Context) {
 		return
 	}
 	payMoney := getPayMoney(req.Amount)
-	if payMoney <= 0.01 {
+	if payMoney < 0.01 {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "充值金额过低"})
 		return
 	}
