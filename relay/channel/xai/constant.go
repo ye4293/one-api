@@ -5,6 +5,9 @@ import "github.com/songquanpeng/one-api/relay/model"
 var modelList = []string{
 	"grok-code-fast-1",
 	// 原始模型
+	"grok-4.20-multi-agent-beta-0309",
+	"grok-4.20-beta-0309-reasoning",
+	"grok-4.20-beta-0309-non-reasoning",
 	"grok-4-latest",
 	"grok-4-latest-low",
 	"grok-4-latest-medium",
@@ -62,6 +65,39 @@ var modelList = []string{
 var channelName = "xai"
 
 var ModelDetails = []model.APIModel{
+	{
+		Provider:    "xAI",
+		Name:        "grok-4.20-multi-agent-beta-0309",
+		Tags:        []string{"grok", "chat", "reasoning", "multi-agent"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 4.20 Multi-Agent Beta - Multi-agent research and reasoning model",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$2.00 /M tokens",
+			"OutputTokens": "$6.00 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-4.20-beta-0309-reasoning",
+		Tags:        []string{"grok", "chat", "reasoning"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 4.20 Beta Reasoning - Advanced multimodal reasoning model",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$2.00 /M tokens",
+			"OutputTokens": "$6.00 /M tokens",
+		},
+	},
+	{
+		Provider:    "xAI",
+		Name:        "grok-4.20-beta-0309-non-reasoning",
+		Tags:        []string{"grok", "chat"},
+		PriceType:   "pay-per-token",
+		Description: "Grok 4.20 Beta Non-Reasoning - Multimodal model optimized for standard generation",
+		Prices: map[string]interface{}{
+			"InputTokens":  "$2.00 /M tokens",
+			"OutputTokens": "$6.00 /M tokens",
+		},
+	},
 	{
 		Provider:    "xAI",
 		Name:        "grok-4-latest",
