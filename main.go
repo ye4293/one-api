@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"os"
@@ -168,6 +169,12 @@ func main() {
 	// 启动Key禁用通知监听器
 	monitor.StartKeyNotificationListener()
 	logger.SysLog("key disable notification listener started")
+
+	// 启动阿里云万相视频任务轮询器
+	common.SafeGoroutine(func() {
+		controller.StartAliWanTaskPoller(context.Background())
+	})
+	logger.SysLog("ali-wan video task poller started")
 
 	// 启动 Goroutine 监控
 	go monitorGoroutines()

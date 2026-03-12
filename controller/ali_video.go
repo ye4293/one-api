@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +20,10 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-const aliWanProvider = "ali-wan"
+const (
+	aliWanProvider       = "ali-wan"
+	aliWanPollingInterval = 10 * time.Minute // 轮询间隔
+)
 
 // mapAliWanStatus 将 DashScope 任务状态映射为 DB status
 func mapAliWanStatus(dashStatus string) string {
@@ -39,6 +43,7 @@ type aliWanBillingInfo struct {
 	VideoType  string // "text-to-video" or "image-to-video"
 	Duration   string
 	Resolution string // 统一转换为档位: 480P / 720P / 1080P
+	Prompt     string // 用户提示词
 }
 
 func parseAliWanBillingInfo(body []byte, metaModel string) aliWanBillingInfo {
@@ -58,10 +63,13 @@ func parseAliWanBillingInfo(body []byte, metaModel string) aliWanBillingInfo {
 		info.Model = m
 	}
 
-	// 判断 T2V / I2V
+	// 判断 T2V / I2V，并提取 prompt
 	if input, ok := req["input"].(map[string]interface{}); ok {
 		if imgURL, ok := input["img_url"].(string); ok && imgURL != "" {
 			info.VideoType = "image-to-video"
+		}
+		if prompt, ok := input["prompt"].(string); ok {
+			info.Prompt = prompt
 		}
 	}
 
@@ -125,7 +133,7 @@ func RelayAliVideoCreate(c *gin.Context) {
 
 	billing := parseAliWanBillingInfo(bodyBytes, meta.ActualModelName)
 
-	quota := common.CalculateVideoQuota(billing.Model, billing.VideoType, "*", billing.Duration, billing.Resolution)
+	quota := common.CalculateVideoQuota(billing.Model, billing.VideoType, "", billing.Duration, billing.Resolution)
 
 	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
 	if err != nil {
@@ -181,7 +189,7 @@ func RelayAliVideoCreate(c *gin.Context) {
 
 	// 上游业务错误，直接透传，不扣费不建记录
 	if aliResp.Code != "" {
-		logger.SysError(fmt.Sprintf("[ali-wan] upstream error: code=%s, msg=%s", aliResp.Code, aliResp.Message))
+		logger.Error(c.Request.Context(), fmt.Sprintf("[ali-wan] upstream error: code=%s, msg=%s", aliResp.Code, aliResp.Message))
 		c.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
@@ -193,7 +201,7 @@ func RelayAliVideoCreate(c *gin.Context) {
 
 	// 预扣费
 	if err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota); err != nil {
-		logger.SysError(fmt.Sprintf("[ali-wan] pre-deduct quota failed: %v", err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("[ali-wan] pre-deduct quota failed: %v", err))
 	}
 	_ = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
 
@@ -205,6 +213,7 @@ func RelayAliVideoCreate(c *gin.Context) {
 		Type:       billing.VideoType,
 		Duration:   billing.Duration,
 		Resolution: billing.Resolution,
+		Prompt:     billing.Prompt,
 		Status:     "processing",
 		Quota:      quota,
 		UserId:     meta.UserId,
@@ -213,10 +222,10 @@ func RelayAliVideoCreate(c *gin.Context) {
 		CreatedAt:  time.Now().Unix(),
 	}
 	if err := video.Insert(); err != nil {
-		logger.SysError(fmt.Sprintf("[ali-wan] insert video record failed: task_id=%s, %v", taskID, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("[ali-wan] insert video record failed: task_id=%s, %v", taskID, err))
 	}
 
-	logger.SysLog(fmt.Sprintf("[ali-wan] task created: task_id=%s, model=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
+	logger.Info(c.Request.Context(), fmt.Sprintf("[ali-wan] task created: task_id=%s, model=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
 		taskID, billing.Model, billing.VideoType, meta.UserId, meta.ChannelId, quota))
 
 	c.Data(resp.StatusCode, "application/json", respBody)
@@ -296,7 +305,7 @@ func RelayAliVideoResult(c *gin.Context) {
 			if err := dbmodel.DB.Model(&dbmodel.Video{}).
 				Where("task_id = ?", taskID).
 				Updates(updates).Error; err != nil {
-				logger.SysError(fmt.Sprintf("[ali-wan] update task status failed: task_id=%s, %v", taskID, err))
+				logger.Error(c.Request.Context(), fmt.Sprintf("[ali-wan] update task status failed: task_id=%s, %v", taskID, err))
 			}
 
 			// 失败时异步退款补偿
@@ -340,13 +349,151 @@ func buildAliWanCachedResponse(v *dbmodel.Video) map[string]interface{} {
 
 // compensateAliWanTask 退款补偿（异步执行）
 func compensateAliWanTask(taskID string, v *dbmodel.Video) {
+	ctx := context.Background()
 	if v.Quota <= 0 {
 		return
 	}
 	if err := dbmodel.IncreaseUserQuota(v.UserId, v.Quota); err != nil {
-		logger.SysError(fmt.Sprintf("[ali-wan] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v",
+		logger.Error(ctx, fmt.Sprintf("[ali-wan] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v",
 			taskID, v.UserId, v.Quota, err))
 		return
 	}
-	logger.SysLog(fmt.Sprintf("[ali-wan] compensated: task_id=%s, user_id=%d, quota=%d", taskID, v.UserId, v.Quota))
+	logger.Info(ctx, fmt.Sprintf("[ali-wan] compensated: task_id=%s, user_id=%d, quota=%d", taskID, v.UserId, v.Quota))
 }
+
+// ─── 定时轮询器 ────────────────────────────────────────────────────────────────
+
+// StartAliWanTaskPoller 启动阿里云万相视频任务轮询器
+// 每隔 10 分钟扫描一次数据库中 provider='ali-wan' 且 status='processing' 的任务
+func StartAliWanTaskPoller(ctx context.Context) {
+	ticker := time.NewTicker(aliWanPollingInterval)
+	defer ticker.Stop()
+
+	logger.Info(ctx, fmt.Sprintf("[ali-wan-poller] started, interval=%v", aliWanPollingInterval))
+
+	// 立即执行一次
+	pollAliWanTasks(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info(ctx, "[ali-wan-poller] stopped")
+			return
+		case <-ticker.C:
+			pollAliWanTasks(ctx)
+		}
+	}
+}
+
+// pollAliWanTasks 轮询所有处理中的阿里云万相视频任务
+func pollAliWanTasks(ctx context.Context) {
+	var tasks []dbmodel.Video
+	if err := dbmodel.DB.Where("provider = ? AND status = ?", aliWanProvider, "processing").
+		Find(&tasks).Error; err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] query tasks failed: %v", err))
+		return
+	}
+
+	if len(tasks) == 0 {
+		logger.Info(ctx, "[ali-wan-poller] no processing tasks found")
+		return
+	}
+
+	logger.Info(ctx, fmt.Sprintf("[ali-wan-poller] found %d processing tasks", len(tasks)))
+
+	for _, task := range tasks {
+		go pollSingleAliWanTask(ctx, &task)
+	}
+}
+
+// pollSingleAliWanTask 轮询单个任务状态
+func pollSingleAliWanTask(ctx context.Context, task *dbmodel.Video) {
+	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
+			task.TaskId, task.ChannelId, err))
+		return
+	}
+
+	baseURL := "https://dashscope.aliyuncs.com"
+	if channel.BaseURL != nil && *channel.BaseURL != "" {
+		baseURL = strings.TrimRight(*channel.BaseURL, "/")
+	}
+	upstreamURL := fmt.Sprintf("%s/api/v1/tasks/%s", baseURL, task.TaskId)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] build request failed: task_id=%s, err=%v",
+			task.TaskId, err))
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+channel.Key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] request failed: task_id=%s, err=%v",
+			task.TaskId, err))
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] read response failed: task_id=%s, err=%v",
+			task.TaskId, err))
+		return
+	}
+
+	var queryResp alimodel.AliVideoQueryResponse
+	if err := json.Unmarshal(respBody, &queryResp); err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] parse response failed: task_id=%s, err=%v",
+			task.TaskId, err))
+		return
+	}
+
+	if queryResp.Output == nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] empty output: task_id=%s", task.TaskId))
+		return
+	}
+
+	dashStatus := queryResp.Output.TaskStatus
+	dbStatus := mapAliWanStatus(dashStatus)
+
+	// 状态未变化，跳过
+	if dbStatus == task.Status {
+		logger.Info(ctx, fmt.Sprintf("[ali-wan-poller] status unchanged: task_id=%s, status=%s",
+			task.TaskId, dbStatus))
+		return
+	}
+
+	// 更新数据库
+	updates := map[string]interface{}{
+		"status":     dbStatus,
+		"updated_at": time.Now().Unix(),
+	}
+
+	if dashStatus == "SUCCEEDED" && queryResp.Output.VideoURL != "" {
+		updates["store_url"] = queryResp.Output.VideoURL
+	}
+
+	if dbStatus == "failed" {
+		updates["fail_reason"] = buildAliWanFailMessage(queryResp)
+	}
+
+	if err := dbmodel.DB.Model(&dbmodel.Video{}).
+		Where("task_id = ?", task.TaskId).
+		Updates(updates).Error; err != nil {
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] update status failed: task_id=%s, err=%v",
+			task.TaskId, err))
+		return
+	}
+
+	logger.Info(ctx, fmt.Sprintf("[ali-wan-poller] updated: task_id=%s, %s -> %s",
+		task.TaskId, task.Status, dbStatus))
+
+	// 失败时补偿退款
+	if dbStatus == "failed" {
+		go compensateAliWanTask(task.TaskId, task)
+	}
+}
+
