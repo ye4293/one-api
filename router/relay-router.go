@@ -336,10 +336,11 @@ func SetRelayRouter(router *gin.Engine) {
 
 	// 阿里云万相视频生成路由组
 	// 路径与 DashScope 原生路径对应，统一支持 T2V 和 I2V
-	aliVideoCreateRouter := router.Group("/ali/api/v1")
-	aliVideoCreateRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	// POST 和 GET 均挂载 Distribute，GET handler 内部会用 resolveChannelForTaskQuery 覆盖为任务绑定渠道
+	aliVideoRouter := router.Group("/ali/api/v1")
+	aliVideoRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		aliVideoCreateRouter.POST("/services/aigc/video-generation/video-synthesis", controller.RelayAliVideoCreate)
-		aliVideoCreateRouter.GET("/tasks/:taskId", controller.RelayAliVideoResult)
+		aliVideoRouter.POST("/services/aigc/video-generation/video-synthesis", controller.RelayAliVideoCreate)
+		aliVideoRouter.GET("/tasks/:taskId", controller.RelayAliVideoResult)
 	}
 }
