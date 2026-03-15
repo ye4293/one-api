@@ -35,6 +35,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/vertexai"
 	"github.com/songquanpeng/one-api/relay/channel/xai"
+	relayhelper "github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -134,6 +135,11 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 	meta := util.GetRelayMeta(c)
 	if err != nil {
 		return openai.ErrorWrapper(err, "invalid_text_request", http.StatusBadRequest)
+	}
+
+	// 适配器路由：已迁移供应商由对应 VideoAdaptor 处理
+	if adaptor := relayhelper.GetVideoAdaptor(modelName); adaptor != nil {
+		return invokeVideoAdaptorRequest(c, ctx, adaptor, &videoRequest, meta)
 	}
 
 	if strings.HasPrefix(modelName, "video-01") ||
@@ -3524,6 +3530,69 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 	return nil
 }
 
+// invokeVideoAdaptorRequest 通过 VideoAdaptor 接口处理视频生成请求
+func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor relaychannel.VideoAdaptor, videoRequest *model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
+	// 预扣费余额检查
+	prePayment := adaptor.GetPrePaymentQuota()
+	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-prePayment < 0 {
+		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+
+	adaptor.Init(meta)
+	taskResult, apiErr := adaptor.HandleVideoRequest(c, videoRequest, meta)
+	if apiErr != nil {
+		return apiErr
+	}
+
+	// 创建视频任务日志
+	_ = CreateVideoLog(adaptor.GetProviderName(), taskResult.TaskId, meta,
+		taskResult.Mode, taskResult.Duration, taskResult.VideoType,
+		taskResult.VideoId, taskResult.Quota, taskResult.Resolution)
+
+	// 响应客户端
+	c.JSON(http.StatusOK, model.GeneralVideoResponse{
+		TaskId:     taskResult.TaskId,
+		TaskStatus: taskResult.TaskStatus,
+		Message:    taskResult.Message,
+	})
+
+	return handleSuccessfulResponseWithQuota(c, ctx, meta,
+		meta.ActualModelName, taskResult.Mode, taskResult.Duration,
+		taskResult.Quota, taskResult.TaskId)
+}
+
+// invokeVideoAdaptorResult 通过 VideoAdaptor 接口查询视频任务结果
+func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor, videoTask *dbmodel.Video, channel *dbmodel.Channel, cfg *dbmodel.ChannelConfig) *model.ErrorWithStatusCode {
+	adaptor.Init(nil)
+	result, apiErr := adaptor.HandleVideoResult(c, videoTask, channel, cfg)
+	if apiErr != nil {
+		return apiErr
+	}
+
+	taskId := videoTask.TaskId
+
+	// 更新任务状态，检查是否需要退款
+	needRefund := UpdateVideoTaskStatus(taskId, result.TaskStatus, result.Message)
+	if needRefund {
+		log.Printf("Task %s failed, compensating user", taskId)
+		CompensateVideoTask(taskId)
+	}
+
+	// 保存视频 URL 到数据库
+	if result.VideoResult != "" {
+		if err := dbmodel.UpdateVideoStoreUrl(taskId, result.VideoResult); err != nil {
+			log.Printf("Failed to update store_url for task %s: %v", taskId, err)
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
+	return nil
+}
+
 func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64, resolution ...string) error {
 	// 对于VertexAI，保存完整的JSON凭证
 	var credentialsJSON string
@@ -3672,6 +3741,11 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			"config_error",
 			http.StatusInternalServerError,
 		)
+	}
+
+	// 适配器路由：已迁移供应商由对应 VideoAdaptor 处理
+	if adaptor := relayhelper.GetVideoAdaptorByProvider(videoTask.Provider); adaptor != nil {
+		return invokeVideoAdaptorResult(c, adaptor, videoTask, channel, &cfg)
 	}
 
 	var fullRequestUrl string
