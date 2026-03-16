@@ -8,6 +8,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/aws"
+	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/baidu"
 	"github.com/songquanpeng/one-api/relay/channel/cohere"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
@@ -52,7 +53,10 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &xai.VideoAdaptor{}
 	case strings.HasPrefix(modelName, "doubao"):
 		return &doubao.VideoAdaptor{}
-		// TODO: Phase 3 – kling、sora、vertexai
+	case strings.HasPrefix(modelName, "kling") &&
+		modelName != "kling-identify-face" &&
+		modelName != "kling-advanced-lip-sync":
+		return &keling.VideoAdaptor{}
 	}
 	return nil
 }
@@ -76,7 +80,8 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &xai.VideoAdaptor{}
 	case "doubao":
 		return &doubao.VideoAdaptor{}
-		// TODO: Phase 3 – kling、sora、vertexai
+	case "kling":
+		return &keling.VideoAdaptor{}
 	}
 	return nil
 }

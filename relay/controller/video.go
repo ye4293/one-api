@@ -19,14 +19,12 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
-	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/vertexai"
@@ -145,8 +143,12 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleMinimaxVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "cogvideox" {
 		return handleZhipuVideoRequest(c, ctx, videoRequest, meta)
-	} else if strings.HasPrefix(modelName, "kling") {
-		return handleKelingVideoRequest(c, ctx, meta)
+	} else if modelName == "kling-identify-face" {
+		DoIdentifyFace(c)
+		return nil
+	} else if modelName == "kling-advanced-lip-sync" {
+		DoAdvancedLipSync(c)
+		return nil
 	} else if modelName == "gen3a_turbo" {
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "veo") {
@@ -1410,152 +1412,6 @@ func handleZhipuVideoRequest(c *gin.Context, ctx context.Context, videoRequest m
 
 	return sendRequestZhipuAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, "cogvideox")
 }
-
-func handleKelingVideoRequest(c *gin.Context, ctx context.Context, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	// 构建基础URL和路由映射
-	baseUrl := meta.BaseURL
-	routeMap := map[string]map[int]string{
-		"kling-lip": {
-			41: "/v1/videos/lip-sync",
-			0:  "/kling/v1/videos/lip2video",
-		},
-		"text-to-video": {
-			41: "/v1/videos/text2video",
-			0:  "/kling/v1/videos/text2video",
-		},
-		"image-to-video": {
-			41: "/v1/videos/image2video",
-			0:  "/kling/v1/videos/image2video",
-		},
-		"multi-image-to-video": {
-			41: "/v1/videos/multi-image2video",
-			0:  "/kling/v1/videos/multi-image2video",
-		},
-		"omni-video": {
-			41: "/v1/videos/omni-video",
-			0:  "/kling/v1/videos/omni-video",
-		},
-	}
-
-	// 确定请求类型和URL
-	var requestType string
-	var requestBody any
-	var videoType string
-	var videoId string
-	var mode string
-	var duration string
-
-	if meta.OriginModelName == "kling-lip" {
-		requestType = "kling-lip"
-		videoType = "kling-lip"
-		var lipRequest keling.KlingLipRequest
-		if err := common.UnmarshalBodyReusable(c, &lipRequest); err != nil {
-			return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-		}
-		requestBody = lipRequest
-		videoId = lipRequest.Input.VideoId
-	} else if meta.OriginModelName == "kling-identify-face" {
-		// 人脸识别请求 - 使用独立的处理逻辑
-		DoIdentifyFace(c)
-		return nil
-	} else if meta.OriginModelName == "kling-advanced-lip-sync" {
-		// 对口型任务请求 - 使用独立的处理逻辑
-		DoAdvancedLipSync(c)
-		return nil
-	} else if meta.OriginModelName == "kling-video-o1" || meta.OriginModelName == "kling-v3-omni" {
-		requestType = "omni-video"
-		videoType = "omni-video"
-		var requestMap map[string]interface{}
-		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
-			return openai.ErrorWrapper(err, "invalid_request", http.StatusBadRequest)
-		}
-		if modeVal, ok := requestMap["mode"].(string); ok {
-			mode = modeVal
-		}
-		if durVal := requestMap["duration"]; durVal != nil {
-			switch v := durVal.(type) {
-			case float64:
-				duration = strconv.Itoa(int(v))
-			case string:
-				duration = v
-			}
-		}
-		if modelVal, hasModel := requestMap["model"]; hasModel {
-			requestMap["model_name"] = modelVal
-			delete(requestMap, "model")
-		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
-			requestMap["model_name"] = meta.OriginModelName
-		}
-		requestBody = requestMap
-	} else {
-		var requestMap map[string]interface{}
-		if err := common.UnmarshalBodyReusable(c, &requestMap); err != nil {
-			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-		}
-
-		if modeVal, ok := requestMap["mode"].(string); ok {
-			mode = modeVal
-		}
-		if durVal := requestMap["duration"]; durVal != nil {
-			switch v := durVal.(type) {
-			case float64:
-				duration = strconv.Itoa(int(v))
-			case string:
-				duration = v
-			}
-		}
-
-		if modelVal, hasModel := requestMap["model"]; hasModel {
-			requestMap["model_name"] = modelVal
-			delete(requestMap, "model")
-		} else if _, hasModelName := requestMap["model_name"]; !hasModelName {
-			requestMap["model_name"] = meta.OriginModelName
-		}
-
-		hasImageList := false
-		if listVal, ok := requestMap["image_list"].([]interface{}); ok && len(listVal) > 0 {
-			hasImageList = true
-		}
-		hasImage := false
-		if imgVal, ok := requestMap["image"].(string); ok && imgVal != "" {
-			hasImage = true
-		}
-		hasImageTail := false
-		if tailVal, ok := requestMap["image_tail"].(string); ok && tailVal != "" {
-			hasImageTail = true
-		}
-
-		if hasImageList {
-			requestType = "multi-image-to-video"
-			videoType = "multi-image-to-video"
-		} else if hasImage || hasImageTail {
-			requestType = "image-to-video"
-			videoType = "image-to-video"
-		} else {
-			requestType = "text-to-video"
-			videoType = "text-to-video"
-		}
-
-		requestBody = requestMap
-	}
-
-	// 构建完整URL
-	channelType := meta.ChannelType
-	if channelType != 41 {
-		channelType = 0
-	}
-	fullRequestUrl := baseUrl + routeMap[requestType][channelType]
-
-	// 序列化请求体
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
-	}
-	// log.Printf("Request body JSON: %s", string(jsonData))
-
-	return sendRequestKelingAndHandleResponse(c, ctx, fullRequestUrl, jsonData, meta, meta.OriginModelName, mode, duration, videoType, videoId)
-}
-
 func handleRunwayVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 	baseUrl := meta.BaseURL
 	var fullRequestUrl string
@@ -1680,84 +1536,6 @@ func sendRequestZhipuAndHandleResponse(c *gin.Context, ctx context.Context, full
 	return handleMZhipuVideoResponse(c, ctx, videoResponse, body, meta, modelName)
 
 }
-
-func sendRequestKelingAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string, videoId string) *model.ErrorWithStatusCode {
-	// 预扣费检查 - 预扣0.2，后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
-	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
-	}
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
-	}
-
-	// log.Printf("Request body JSON: %s", string(jsonData))
-	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
-	}
-
-	var token string
-
-	if meta.OriginModelName == "kling-lip" {
-		video, err := dbmodel.GetVideoTaskByVideoId(videoId)
-		if err != nil {
-			return openai.ErrorWrapper(err, "get_video_task_error", http.StatusInternalServerError)
-		}
-		meta.ChannelId = video.ChannelId
-		channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-		if err != nil {
-			return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-		}
-		meta.ChannelType = channel.Type
-	}
-
-	if meta.ChannelType == 41 {
-		// 获取渠道信息以支持Key字段解析
-		channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-		if err != nil {
-			return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-		}
-
-		// 智能获取可灵凭证 - 支持Key字段和Config
-		credentials, err := keling.GetKelingCredentialsFromConfig(meta.Config, channel, 0)
-		if err != nil {
-			return openai.ErrorWrapper(err, "get_keling_credentials_error", http.StatusInternalServerError)
-		}
-
-		// Generate JWT token
-		token = EncodeJWTToken(credentials.AK, credentials.SK)
-	} else {
-		token = meta.APIKey
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
-	}
-
-	// 添加原始响应日志
-	log.Printf("Raw response body: %s", string(body))
-
-	var KelingvideoResponse keling.KelingVideoResponse
-	err = json.Unmarshal(body, &KelingvideoResponse)
-	if err != nil {
-		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
-	}
-	KelingvideoResponse.StatusCode = resp.StatusCode
-	return handleKelingVideoResponse(c, ctx, KelingvideoResponse, body, meta, modelName, mode, duration, videoType)
-}
-
 func sendRequestRunwayAndHandleResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	// 预扣费检查 - 预扣0.2，后续处理完多退少补
 	quota := int64(0.2 * config.QuotaPerUnit)
@@ -1804,42 +1582,6 @@ func sendRequestRunwayAndHandleResponse(c *gin.Context, ctx context.Context, ful
 
 	videoResponse.StatusCode = resp.StatusCode
 	return handleRunwayVideoResponse(c, ctx, videoResponse, body, meta, modelName)
-}
-
-func EncodeJWTToken(ak, sk string) string {
-	claims := jwt.MapClaims{
-		"iss": ak,
-		"exp": time.Now().Add(30 * time.Minute).Unix(),
-		"nbf": time.Now().Add(-5 * time.Second).Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString([]byte(sk))
-	if err != nil {
-		// Handle error (you might want to return an error instead of panicking in production)
-		panic(err)
-	}
-
-	return tokenString
-}
-
-func getStatusMessage(statusCode int) string {
-	switch statusCode {
-	case 0:
-		return "请求成功"
-	case 1002:
-		return "触发限流，请稍后再试"
-	case 1004:
-		return "账号鉴权失败，请检查 API-Key 是否填写正确"
-	case 1008:
-		return "账号余额不足"
-	case 1013:
-		return "传入参数异常，请检查入参是否按要求填写"
-	case 1026:
-		return "视频描述涉及敏感内容"
-	default:
-		return fmt.Sprintf("未知错误码: %d", statusCode)
-	}
 }
 
 func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoResponse model.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
@@ -1982,92 +1724,6 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		)
 	}
 }
-
-func handleKelingVideoResponse(c *gin.Context, ctx context.Context, videoResponse keling.KelingVideoResponse, body []byte, meta *util.RelayMeta, modelName string, mode string, duration string, videoType string) *model.ErrorWithStatusCode {
-	modelName2 := c.GetString("original_model")
-	switch videoResponse.StatusCode {
-	case 200:
-		// 首先打印完整的响应内容以便调试
-		log.Printf("Video Response: %+v", videoResponse)
-
-		// 先计算quota
-		quota := calculateQuota(meta, modelName2, mode, duration, c)
-
-		// 现在可以安全地访问这些字段
-		err := CreateVideoLog(
-			"kling",
-			videoResponse.Data.TaskID,
-			meta,
-			mode,
-			duration,
-			videoType,
-			"",
-			quota,
-		)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("API error: %s", err),
-				"api_error",
-				http.StatusBadRequest,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralVideoResponse{
-			TaskId:  videoResponse.Data.TaskID,
-			Message: videoResponse.Message,
-		}
-
-		switch videoResponse.Data.TaskStatus {
-		case "failed":
-			generalResponse.TaskStatus = "failed"
-		default:
-			generalResponse.TaskStatus = "succeed"
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
-
-		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName2, mode, duration, quota)
-	case 400:
-		return openai.ErrorWrapper(
-			fmt.Errorf("API error (400): %s\nFull response: %s", videoResponse.Message, string(body)),
-			"api_error",
-			http.StatusBadRequest,
-		)
-	case 429:
-		return openai.ErrorWrapper(
-			fmt.Errorf("API error (429): %s\nFull response: %s", videoResponse.Message, string(body)),
-			"api_error",
-			http.StatusTooManyRequests,
-		)
-	default:
-		// 对于未知错误，我们需要更详细的信息
-		errorMessage := fmt.Sprintf("Unknown API error (Status Code: %d): %s\nFull response: %s",
-			videoResponse.StatusCode,
-			videoResponse.Message,
-			string(body))
-
-		log.Printf("Error occurred: %s", errorMessage)
-
-		return openai.ErrorWrapper(
-			fmt.Errorf(errorMessage),
-			"api_error",
-			http.StatusInternalServerError,
-		)
-	}
-}
-
 func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoResponse runway.VideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
 	switch videoResponse.StatusCode {
 	case 200:
@@ -2545,45 +2201,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		fullRequestUrl = fmt.Sprintf("https://open.bigmodel.cn/api/paas/v4/async-result/%s", taskId)
 	case "minimax":
 		fullRequestUrl = fmt.Sprintf("%s/v1/query/video_generation?task_id=%s", *channel.BaseURL, taskId)
-	case "kling":
-		// 对于 kling-advanced-lip-sync 和 identify-face 类型，直接从数据库返回结果
-		if videoTask.Type == "advanced-lip-sync" || videoTask.Type == "identify-face" {
-			GetKlingVideoResult(c, taskId)
-			return nil
-		}
-
-		if videoTask.Type == "text-to-video" {
-			if channel.Type == 41 {
-				fullRequestUrl = fmt.Sprintf("%s/v1/videos/text2video/%s", *channel.BaseURL, taskId)
-			} else {
-				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/text2video/%s", *channel.BaseURL, taskId)
-			}
-		} else if videoTask.Type == "image-to-video" {
-			if channel.Type == 41 {
-				fullRequestUrl = fmt.Sprintf("%s/v1/videos/image2video/%s", *channel.BaseURL, taskId)
-			} else {
-				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/image2video/%s", *channel.BaseURL, taskId)
-			}
-		} else if videoTask.Type == "kling-lip" {
-			if channel.Type == 41 {
-				fullRequestUrl = fmt.Sprintf("%s/v1/videos/lip-sync/%s", *channel.BaseURL, taskId)
-			} else {
-				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/lip2video/%s", *channel.BaseURL, taskId)
-			}
-		} else if videoTask.Type == "multi-image-to-video" {
-			if channel.Type == 41 {
-				fullRequestUrl = fmt.Sprintf("%s/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
-			} else {
-				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/multi-image2video/%s", *channel.BaseURL, taskId)
-			}
-		} else if videoTask.Type == "omni-video" {
-			if channel.Type == 41 {
-				fullRequestUrl = fmt.Sprintf("%s/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
-			} else {
-				fullRequestUrl = fmt.Sprintf("%s/kling/v1/videos/omni-video/%s", *channel.BaseURL, taskId)
-			}
-		}
-
 	case "runway":
 		if channel.Type != 42 {
 			fullRequestUrl = fmt.Sprintf("%s/runwayml/v1/tasks/%s", *channel.BaseURL, taskId)
@@ -2725,24 +2342,7 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			http.StatusInternalServerError,
 		)
 	}
-
-	if videoTask.Provider == "kling" && channel.Type == 41 {
-		// 智能获取可灵凭证 - 支持Key字段和Config
-		credentials, err := keling.GetKelingCredentialsFromConfig(cfg, channel, 0)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to get Keling credentials: %v", err),
-				"credential_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		token := EncodeJWTToken(credentials.AK, credentials.SK)
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+token)
-
-	} else if videoTask.Provider == "runway" && channel.Type == 42 {
+	if videoTask.Provider == "runway" && channel.Type == 42 {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Runway-Version", "2024-11-06")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
@@ -2916,103 +2516,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 				http.StatusInternalServerError,
 			)
 		}
-	} else if videoTask.Provider == "kling" {
-		// ✅ 修复：defer 必须在 ReadAll 之前
-		defer func() {
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-		}()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to read response body: %v", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// Kling 响应已接收
-
-		// 解析JSON响应
-		var klingResp keling.KelingVideoResponse
-		if err := json.Unmarshal(body, &klingResp); err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to parse response JSON: %v", err),
-				"json_parse_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralFinalVideoResponse{
-			TaskId:      klingResp.Data.TaskID,
-			Message:     klingResp.Data.TaskStatusMsg,
-			VideoResult: "",
-			Duration:    videoTask.Duration,
-		}
-
-		// 检查是否有视频结果
-		if len(klingResp.Data.TaskResult.Videos) > 0 {
-			generalResponse.VideoId = klingResp.Data.TaskResult.Videos[0].ID
-			// 如果响应中有Duration，使用响应中的值
-			if klingResp.Data.TaskResult.Videos[0].Duration != "" {
-				generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
-			}
-		}
-
-		// 处理任务状态
-		switch klingResp.Data.TaskStatus {
-		case "submitted":
-			generalResponse.TaskStatus = "processing"
-		default:
-			generalResponse.TaskStatus = klingResp.Data.TaskStatus
-		}
-
-		// 如果任务成功且有视频结果，添加到响应中
-		if klingResp.Data.TaskStatus == "succeed" && len(klingResp.Data.TaskResult.Videos) > 0 {
-			generalResponse.VideoResult = klingResp.Data.TaskResult.Videos[0].URL
-			generalResponse.Duration = klingResp.Data.TaskResult.Videos[0].Duration
-			// 同时设置 VideoResults
-			generalResponse.VideoResults = []model.VideoResultItem{
-				{Url: klingResp.Data.TaskResult.Videos[0].URL},
-			}
-
-			// 将视频URL存储到数据库
-			if generalResponse.VideoResult != "" {
-				err := dbmodel.UpdateVideoStoreUrl(taskId, generalResponse.VideoResult)
-				if err != nil {
-					log.Printf("Failed to update store_url for task %s: %v", taskId, err)
-				}
-			}
-		}
-
-		// 更新任务状态并检查是否需要退款
-		failReason := ""
-		if klingResp.Data.TaskStatus == "failed" {
-			failReason = klingResp.Data.TaskStatusMsg
-		}
-		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
-		if needRefund {
-			log.Printf("Task %s failed, compensating user", taskId)
-			CompensateVideoTask(taskId)
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 直接使用上游返回的状态码
-		c.Data(resp.StatusCode, "application/json", jsonResponse)
-
-		return nil
 	} else if videoTask.Provider == "runway" {
 		// ✅ defer 位置正确（在 ReadAll 之前）
 		defer func() {
