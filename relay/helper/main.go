@@ -42,7 +42,9 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &runway.VideoAdaptor{}
 	case strings.HasPrefix(strings.ToLower(modelName), "luma"):
 		return &luma.VideoAdaptor{}
-		// TODO: Phase 2/3 – kling、ali、pixverse、doubao、grok、sora、vertexai
+	case strings.HasPrefix(strings.ToLower(modelName), "wan"):
+		return &ali.VideoAdaptor{}
+		// TODO: Phase 2/3 – kling、pixverse、doubao、grok、sora、vertexai
 	}
 	return nil
 }
@@ -58,7 +60,9 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &runway.VideoAdaptor{}
 	case "luma":
 		return &luma.VideoAdaptor{}
-		// TODO: Phase 2/3 – kling、ali、pixverse、doubao、grok、sora、vertexai
+	case "ali":
+		return &ali.VideoAdaptor{}
+		// TODO: Phase 2/3 – kling、pixverse、doubao、grok、sora、vertexai
 	}
 	return nil
 }
