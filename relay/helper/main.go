@@ -47,7 +47,9 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &ali.VideoAdaptor{}
 	case modelName == "v3.5":
 		return &pixverse.VideoAdaptor{}
-		// TODO: Phase 3 – kling、doubao、grok、sora、vertexai
+	case strings.HasPrefix(modelName, "grok-imagine-video"):
+		return &xai.VideoAdaptor{}
+		// TODO: Phase 3 – kling、doubao、sora、vertexai
 	}
 	return nil
 }
@@ -67,7 +69,9 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &ali.VideoAdaptor{}
 	case "pixverse":
 		return &pixverse.VideoAdaptor{}
-		// TODO: Phase 3 – kling、doubao、grok、sora、vertexai
+	case "grok":
+		return &xai.VideoAdaptor{}
+		// TODO: Phase 3 – kling、doubao、sora、vertexai
 	}
 	return nil
 }
