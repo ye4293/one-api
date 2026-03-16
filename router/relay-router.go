@@ -27,19 +27,23 @@ func SetRelayRouter(router *gin.Engine) {
 	soraRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
 		soraRouter.POST("/videos", controller.RelaySoraVideo)
+		//soraRouter.POST("/videos/characters", controller.RelaySoraCharacter)
 	}
 
-	// Sora 视频 remix 路由 - 不需要 Distribute 中间件，因为必须使用原视频的渠道
-	soraRemixRouter := router.Group("/v1")
-	soraRemixRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	// Sora 视频操作路由（基于已有视频）- 不需要 Distribute 中间件，从请求体中的 video.id 查找原视频渠道
+	soraVideoOpsRouter := router.Group("/v1")
+	soraVideoOpsRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
-		soraRemixRouter.POST("/videos/:videoId/remix", controller.RelaySoraVideoRemix)
+		soraVideoOpsRouter.POST("/videos/:videoId/remix", controller.RelaySoraVideoRemix)
+		soraVideoOpsRouter.POST("/videos/edits", controller.RelaySoraVideoEdit)
+		soraVideoOpsRouter.POST("/videos/extensions", controller.RelaySoraVideoExtension)
 	}
 
 	// Sora 查询路由 - 不需要 Distribute 中间件
 	soraResultRouter := router.Group("/v1")
 	soraResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
+		soraResultRouter.GET("/videos/characters/:characterId", controller.RelaySoraCharacterGet)
 		soraResultRouter.GET("/videos/:videoId/content", controller.RelaySoraVideoContent)
 		soraResultRouter.GET("/videos/:videoId", controller.RelaySoraVideoResult)
 	}

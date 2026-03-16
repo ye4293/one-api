@@ -187,6 +187,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 	if (strings.HasPrefix(path, "/v1/audio/transcriptions") || strings.HasPrefix(path, "/v1/audio/translations")) && modelRequest.Model == "" {
 		modelRequest.Model = "whisper-1"
 	}
+	if strings.HasPrefix(path, "/v1/videos/characters") && modelRequest.Model == "" {
+		modelRequest.Model = "sora-2"
+		shouldSelectChannel = false
+	}
 
 	return &modelRequest, shouldSelectChannel
 }
