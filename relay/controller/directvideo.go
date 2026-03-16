@@ -913,8 +913,10 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 		if refValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(refValues) > 0 {
 			refValue := refValues[0]
 			if refValue != "" {
+				logger.Debugf(ctx, "input_reference refValue: %s", refValue)
 				var refObj map[string]interface{}
 				if json.Unmarshal([]byte(refValue), &refObj) == nil {
+					logger.Debugf(ctx, "input_reference refObj: %v", refObj) 
 					// JSON 对象，直接作为表单字段透传
 					writer.WriteField("input_reference", refValue)
 					inputReferenceHandled = true
@@ -2135,13 +2137,20 @@ func DirectRelaySoraVideoEdit(c *gin.Context) {
 				formParams[key] = values[0]
 			}
 		}
-		// 尝试从 video 字段提取 JSON 中的 id
+		// 尝试从 video 字段提取 id，支持多种表单传参风格
+		// 风格1: video={"id":"xxx"} (JSON 字符串)
 		if videoJSON, ok := formParams["video"]; ok {
 			var videoObj map[string]interface{}
 			if json.Unmarshal([]byte(videoJSON), &videoObj) == nil {
 				if id, ok := videoObj["id"].(string); ok {
 					sourceVideoId = id
 				}
+			}
+		}
+		// 风格2: video[id]=xxx (方括号风格)
+		if sourceVideoId == "" {
+			if id, ok := formParams["video[id]"]; ok && id != "" {
+				sourceVideoId = id
 			}
 		}
 	} else {
