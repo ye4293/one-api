@@ -907,27 +907,28 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 			}
 		}
 
-		// 处理 input_reference 字段：支持对象、URL 和文件三种方式
+		// 处理 input_reference 字段：JSON 对象直接透传，纯 URL 下载后作为文件上传
 		inputReferenceHandled := false
 
-		// 1. 检查是否有 input_reference 作为文本字段
 		if refValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(refValues) > 0 {
 			refValue := refValues[0]
 			if refValue != "" {
 				var refObj map[string]interface{}
 				if json.Unmarshal([]byte(refValue), &refObj) == nil {
-					// 已经是 JSON 对象，直接透传
+					// JSON 对象，直接作为表单字段透传
 					writer.WriteField("input_reference", refValue)
-					logger.Debugf(ctx, "input_reference 已是对象格式，直接透传")
+					inputReferenceHandled = true
+					logger.Debugf(ctx, "input_reference 已是 JSON 对象，直接透传")
 				} else {
-					// 纯 URL 字符串，封装为 {"image_url": "..."} 对象
-					wrappedRef, _ := json.Marshal(map[string]interface{}{
-						"image_url": refValue,
-					})
-					writer.WriteField("input_reference", string(wrappedRef))
-					logger.Debugf(ctx, "input_reference 字符串封装为对象: %s", refValue)
+					// 纯 URL 字符串，下载图片后作为文件上传
+					logger.Debugf(ctx, "检测到 input_reference URL: %s，开始下载", refValue)
+					if err := downloadAndAddImageFile(ctx, writer, refValue); err != nil {
+						c.JSON(http.StatusBadRequest, gin.H{"error": "下载 input_reference 图片失败: " + err.Error()})
+						return
+					}
+					inputReferenceHandled = true
+					logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
 				}
-				inputReferenceHandled = true
 			}
 		}
 
