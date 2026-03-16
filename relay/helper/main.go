@@ -6,6 +6,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/anthropic"
+	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/aws"
 	"github.com/songquanpeng/one-api/relay/channel/baidu"
 	"github.com/songquanpeng/one-api/relay/channel/cohere"
@@ -49,7 +50,9 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &pixverse.VideoAdaptor{}
 	case strings.HasPrefix(modelName, "grok-imagine-video"):
 		return &xai.VideoAdaptor{}
-		// TODO: Phase 3 – kling、doubao、sora、vertexai
+	case strings.HasPrefix(modelName, "doubao"):
+		return &doubao.VideoAdaptor{}
+		// TODO: Phase 3 – kling、sora、vertexai
 	}
 	return nil
 }
@@ -71,7 +74,9 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &pixverse.VideoAdaptor{}
 	case "grok":
 		return &xai.VideoAdaptor{}
-		// TODO: Phase 3 – kling、doubao、sora、vertexai
+	case "doubao":
+		return &doubao.VideoAdaptor{}
+		// TODO: Phase 3 – kling、sora、vertexai
 	}
 	return nil
 }
