@@ -22,7 +22,6 @@ import (
 	"github.com/golang-jwt/jwt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaychannel "github.com/songquanpeng/one-api/relay/channel"
@@ -30,7 +29,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
-	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/vertexai"
 	"github.com/songquanpeng/one-api/relay/channel/xai"
@@ -153,8 +151,6 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleKelingVideoRequest(c, ctx, meta)
 	} else if modelName == "gen3a_turbo" {
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
-	} else if modelName == "v3.5" {
-		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "doubao") {
 		return handleDoubaoVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "veo") {
@@ -1487,330 +1483,6 @@ func handleVeoVideoResponse(c *gin.Context, ctx context.Context, veoResponse map
 			fmt.Errorf(detailedErrorMsg),
 			errorCode,
 			statusCode,
-		)
-	}
-}
-
-func handlePixverseVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	}
-
-	var fullRequestUrl string
-	var jsonData []byte
-
-	// 1. 读取原始请求体
-	jsonData, err = io.ReadAll(c.Request.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		return openai.ErrorWrapper(err, "read_request_error", http.StatusBadRequest)
-	}
-	// 重新设置请求体
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
-
-	var imageCheck struct {
-		Image      string      `json:"image"`
-		Duration   interface{} `json:"duration"`
-		Quality    string      `json:"quality"`
-		MotionMode string      `json:"motion_mode"`
-	}
-
-	if err := common.UnmarshalBodyReusable(c, &imageCheck); err != nil {
-		return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-	}
-
-	// Convert duration to int
-	var duration int
-	switch v := imageCheck.Duration.(type) {
-	case float64:
-		duration = int(v)
-	case string:
-		var err error
-		duration, err = strconv.Atoi(v)
-		if err != nil {
-			return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
-		}
-	case int:
-		duration = v
-	default:
-		return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
-	}
-
-	c.Set("Duration", duration)
-	c.Set("Quality", imageCheck.Quality)
-	c.Set("MotionMode", imageCheck.MotionMode)
-
-	if imageCheck.Image != "" {
-		// 1. 先上传图片
-		uploadUrl := meta.BaseURL + "/openapi/v2/image/upload"
-
-		// 创建multipart表单
-		body := &bytes.Buffer{}
-		writer := multipart.NewWriter(body)
-
-		// 创建文件表单字段
-		part, err := writer.CreateFormFile("image", "image.png")
-		if err != nil {
-			return openai.ErrorWrapper(err, "failed_to_create_form", http.StatusInternalServerError)
-		}
-
-		// 检查是否为base64格式
-		isBase64 := strings.HasPrefix(imageCheck.Image, "data:")
-
-		if isBase64 {
-			// 处理base64格式
-			// 移除 "data:image/jpeg;base64," 这样的前缀
-			base64Data := imageCheck.Image
-			if i := strings.Index(base64Data, ","); i != -1 {
-				base64Data = base64Data[i+1:]
-			}
-
-			// 解码base64数据
-			imgData, err := base64.StdEncoding.DecodeString(base64Data)
-			if err != nil {
-				return openai.ErrorWrapper(err, "invalid_base64_image", http.StatusBadRequest)
-			}
-
-			// 写入图片数据
-			if _, err = part.Write(imgData); err != nil {
-				return openai.ErrorWrapper(err, "failed_to_write_image", http.StatusInternalServerError)
-			}
-		} else {
-			// 处理URL格式
-			// 检查是否是有效的URL
-			if !strings.HasPrefix(imageCheck.Image, "http://") && !strings.HasPrefix(imageCheck.Image, "https://") {
-				return openai.ErrorWrapper(fmt.Errorf("invalid URL format"), "invalid_url", http.StatusBadRequest)
-			}
-
-			resp, err := http.Get(imageCheck.Image)
-			if err != nil {
-				return openai.ErrorWrapper(err, "failed_to_download_image", http.StatusBadRequest)
-			}
-			defer resp.Body.Close()
-
-			// 复制图片数据到表单
-			if _, err = io.Copy(part, resp.Body); err != nil {
-				return openai.ErrorWrapper(err, "failed_to_copy_image", http.StatusInternalServerError)
-			}
-		}
-
-		writer.Close()
-
-		// 创建上传请求
-		uploadReq, err := http.NewRequest("POST", uploadUrl, body)
-		if err != nil {
-			return openai.ErrorWrapper(err, "failed_to_create_request", http.StatusInternalServerError)
-		}
-
-		log.Printf("key:%s", channel.Key)
-		// 设置请求头
-		uploadReq.Header.Set("Content-Type", writer.FormDataContentType())
-		uploadReq.Header.Set("API-KEY", channel.Key)
-		uploadReq.Header.Set("AI-trace-id", helper.GetUUID())
-
-		// 发送请求
-		client := &http.Client{}
-		uploadResp, err := client.Do(uploadReq)
-		if err != nil {
-			return openai.ErrorWrapper(err, "failed_to_upload_image", http.StatusInternalServerError)
-		}
-		defer uploadResp.Body.Close()
-
-		// 解析响应
-		var uploadResponse pixverse.UploadImageResponse
-		if err := json.NewDecoder(uploadResp.Body).Decode(&uploadResponse); err != nil {
-			return openai.ErrorWrapper(err, "failed_to_parse_upload_response", http.StatusInternalServerError)
-		}
-
-		// 检查上传是否成功
-		if uploadResponse.ErrCode != 0 {
-			return openai.ErrorWrapper(
-				fmt.Errorf("image upload failed: %s", uploadResponse.ErrMsg),
-				"image_upload_failed",
-				http.StatusBadRequest,
-			)
-		}
-
-		// 2. 使用返回的图片ID构建视频生成请求
-		fullRequestUrl = meta.BaseURL + "/openapi/v2/video/img/generate"
-
-		// 将原始请求体中的img_url替换为img_id
-		var originalBody pixverse.PixverseRequest2
-		if err := common.UnmarshalBodyReusable(c, &originalBody); err != nil {
-			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-		}
-
-		// Convert duration to int in originalBody
-		switch v := originalBody.Duration.(type) {
-		case float64:
-			originalBody.Duration = int(v)
-		case string:
-			duration, err := strconv.Atoi(v)
-			if err != nil {
-				return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
-			}
-			originalBody.Duration = duration
-		case int:
-			// already in correct format
-		default:
-			return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
-		}
-
-		originalBody.ImgId = uploadResponse.Resp.ImgId
-		originalBody.Image = ""
-
-		// 将修改后的请求体重新设置到context中，同时更新jsonData
-		jsonData, err = json.Marshal(originalBody)
-		if err != nil {
-			return openai.ErrorWrapper(err, "failed_to_marshal_request", http.StatusInternalServerError)
-		}
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
-	} else {
-		// 处理 PixverseRequest1 的情况
-		var textRequest pixverse.PixverseRequest1
-		if err := common.UnmarshalBodyReusable(c, &textRequest); err != nil {
-			return openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
-		}
-		// Convert duration to int in textRequest
-		switch v := textRequest.Duration.(type) {
-		case float64:
-			textRequest.Duration = int(v)
-		case string:
-			duration, err := strconv.Atoi(v)
-			if err != nil {
-				return openai.ErrorWrapper(err, "invalid_duration_format", http.StatusBadRequest)
-			}
-			textRequest.Duration = duration
-		case int:
-			// already in correct format
-		default:
-			return openai.ErrorWrapper(fmt.Errorf("unsupported duration type"), "invalid_duration_type", http.StatusBadRequest)
-		}
-
-		jsonData, err = json.Marshal(textRequest)
-		if err != nil {
-			return openai.ErrorWrapper(err, "failed_to_marshal_request", http.StatusInternalServerError)
-		}
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
-
-		fullRequestUrl = meta.BaseURL + "/openapi/v2/video/text/generate"
-	}
-	return sendRequestAndHandlePixverseResponse(c, ctx, fullRequestUrl, jsonData, meta, "pixverse")
-}
-
-func sendRequestAndHandlePixverseResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
-	// 预扣费检查 - 预扣0.2，后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
-	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
-	}
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
-	}
-
-	// // 添加请求体日志
-	// log.Printf("Request URL: %s", fullRequestUrl)
-	// log.Printf("Request Body: %s", string(jsonData))
-
-	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	if err != nil {
-		log.Printf("Get channel error: %v", err)
-		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	}
-
-	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("Create request error: %v", err)
-		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
-	}
-
-	// 添加请求头日志
-	req.Header.Set("Ai-trace-id", helper.GetUUID())
-	req.Header.Set("API-KEY", channel.Key)
-	req.Header.Set("Content-Type", "application/json") // 添加 Content-Type 头
-	// log.Printf("Request Headers: %v", req.Header)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Request error: %v", err)
-		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Read response error: %v", err)
-		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
-	}
-
-	// // 添加响应日志
-	// log.Printf("Response Status: %d", resp.StatusCode)
-	// log.Printf("Response Body: %s", string(body))
-
-	var PixverseFinalResp pixverse.PixverseVideoResponse
-	err = json.Unmarshal(body, &PixverseFinalResp)
-	if err != nil {
-		log.Printf("Response parse error: %v", err)
-		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
-	}
-
-	PixverseFinalResp.StatusCode = resp.StatusCode
-	return handlePixverseVideoResponse(c, ctx, PixverseFinalResp, body, meta, "")
-}
-
-func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoResponse pixverse.PixverseVideoResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	duration := c.GetInt("Duration")
-	quality := c.GetString("Quality")
-	motionMode := c.GetString("MotionMode")
-	if videoResponse.ErrCode == 0 && videoResponse.StatusCode == 200 {
-		// 先计算quota
-		quota := calculateQuota(meta, "v3.5", "", strconv.Itoa(duration), c)
-
-		err := CreateVideoLog("pixverse", strconv.Itoa(videoResponse.Resp.VideoId), meta,
-			quality,
-			strconv.Itoa(duration),
-			motionMode,
-			"",
-			quota,
-		)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("API error: %s", err),
-				"api_error",
-				http.StatusBadRequest,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralVideoResponse{
-			TaskId:     strconv.Itoa(videoResponse.Resp.VideoId),
-			Message:    videoResponse.ErrMsg,
-			TaskStatus: "succeed",
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
-
-		return handleSuccessfulResponseWithQuota(c, ctx, meta, modelName, "", "", quota)
-
-	} else {
-		return openai.ErrorWrapper(
-			fmt.Errorf("error: %s", videoResponse.ErrMsg),
-			"internal_error",
-			http.StatusInternalServerError,
 		)
 	}
 }
@@ -3342,8 +3014,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			fullRequestUrl = fmt.Sprintf("%s/v1/tasks/%s", *channel.BaseURL, taskId)
 		}
 
-	case "pixverse":
-		fullRequestUrl = fmt.Sprintf("%s/openapi/v2/video/result/%s", *channel.BaseURL, taskId)
 	case "doubao":
 		fullRequestUrl = fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", *channel.BaseURL, taskId)
 	case "vertexai":
@@ -3508,9 +3178,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Runway-Version", "2024-11-06")
 		req.Header.Set("Authorization", "Bearer "+channel.Key)
-	} else if videoTask.Provider == "pixverse" {
-		req.Header.Set("API-KEY", channel.Key)
-		req.Header.Set("Ai-trace-id", "aaaaa")
 	} else if videoTask.Provider == "vertexai" {
 		// VertexAI 需要使用 OAuth2 token 进行认证 - 使用保存的凭证
 		var credentials *vertexai.Credentials
@@ -3869,81 +3536,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 直接使用上游返回的状态码
-		c.Data(resp.StatusCode, "application/json", jsonResponse)
-		return nil
-	} else if videoTask.Provider == "pixverse" {
-		// 读取响应体
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to read response body: %v", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-		defer resp.Body.Close()
-
-		// 打印响应体用于调试
-		log.Printf("Pixverse response body: %s", string(body))
-
-		// 解析JSON响应
-		var pixverseResp pixverse.PixverseFinalResponse
-		if err := json.Unmarshal(body, &pixverseResp); err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to parse response JSON: %v", err),
-				"json_parse_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 创建通用响应结构体
-		generalResponse := model.GeneralFinalVideoResponse{
-			TaskId:      strconv.Itoa(pixverseResp.Resp.Id),
-			VideoResult: "",
-			VideoId:     strconv.Itoa(pixverseResp.Resp.Id),
-			TaskStatus:  "succeed",
-			Message:     pixverseResp.ErrMsg,
-			Duration:    videoTask.Duration,
-		}
-
-		if pixverseResp.Resp.Url != "" {
-			generalResponse.VideoResult = pixverseResp.Resp.Url
-			// 同时设置 VideoResults
-			generalResponse.VideoResults = []model.VideoResultItem{
-				{Url: pixverseResp.Resp.Url},
-			}
-		}
-
-		// 检查任务状态，如果ErrCode不为0则为失败
-		if pixverseResp.ErrCode != 0 {
-			generalResponse.TaskStatus = "failed"
-		}
-
-		// 更新任务状态并检查是否需要退款
-		failReason := ""
-		if generalResponse.TaskStatus == "failed" {
-			failReason = pixverseResp.ErrMsg
-			if failReason == "" {
-				failReason = "Task failed"
-			}
-		}
-		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
-		if needRefund {
-			log.Printf("Task %s failed, compensating user", taskId)
-			CompensateVideoTask(taskId)
-		}
-
-		// 将响应转换为JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
 				"internal_error",
 				http.StatusInternalServerError,
 			)

@@ -13,6 +13,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/minimax"
+	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
 	"github.com/songquanpeng/one-api/relay/channel/tencent"
@@ -44,7 +45,9 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &luma.VideoAdaptor{}
 	case strings.HasPrefix(strings.ToLower(modelName), "wan"):
 		return &ali.VideoAdaptor{}
-		// TODO: Phase 2/3 – kling、pixverse、doubao、grok、sora、vertexai
+	case modelName == "v3.5":
+		return &pixverse.VideoAdaptor{}
+		// TODO: Phase 3 – kling、doubao、grok、sora、vertexai
 	}
 	return nil
 }
@@ -62,7 +65,9 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &luma.VideoAdaptor{}
 	case "ali":
 		return &ali.VideoAdaptor{}
-		// TODO: Phase 2/3 – kling、pixverse、doubao、grok、sora、vertexai
+	case "pixverse":
+		return &pixverse.VideoAdaptor{}
+		// TODO: Phase 3 – kling、doubao、grok、sora、vertexai
 	}
 	return nil
 }
