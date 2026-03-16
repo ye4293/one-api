@@ -29,7 +29,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/ali"
 	"github.com/songquanpeng/one-api/relay/channel/doubao"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
-	"github.com/songquanpeng/one-api/relay/channel/luma"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/pixverse"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
@@ -154,8 +153,6 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 		return handleKelingVideoRequest(c, ctx, meta)
 	} else if modelName == "gen3a_turbo" {
 		return handleRunwayVideoRequest(c, ctx, videoRequest, meta)
-	} else if strings.HasPrefix(modelName, "luma") {
-		return handleLumaVideoRequest(c, ctx, videoRequest, meta)
 	} else if modelName == "v3.5" {
 		return handlePixverseVideoRequest(c, ctx, videoRequest, meta)
 	} else if strings.HasPrefix(modelName, "doubao") {
@@ -2111,85 +2108,6 @@ func handlePixverseVideoResponse(c *gin.Context, ctx context.Context, videoRespo
 	}
 }
 
-func handleLumaVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
-	baseUrl := meta.BaseURL
-	var fullRequestUrl string
-	if meta.ChannelType == 44 {
-		fullRequestUrl = baseUrl + "/dream-machine/v1/generations"
-	} else {
-		fullRequestUrl = baseUrl + "/luma/dream-machine/v1/generations"
-	}
-
-	var lumaVideoRequest luma.LumaGenerationRequest
-	if err := common.UnmarshalBodyReusable(c, &lumaVideoRequest); err != nil {
-		return openai.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
-	}
-
-	jsonData, err := json.Marshal(lumaVideoRequest)
-	if err != nil {
-		return openai.ErrorWrapper(err, "json_marshal_error", http.StatusInternalServerError)
-	}
-
-	return sendRequestAndHandleLumaResponse(c, ctx, fullRequestUrl, jsonData, meta, "luma")
-}
-
-func sendRequestAndHandleLumaResponse(c *gin.Context, ctx context.Context, fullRequestUrl string, jsonData []byte, meta *util.RelayMeta, s string) *model.ErrorWithStatusCode {
-	// 预扣费检查 - 预扣0.2，后续处理完多退少补
-	quota := int64(0.2 * config.QuotaPerUnit)
-	userQuota, err := dbmodel.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
-	}
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
-	}
-
-	// 1. 获取频道信息
-	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
-	if err != nil {
-		return openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
-	}
-
-	// 2. 创建请求
-	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return openai.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
-	}
-
-	// 3. 设置请求头
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
-
-	// 4. 发送请求
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return openai.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
-	}
-	defer resp.Body.Close()
-
-	// 5. 读取响应体
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return openai.ErrorWrapper(err, "read_response_error", http.StatusInternalServerError)
-	}
-
-	// 6. 解析响应
-	var lumaResponse luma.LumaGenerationResponse
-	err = json.Unmarshal(body, &lumaResponse)
-	if err != nil {
-		return openai.ErrorWrapper(err, "response_parse_error", http.StatusInternalServerError)
-	}
-
-	// 7. 设置状态码
-	lumaResponse.StatusCode = resp.StatusCode
-
-	// 8. 处理响
-	result := handleLumaVideoResponse(c, ctx, lumaResponse, body, meta, "")
-
-	return result
-}
-
 // handleGrokVideoRequest 处理 Grok 视频生成/编辑请求
 // 根据请求中是否包含 video 参数来判断是视频生成还是视频编辑
 // 请求体直接透传，不做序列化处理
@@ -3221,76 +3139,6 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 }
 
 // Add this function definition to resolve the error
-func handleLumaVideoResponse(c *gin.Context, ctx context.Context, lumaResponse luma.LumaGenerationResponse, body []byte, meta *util.RelayMeta, modelName string) *model.ErrorWithStatusCode {
-	switch lumaResponse.StatusCode {
-	case 201:
-		// 先计算quota
-		quota := calculateQuota(meta, "luma", "", "", c)
-
-		err := CreateVideoLog("luma", lumaResponse.ID, meta, "", "", "", "", quota)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("API error: %s", err),
-				"api_error",
-				http.StatusBadRequest,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralVideoResponse{
-			TaskId:  lumaResponse.ID,
-			Message: "",
-		}
-
-		switch lumaResponse.State {
-		case "failed":
-			generalResponse.TaskStatus = "failed"
-		default:
-			generalResponse.TaskStatus = "succeed"
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("Error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 发送 JSON 响应给客户端
-		c.Data(http.StatusOK, "application/json", jsonResponse)
-		return handleSuccessfulResponseWithQuota(c, ctx, meta, "luma", "", "", quota)
-	case 400:
-		return openai.ErrorWrapper(
-			fmt.Errorf("API error (400): %s\nFull response: %s", *lumaResponse.FailureReason, string(body)),
-			"api_error",
-			http.StatusBadRequest,
-		)
-	case 429:
-		return openai.ErrorWrapper(
-			fmt.Errorf("API error (429): %s\nFull response: %s", *lumaResponse.FailureReason, string(body)),
-			"api_error",
-			http.StatusTooManyRequests,
-		)
-	default:
-		// 对于未知错误，我们需要更详细的信息
-		errorMessage := fmt.Sprintf("Unknown API error (Status Code: %d): %s\nFull response: %s",
-			lumaResponse.StatusCode,
-			*lumaResponse.FailureReason,
-			string(body))
-
-		log.Printf("Error occurred: %s", errorMessage)
-
-		return openai.ErrorWrapper(
-			fmt.Errorf(errorMessage),
-			"api_error",
-			http.StatusInternalServerError,
-		)
-	}
-}
-
 // calculateGrokVideoQuota 计算 Grok 视频的 quota
 // Grok 计费：
 //   - 输出 480p: $0.05/秒，720p: $0.07/秒
@@ -3692,19 +3540,6 @@ func mapTaskStatusMinimax(status string) string {
 	}
 }
 
-func mapTaskStatusLuma(status string) string {
-	switch status {
-	case "completed":
-		return "scucceed"
-	case "dreaming":
-		return "processing"
-	case "failed":
-		return "failed"
-	default:
-		return "unknown"
-	}
-}
-
 func mapTaskStatusRunway(status string) string {
 	switch status {
 	case "PENDING":
@@ -3798,13 +3633,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 			fullRequestUrl = fmt.Sprintf("%s/runwayml/v1/tasks/%s", *channel.BaseURL, taskId)
 		} else {
 			fullRequestUrl = fmt.Sprintf("%s/v1/tasks/%s", *channel.BaseURL, taskId)
-		}
-
-	case "luma":
-		if channel.Type != 44 {
-			fullRequestUrl = fmt.Sprintf("%s/dream-machine/v1/generations/%s", *channel.BaseURL, taskId)
-		} else {
-			fullRequestUrl = fmt.Sprintf("%s/luma/dream-machine/v1/generations/%s", *channel.BaseURL, taskId)
 		}
 
 	case "pixverse":
@@ -4326,101 +4154,6 @@ func GetVideoResult(c *gin.Context, taskId string) *model.ErrorWithStatusCode {
 		failReason := ""
 		if runwayResp.Status == "FAILED" {
 			failReason = "Task failed"
-		}
-		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
-		if needRefund {
-			log.Printf("Task %s failed, compensating user", taskId)
-			CompensateVideoTask(taskId)
-		}
-
-		// 将 GeneralVideoResponse 结构体转换为 JSON
-		jsonResponse, err := json.Marshal(generalResponse)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("error marshaling response: %s", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 直接使用上游返回的状态码
-		c.Data(resp.StatusCode, "application/json", jsonResponse)
-		return nil
-	} else if videoTask.Provider == "luma" {
-		// ✅ defer 位置正确（在 ReadAll 之前）
-		defer func() {
-			if resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-		}()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to read response body: %v", err),
-				"internal_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 解析JSON响应
-		var lumaResp luma.LumaGenerationResponse
-		if err := json.Unmarshal(body, &lumaResp); err != nil {
-			log.Printf("Failed to parse response: %v, body: %s", err, string(body))
-			return openai.ErrorWrapper(
-				fmt.Errorf("failed to parse response JSON: %v", err),
-				"json_parse_error",
-				http.StatusInternalServerError,
-			)
-		}
-
-		// 创建 GeneralVideoResponse 结构体
-		generalResponse := model.GeneralFinalVideoResponse{
-			TaskId:      taskId,
-			TaskStatus:  mapTaskStatusLuma(lumaResp.State),
-			Message:     "", // 添加错误信息
-			VideoResult: "",
-			Duration:    videoTask.Duration,
-		}
-
-		// 如果任务成功且有视频结果，添加到响应中
-		if lumaResp.State == "completed" && lumaResp.Assets != nil {
-			// 将 interface{} 转换为 map[string]interface{}
-			if assets, ok := lumaResp.Assets.(map[string]interface{}); ok {
-				// 获取 video URL
-				if videoURL, ok := assets["video"].(string); ok {
-					generalResponse.VideoResult = videoURL
-					// 同时设置 VideoResults
-					generalResponse.VideoResults = []model.VideoResultItem{
-						{Url: videoURL},
-					}
-
-					// 将视频URL存储到数据库
-					if videoURL != "" {
-						err := dbmodel.UpdateVideoStoreUrl(taskId, videoURL)
-						if err != nil {
-							log.Printf("Failed to update store_url for task %s: %v", taskId, err)
-						}
-					}
-				} else {
-					log.Printf("Video URL not found or invalid type in assets")
-				}
-			} else {
-				log.Printf("Failed to convert assets to map")
-			}
-		} else {
-			log.Printf("Task not completed or no assets. State: %s, Assets: %v",
-				lumaResp.State, lumaResp.Assets)
-		}
-
-		// 更新任务状态并检查是否需要退款
-		failReason := ""
-		if lumaResp.State == "failed" {
-			if lumaResp.FailureReason != nil {
-				failReason = *lumaResp.FailureReason
-			} else {
-				failReason = "Task failed"
-			}
 		}
 		needRefund := UpdateVideoTaskStatus(taskId, generalResponse.TaskStatus, failReason)
 		if needRefund {
