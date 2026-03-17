@@ -907,33 +907,25 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 			}
 		}
 
-		// 处理 input_reference 字段：JSON 对象直接透传，纯 URL 下载后作为文件上传
+		// 处理 input_reference 字段：支持 URL 和文件两种方式
 		inputReferenceHandled := false
 
-		if refValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(refValues) > 0 {
-			refValue := refValues[0]
-			if refValue != "" {
-				logger.Debugf(ctx, "input_reference refValue: %s", refValue)
-				var refObj map[string]interface{}
-				if json.Unmarshal([]byte(refValue), &refObj) == nil {
-					logger.Debugf(ctx, "input_reference refObj: %v", refObj) 
-					// JSON 对象，直接作为表单字段透传
-					writer.WriteField("input_reference", refValue)
-					inputReferenceHandled = true
-					logger.Debugf(ctx, "input_reference 已是 JSON 对象，直接透传")
-				} else {
-					// 纯 URL 字符串，下载图片后作为文件上传
-					logger.Debugf(ctx, "检测到 input_reference URL: %s，开始下载", refValue)
-					if err := downloadAndAddImageFile(ctx, writer, refValue); err != nil {
-						c.JSON(http.StatusBadRequest, gin.H{"error": "下载 input_reference 图片失败: " + err.Error()})
-						return
-					}
-					inputReferenceHandled = true
-					logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
+		// 1. 检查是否有 input_reference 作为 URL（普通字段）
+		if urlValues, exists := c.Request.MultipartForm.Value["input_reference"]; exists && len(urlValues) > 0 {
+			imageUrl := urlValues[0]
+			if imageUrl != "" {
+				logger.Debugf(ctx, "检测到 input_reference URL: %s，开始下载", imageUrl)
+
+				// 下载图片并添加为文件字段
+				if err := downloadAndAddImageFile(ctx, writer, imageUrl); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "下载 input_reference 图片失败: " + err.Error()})
+					return
 				}
+				inputReferenceHandled = true
+				logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
 			}
 		}
-
+		
 		// 2. 如果没有处理过，检查是否有 input_reference 作为文件
 		if !inputReferenceHandled {
 			if fileHeaders, exists := c.Request.MultipartForm.File["input_reference"]; exists && len(fileHeaders) > 0 {
