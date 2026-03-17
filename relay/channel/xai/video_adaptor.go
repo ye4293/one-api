@@ -20,6 +20,18 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
+// checkBalance verifies that the user has enough quota before sending the request
+func checkBalance(c *gin.Context, meta *util.RelayMeta, quota int64) *model.ErrorWithStatusCode {
+	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
+	if err != nil {
+		return openaiAdaptor.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openaiAdaptor.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+	return nil
+}
+
 type VideoAdaptor struct {
 	relaychannel.BaseVideoAdaptor
 }
@@ -83,6 +95,11 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	quota := computeGrokQuota(duration, resolution, hasVideoInput, hasImageInput)
 	log.Printf("[Grok Video] 预扣费用 - duration=%d, resolution=%s, quota=%d", duration, resolution, quota)
 
+	// 基于实际请求参数做精确余额校验，与重构前行为一致
+	if balErr := checkBalance(c, meta, quota); balErr != nil {
+		return nil, balErr
+	}
+
 	httpReq, err := http.NewRequest(http.MethodPost, fullRequestUrl, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
@@ -120,13 +137,8 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 			"api_error", grokResponse.StatusCode)
 	}
 
-	// Save the API key used for creation so polling can use it later
-	if meta.APIKey != "" {
-		if err := dbmodel.UpdateVideoCredentials(grokResponse.RequestId, meta.APIKey); err != nil {
-			log.Printf("[Grok Video] 保存 API Key 失败: %v", err)
-		}
-	}
-
+	// Credentials 字段由 invokeVideoAdaptorRequest 在 CreateVideoLog 之后写入 DB
+	// 此处不直接调用 UpdateVideoCredentials，避免记录未创建导致写入失败
 	return &relaychannel.VideoTaskResult{
 		TaskId:      grokResponse.RequestId,
 		TaskStatus:  "succeed",

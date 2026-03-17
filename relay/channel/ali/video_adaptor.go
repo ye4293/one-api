@@ -20,6 +20,18 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
+// checkBalance verifies that the user has enough quota before sending the request
+func checkBalance(c *gin.Context, meta *util.RelayMeta, quota int64) *model.ErrorWithStatusCode {
+	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
+	if err != nil {
+		return openaiAdaptor.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
+	}
+	if userQuota-quota < 0 {
+		return openaiAdaptor.ErrorWrapper(fmt.Errorf("用户余额不足"), "User balance is not enough", http.StatusBadRequest)
+	}
+	return nil
+}
+
 const defaultDashScopeBaseURL = "https://dashscope.aliyuncs.com"
 
 // GetBaseURL returns the DashScope base URL, preferring channel custom address
@@ -124,6 +136,11 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		videoType = "text-to-video"
 	}
 	quota := common.CalculateVideoQuota(modelName, videoType, "*", duration, resolution)
+
+	// 基于实际请求参数做精确余额校验，与重构前行为一致
+	if balErr := checkBalance(c, meta, quota); balErr != nil {
+		return nil, balErr
+	}
 
 	ch, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {

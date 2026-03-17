@@ -758,6 +758,13 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		taskResult.Mode, taskResult.Duration, taskResult.VideoType,
 		taskResult.VideoId, taskResult.Quota, taskResult.Resolution)
 
+	// 保存 provider 凭证（需在 CreateVideoLog 之后，确保记录已创建）
+	if taskResult.Credentials != "" {
+		if credErr := dbmodel.UpdateVideoCredentials(taskResult.TaskId, taskResult.Credentials); credErr != nil {
+			log.Printf("[VideoAdaptor] Failed to save credentials for task %s: %v", taskResult.TaskId, credErr)
+		}
+	}
+
 	// 响应客户端
 	c.JSON(http.StatusOK, model.GeneralVideoResponse{
 		TaskId:     taskResult.TaskId,
@@ -781,7 +788,12 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 	taskId := videoTask.TaskId
 
 	// 更新任务状态，检查是否需要退款
-	needRefund := UpdateVideoTaskStatus(taskId, result.TaskStatus, result.Message)
+	// 只在失败时传递失败原因，避免将成功/处理中的 Message 写入 fail_reason 字段
+	failReason := ""
+	if result.TaskStatus == "failed" {
+		failReason = result.Message
+	}
+	needRefund := UpdateVideoTaskStatus(taskId, result.TaskStatus, failReason)
 	if needRefund {
 		log.Printf("Task %s failed, compensating user", taskId)
 		CompensateVideoTask(taskId)
