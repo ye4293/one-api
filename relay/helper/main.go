@@ -59,6 +59,9 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		return &keling.VideoAdaptor{}
 	case strings.HasPrefix(modelName, "veo"):
 		return &vertexai.VideoAdaptor{}
+	case strings.HasPrefix(strings.ToLower(modelName), "sora") ||
+		strings.Contains(strings.ToLower(modelName), "remix"):
+		return &openai.VideoAdaptor{}
 	}
 	return nil
 }
@@ -86,6 +89,8 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &keling.VideoAdaptor{}
 	case "vertexai":
 		return &vertexai.VideoAdaptor{}
+	case "sora":
+		return &openai.VideoAdaptor{}
 	}
 	return nil
 }
