@@ -250,8 +250,9 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/images/editing/expand", controller.RelayKlingVideo)
 
 		// ========== 通用类接口（2个）==========
-		klingRouter.POST("/general/custom-elements", controller.DoCustomElements) // 同步接口
-		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)    // 异步接口，复用逻辑
+		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)           // 同步接口
+		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo)   // 异步接口
+		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)              // 异步接口，复用逻辑
 
 		// ========== 查询和管理接口（透明代理，不计费）==========
 		// 使用通配符批量处理所有 GET 查询接口
