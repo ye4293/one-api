@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,11 +110,23 @@ func RequestEpay(c *gin.Context) {
 		callBackAddress = config.ServerAddress
 	}
 	returnURLValue := config.ServerAddress + "/topup"
+	allowedReturnHosts := map[string]struct{}{}
+
+	if config.ServerAddress != "" {
+		if serverParsed, err := url.Parse(config.ServerAddress); err == nil && serverParsed.Host != "" {
+			allowedReturnHosts[serverParsed.Host] = struct{}{}
+		}
+	}
+	if config.FrontendServerAddress != "" {
+		returnURLValue = strings.TrimRight(config.FrontendServerAddress, "/") + "/dashboard/topup"
+		if frontendParsed, err := url.Parse(config.FrontendServerAddress); err == nil && frontendParsed.Host != "" {
+			allowedReturnHosts[frontendParsed.Host] = struct{}{}
+		}
+	}
 	if req.ReturnURL != "" {
 		parsed, parseErr := url.Parse(req.ReturnURL)
 		if parseErr == nil && parsed.Host != "" {
-			serverParsed, _ := url.Parse(config.ServerAddress)
-			if serverParsed != nil && parsed.Host == serverParsed.Host {
+			if _, ok := allowedReturnHosts[parsed.Host]; ok {
 				returnURLValue = req.ReturnURL
 			}
 		}
