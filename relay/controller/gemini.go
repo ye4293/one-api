@@ -440,7 +440,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 	other := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), cachedTokens)
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), cachedTokens, c.GetString("x_response_id"))
 }
 
 // extractGeminiNativeUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息（用于 native 接口）
@@ -819,6 +819,9 @@ func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
+	if geminiResponse.ResponseId != "" {
+		c.Set("x_response_id", geminiResponse.ResponseId)
+	}
 	//如果没有处理过inlineData中的URL格式图片，则直接返回
 	if c.GetBool("gemini_inline_data_url_processed") == false {
 		logger.Infof(c, "Gemini response images not processed, returning original response")
@@ -894,6 +897,9 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		// 更新使用量统计
 		if geminiResponse.UsageMetadata != nil {
 			lastUsageMetadata = geminiResponse.UsageMetadata
+		}
+		if geminiResponse.ResponseId != "" {
+			c.Set("x_response_id", geminiResponse.ResponseId)
 		}
 
 		// 直接返回原始数据，不处理图片

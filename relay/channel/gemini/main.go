@@ -863,6 +863,9 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			if geminiResponse.UsageMetadata != nil {
 				lastUsageMetadata = geminiResponse.UsageMetadata
 			}
+			if geminiResponse.ResponseId != "" {
+				c.Set("x_response_id", geminiResponse.ResponseId)
+			}
 
 			response := streamResponseGeminiChat2OpenAI(&geminiResponse, modelName)
 			if response == nil {
@@ -1012,6 +1015,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(&geminiResponse)
 	fullTextResponse.Model = modelName
+	if geminiResponse.ResponseId != "" {
+		c.Set("x_response_id", geminiResponse.ResponseId)
+	}
 
 	// 计算 completion tokens
 	baseCompletionTokens := openai.CountTokenText(geminiResponse.GetActualContent(), modelName)

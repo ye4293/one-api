@@ -161,7 +161,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	other := buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo, usageDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
-		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0)
+		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
 }
 
 // buildClaudeOtherInfoWithUsageDetails 构建包含 adminInfo 和 Claude usageDetails 的 otherInfo 字符串
@@ -366,6 +366,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
 	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), "OpenAI Response Cache")
+	c.Set("x_response_id", openaiResponse.ID)
 
 	return openaiResponse.Usage, nil
 }
@@ -416,6 +417,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 
 				// 缓存 response_id 到 Redis
 				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), "OpenAI Response Cache Stream")
+				c.Set("x_response_id", streamResponse.Response.ID)
 
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {

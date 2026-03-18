@@ -5,7 +5,7 @@ COPY ./VERSION .
 COPY ./web .
 
 WORKDIR /web/default
-RUN npm install
+RUN npm config set registry https://registry.npmmirror.com && npm install
 RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat VERSION) npm run build
 
 # WORKDIR /web/berry

@@ -487,6 +487,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 			if len(meta.Id) > 0 { // only message_start has an id, otherwise it's a finish_reason event.
 				modelName = meta.Model
 				id = meta.Id
+				c.Set("x_response_id", id)
 				continue
 			} else { // finish_reason case
 				if len(lastToolCallChoice.Delta.ToolCalls) > 0 {
@@ -607,6 +608,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 	fullTextResponse := ResponseClaude2OpenAI(&claudeResponse)
 	fullTextResponse.Model = modelName
+	if claudeResponse.Id != "" {
+		c.Set("x_response_id", claudeResponse.Id)
+	}
 	usage := model.Usage{
 		PromptTokens:     claudeResponse.Usage.InputTokens,
 		CompletionTokens: claudeResponse.Usage.OutputTokens,

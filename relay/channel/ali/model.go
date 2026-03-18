@@ -164,7 +164,7 @@ type AliVideoQueryOutput struct {
 }
 
 type AliVideoUsage struct {
-	Duration   int `json:"duration"`    // 视频时长（秒）
-	VideoCount int `json:"video_count"` // 视频数量
-	SR         int `json:"SR"`          // 分辨率数值 480/720/1080
+	Duration   float64 `json:"duration"`    // 视频时长（秒，可能是小数）
+	VideoCount int     `json:"video_count"` // 视频数量
+	SR         int     `json:"SR"`          // 分辨率数值 480/720/1080
 }

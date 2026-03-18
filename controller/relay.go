@@ -322,6 +322,7 @@ func recordFailedRequestLog(ctx context.Context, c *gin.Context, bizErr *model.E
 		otherInfo,
 		requestID,
 		0,
+		"",
 	)
 
 	logger.Infof(ctx, "Recorded failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -411,6 +412,7 @@ func recordMidjourneyFailedLog(ctx context.Context, c *gin.Context, mjErr *midjo
 		otherInfo,
 		requestID,
 		0,
+		"",
 	)
 
 	logger.Infof(ctx, "Recorded Midjourney failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -464,6 +466,7 @@ func recordRunwayFailedLog(ctx context.Context, c *gin.Context, statusCode int, 
 		otherInfo,
 		requestID,
 		0,
+		"",
 	)
 
 	logger.Infof(ctx, "Recorded Runway failed request log: userId=%d, model=%s, error=%s, channels=%v",
@@ -674,6 +677,7 @@ func recordXAIContentViolationCharge(ctx context.Context, c *gin.Context, channe
 		otherInfo,
 		requestID,
 		0,
+		"",
 	)
 
 	// 更新用户和渠道quota
@@ -1531,7 +1535,7 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 
 		if otherInfo != "" {
 			dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, inputTokens, outputTokens,
-				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, otherInfo, xRequestID, 0)
+				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, otherInfo, xRequestID, 0, "")
 		} else {
 			dbmodel.RecordConsumeLogWithRequestID(ctx, userId, channelId, inputTokens, outputTokens,
 				modelName, tokenName, quota, logContent, duration, title, httpReferer, false, 0.0, xRequestID)

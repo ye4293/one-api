@@ -73,15 +73,15 @@ func RecordConsumeLog(ctx context.Context, userId int, channelId int, promptToke
 }
 
 func RecordConsumeLogWithRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, xRequestID string) {
-	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "", xRequestID, 0)
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, "", xRequestID, 0, "")
 }
 
 func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string) {
-	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, other, "", 0)
+	RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, isStream, firstWordLatency, other, "", 0, "")
 }
 
-func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int) {
-	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, cachedTokens=%d", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, xRequestID, cachedTokens))
+func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int, xResponseID string) {
+	logger.Info(ctx, fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, xResponseID=%s, cachedTokens=%d", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, xRequestID, xResponseID, cachedTokens))
 	if !config.LogConsumeEnabled {
 		return
 	}
@@ -114,6 +114,7 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		FirstWordLatency: firstWordLatency,
 		Other:            other,
 		XRequestID:       xRequestID,
+		XResponseID:      xResponseID,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

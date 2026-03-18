@@ -49,6 +49,14 @@ var StripePrivateKey = ""
 var StripePublicKey = ""
 var StripeEndpointSecret = ""
 
+var EpayPaymentEnabled = false
+var EpayPayAddress = ""
+var EpayId = ""
+var EpayKey = ""
+var EpayPrice = 7.3
+var EpayMinTopUp = 1
+var EpayCallbackAddress = ""
+
 var CfR2storeEnabled = true
 var CfBucketFileName = "ezlinkai-file"
 

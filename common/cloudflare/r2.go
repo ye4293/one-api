@@ -62,12 +62,14 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 		return "", fmt.Errorf("failed to decode base64: %v", err)
 	}
 
-	// 生成文件名：timestamp-uuid.ext
-	timestamp := time.Now().Format("20060102-150405")
+	// 生成文件名，按日期文件夹分类：gemini-images/2024-01-15/150405-uuid.ext
+	now := time.Now()
+	dateFolder := now.Format("2006-01-02") // 日期文件夹：2024-01-15
+	timeStamp := now.Format("150405")      // 时间戳：150405
 	uuid := generateFileUUID()
 	ext := getExtensionFromMimeType(mimeType)
-	filename := fmt.Sprintf("%s-%s%s", timestamp, uuid, ext)
-	objectKey := path.Join("gemini-images", filename)
+	filename := fmt.Sprintf("%s-%s%s", timeStamp, uuid, ext)
+	objectKey := path.Join("gemini-images", dateFolder, filename)
 
 	// 加载 AWS 配置
 	cfg, err := config.LoadDefaultConfig(ctx,
