@@ -21,7 +21,7 @@ const (
 	RequestTypeMultiElements   = "multi-elements"
 	RequestTypeVideoExtend     = "video-extend"
 	RequestTypeAvatarI2V       = "avatar-image2video"
-	RequestTypeVideoEffects    = "video-effects"
+	RequestTypeVideoEffects    = "effects"
 	RequestTypeImageRecognize  = "image-recognize"
 
 	// 音频相关（新增3个）
