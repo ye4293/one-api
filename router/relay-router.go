@@ -254,8 +254,9 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/images/editing/expand", controller.RelayKlingVideo)
 
 		// ========== 通用类接口（2个）==========
-		klingRouter.POST("/general/custom-elements", controller.DoCustomElements) // 同步接口
-		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)    // 异步接口，复用逻辑
+		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)           // 同步接口
+		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo)   // 异步接口
+		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)              // 异步接口，复用逻辑
 
 		// ========== 查询和管理接口（透明代理，不计费）==========
 		// 使用通配符批量处理所有 GET 查询接口
@@ -336,5 +337,15 @@ func SetRelayRouter(router *gin.Engine) {
 	geminiV1AlphaRouter.Use(middleware.TokenAuth(), middleware.Distribute())
 	{
 		geminiV1AlphaRouter.POST("/models/*path", controller.RelayGemini)
+	}
+
+	// 阿里云万相视频生成路由组
+	// 路径与 DashScope 原生路径对应，统一支持 T2V 和 I2V
+	// POST 和 GET 均挂载 Distribute，GET handler 内部会用 resolveChannelForTaskQuery 覆盖为任务绑定渠道
+	aliVideoRouter := router.Group("/ali/api/v1")
+	aliVideoRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		aliVideoRouter.POST("/services/aigc/video-generation/video-synthesis", controller.RelayAliVideoCreate)
+		aliVideoRouter.GET("/tasks/:taskId", controller.RelayAliVideoResult)
 	}
 }

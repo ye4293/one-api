@@ -169,6 +169,15 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			}
 		}
 
+	} else if strings.HasPrefix(path, "/ali/api/v1/") {
+		if c.Request.Method == "GET" {
+			modelRequest.Model = "wan2.6-i2v"
+		} else {
+			_ = common.UnmarshalBodyReusable(c, &modelRequest)
+			if modelRequest.Model == "" {
+				modelRequest.Model = "wan2.6-i2v"
+			}
+		}
 	} else {
 		// OpenAI 格式请求
 		_ = common.UnmarshalBodyReusable(c, &modelRequest)

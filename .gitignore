@@ -8,5 +8,5 @@ build
 logs
 data
 /web/node_modules
-
+./.claude/settings.local.json
 .env

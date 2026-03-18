@@ -53,7 +53,8 @@ func InitOptionMap() {
 	config.OptionMap["Footer"] = config.Footer
 	config.OptionMap["SystemName"] = config.SystemName
 	config.OptionMap["Logo"] = config.Logo
-	config.OptionMap["ServerAddress"] = ""
+	config.OptionMap["ServerAddress"] = config.ServerAddress
+	config.OptionMap["FrontendServerAddress"] = config.FrontendServerAddress
 	config.OptionMap["GitHubClientId"] = ""
 	config.OptionMap["GitHubClientSecret"] = ""
 	config.OptionMap["GoogleClientId"] = ""
@@ -93,6 +94,15 @@ func InitOptionMap() {
 	config.OptionMap["StripePrivateKey"] = ""
 	config.OptionMap["StripePublicKey"] = ""
 	config.OptionMap["StripeEndpointKey"] = ""
+
+	config.OptionMap["EpayPaymentEnabled"] = strconv.FormatBool(config.EpayPaymentEnabled)
+	config.OptionMap["EpayPayAddress"] = config.EpayPayAddress
+	config.OptionMap["EpayId"] = config.EpayId
+	config.OptionMap["EpayKey"] = ""
+	config.OptionMap["EpayKeyConfigured"] = strconv.FormatBool(config.EpayKey != "")
+	config.OptionMap["EpayPrice"] = strconv.FormatFloat(config.EpayPrice, 'f', -1, 64)
+	config.OptionMap["EpayMinTopUp"] = strconv.Itoa(config.EpayMinTopUp)
+	config.OptionMap["EpayCallbackAddress"] = config.EpayCallbackAddress
 
 	config.OptionMap["CfR2storeEnabled"] = strconv.FormatBool(config.CfR2storeEnabled)
 	config.OptionMap["CfBucketFileName"] = config.CfBucketFileName
@@ -174,12 +184,16 @@ func UpdateOption(key string, value string) error {
 		Key: key,
 	}
 	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
+	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+		return err
+	}
 	option.Value = value
 	// Save is a combination function.
 	// If save value does not contain primary key, it will execute Create,
 	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	if err := DB.Save(&option).Error; err != nil {
+		return err
+	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
 }
@@ -229,8 +243,10 @@ func updateOptionMap(key string, value string) (err error) {
 			config.CfR2storeEnabled = boolValue
 		case "PingIntervalEnabled":
 			config.PingIntervalEnabled = boolValue
+		case "EpayPaymentEnabled":
+			config.EpayPaymentEnabled = boolValue
 		}
-		
+
 	}
 
 	// 处理其他配置选项
@@ -252,6 +268,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.SMTPToken = value
 	case "ServerAddress":
 		config.ServerAddress = value
+	case "FrontendServerAddress":
+		config.FrontendServerAddress = value
 	case "GoogleClientId":
 		config.GoogleClientId = value
 	case "GoogleClientSecret":
@@ -372,6 +390,19 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	case "FeishuWebhookUrls":
 		config.FeishuWebhookUrls = value
+	case "EpayPayAddress":
+		config.EpayPayAddress = value
+	case "EpayId":
+		config.EpayId = value
+	case "EpayKey":
+		config.EpayKey = value
+		config.OptionMap["EpayKeyConfigured"] = strconv.FormatBool(value != "")
+	case "EpayPrice":
+		config.EpayPrice, _ = strconv.ParseFloat(value, 64)
+	case "EpayMinTopUp":
+		config.EpayMinTopUp, _ = strconv.Atoi(value)
+	case "EpayCallbackAddress":
+		config.EpayCallbackAddress = value
 	case "PingIntervalSeconds":
 		config.PingIntervalSeconds, _ = strconv.Atoi(value)
 	// Claude Thinking 模型配置

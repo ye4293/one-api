@@ -22,6 +22,10 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 }
 
 func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
+	// xAI 同时支持多种兼容接口，保持客户端原始请求路径透传。
+	if meta.RequestURLPath != "" {
+		return util.GetFullRequestURL(meta.BaseURL, meta.RequestURLPath, meta.ChannelType), nil
+	}
 	fullrequestUrl := fmt.Sprintf("%s%s", meta.BaseURL, "/v1/chat/completions")
 	return fullrequestUrl, nil
 }
