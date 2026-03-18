@@ -610,8 +610,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 处理 quality 参数，映射到 Gemini 的 imageSize
 			if qualityValue, exists := requestMap["quality"]; exists {
 				if qualityStr, ok := qualityValue.(string); ok && qualityStr != "" {
-					// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
-					imageSize = strings.ToUpper(qualityStr)
+					// 兼容 0.5k/0.5K/512，同时保留 1k/2k/4k 等大小写归一化
+					imageSize = normalizeGeminiImageSize(qualityStr)
 				}
 			}
 
@@ -3416,8 +3416,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	if qualityValues, ok := c.Request.MultipartForm.Value["quality"]; ok && len(qualityValues) > 0 {
 		qualityStr := qualityValues[0]
 		if qualityStr != "" {
-			// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
-			imageSize = strings.ToUpper(qualityStr)
+			// 兼容 0.5k/0.5K/512，同时保留 1k/2k/4k 等大小写归一化
+			imageSize = normalizeGeminiImageSize(qualityStr)
 		}
 	}
 
@@ -4925,6 +4925,19 @@ func compensateAliImageTask(taskId string) {
 
 	logger.Infof(context.Background(), "Successfully completed compensation for ali image task %s: user %d and channel %d restored quota %d",
 		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
+}
+
+// normalizeGeminiImageSize 统一 Gemini 图片尺寸别名。
+// Gemini 3.1 Flash Image 的 0.5K 在官方接口中必须传 "512"，这里兼容常见别名。
+func normalizeGeminiImageSize(imageSize string) string {
+	normalizedSize := strings.TrimSpace(imageSize)
+	if normalizedSize == "" {
+		return ""
+	}
+	if strings.EqualFold(normalizedSize, "0.5k") || normalizedSize == "512" {
+		return "512"
+	}
+	return strings.ToUpper(normalizedSize)
 }
 
 // convertSizeToAspectRatio 将 OpenAI 格式的尺寸转换为 Gemini 的宽高比格式
