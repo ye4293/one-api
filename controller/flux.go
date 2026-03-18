@@ -56,21 +56,21 @@ func RelayFlux(c *gin.Context) {
 		retryTimes = 0
 	}
 
-	failedChannelIds := []int{}
-	initialFailedChannelId := channelId
+	failedChannelIds := []int{channelId}
+	lastChannel := getLastRetryFallbackChannel(channelId)
 
 	for i := retryTimes; i > 0; i-- {
-		channel, err := model.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
-		if err != nil {
-			logger.Errorf(ctx, "Flux retry: no available channel (excludedChannels: %v): %v", failedChannelIds, err)
-			break
-		}
-
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, initialFailedChannelId)
-		}
-
 		attempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, originalModel, attempt, "", failedChannelIds)
+		if err != nil {
+			if lastChannel == nil {
+				logger.Errorf(ctx, "Flux retry: no available channel (excludedChannels: %v): %v", failedChannelIds, err)
+				break
+			}
+			logger.Infof(ctx, "Flux retry: no new channel found, fallback to last channel #%d (%d/%d)", lastChannel.Id, attempt, retryTimes)
+			channel = lastChannel
+		}
+		lastChannel = channel
 		logger.Infof(ctx, "Flux retry %d/%d: channel #%d (%s) -> #%d (%s), model=%s, reason=%s",
 			attempt, retryTimes, channelId, channelName, channel.Id, channel.Name, originalModel, bizErr.Error.Message)
 
@@ -86,7 +86,7 @@ func RelayFlux(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 		channelName = c.GetString("channel_name")
 		keyIndex = c.GetInt("key_index")
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		logger.Errorf(ctx, "Flux retry %d/%d failed: channel #%d, status=%d, error=%s",
 			attempt, retryTimes, channelId, bizErr.StatusCode, bizErr.Error.Message)
