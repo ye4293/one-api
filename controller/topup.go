@@ -123,14 +123,14 @@ func RequestEpay(c *gin.Context) {
 			allowedReturnHosts[frontendParsed.Host] = struct{}{}
 		}
 	}
-	if req.ReturnURL != "" {
-		parsed, parseErr := url.Parse(req.ReturnURL)
-		if parseErr == nil && parsed.Host != "" {
-			if _, ok := allowedReturnHosts[parsed.Host]; ok {
-				returnURLValue = req.ReturnURL
-			}
-		}
-	}
+	// if req.ReturnURL != "" {
+	// 	parsed, parseErr := url.Parse(req.ReturnURL)
+	// 	if parseErr == nil && parsed.Host != "" {
+	// 		if _, ok := allowedReturnHosts[parsed.Host]; ok {
+	// 			returnURLValue = req.ReturnURL
+	// 		}
+	// 	}
+	// }
 	returnUrl, _ := url.Parse(returnURLValue)
 	notifyUrl, _ := url.Parse(callBackAddress + "/api/user/epay/notify")
 	tradeNo := fmt.Sprintf("USR%dNO%s%d", id, helper.GetRandomString(6), time.Now().Unix())
