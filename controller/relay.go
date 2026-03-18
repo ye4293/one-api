@@ -2019,6 +2019,195 @@ func RelaySoraVideoRemix(c *gin.Context) {
 	controller.DirectRelaySoraVideoRemix(c, videoId)
 }
 
+func RelaySoraVideoEdit(c *gin.Context) {
+	controller.DirectRelaySoraVideoEdit(c)
+}
+
+func RelaySoraVideoExtension(c *gin.Context) {
+	controller.DirectRelaySoraVideoExtension(c)
+}
+
+func RelaySoraCharacter(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+
+	logger.Infof(ctx, "RelaySoraCharacter start - userId: %d, channelId: %d, model: %s, requestID: %s",
+		userId, channelId, modelName, requestID)
+
+	success, statusCode, errorMessage := trySoraCharacterRequest(c)
+	if success {
+		logger.Infof(ctx, "RelaySoraCharacter success - userId: %d, channelId: %d", userId, channelId)
+		return
+	}
+
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	logger.Errorf(ctx, "RelaySoraCharacter first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d, error: %s",
+		userId, channelId, channelName, statusCode, errorMessage)
+
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		StatusCode: statusCode,
+		Error:      model.Error{Message: errorMessage},
+	}, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, statusCode, errorMessage) {
+		logger.Errorf(ctx, "Sora character request error, status code is %d, won't retry", statusCode)
+		writeLastSoraCharacterFailureResponse(c, statusCode)
+		return
+	}
+
+	logger.Infof(ctx, "RelaySoraCharacter will retry %d times - status code: %d", retryTimes, statusCode)
+
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+	failedChannelIds := []int{originalChannelId}
+
+	for i := retryTimes; i > 0; i-- {
+		logger.Infof(ctx, "RelaySoraCharacter retry attempt %d/%d", retryTimes-i+1, retryTimes)
+
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+
+		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+		logger.Infof(ctx, retryLog)
+
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		requestBody, err := common.GetRequestBody(c)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		success, statusCode, retryErrorMessage := trySoraCharacterRequest(c)
+		if success {
+			logger.Infof(ctx, "RelaySoraCharacter retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		failedChannelIds = append(failedChannelIds, channelId)
+		channelName = c.GetString("channel_name")
+
+		logger.Errorf(ctx, "RelaySoraCharacter retry %d/%d FAILED on channel #%d (%s) - statusCode: %d, error: %s",
+			retryTimes-i+1, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
+
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+			StatusCode: statusCode,
+			Error:      model.Error{Message: retryErrorMessage},
+		}, modelName)
+
+		if !shouldRetry(c, statusCode, retryErrorMessage) {
+			logger.Errorf(ctx, "Retry encountered non-retryable error, status code is %d, stopping retries", statusCode)
+			writeLastSoraCharacterFailureResponse(c, statusCode)
+			return
+		}
+	}
+
+	logger.Errorf(ctx, "RelaySoraCharacter ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
+	writeLastSoraCharacterFailureResponse(c, statusCode)
+}
+
+func trySoraCharacterRequest(c *gin.Context) (success bool, statusCode int, errorMessage string) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+	logger.Debugf(ctx, "trySoraCharacterRequest start - channelId: %d", channelId)
+
+	meta := util.GetRelayMeta(c)
+	if meta == nil {
+		logger.Errorf(ctx, "trySoraCharacterRequest: failed to get relay meta for channelId: %d", channelId)
+		return false, http.StatusInternalServerError, "Internal server error: missing relay meta"
+	}
+
+	originalWriter := c.Writer
+	rec := newResponseRecorder(originalWriter)
+	c.Writer = rec
+
+	defer func() {
+		c.Writer = originalWriter
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf(ctx, "trySoraCharacterRequest panic recovered - channelId: %d, error: %v", channelId, r)
+			statusCode = http.StatusInternalServerError
+			errorMessage = "Internal server error: request panic"
+			success = false
+		}
+	}()
+
+	controller.DirectRelaySoraCharacter(c, meta)
+
+	statusCode = rec.statusCode
+	logger.Debugf(ctx, "trySoraCharacterRequest response - channelId: %d, statusCode: %d, bodySize: %d",
+		channelId, statusCode, rec.body.Len())
+
+	if statusCode >= 400 {
+		responseBody := rec.body.String()
+		errorMessage = extractErrorMessage(responseBody)
+		logger.Debugf(ctx, "trySoraCharacterRequest FAILED - channelId: %d, statusCode: %d, error: %s",
+			channelId, statusCode, truncateString(errorMessage, 100))
+		return false, statusCode, errorMessage
+	}
+
+	if err := writeSuccessResponse(originalWriter, rec); err != nil {
+		logger.Errorf(ctx, "trySoraCharacterRequest: failed to write success response - channelId: %d, error: %v", channelId, err)
+		return false, http.StatusInternalServerError, "Failed to write response"
+	}
+
+	logger.Debugf(ctx, "trySoraCharacterRequest SUCCESS - channelId: %d, statusCode: %d", channelId, statusCode)
+	return true, statusCode, ""
+}
+
+func writeLastSoraCharacterFailureResponse(c *gin.Context, statusCode int) {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+	logger.Debugf(ctx, "writeLastSoraCharacterFailureResponse - channelId: %d, statusCode: %d", channelId, statusCode)
+
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get request body for final response: %v", err)
+		c.JSON(statusCode, gin.H{"error": "Request failed"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+	controller.DirectRelaySoraCharacter(c, meta)
+}
+
+func RelaySoraCharacterGet(c *gin.Context) {
+	characterId := c.Param("characterId")
+	if characterId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "characterId is required"})
+		return
+	}
+	controller.GetSoraCharacter(c, characterId)
+}
+
 func RelaySoraVideo(c *gin.Context) {
 	ctx := c.Request.Context()
 	requestID := c.GetHeader("X-Request-ID")

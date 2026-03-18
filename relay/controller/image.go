@@ -39,6 +39,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt"
 )
 
 // Gemini Token 详情 Modality 常量
@@ -4994,4 +4995,20 @@ func convertSizeToAspectRatio(size string) string {
 	// 如果无法解析或格式不正确，返回空字符串，表示不设置此参数
 	// Gemini 官方默认会使输出图片的大小与输入图片的大小保持一致
 	return ""
+}
+
+func EncodeJWTToken(ak, sk string) string {
+	claims := jwt.MapClaims{
+		"iss": ak,
+		"exp": time.Now().Add(30 * time.Minute).Unix(),
+		"nbf": time.Now().Add(-5 * time.Second).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(sk))
+	if err != nil {
+		panic(err)
+	}
+
+	return tokenString
 }
