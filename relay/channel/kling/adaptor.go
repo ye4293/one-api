@@ -42,7 +42,7 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	case RequestTypeImageGeneration, RequestTypeOmniImage, RequestTypeMultiImage2Image, RequestTypeImageExpand:
 		pathPrefix = "/v1/images"
 	// 通用类接口（包括查询和管理接口）
-	case RequestTypeCustomElements, RequestTypeCustomVoices,
+	case RequestTypeCustomElements, RequestTypeAdvancedCustomElements, RequestTypeCustomVoices,
 		RequestTypePresetsElements, RequestTypeDeleteElements,
 		RequestTypePresetsVoices, RequestTypeDeleteVoices:
 		pathPrefix = "/v1/general"

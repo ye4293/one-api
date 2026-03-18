@@ -71,6 +71,8 @@ func DetermineRequestType(path string) string {
 		return RequestTypePresetsElements
 	} else if strings.Contains(path, "/delete-elements") {
 		return RequestTypeDeleteElements
+	} else if strings.Contains(path, "/advanced-custom-elements") {
+		return RequestTypeAdvancedCustomElements
 	} else if strings.Contains(path, "/custom-elements") {
 		return RequestTypeCustomElements
 	} else if strings.Contains(path, "/presets-voices") {
