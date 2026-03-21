@@ -92,7 +92,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	}
 
 	// 计算预估费用
-	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
+	quota := common.CalculateVideoQuota(userModel, requestType, mode, duration, "")
 
 	// 检查用户余额
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
@@ -135,7 +135,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	return &klingRequest{
 		RequestType:   requestType,
 		RequestParams: requestParams,
-		Model:         model,
+		Model:         userModel,
 		Mode:          mode,
 		Duration:      duration,
 		Sound:         sound,
