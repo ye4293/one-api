@@ -61,7 +61,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 
 	// 提取请求参数
 	userModel := kling.GetModelNameFromRequest(requestParams)
-	// 根据 requestType 自动确定 model（在映射表中的使用固定值，不在的使用用户传递的值）
+	// 根据 requestType 确定最终 model：固定映射表 > 用户传递值 > 官方默认值
 	model := kling.GetModelNameByRequestType(requestType, userModel)
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
@@ -92,7 +92,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	}
 
 	// 计算预估费用
-	quota := common.CalculateVideoQuota(userModel, requestType, mode, duration, "")
+	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
 
 	// 检查用户余额
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
@@ -135,7 +135,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	return &klingRequest{
 		RequestType:   requestType,
 		RequestParams: requestParams,
-		Model:         userModel,
+		Model:         model,
 		Mode:          mode,
 		Duration:      duration,
 		Sound:         sound,
