@@ -39,6 +39,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt"
 )
 
 // Gemini Token 详情 Modality 常量
@@ -610,8 +611,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 处理 quality 参数，映射到 Gemini 的 imageSize
 			if qualityValue, exists := requestMap["quality"]; exists {
 				if qualityStr, ok := qualityValue.(string); ok && qualityStr != "" {
-					// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
-					imageSize = strings.ToUpper(qualityStr)
+					// 兼容 0.5k/0.5K/512，同时保留 1k/2k/4k 等大小写归一化
+					imageSize = normalizeGeminiImageSize(qualityStr)
 				}
 			}
 
@@ -3416,8 +3417,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	if qualityValues, ok := c.Request.MultipartForm.Value["quality"]; ok && len(qualityValues) > 0 {
 		qualityStr := qualityValues[0]
 		if qualityStr != "" {
-			// 统一转换为大写，例如 2k -> 2K, 4k -> 4K
-			imageSize = strings.ToUpper(qualityStr)
+			// 兼容 0.5k/0.5K/512，同时保留 1k/2k/4k 等大小写归一化
+			imageSize = normalizeGeminiImageSize(qualityStr)
 		}
 	}
 
@@ -4927,6 +4928,19 @@ func compensateAliImageTask(taskId string) {
 		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
 }
 
+// normalizeGeminiImageSize 统一 Gemini 图片尺寸别名。
+// Gemini 3.1 Flash Image 的 0.5K 在官方接口中必须传 "512"，这里兼容常见别名。
+func normalizeGeminiImageSize(imageSize string) string {
+	normalizedSize := strings.TrimSpace(imageSize)
+	if normalizedSize == "" {
+		return ""
+	}
+	if strings.EqualFold(normalizedSize, "0.5k") || normalizedSize == "512" {
+		return "512"
+	}
+	return strings.ToUpper(normalizedSize)
+}
+
 // convertSizeToAspectRatio 将 OpenAI 格式的尺寸转换为 Gemini 的宽高比格式
 // 支持两种输入格式：
 // 1. 比例格式（包含":"）：如 "16:9" -> 直接赋值返回 "16:9"
@@ -4981,4 +4995,20 @@ func convertSizeToAspectRatio(size string) string {
 	// 如果无法解析或格式不正确，返回空字符串，表示不设置此参数
 	// Gemini 官方默认会使输出图片的大小与输入图片的大小保持一致
 	return ""
+}
+
+func EncodeJWTToken(ak, sk string) string {
+	claims := jwt.MapClaims{
+		"iss": ak,
+		"exp": time.Now().Add(30 * time.Minute).Unix(),
+		"nbf": time.Now().Add(-5 * time.Second).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(sk))
+	if err != nil {
+		panic(err)
+	}
+
+	return tokenString
 }

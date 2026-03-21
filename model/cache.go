@@ -248,6 +248,32 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
+func isExcludedChannel(channelID int, excludeIds []int) bool {
+	for _, excludeID := range excludeIds {
+		if excludeID == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+func getSortedSatisfiedChannelPriorities(group string, model string, groupCol string, trueVal string) ([]int, error) {
+	var priorities []int
+	err := DB.Table("abilities").
+		Joins("JOIN channels ON abilities.channel_id = channels.id").
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled).
+		Pluck("DISTINCT abilities.priority", &priorities).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
+	}
+
+	sort.Slice(priorities, func(i, j int) bool {
+		return priorities[i] > priorities[j]
+	})
+
+	return priorities, nil
+}
+
 func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
@@ -272,66 +298,60 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 			// 将 channel ID 字符串转换为整数
 			channelID, parseErr := strconv.Atoi(cachedChannelID)
 			if parseErr == nil {
-				// 尝试获取该 channel
-				channel, getErr := CacheGetChannel(channelID)
-				if getErr == nil && channel != nil {
-					// 验证该 channel 是否满足条件（group、model、状态）
-					if channel.Status == common.ChannelStatusEnabled {
-						// 检查 group 是否匹配
-						channelGroups := strings.Split(channel.Group, ",")
-						groupMatched := false
-						for _, cg := range channelGroups {
-							if strings.TrimSpace(cg) == group {
-								groupMatched = true
-								break
+				if isExcludedChannel(channelID, excludeIds) {
+					logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
+				} else {
+					// 尝试获取该 channel
+					channel, getErr := CacheGetChannel(channelID)
+					if getErr == nil && channel != nil {
+						// 验证该 channel 是否满足条件（group、model、状态）
+						if channel.Status == common.ChannelStatusEnabled {
+							// 检查 group 是否匹配
+							channelGroups := strings.Split(channel.Group, ",")
+							groupMatched := false
+							for _, cg := range channelGroups {
+								if strings.TrimSpace(cg) == group {
+									groupMatched = true
+									break
+								}
 							}
-						}
 
-						// 检查 model 是否匹配
-						channelModels := strings.Split(channel.Models, ",")
-						modelMatched := false
-						for _, cm := range channelModels {
-							if strings.TrimSpace(cm) == model {
-								modelMatched = true
-								break
+							// 检查 model 是否匹配
+							channelModels := strings.Split(channel.Models, ",")
+							modelMatched := false
+							for _, cm := range channelModels {
+								if strings.TrimSpace(cm) == model {
+									modelMatched = true
+									break
+								}
 							}
-						}
 
-						// 如果都匹配，直接返回该 channel
-						if groupMatched && modelMatched {
-							logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d for responseID: %s, group: %s, model: %s",
-								channelID, responseID, group, model))
-							return channel, nil
+							// 如果都匹配，直接返回该 channel
+							if groupMatched && modelMatched {
+								logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d for responseID: %s, group: %s, model: %s",
+									channelID, responseID, group, model))
+								return channel, nil
+							} else {
+								logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
+									channelID, groupMatched, modelMatched))
+							}
 						} else {
-							logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
-								channelID, groupMatched, modelMatched))
+							logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
+								channelID, channel.Status))
 						}
 					} else {
-						logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
-							channelID, channel.Status))
+						logger.SysLog(fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
+							channelID, getErr))
 					}
-				} else {
-					logger.SysLog(fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
-						channelID, getErr))
 				}
 			}
 		}
 	}
-	// 构建基础查询条件
-	baseQuery := DB.Table("abilities").
-		Joins("JOIN channels ON abilities.channel_id = channels.id").
-		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled)
 
-	// 如果有需要排除的渠道ID，添加排除条件
-	if len(excludeIds) > 0 {
-		baseQuery = baseQuery.Where("channels.id NOT IN ?", excludeIds)
-	}
-
-	// 查询所有有可用渠道的优先级（确保abilities和channels状态一致）
-	var priorities []int
-	err := baseQuery.Pluck("DISTINCT abilities.priority", &priorities).Error
+	// 查询所有优先级。这里不能应用排除条件，否则 skipPriorityLevels 会按“剩余优先级”错位。
+	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
+		return nil, err
 	}
 
 	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v, excludeIds=%v", group, model, priorities, excludeIds)) // 调试用，生产环境可注释
@@ -343,12 +363,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 
 	// 确定使用哪个优先级
 	var priorityToUse int
-	// 首先，按照从大到小的顺序对priorities进行排序
-	sort.Slice(priorities, func(i, j int) bool {
-		return priorities[i] > priorities[j]
-	})
-
-	// 智能选择有可用渠道的优先级
+	// skipPriorityLevels 基于完整优先级序列，而不是排除失败渠道后的剩余优先级。
 	selectedPriorityIndex := skipPriorityLevels
 	if selectedPriorityIndex >= len(priorities) {
 		selectedPriorityIndex = len(priorities) - 1
@@ -470,34 +485,22 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 		excludeIds = excludeChannelIds[0]
 	}
 
-	// 构建基础查询条件
-	baseQuery := DB.Table("abilities").
-		Joins("JOIN channels ON abilities.channel_id = channels.id").
-		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?",
-			group, model, trueVal, common.ChannelStatusEnabled)
-
-	if len(excludeIds) > 0 {
-		baseQuery = baseQuery.Where("channels.id NOT IN ?", excludeIds)
-	}
-
-	// 获取所有优先级
-	var priorities []int
-	err := baseQuery.Pluck("DISTINCT abilities.priority", &priorities).Error
+	// 获取完整优先级列表，保持 skipPriorityLevels 与原始优先级层级一致。
+	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch priorities: %w", err)
+		return nil, err
 	}
 
 	if len(priorities) == 0 {
 		return nil, errors.New("no priorities available")
 	}
 
-	// 按优先级排序（从大到小）
-	sort.Slice(priorities, func(i, j int) bool {
-		return priorities[i] > priorities[j]
-	})
-
+	selectedPriorityIndex := skipPriorityLevels
+	if selectedPriorityIndex >= len(priorities) {
+		selectedPriorityIndex = len(priorities) - 1
+	}
 	// 遍历优先级，寻找支持指定能力的渠道
-	for priorityIdx := skipPriorityLevels; priorityIdx < len(priorities); priorityIdx++ {
+	for priorityIdx := selectedPriorityIndex; priorityIdx < len(priorities); priorityIdx++ {
 		priorityToUse := priorities[priorityIdx]
 
 		// 获取该优先级的所有渠道

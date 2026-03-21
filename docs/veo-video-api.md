@@ -4,6 +4,44 @@
 
 本文档描述了如何使用 EzLinkAI 的视频生成 API 来调用 Google Veo 系列模型生成视频。
 
+## Veo3 模型说明
+
+使用 Google Veo3 模型进行视频生成。支持文生视频和图生视频，提供高质量的视频内容创作。
+
+### 支持的 Veo3 模型
+
+- **`veo-3.0-generate-preview`**：标准版 Veo3 模型，支持高质量视频生成，仅支持 `16:9` 宽高比，生成音频为必选项
+- **`veo-3.0-fast-generate-preview`**：快速版 Veo3 模型，提供更快的生成速度
+- **`veo-3.1-generate-preview`**：Veo 3.1 标准预览版模型，支持高质量视频生成
+- **`veo-3.1-fast-generate-preview`**：Veo 3.1 快速预览版模型，提供更快的生成速度
+
+### 请求体格式
+
+Veo3 模型使用 `instances` 和 `parameters` 格式：
+- **`model`**：模型 ID，支持 `veo-3.0-generate-preview`、`veo-3.0-fast-generate-preview`、`veo-3.1-generate-preview`、`veo-3.1-fast-generate-preview`
+- **`instances`**：实例数组，包含 `prompt` 和可选的 `image`
+- **`parameters`**：生成参数，包含 `aspectRatio`、`generateAudio` 等
+
+### Veo3 模型特点
+
+#### 图片支持
+
+- 支持 Base64 编码的图片输入
+- 图片将作为视频的起始帧
+- 可配合文本提示词生成定制化视频内容
+- 使用 `image` 字段，包含 `bytesBase64Encoded` 和 `mimeType`
+
+#### 参数控制
+
+- **`aspectRatio`**：宽高比，`veo-3.0-generate-preview` 仅支持 `16:9`
+- **`durationSeconds`**：视频时长（秒）
+- **`enhancePrompt`**：提示词增强，提升生成质量
+- **`generateAudio`**：音频生成控制，对于 `veo-3.0-generate-preview` 为必选项
+- **`negativePrompt`**：反向提示词，描述不希望出现的内容
+- **`personGeneration`**：人物生成策略，如 `allow` / `deny`
+- **`sampleCount`**：生成样本数量
+- **`seed`**：随机种子，控制生成结果的随机性
+
 ## 支持的模型
 
 | 模型名称 | 说明 |
