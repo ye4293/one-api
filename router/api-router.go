@@ -19,6 +19,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/notice", controller.GetNotice)
 		apiRouter.GET("/about", controller.GetAbout)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
+		apiRouter.GET("/model-plaza", controller.GetModelPlaza)
 		apiRouter.GET("/verification", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), controller.ResetPassword)
@@ -93,6 +94,16 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			testRoute.POST("/smtp", controller.TestSMTP)
 			testRoute.POST("/feishu", controller.TestFeishuWebhook)
+		}
+
+		// 分组等级配置管理路由（需要管理员权限）
+		groupConfigRoute := apiRouter.Group("/group-config")
+		groupConfigRoute.Use(middleware.AdminAuth())
+		{
+			groupConfigRoute.GET("/", controller.GetAllGroupConfigs)
+			groupConfigRoute.POST("/", controller.CreateGroupConfigHandler)
+			groupConfigRoute.PUT("/", controller.UpdateGroupConfigHandler)
+			groupConfigRoute.DELETE("/:id", controller.DeleteGroupConfigHandler)
 		}
 
 		channelRoute := apiRouter.Group("/channel")

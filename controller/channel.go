@@ -432,6 +432,9 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 	if source.Weight != nil {
 		target.Weight = source.Weight
 	}
+	if _, exists := rawBody["discount"]; exists {
+		target.Discount = source.Discount
+	}
 
 	// 特殊处理布尔字段
 	if autoDisabledValue, exists := rawBody["auto_disabled"]; exists {

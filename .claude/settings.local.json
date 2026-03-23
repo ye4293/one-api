@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.cloud.google.com)",
+      "mcp__web-reader__webReader",
+      "Bash(python3 -c \"import json; json.load\\(open\\(''C:/Users/brows/Desktop/ezlinkai/docs/EZLINK AI API.Apifox.json'', encoding=''utf-8''\\)\\); print\\(''JSON valid''\\)\")",
+      "Bash(python -c \"import json; json.load\\(open\\(''C:/Users/brows/Desktop/ezlinkai/docs/EZLINK AI API.Apifox.json'', encoding=''utf-8''\\)\\); print\\(''JSON valid''\\)\")",
+      "Bash(xargs grep:*)",
+      "WebSearch",
+      "Bash(gh api:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go build:*)",
+      "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/app/api/model-plaza)",
+      "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/app/api/group-config)",
+      "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/app/api/group-config/[id])",
+      "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/sections/model-plaza)",
+      "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/app/model-plaza)",
+      "Bash(npx next:*)",
+      "Bash(grep -r \"localStorage.*status\\\\|localStorage.*setItem.*status\" /c/Users/brows/Desktop/ezlinkai-web-next/app /c/Users/brows/Desktop/ezlinkai-web-next/sections --include=*.ts --include=*.tsx)"
+    ]
+  }
+}
