@@ -80,12 +80,24 @@ func ShouldEnableChannel(err error, openAIErr *relaymodel.Error) bool {
 	return true
 }
 
+// OpenRouterMetadata OpenRouter 错误响应中的 metadata 字段
+type OpenRouterMetadata struct {
+	Raw          string `json:"raw"`
+	ProviderName string `json:"provider_name"`
+}
+
+// OpenRouterError 扩展的 OpenRouter 错误结构
+type OpenRouterError struct {
+	relaymodel.Error
+	Metadata *OpenRouterMetadata `json:"metadata,omitempty"`
+}
+
 type GeneralErrorResponse struct {
-	Error    relaymodel.Error `json:"error"`
-	Message  string           `json:"message"`
-	Msg      string           `json:"msg"`
-	Err      string           `json:"err"`
-	ErrorMsg string           `json:"error_msg"`
+	Error    OpenRouterError `json:"error"`
+	Message  string          `json:"message"`
+	Msg      string          `json:"msg"`
+	Err      string          `json:"err"`
+	ErrorMsg string          `json:"error_msg"`
 	Header   struct {
 		Message string `json:"message"`
 	} `json:"header"`
@@ -154,7 +166,16 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 	}
 	if errResponse.Error.Message != "" {
 		// OpenAI format error, so we override the default one
-		ErrorWithStatusCode.Error = errResponse.Error
+		ErrorWithStatusCode.Error = errResponse.Error.Error
+		// OpenRouter: 提取 metadata 中的实际错误信息
+		if errResponse.Error.Metadata != nil && errResponse.Error.Metadata.ProviderName != "" {
+			realMsg := extractOpenRouterRealError(errResponse.Error.Metadata)
+			if realMsg != "" {
+				ErrorWithStatusCode.Error.Message = fmt.Sprintf("[%s] %s", errResponse.Error.Metadata.ProviderName, realMsg)
+			} else {
+				ErrorWithStatusCode.Error.Message = fmt.Sprintf("[%s] %s", errResponse.Error.Metadata.ProviderName, errResponse.Error.Message)
+			}
+		}
 	} else {
 		ErrorWithStatusCode.Error.Message = errResponse.ToMessage()
 	}
@@ -180,6 +201,35 @@ func RelayErrorHandler(resp *http.Response) (ErrorWithStatusCode *relaymodel.Err
 		}
 	}
 	return
+}
+
+// extractOpenRouterRealError 从 OpenRouter metadata.raw 中提取实际的上游错误信息
+func extractOpenRouterRealError(metadata *OpenRouterMetadata) string {
+	if metadata.Raw == "" {
+		return ""
+	}
+	raw := metadata.Raw
+	// 尝试解析为标准 OpenAI 错误格式: {"error":{"message":"..."}}
+	var errResp struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &errResp); err == nil && errResp.Error.Message != "" {
+		return errResp.Error.Message
+	}
+	// 尝试直接提取顶层 message 字段: {"message":"..."}
+	var simple struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &simple); err == nil && simple.Message != "" {
+		return simple.Message
+	}
+	// 无法解析为 JSON，返回截断的原始内容
+	if len(raw) > 200 {
+		return raw[:200] + "..."
+	}
+	return raw
 }
 
 // RelayErrorHandlerWithAdaptor 使用 adaptor 特定的错误处理逻辑

@@ -1183,8 +1183,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logContent = fmt.Sprintf("模型价格 $%.2f，分组倍率 %.2f", modelPrice, groupRatio)
 		}
 
-		// 记录消费日志 - 在RelayImageHelper中不需要处理other字段，这由具体的处理函数负责
-		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.ActualModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
+		// 记录消费日志
+		logModelName := meta.OriginModelName
+		if logModelName == "" {
+			logModelName = meta.ActualModelName
+		}
+		otherInfoImg := appendModelMappingInfo("", meta.OriginModelName, meta.ActualModelName)
+		if otherInfoImg != "" {
+			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfoImg, xRequestID, 0, "")
+		} else {
+			model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, xRequestID)
+		}
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		channelId := c.GetInt("channel_id")
 		model.UpdateChannelUsedQuota(channelId, quota)
