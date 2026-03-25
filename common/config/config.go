@@ -48,6 +48,12 @@ var StripeCallbackUrl = ""
 var StripePrivateKey = ""
 var StripePublicKey = ""
 var StripeEndpointSecret = ""
+var StripeApiSecret = ""
+var StripeWebhookSecret = ""
+var StripePriceId = ""
+var StripeUnitPrice = 8.0
+var StripeMinTopUp = 1
+var StripePromotionCodesEnabled = false
 
 var EpayPaymentEnabled = false
 var EpayPayAddress = ""

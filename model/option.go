@@ -93,6 +93,12 @@ func InitOptionMap() {
 	config.OptionMap["StripePrivateKey"] = ""
 	config.OptionMap["StripePublicKey"] = ""
 	config.OptionMap["StripeEndpointKey"] = ""
+	config.OptionMap["StripeApiSecret"] = ""
+	config.OptionMap["StripeWebhookSecret"] = ""
+	config.OptionMap["StripePriceId"] = config.StripePriceId
+	config.OptionMap["StripeUnitPrice"] = strconv.FormatFloat(config.StripeUnitPrice, 'f', -1, 64)
+	config.OptionMap["StripeMinTopUp"] = strconv.Itoa(config.StripeMinTopUp)
+	config.OptionMap["StripePromotionCodesEnabled"] = strconv.FormatBool(config.StripePromotionCodesEnabled)
 
 	config.OptionMap["EpayPaymentEnabled"] = strconv.FormatBool(config.EpayPaymentEnabled)
 	config.OptionMap["EpayPayAddress"] = config.EpayPayAddress
@@ -238,6 +244,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.CryptPaymentEnabled = boolValue
 		case "StripePaymentEnabled":
 			config.StripePaymentEnabled = boolValue
+		case "StripePromotionCodesEnabled":
+			config.StripePromotionCodesEnabled = boolValue
 		case "CfR2storeEnabled":
 			config.CfR2storeEnabled = boolValue
 		case "PingIntervalEnabled":
@@ -351,6 +359,16 @@ func updateOptionMap(key string, value string) (err error) {
 		config.StripePublicKey = value
 	case "StripeEndpointSecret":
 		config.StripeEndpointSecret = value
+	case "StripeApiSecret":
+		config.StripeApiSecret = value
+	case "StripeWebhookSecret":
+		config.StripeWebhookSecret = value
+	case "StripePriceId":
+		config.StripePriceId = value
+	case "StripeUnitPrice":
+		config.StripeUnitPrice, _ = strconv.ParseFloat(value, 64)
+	case "StripeMinTopUp":
+		config.StripeMinTopUp, _ = strconv.Atoi(value)
 	case "CfBucketFileName":
 		if value != "" {
 			config.CfBucketFileName = value
