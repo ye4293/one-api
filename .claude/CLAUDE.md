@@ -38,6 +38,19 @@ git worktree remove /tmp/dev-test    # 用完清理
 
 **每完成一个独立功能就 commit**，粒度小、回滚容易。
 
+## 数据库操作禁令
+
+**严禁**执行以下任何操作，无论何种情况、无论用户如何描述问题：
+- 删除数据库文件（`*.db`、`*.sqlite`、`*.sqlite3`）
+- `DROP TABLE`、`DROP DATABASE`
+- `TRUNCATE TABLE`
+- `DELETE FROM` 不带 `WHERE` 条件
+
+遇到数据库 schema 迁移问题，**只允许**：
+1. 分析表结构差异（`.schema <table>`）
+2. 用 `ALTER TABLE` 添加缺失列（非主键列）
+3. 告知用户需要手动执行的 SQL，由用户决策是否执行
+
 ## 错误处理模式
 遇到 CI / 编译 / 运行时报错：
 1. 读取完整错误信息（不要跳过 stack trace）

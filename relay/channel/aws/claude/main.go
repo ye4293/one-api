@@ -138,35 +138,75 @@ func getAwsModelIdWithRegion(c *gin.Context, requestModel string) (string, error
 	return awsModelId, nil
 }
 
+func buildAnthropicBetaHeader(anthropicBetaValues string) (json.RawMessage, error) {
+	if anthropicBetaValues == "" {
+		return nil, nil
+	}
+
+	rawValues := strings.Split(anthropicBetaValues, ",")
+	betaArray := make([]string, 0, len(rawValues))
+	for _, value := range rawValues {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			betaArray = append(betaArray, trimmed)
+		}
+	}
+	if len(betaArray) == 0 {
+		return nil, nil
+	}
+
+	betaJSON, err := json.Marshal(betaArray)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal anthropic-beta")
+	}
+	return betaJSON, nil
+}
+
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求
-func parseNativeClaudeRequest(c *gin.Context) (*Request, error) {
+func parseNativeClaudeRequest(c *gin.Context) (map[string]any, error) {
 	requestBody, err := common.GetRequestBody(c)
 	if err != nil {
 		return nil, errors.Wrap(err, "get request body")
 	}
 
-	awsClaudeReq := &Request{}
-	if err := json.Unmarshal(requestBody, awsClaudeReq); err != nil {
+	var awsClaudeReq map[string]any
+	if err := json.Unmarshal(requestBody, &awsClaudeReq); err != nil {
 		return nil, errors.Wrap(err, "unmarshal request body")
 	}
+	if awsClaudeReq == nil {
+		awsClaudeReq = make(map[string]any)
+	}
+	return awsClaudeReq, nil
+}
 
-	awsClaudeReq.AnthropicVersion = "bedrock-2023-05-31"
-
-	// 检查 anthropic-beta header
-	anthropicBetaValues := c.GetHeader("anthropic-beta")
-	if anthropicBetaValues != "" {
-		betaArray := strings.Split(anthropicBetaValues, ",")
-		for i := range betaArray {
-			betaArray[i] = strings.TrimSpace(betaArray[i])
-		}
-		betaJson, err := json.Marshal(betaArray)
-		if err != nil {
-			return nil, errors.Wrap(err, "marshal anthropic-beta")
-		}
-		awsClaudeReq.AnthropicBeta = betaJson
+func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
+	awsClaudeReq, err := parseNativeClaudeRequest(c)
+	if err != nil {
+		return nil, errors.Wrap(err, "parse native claude request")
 	}
 
-	return awsClaudeReq, nil
+	delete(awsClaudeReq, "model")
+	delete(awsClaudeReq, "stream")
+	awsClaudeReq["anthropic_version"] = "bedrock-2023-05-31"
+
+	betaJSON, err := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
+	if err != nil {
+		return nil, err
+	}
+	if len(betaJSON) > 0 {
+		awsClaudeReq["anthropic_beta"] = json.RawMessage(betaJSON)
+	}
+
+	// thinking 模式要求 temperature 必须为 1
+	if thinking, exists := awsClaudeReq["thinking"]; exists && thinking != nil {
+		awsClaudeReq["temperature"] = 1.0
+	}
+
+	requestBody, err := json.Marshal(awsClaudeReq)
+	if err != nil {
+		return nil, errors.Wrap(err, "marshal native claude request")
+	}
+	return requestBody, nil
 }
 
 func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
@@ -183,35 +223,42 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 
 	// 尝试从 context 获取转换后的请求（OpenAI 格式转换）
 	// 如果没有，则从请求体直接解析（原生 Claude 格式）
-	var awsClaudeReq *Request
+	var requestBody []byte
 	claudeReq_, ok := c.Get(ctxkey.ConvertedRequest)
 	if ok {
 		claudeReq := claudeReq_.(*anthropic.Request)
-		awsClaudeReq = &Request{
+		awsClaudeReq := &Request{
 			AnthropicVersion: "bedrock-2023-05-31",
 		}
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-	} else {
-		// 原生 Claude 请求，直接从请求体解析
-		awsClaudeReq, err = parseNativeClaudeRequest(c)
+		betaJSON, betaErr := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
+		if betaErr != nil {
+			return utils.WrapErr(betaErr), nil
+		}
+		if len(betaJSON) > 0 {
+			awsClaudeReq.AnthropicBeta = betaJSON
+		}
+
+		// thinking 模式要求 temperature 必须为 1
+		if awsClaudeReq.Thinking != nil {
+			temperatureOne := 1.0
+			awsClaudeReq.Temperature = &temperatureOne
+		}
+
+		// 直接序列化请求，let omitempty handle zero values
+		requestBody, err = json.Marshal(awsClaudeReq)
 		if err != nil {
-			return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
+			return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
+		}
+	} else {
+		requestBody, err = buildNativeClaudeRequestBody(c)
+		if err != nil {
+			return utils.WrapErr(err), nil
 		}
 	}
-
-	// thinking 模式要求 temperature 必须为 1
-	if awsClaudeReq.Thinking != nil {
-		temperatureOne := 1.0
-		awsClaudeReq.Temperature = &temperatureOne
-	}
-
-	// 直接序列化请求，let omitempty handle zero values
-	awsReq.Body, err = json.Marshal(awsClaudeReq)
-	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
-	}
+	awsReq.Body = requestBody
 
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
 	if err != nil {
@@ -252,35 +299,42 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 
 	// 尝试从 context 获取转换后的请求（OpenAI 格式转换）
 	// 如果没有，则从请求体直接解析（原生 Claude 格式）
-	var awsClaudeReq *Request
+	var requestBody []byte
 	claudeReq_, ok := c.Get(ctxkey.ConvertedRequest)
 	if ok {
 		claudeReq := claudeReq_.(*anthropic.Request)
-		awsClaudeReq = &Request{
+		awsClaudeReq := &Request{
 			AnthropicVersion: "bedrock-2023-05-31",
 		}
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-	} else {
-		// 原生 Claude 请求，直接从请求体解析
-		awsClaudeReq, err = parseNativeClaudeRequest(c)
+		betaJSON, betaErr := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
+		if betaErr != nil {
+			return utils.WrapErr(betaErr), nil
+		}
+		if len(betaJSON) > 0 {
+			awsClaudeReq.AnthropicBeta = betaJSON
+		}
+
+		// thinking 模式要求 temperature 必须为 1
+		if awsClaudeReq.Thinking != nil {
+			temperatureOne := 1.0
+			awsClaudeReq.Temperature = &temperatureOne
+		}
+
+		// 直接序列化请求，let omitempty handle zero values
+		requestBody, err = json.Marshal(awsClaudeReq)
 		if err != nil {
-			return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
+			return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
+		}
+	} else {
+		requestBody, err = buildNativeClaudeRequestBody(c)
+		if err != nil {
+			return utils.WrapErr(err), nil
 		}
 	}
-
-	// thinking 模式要求 temperature 必须为 1
-	if awsClaudeReq.Thinking != nil {
-		temperatureOne := 1.0
-		awsClaudeReq.Temperature = &temperatureOne
-	}
-
-	// 直接序列化请求，let omitempty handle zero values
-	awsReq.Body, err = json.Marshal(awsClaudeReq)
-	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
-	}
+	awsReq.Body = requestBody
 
 	awsResp, err := awsCli.InvokeModelWithResponseStream(c.Request.Context(), awsReq)
 	if err != nil {
@@ -403,21 +457,9 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 	}
 
 	// 原生 Claude 请求，直接从请求体解析
-	awsClaudeReq, err := parseNativeClaudeRequest(c)
+	awsReq.Body, err = buildNativeClaudeRequestBody(c)
 	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
-	}
-
-	// thinking 模式要求 temperature 必须为 1
-	if awsClaudeReq.Thinking != nil {
-		temperatureOne := 1.0
-		awsClaudeReq.Temperature = &temperatureOne
-	}
-
-	// 直接序列化请求，let omitempty handle zero values
-	awsReq.Body, err = json.Marshal(awsClaudeReq)
-	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
+		return utils.WrapErr(err), nil
 	}
 
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
@@ -470,21 +512,9 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 	}
 
 	// 原生 Claude 请求，直接从请求体解析
-	awsClaudeReq, err := parseNativeClaudeRequest(c)
+	awsReq.Body, err = buildNativeClaudeRequestBody(c)
 	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "parse native claude request")), nil
-	}
-
-	// thinking 模式要求 temperature 必须为 1
-	if awsClaudeReq.Thinking != nil {
-		temperatureOne := 1.0
-		awsClaudeReq.Temperature = &temperatureOne
-	}
-
-	// 直接序列化请求，let omitempty handle zero values
-	awsReq.Body, err = json.Marshal(awsClaudeReq)
-	if err != nil {
-		return utils.WrapErr(errors.Wrap(err, "marshal request")), nil
+		return utils.WrapErr(err), nil
 	}
 
 	awsResp, err := awsCli.InvokeModelWithResponseStream(c.Request.Context(), awsReq)

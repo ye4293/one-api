@@ -14,6 +14,7 @@ import (
 var GeminiVersion = "v1/beta"
 var SystemName = "EZLINK AI"
 var ServerAddress = "http://localhost:3000"
+var FrontendServerAddress = ""
 var Footer = ""
 var Logo = ""
 var TopUpLink = ""
@@ -180,7 +181,8 @@ var SyncFrequency = env.Int("SYNC_FREQUENCY", 10*60) // unit is second
 var BatchUpdateEnabled = false
 var BatchUpdateInterval = env.Int("BATCH_UPDATE_INTERVAL", 5)
 
-var RelayTimeout = env.Int("RELAY_TIMEOUT", 0) // unit is second
+var RelayTimeout = env.Int("RELAY_TIMEOUT", 0)           // unit is second
+var StreamingTimeout = env.Int("STREAMING_TIMEOUT", 300) // unit is second
 
 var GeminiSafetySetting = env.String("GEMINI_SAFETY_SETTING", "BLOCK_NONE")
 
@@ -221,8 +223,8 @@ var MetricFailChanSize = env.Int("METRIC_FAIL_CHAN_SIZE", 128)
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
 
 // Claude Thinking 模型配置
-var ClaudeThinkingEnabled = true                              // 是否启用 Claude 思考适配（-thinking 后缀）
-var ClaudeThinkingBudgetRatio = 0.8                           // 默认思考 token 百分比（80%）
-var ClaudeDefaultMaxTokens map[string]int                     // 模型默认 MaxTokens
-var ClaudeReasoningEffortMap map[string]float64               // reasoning_effort 到百分比的映射
-var ClaudeRequestHeaders map[string]map[string]string         // 请求头覆盖（模型名 -> 请求头键值对）
+var ClaudeThinkingEnabled = true                      // 是否启用 Claude 思考适配（-thinking 后缀）
+var ClaudeThinkingBudgetRatio = 0.8                   // 默认思考 token 百分比（80%）
+var ClaudeDefaultMaxTokens map[string]int             // 模型默认 MaxTokens
+var ClaudeReasoningEffortMap map[string]float64       // reasoning_effort 到百分比的映射
+var ClaudeRequestHeaders map[string]map[string]string // 请求头覆盖（模型名 -> 请求头键值对）

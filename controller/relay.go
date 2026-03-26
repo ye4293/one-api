@@ -142,10 +142,8 @@ func Relay(c *gin.Context) {
 	// 添加初始失败的渠道
 	channelHistory = append(channelHistory, channelId)
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	initialFailedChannelId := channelId
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，确保同优先级补重试不会再次命中它
+	failedChannelIds := []int{channelId}
 
 	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
 	cumulativeDuration := time.Since(totalStartTime).Seconds()
@@ -165,25 +163,20 @@ func Relay(c *gin.Context) {
 	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
 	claudeResponseID := c.GetHeader("X-Response-ID")
 
-	var lastChannel *dbmodel.Channel
+	lastChannel := getLastRetryFallbackChannel(channelId)
 
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
 		if err != nil {
 			if lastChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastChannel.Id, retryTimes-i+1, retryTimes)
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastChannel.Id, currentAttempt, retryTimes)
 			channel = lastChannel
 		}
 		lastChannel = channel
-
-		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, initialFailedChannelId)
-		}
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := bizErr.Error.Message
@@ -200,7 +193,7 @@ func Relay(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, channelId, channelName, keyIndex,
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -230,14 +223,13 @@ func Relay(c *gin.Context) {
 
 		// 计算累计耗时（从请求开始到当前失败的时间）
 		cumulativeDuration = time.Since(totalStartTime).Seconds()
-		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
 		channelName = c.GetString("channel_name")
 		keyIndex = c.GetInt("key_index") // 在异步调用前获取keyIndex
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 检查是否是xAI内容违规错误
 		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
@@ -851,35 +843,28 @@ func RelayMidjourney(c *gin.Context) {
 		channelHistory = append(channelHistory, channelId)
 	}
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	initialMjFailedId := channelId
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，最高优先级只补重试其他可用渠道一次
+	failedChannelIds := []int{channelId}
 
-	var lastMjChannel *dbmodel.Channel
+	lastMjChannel := getLastRetryFallbackChannel(channelId)
 
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
-			// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-			channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
+			currentAttempt := retryTimes - i + 1
+			channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
 			if err != nil {
 				if lastMjChannel == nil {
 					logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %+v (excludedChannels: %v)", err, failedChannelIds)
 					break
 				}
-				logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastMjChannel.Id, retryTimes-i+1, retryTimes)
+				logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastMjChannel.Id, currentAttempt, retryTimes)
 				channel = lastMjChannel
 			}
 			lastMjChannel = channel
 			logger.Infof(ctx, "Using channel #%d to retry (remain times %d)", channel.Id, i)
 
-			// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-			if i == retryTimes && initialMjFailedId > 0 {
-				failedChannelIds = append(failedChannelIds, initialMjFailedId)
-			}
-
 			// 将新渠道添加到已失败列表（因为如果本次失败，下次不应该再选它）
-			failedChannelIds = append(failedChannelIds, channel.Id)
+			failedChannelIds = appendUniqueChannelID(failedChannelIds, channel.Id)
 
 			// 记录重试使用的渠道
 			channelHistory = append(channelHistory, channel.Id)
@@ -1022,29 +1007,23 @@ func RelayVideoGenerate(c *gin.Context) {
 	// 添加初始失败的渠道
 	channelHistory = append(channelHistory, originalChannelId)
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，确保同优先级只补重试一次
+	failedChannelIds := []int{originalChannelId}
 
-	var lastVideoChannel *dbmodel.Channel
+	lastVideoChannel := getLastRetryFallbackChannel(originalChannelId)
 
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastVideoChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastVideoChannel.Id, retryTimes-i+1, retryTimes)
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastVideoChannel.Id, currentAttempt, retryTimes)
 			channel = lastVideoChannel
 		}
 		lastVideoChannel = channel
-
-		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, originalChannelId)
-		}
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := bizErr.Error.Message
@@ -1061,7 +1040,7 @@ func RelayVideoGenerate(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -1084,7 +1063,7 @@ func RelayVideoGenerate(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		channelName = c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
@@ -1313,32 +1292,25 @@ func RelayRecraft(c *gin.Context) {
 	// 添加初始失败的渠道
 	channelHistory = append(channelHistory, channelId)
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	initialRecraftFailedId := channelId
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，确保同优先级只补重试一次
+	failedChannelIds := []int{channelId}
 
-	var lastRecraftChannel *dbmodel.Channel
+	lastRecraftChannel := getLastRetryFallbackChannel(channelId)
 
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastRecraftChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRecraftChannel.Id, retryTimes-i+1, retryTimes)
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRecraftChannel.Id, currentAttempt, retryTimes)
 			channel = lastRecraftChannel
 		}
 		lastRecraftChannel = channel
-
-		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, initialRecraftFailedId)
-		}
 		logger.Infof(ctx, "Recraft retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
-			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
+			modelName, currentAttempt, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
 
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		channelHistory = append(channelHistory, channel.Id)
@@ -1364,7 +1336,7 @@ func RelayRecraft(c *gin.Context) {
 		keyIndex = c.GetInt("key_index")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
@@ -1686,32 +1658,25 @@ func RelayImageGenerateAsync(c *gin.Context) {
 	// 添加初始失败的渠道
 	channelHistory = append(channelHistory, channelId)
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	initialImageFailedId := channelId
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，确保同优先级只补重试一次
+	failedChannelIds := []int{channelId}
 
-	var lastImageChannel *dbmodel.Channel
+	lastImageChannel := getLastRetryFallbackChannel(channelId)
 
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastImageChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastImageChannel.Id, retryTimes-i+1, retryTimes)
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastImageChannel.Id, currentAttempt, retryTimes)
 			channel = lastImageChannel
 		}
 		lastImageChannel = channel
-
-		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, initialImageFailedId)
-		}
 		logger.Infof(ctx, "Image retry: 模型=%s, 尝试=%d/%d, 用户ID=%d, 渠道切换: #%d(%s) -> #%d(%s)",
-			modelName, retryTimes-i+1, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
+			modelName, currentAttempt, retryTimes, userId, channelId, channelName, channel.Id, channel.Name)
 
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		channelHistory = append(channelHistory, channel.Id)
@@ -1737,7 +1702,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 		keyIndex = c.GetInt("key_index")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
@@ -1843,31 +1808,25 @@ func RelayRunway(c *gin.Context) {
 	// 添加初始失败的渠道
 	channelHistory = append(channelHistory, originalChannelId)
 
-	// 记录所有已失败的渠道ID，用于重试时排除
-	// 初始不加入首次失败的渠道，第一次重试保持在原优先级
-	failedChannelIds := []int{}
+	// 初始就排除首次失败渠道，确保同优先级只补重试一次
+	failedChannelIds := []int{originalChannelId}
 
-	var lastRunwayChannel *dbmodel.Channel
+	lastRunwayChannel := getLastRetryFallbackChannel(originalChannelId)
 
 	for i := retryTimes; i > 0; i-- {
-		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
+		currentAttempt := retryTimes - i + 1
+		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastRunwayChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRunwayChannel.Id, retryTimes-i+1, retryTimes)
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRunwayChannel.Id, currentAttempt, retryTimes)
 			channel = lastRunwayChannel
 		}
 		lastRunwayChannel = channel
-
-		// 第一次重试完成后，将初始失败渠道加入排除列表，后续重试降级到次优先级
-		if i == retryTimes {
-			failedChannelIds = append(failedChannelIds, originalChannelId)
-		}
 
 		// 获取重试原因 - 直接使用状态码
 		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
@@ -1884,7 +1843,7 @@ func RelayRunway(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -1895,15 +1854,15 @@ func RelayRunway(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		requestBody, err := common.GetRequestBody(c)
 		if err != nil {
-			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", currentAttempt, retryTimes, err)
 			break
 		}
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
-		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", currentAttempt, retryTimes, channel.Id)
 		success, statusCode = tryRunwayRequest(c)
 		if success {
-			logger.Infof(ctx, "RelayRunway retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			logger.Infof(ctx, "RelayRunway retry %d/%d SUCCESS on channel #%d", currentAttempt, retryTimes, channel.Id)
 			// 成功时记录渠道历史到上下文中
 			c.Set("admin_channel_history", channelHistory)
 			return
@@ -1912,11 +1871,11 @@ func RelayRunway(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		channelName = c.GetString("channel_name")
 		logger.Errorf(ctx, "RelayRunway retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
-			retryTimes-i+1, retryTimes, channelId, channelName, statusCode)
+			currentAttempt, retryTimes, channelId, channelName, statusCode)
 
 		keyIndex := c.GetInt("key_index")
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
@@ -2060,6 +2019,195 @@ func RelaySoraVideoRemix(c *gin.Context) {
 	controller.DirectRelaySoraVideoRemix(c, videoId)
 }
 
+func RelaySoraVideoEdit(c *gin.Context) {
+	controller.DirectRelaySoraVideoEdit(c)
+}
+
+func RelaySoraVideoExtension(c *gin.Context) {
+	controller.DirectRelaySoraVideoExtension(c)
+}
+
+func RelaySoraCharacter(c *gin.Context) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+
+	logger.Infof(ctx, "RelaySoraCharacter start - userId: %d, channelId: %d, model: %s, requestID: %s",
+		userId, channelId, modelName, requestID)
+
+	success, statusCode, errorMessage := trySoraCharacterRequest(c)
+	if success {
+		logger.Infof(ctx, "RelaySoraCharacter success - userId: %d, channelId: %d", userId, channelId)
+		return
+	}
+
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	logger.Errorf(ctx, "RelaySoraCharacter first attempt failed - userId: %d, channelId: %d (%s), statusCode: %d, error: %s",
+		userId, channelId, channelName, statusCode, errorMessage)
+
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		StatusCode: statusCode,
+		Error:      model.Error{Message: errorMessage},
+	}, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, statusCode, errorMessage) {
+		logger.Errorf(ctx, "Sora character request error, status code is %d, won't retry", statusCode)
+		writeLastSoraCharacterFailureResponse(c, statusCode)
+		return
+	}
+
+	logger.Infof(ctx, "RelaySoraCharacter will retry %d times - status code: %d", retryTimes, statusCode)
+
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+	failedChannelIds := []int{originalChannelId}
+
+	for i := retryTimes; i > 0; i-- {
+		logger.Infof(ctx, "RelaySoraCharacter retry attempt %d/%d", retryTimes-i+1, retryTimes)
+
+		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		if err != nil {
+			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+
+		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+		logger.Infof(ctx, retryLog)
+
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+		requestBody, err := common.GetRequestBody(c)
+		if err != nil {
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			break
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		success, statusCode, retryErrorMessage := trySoraCharacterRequest(c)
+		if success {
+			logger.Infof(ctx, "RelaySoraCharacter retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		failedChannelIds = append(failedChannelIds, channelId)
+		channelName = c.GetString("channel_name")
+
+		logger.Errorf(ctx, "RelaySoraCharacter retry %d/%d FAILED on channel #%d (%s) - statusCode: %d, error: %s",
+			retryTimes-i+1, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
+
+		keyIndex := c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+			StatusCode: statusCode,
+			Error:      model.Error{Message: retryErrorMessage},
+		}, modelName)
+
+		if !shouldRetry(c, statusCode, retryErrorMessage) {
+			logger.Errorf(ctx, "Retry encountered non-retryable error, status code is %d, stopping retries", statusCode)
+			writeLastSoraCharacterFailureResponse(c, statusCode)
+			return
+		}
+	}
+
+	logger.Errorf(ctx, "RelaySoraCharacter ALL RETRIES FAILED - userId: %d, final statusCode: %d", userId, statusCode)
+	writeLastSoraCharacterFailureResponse(c, statusCode)
+}
+
+func trySoraCharacterRequest(c *gin.Context) (success bool, statusCode int, errorMessage string) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+	logger.Debugf(ctx, "trySoraCharacterRequest start - channelId: %d", channelId)
+
+	meta := util.GetRelayMeta(c)
+	if meta == nil {
+		logger.Errorf(ctx, "trySoraCharacterRequest: failed to get relay meta for channelId: %d", channelId)
+		return false, http.StatusInternalServerError, "Internal server error: missing relay meta"
+	}
+
+	originalWriter := c.Writer
+	rec := newResponseRecorder(originalWriter)
+	c.Writer = rec
+
+	defer func() {
+		c.Writer = originalWriter
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf(ctx, "trySoraCharacterRequest panic recovered - channelId: %d, error: %v", channelId, r)
+			statusCode = http.StatusInternalServerError
+			errorMessage = "Internal server error: request panic"
+			success = false
+		}
+	}()
+
+	controller.DirectRelaySoraCharacter(c, meta)
+
+	statusCode = rec.statusCode
+	logger.Debugf(ctx, "trySoraCharacterRequest response - channelId: %d, statusCode: %d, bodySize: %d",
+		channelId, statusCode, rec.body.Len())
+
+	if statusCode >= 400 {
+		responseBody := rec.body.String()
+		errorMessage = extractErrorMessage(responseBody)
+		logger.Debugf(ctx, "trySoraCharacterRequest FAILED - channelId: %d, statusCode: %d, error: %s",
+			channelId, statusCode, truncateString(errorMessage, 100))
+		return false, statusCode, errorMessage
+	}
+
+	if err := writeSuccessResponse(originalWriter, rec); err != nil {
+		logger.Errorf(ctx, "trySoraCharacterRequest: failed to write success response - channelId: %d, error: %v", channelId, err)
+		return false, http.StatusInternalServerError, "Failed to write response"
+	}
+
+	logger.Debugf(ctx, "trySoraCharacterRequest SUCCESS - channelId: %d, statusCode: %d", channelId, statusCode)
+	return true, statusCode, ""
+}
+
+func writeLastSoraCharacterFailureResponse(c *gin.Context, statusCode int) {
+	ctx := c.Request.Context()
+	meta := util.GetRelayMeta(c)
+	channelId := c.GetInt("channel_id")
+	logger.Debugf(ctx, "writeLastSoraCharacterFailureResponse - channelId: %d, statusCode: %d", channelId, statusCode)
+
+	requestBody, err := common.GetRequestBody(c)
+	if err != nil {
+		logger.Errorf(ctx, "Failed to get request body for final response: %v", err)
+		c.JSON(statusCode, gin.H{"error": "Request failed"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+	controller.DirectRelaySoraCharacter(c, meta)
+}
+
+func RelaySoraCharacterGet(c *gin.Context) {
+	characterId := c.Param("characterId")
+	if characterId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "characterId is required"})
+		return
+	}
+	controller.GetSoraCharacter(c, characterId)
+}
+
 func RelaySoraVideo(c *gin.Context) {
 	ctx := c.Request.Context()
 	requestID := c.GetHeader("X-Request-ID")
@@ -2124,16 +2272,22 @@ func RelaySoraVideo(c *gin.Context) {
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{originalChannelId}
+	lastSoraChannel := getLastRetryFallbackChannel(originalChannelId)
 
 	for i := retryTimes; i > 0; i-- {
-		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", retryTimes-i+1, retryTimes)
+		currentAttempt := retryTimes - i + 1
+		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", retryTimes-i+1, retryTimes, err, failedChannelIds)
-			break
+			if lastSoraChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastSoraChannel.Id, currentAttempt, retryTimes)
+			channel = lastSoraChannel
 		}
+		lastSoraChannel = channel
 
 		// 获取重试原因 - 直接使用状态码
 		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
@@ -2150,7 +2304,7 @@ func RelaySoraVideo(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -2161,15 +2315,15 @@ func RelaySoraVideo(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		requestBody, err := common.GetRequestBody(c)
 		if err != nil {
-			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
+			logger.Errorf(ctx, "Failed to get request body for retry %d/%d: %v", currentAttempt, retryTimes, err)
 			break
 		}
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
-		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+		logger.Infof(ctx, "Sending retry request %d/%d to channel #%d", currentAttempt, retryTimes, channel.Id)
 		success, statusCode, retryErrorMessage := trySoraRequest(c)
 		if success {
-			logger.Infof(ctx, "RelaySoraVideo retry %d/%d SUCCESS on channel #%d", retryTimes-i+1, retryTimes, channel.Id)
+			logger.Infof(ctx, "RelaySoraVideo retry %d/%d SUCCESS on channel #%d", currentAttempt, retryTimes, channel.Id)
 			// 成功时记录渠道历史到上下文中
 			c.Set("admin_channel_history", channelHistory)
 			return
@@ -2178,11 +2332,11 @@ func RelaySoraVideo(c *gin.Context) {
 		channelId = c.GetInt("channel_id")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		channelName = c.GetString("channel_name")
 		logger.Errorf(ctx, "RelaySoraVideo retry %d/%d FAILED on channel #%d (%s) - statusCode: %d, error: %s",
-			retryTimes-i+1, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
+			currentAttempt, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
 
 		keyIndex := c.GetInt("key_index")
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
@@ -2483,6 +2637,7 @@ func RelayGemini(c *gin.Context) {
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
+	lastGeminiChannel := getLastRetryFallbackChannel(originalChannelId)
 	group := c.GetString("group")
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, geminiErr.StatusCode, geminiErr.Error.Message) {
@@ -2491,12 +2646,17 @@ func RelayGemini(c *gin.Context) {
 	}
 
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastGeminiChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastGeminiChannel.Id, currentAttempt, retryTimes)
+			channel = lastGeminiChannel
 		}
+		lastGeminiChannel = channel
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := geminiErr.Error.Message
@@ -2513,7 +2673,7 @@ func RelayGemini(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -2539,14 +2699,13 @@ func RelayGemini(c *gin.Context) {
 
 		// 计算累计耗时（从请求开始到当前失败的时间）
 		cumulativeDuration = time.Since(totalStartTime).Seconds()
-		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, geminiErr.Error.Message, channel.Name, channelHistory)
@@ -2613,6 +2772,7 @@ func RelayClaude(c *gin.Context) {
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
+	lastClaudeChannel := getLastRetryFallbackChannel(originalChannelId)
 	group := c.GetString("group")
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
@@ -2620,12 +2780,17 @@ func RelayClaude(c *gin.Context) {
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, "", failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastClaudeChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastClaudeChannel.Id, currentAttempt, retryTimes)
+			channel = lastClaudeChannel
 		}
+		lastClaudeChannel = channel
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := relayError.Error.Message
@@ -2642,7 +2807,7 @@ func RelayClaude(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -2668,14 +2833,13 @@ func RelayClaude(c *gin.Context) {
 
 		// 计算累计耗时（从请求开始到当前失败的时间）
 		cumulativeDuration = time.Since(totalStartTime).Seconds()
-		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)
@@ -2748,18 +2912,24 @@ func RelayResponse(c *gin.Context) {
 	claudeResponseID := c.GetHeader("X-Response-ID")
 
 	group := c.GetString("group")
+	lastResponseChannel := getLastRetryFallbackChannel(originalChannelId)
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
 		retryTimes = 0
 	}
 	for i := retryTimes; i > 0; i-- {
-		// 使用排除已失败渠道的方式选择新渠道，始终选择最高优先级的可用渠道
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, originalModel, 0, claudeResponseID, failedChannelIds)
+		currentAttempt := retryTimes - i + 1
+		channel, err := selectRetryChannel(group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
 		if err != nil {
-			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
-			break
+			if lastResponseChannel == nil {
+				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastResponseChannel.Id, currentAttempt, retryTimes)
+			channel = lastResponseChannel
 		}
+		lastResponseChannel = channel
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := relayError.Error.Message
@@ -2776,7 +2946,7 @@ func RelayResponse(c *gin.Context) {
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
-			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
 		logger.Infof(ctx, retryLog)
 
@@ -2802,14 +2972,13 @@ func RelayResponse(c *gin.Context) {
 
 		// 计算累计耗时（从请求开始到当前失败的时间）
 		cumulativeDuration = time.Since(totalStartTime).Seconds()
-		currentAttempt := retryTimes - i + 1
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
 
 		// 记录失败的渠道ID，下次重试时排除
-		failedChannelIds = append(failedChannelIds, channelId)
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
 		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)
@@ -3148,11 +3317,11 @@ func convertToAwsBedrockFormat(requestBody []byte) ([]byte, error) {
 		awsReq["messages"] = json.RawMessage(anthropicReq.Messages)
 	}
 
-	if anthropicReq.System != nil && len(anthropicReq.System) > 0 {
+	if len(anthropicReq.System) > 0 {
 		awsReq["system"] = json.RawMessage(anthropicReq.System)
 	}
 
-	if anthropicReq.Tools != nil && len(anthropicReq.Tools) > 0 {
+	if len(anthropicReq.Tools) > 0 {
 		awsReq["tools"] = json.RawMessage(anthropicReq.Tools)
 	}
 

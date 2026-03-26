@@ -53,7 +53,8 @@ func InitOptionMap() {
 	config.OptionMap["Footer"] = config.Footer
 	config.OptionMap["SystemName"] = config.SystemName
 	config.OptionMap["Logo"] = config.Logo
-	config.OptionMap["ServerAddress"] = ""
+	config.OptionMap["ServerAddress"] = config.ServerAddress
+	config.OptionMap["FrontendServerAddress"] = config.FrontendServerAddress
 	config.OptionMap["GitHubClientId"] = ""
 	config.OptionMap["GitHubClientSecret"] = ""
 	config.OptionMap["GoogleClientId"] = ""
@@ -253,7 +254,7 @@ func updateOptionMap(key string, value string) (err error) {
 		case "EpayPaymentEnabled":
 			config.EpayPaymentEnabled = boolValue
 		}
-		
+
 	}
 
 	// 处理其他配置选项
@@ -275,6 +276,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.SMTPToken = value
 	case "ServerAddress":
 		config.ServerAddress = value
+	case "FrontendServerAddress":
+		config.FrontendServerAddress = value
 	case "GoogleClientId":
 		config.GoogleClientId = value
 	case "GoogleClientSecret":

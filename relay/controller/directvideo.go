@@ -925,7 +925,7 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 				logger.Debugf(ctx, "成功下载并添加 input_reference 图片")
 			}
 		}
-
+		
 		// 2. 如果没有处理过，检查是否有 input_reference 作为文件
 		if !inputReferenceHandled {
 			if fileHeaders, exists := c.Request.MultipartForm.File["input_reference"]; exists && len(fileHeaders) > 0 {
@@ -1409,6 +1409,8 @@ func calculateSoraQuotaFromForm(formParams map[string]string) int64 {
 		// 检查是否是高分辨率 (1024x1792 或 1792x1024)
 		if strings.Contains(size, "1024x1792") || strings.Contains(size, "1792x1024") {
 			pricePerSecond = 0.50 // $0.50/秒
+		}else if strings.Contains(size, "1920x1080") || strings.Contains(size, "1080x1920") {
+				pricePerSecond = 0.70 // $0.70/秒
 		} else {
 			// 标准分辨率 (720x1280 或 1280x720)
 			pricePerSecond = 0.30 // $0.30/秒
@@ -1636,6 +1638,254 @@ func updateSoraTaskStatusFromHTTPCode(videoId string, statusCode int) {
 	}
 }
 
+// DirectRelaySoraCharacter 处理 Sora Character 创建请求 (POST /v1/videos/characters)
+// 透传 multipart/form-data 请求到 OpenAI，成功后记录 character_id -> channel 映射
+func DirectRelaySoraCharacter(c *gin.Context, meta *util.RelayMeta) {
+	ctx := c.Request.Context()
+
+	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取渠道信息失败: " + err.Error()})
+		return
+	}
+
+	if channel.Key == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "渠道密钥为空"})
+		return
+	}
+
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/characters", meta.BaseURL)
+	} else {
+		fullRequestUrl = fmt.Sprintf("%s/v1/videos/characters", meta.BaseURL)
+	}
+
+	contentType := c.Request.Header.Get("Content-Type")
+	isFormData := strings.Contains(contentType, "multipart/form-data")
+
+	var req *http.Request
+
+	if isFormData {
+		if err := c.Request.ParseMultipartForm(64 << 20); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解析表单失败: " + err.Error()})
+			return
+		}
+
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		for key, values := range c.Request.MultipartForm.Value {
+			for _, value := range values {
+				writer.WriteField(key, value)
+			}
+		}
+
+		for key, fileHeaders := range c.Request.MultipartForm.File {
+			for _, fileHeader := range fileHeaders {
+				file, err := fileHeader.Open()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件失败: " + err.Error()})
+					return
+				}
+				defer file.Close()
+
+				fileContentType, err := detectFileContentType(file, fileHeader)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "文件类型检测失败: " + err.Error()})
+					return
+				}
+
+				h := make(textproto.MIMEHeader)
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, key, fileHeader.Filename))
+				h.Set("Content-Type", fileContentType)
+
+				part, err := writer.CreatePart(h)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "创建表单文件失败: " + err.Error()})
+					return
+				}
+
+				if _, err := io.Copy(part, file); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "复制文件内容失败: " + err.Error()})
+					return
+				}
+			}
+		}
+
+		writer.Close()
+
+		req, err = http.NewRequest("POST", fullRequestUrl, body)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+			return
+		}
+
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+	} else {
+		requestBody, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败: " + err.Error()})
+			return
+		}
+
+		req, err = http.NewRequest("POST", fullRequestUrl, bytes.NewReader(requestBody))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+			return
+		}
+
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+	}
+
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "请求失败: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取响应失败: " + err.Error()})
+		return
+	}
+
+	if resp.StatusCode == 200 {
+		var responseData map[string]interface{}
+		if err := json.Unmarshal(responseBody, &responseData); err == nil {
+			if characterId, ok := responseData["id"].(string); ok {
+				characterName := ""
+				if name, ok := responseData["name"].(string); ok {
+					characterName = name
+				}
+				videoTask := &dbmodel.Video{
+					TaskId:    characterId,
+					Prompt:    characterName,
+					Type:      "sora_character",
+					Provider:  "sora",
+					ChannelId: meta.ChannelId,
+					UserId:    meta.UserId,
+					Model:     meta.OriginModelName,
+					Status:    "completed",
+				}
+				if insertErr := videoTask.Insert(); insertErr != nil {
+					logger.Errorf(ctx, "保存角色信息失败: %v", insertErr)
+				} else {
+					logger.Infof(ctx, "Sora Character 创建成功 - characterId: %s, name: %s, channelId: %d",
+						characterId, characterName, meta.ChannelId)
+				}
+			}
+		}
+	}
+
+	for key, values := range resp.Header {
+		if strings.ToLower(key) == "content-length" {
+			continue
+		}
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+
+	logger.Debugf(ctx, "DirectRelaySoraCharacter response body size: %d bytes, status: %d", len(responseBody), resp.StatusCode)
+	c.Data(resp.StatusCode, c.Writer.Header().Get("Content-Type"), responseBody)
+}
+
+// GetSoraCharacter 处理 Sora Character 查询请求 (GET /v1/videos/characters/:characterId)
+// 从数据库查找 character_id 对应的渠道，然后透传请求到上游
+func GetSoraCharacter(c *gin.Context, characterId string) {
+	ctx := c.Request.Context()
+	logger.Debugf(ctx, "GetSoraCharacter called with characterId: %s", characterId)
+
+	var channelId int
+	task, err := dbmodel.GetVideoTaskById(characterId)
+	if err == nil && task != nil {
+		channelId = task.ChannelId
+	} else {
+		channelId = c.GetInt("channel_id")
+		if channelId == 0 {
+			logger.Warnf(ctx, "GetSoraCharacter: no channel found for characterId %s", characterId)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No channel configured for this character"})
+			return
+		}
+	}
+
+	channel, err := dbmodel.GetChannelById(channelId, true)
+	if err != nil {
+		logger.Errorf(ctx, "GetSoraCharacter: failed to get channel %d: %v", channelId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel info"})
+		return
+	}
+
+	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/characters/%s", baseURL, characterId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/characters/%s", baseURL, characterId)
+		}
+	} else {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/characters/%s", baseURL, characterId)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/characters/%s", baseURL, characterId)
+		}
+	}
+
+	logger.Debugf(ctx, "GetSoraCharacter - requesting URL: %s", fullRequestUrl)
+
+	req, err := http.NewRequest("GET", fullRequestUrl, nil)
+	if err != nil {
+		logger.Errorf(ctx, "GetSoraCharacter: failed to create request: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		logger.Errorf(ctx, "GetSoraCharacter: request failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Request to upstream failed"})
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Errorf(ctx, "GetSoraCharacter: failed to read response: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response"})
+		return
+	}
+
+	for key, values := range resp.Header {
+		if strings.ToLower(key) == "content-length" {
+			continue
+		}
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+
+	c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), responseBody)
+}
+
 // DirectRelaySoraVideoRemix 处理 Sora API 的视频 remix 请求
 // 功能：
 // 1. 必须使用原视频的渠道key进行调用
@@ -1853,6 +2103,392 @@ func handleSoraRemixBilling(c *gin.Context, meta *util.RelayMeta, modelName stri
 	}
 
 	return nil
+}
+
+// DirectRelaySoraVideoEdit 处理 Sora 视频编辑请求 (POST /v1/videos/edits)
+// 必须使用原视频的渠道，从请求体中提取 video.id 查找对应渠道
+func DirectRelaySoraVideoEdit(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	contentType := c.Request.Header.Get("Content-Type")
+	isFormData := strings.Contains(contentType, "multipart/form-data")
+
+	var requestBody []byte
+	var sourceVideoId string
+	var formParams map[string]string
+
+	if isFormData {
+		// multipart/form-data: 可能是文件上传编辑
+		if err := c.Request.ParseMultipartForm(64 << 20); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解析表单失败: " + err.Error()})
+			return
+		}
+		formParams = make(map[string]string)
+		for key, values := range c.Request.MultipartForm.Value {
+			if len(values) > 0 {
+				formParams[key] = values[0]
+			}
+		}
+		// 尝试从 video 字段提取 id，支持多种表单传参风格
+		// 风格1: video={"id":"xxx"} (JSON 字符串)
+		if videoJSON, ok := formParams["video"]; ok {
+			var videoObj map[string]interface{}
+			if json.Unmarshal([]byte(videoJSON), &videoObj) == nil {
+				if id, ok := videoObj["id"].(string); ok {
+					sourceVideoId = id
+				}
+			}
+		}
+		// 风格2: video[id]=xxx (方括号风格)
+		if sourceVideoId == "" {
+			if id, ok := formParams["video[id]"]; ok && id != "" {
+				sourceVideoId = id
+			}
+		}
+	} else {
+		// JSON 格式
+		var err error
+		requestBody, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败: " + err.Error()})
+			return
+		}
+		var requestData map[string]interface{}
+		if err := json.Unmarshal(requestBody, &requestData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求体失败: " + err.Error()})
+			return
+		}
+		if videoObj, ok := requestData["video"].(map[string]interface{}); ok {
+			if id, ok := videoObj["id"].(string); ok {
+				sourceVideoId = id
+			}
+		}
+	}
+
+	if sourceVideoId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 video.id，视频编辑需要指定源视频"})
+		return
+	}
+
+	logger.Debugf(ctx, "DirectRelaySoraVideoEdit - sourceVideoId: %s", sourceVideoId)
+
+	originalTask, err := dbmodel.GetVideoTaskById(sourceVideoId)
+	if err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoEdit: source video not found: %s, error: %v", sourceVideoId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source video not found"})
+		return
+	}
+
+	channel, err := dbmodel.GetChannelById(originalTask.ChannelId, true)
+	if err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoEdit: failed to get channel %d: %v", originalTask.ChannelId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel info"})
+		return
+	}
+
+	if channel.Key == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "渠道密钥为空"})
+		return
+	}
+
+	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/edits", baseURL)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/edits", baseURL)
+		}
+	} else {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/edits", baseURL)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/edits", baseURL)
+		}
+	}
+
+	logger.Debugf(ctx, "DirectRelaySoraVideoEdit - requesting URL: %s", fullRequestUrl)
+
+	var req *http.Request
+
+	if isFormData {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		for key, values := range c.Request.MultipartForm.Value {
+			for _, value := range values {
+				writer.WriteField(key, value)
+			}
+		}
+
+		for key, fileHeaders := range c.Request.MultipartForm.File {
+			for _, fileHeader := range fileHeaders {
+				file, err := fileHeader.Open()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "读取文件失败: " + err.Error()})
+					return
+				}
+				defer file.Close()
+
+				fileContentType, err := detectFileContentType(file, fileHeader)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "文件类型检测失败: " + err.Error()})
+					return
+				}
+
+				h := make(textproto.MIMEHeader)
+				h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, key, fileHeader.Filename))
+				h.Set("Content-Type", fileContentType)
+
+				part, err := writer.CreatePart(h)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "创建表单文件失败: " + err.Error()})
+					return
+				}
+
+				if _, err := io.Copy(part, file); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "复制文件内容失败: " + err.Error()})
+					return
+				}
+			}
+		}
+
+		writer.Close()
+
+		req, err = http.NewRequest("POST", fullRequestUrl, body)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+			return
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+	} else {
+		req, err = http.NewRequest("POST", fullRequestUrl, bytes.NewReader(requestBody))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "请求失败: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取响应失败: " + err.Error()})
+		return
+	}
+
+	if resp.StatusCode == 200 {
+		var responseData map[string]interface{}
+		if err := json.Unmarshal(responseBody, &responseData); err == nil {
+			if newVideoId, ok := responseData["id"].(string); ok {
+				seconds := "8"
+				if s, ok := responseData["seconds"].(string); ok && s != "" {
+					seconds = s
+				} else if s, ok := responseData["seconds"].(float64); ok {
+					seconds = fmt.Sprintf("%.0f", s)
+				}
+
+				size := "720x1280"
+				if s, ok := responseData["size"].(string); ok && s != "" {
+					size = s
+				}
+
+				model := "sora-2"
+				if m, ok := responseData["model"].(string); ok && m != "" {
+					model = m
+				}
+
+				quota := calculateSoraRemixQuota(seconds, size, model)
+
+				meta := &util.RelayMeta{
+					UserId:          c.GetInt("id"),
+					TokenId:         c.GetInt("token_id"),
+					ChannelId:       originalTask.ChannelId,
+					OriginModelName: model,
+				}
+
+				if err := handleSoraRemixBilling(c, meta, model, seconds, quota, newVideoId); err != nil {
+					logger.Errorf(ctx, "处理Sora视频编辑扣费失败: %v", err)
+				}
+
+				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-edit", sourceVideoId, quota); err != nil {
+					logger.Errorf(ctx, "创建Sora视频编辑日志失败: %v", err)
+				}
+			}
+		}
+	}
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+
+	c.Writer.WriteHeader(resp.StatusCode)
+	if _, err := c.Writer.Write(responseBody); err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoEdit: failed to write response: %v", err)
+	}
+}
+
+// DirectRelaySoraVideoExtension 处理 Sora 视频续写请求 (POST /v1/videos/extensions)
+// 必须使用原视频的渠道，从请求体中提取 video.id 查找对应渠道
+func DirectRelaySoraVideoExtension(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	requestBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求体失败: " + err.Error()})
+		return
+	}
+
+	var requestData map[string]interface{}
+	if err := json.Unmarshal(requestBody, &requestData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解析请求体失败: " + err.Error()})
+		return
+	}
+
+	videoObj, ok := requestData["video"].(map[string]interface{})
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 video 对象"})
+		return
+	}
+
+	sourceVideoId, ok := videoObj["id"].(string)
+	if !ok || sourceVideoId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 video.id"})
+		return
+	}
+
+	logger.Debugf(ctx, "DirectRelaySoraVideoExtension - sourceVideoId: %s", sourceVideoId)
+
+	originalTask, err := dbmodel.GetVideoTaskById(sourceVideoId)
+	if err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoExtension: source video not found: %s, error: %v", sourceVideoId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Source video not found"})
+		return
+	}
+
+	channel, err := dbmodel.GetChannelById(originalTask.ChannelId, true)
+	if err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoExtension: failed to get channel %d: %v", originalTask.ChannelId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get channel info"})
+		return
+	}
+
+	if channel.Key == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "渠道密钥为空"})
+		return
+	}
+
+	baseURL := strings.TrimSuffix(channel.GetBaseURL(), "/")
+	var fullRequestUrl string
+	if channel.Type == common.ChannelTypeAzure {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/../openai/v1/videos/extensions", baseURL)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/openai/v1/videos/extensions", baseURL)
+		}
+	} else {
+		if strings.HasSuffix(baseURL, "/v1") {
+			fullRequestUrl = fmt.Sprintf("%s/videos/extensions", baseURL)
+		} else {
+			fullRequestUrl = fmt.Sprintf("%s/v1/videos/extensions", baseURL)
+		}
+	}
+
+	logger.Debugf(ctx, "DirectRelaySoraVideoExtension - requesting URL: %s", fullRequestUrl)
+
+	req, err := http.NewRequest("POST", fullRequestUrl, bytes.NewReader(requestBody))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if channel.Type == common.ChannelTypeAzure {
+		req.Header.Set("Api-key", channel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+channel.Key)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := util.HTTPClient.Do(req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "请求失败: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取响应失败: " + err.Error()})
+		return
+	}
+
+	if resp.StatusCode == 200 {
+		var responseData map[string]interface{}
+		if err := json.Unmarshal(responseBody, &responseData); err == nil {
+			if newVideoId, ok := responseData["id"].(string); ok {
+				seconds := "8"
+				if s, ok := responseData["seconds"].(string); ok && s != "" {
+					seconds = s
+				} else if s, ok := responseData["seconds"].(float64); ok {
+					seconds = fmt.Sprintf("%.0f", s)
+				}
+
+				size := "720x1280"
+				if s, ok := responseData["size"].(string); ok && s != "" {
+					size = s
+				}
+
+				model := "sora-2"
+				if m, ok := responseData["model"].(string); ok && m != "" {
+					model = m
+				}
+
+				quota := calculateSoraRemixQuota(seconds, size, model)
+
+				meta := &util.RelayMeta{
+					UserId:          c.GetInt("id"),
+					TokenId:         c.GetInt("token_id"),
+					ChannelId:       originalTask.ChannelId,
+					OriginModelName: model,
+				}
+
+				if err := handleSoraRemixBilling(c, meta, model, seconds, quota, newVideoId); err != nil {
+					logger.Errorf(ctx, "处理Sora视频续写扣费失败: %v", err)
+				}
+
+				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-extension", sourceVideoId, quota); err != nil {
+					logger.Errorf(ctx, "创建Sora视频续写日志失败: %v", err)
+				}
+			}
+		}
+	}
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+
+	c.Writer.WriteHeader(resp.StatusCode)
+	if _, err := c.Writer.Write(responseBody); err != nil {
+		logger.Errorf(ctx, "DirectRelaySoraVideoExtension: failed to write response: %v", err)
+	}
 }
 
 // compensateSoraVideoTask 补偿Sora视频任务失败的配额
