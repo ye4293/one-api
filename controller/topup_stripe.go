@@ -151,10 +151,10 @@ func genStripeCheckoutLink(referenceId string, amount int64, successURL string, 
 	stripe.Key = config.StripeApiSecret
 
 	if successURL == "" {
-		successURL = config.ServerAddress + "/dashboard/log"
+		successURL = config.FrontendServerAddress + "/dashboard/topup"
 	}
 	if cancelURL == "" {
-		cancelURL = config.ServerAddress + "/dashboard/topup"
+		cancelURL = config.FrontendServerAddress + "/dashboard/topup"
 	}
 
 	params := &stripe.CheckoutSessionParams{
