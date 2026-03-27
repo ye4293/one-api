@@ -1,0 +1,1316 @@
+{
+  "apifoxProject": "1.0.0",
+  "$schema": {
+    "app": "apifox",
+    "type": "project",
+    "version": "1.2.0"
+  },
+  "info": {
+    "name": "EZLINK AI API",
+    "description": "EZLINK AI Docs",
+    "mockRule": {
+      "rules": [],
+      "enableSystemRule": true
+    }
+  },
+  "projectSetting": {
+    "id": "4639950",
+    "auth": {},
+    "securityScheme": {},
+    "gateway": [],
+    "language": "en-US",
+    "apiStatuses": [
+      "developing",
+      "testing",
+      "released",
+      "deprecated"
+    ],
+    "mockSettings": {},
+    "preProcessors": [],
+    "postProcessors": [],
+    "advancedSettings": {
+      "enableJsonc": true,
+      "enableBigint": false,
+      "responseValidate": true,
+      "isDefaultUrlEncoding": 2,
+      "enableTestScenarioSetting": false,
+      "enableYAPICompatScript": false,
+      "publishedDocUrlRules": {
+        "defaultRule": "RESOURCE_KEY_ONLY",
+        "resourceKeyStandard": "NEW"
+      },
+      "folderShareExpandModeSettings": {
+        "expandId": [],
+        "mode": "AUTO"
+      },
+      "sampleCode": {
+        "enable": true,
+        "autoGenerateFor": "CUSTOM",
+        "overwriteExisting": true
+      }
+    },
+    "initialDisabledMockIds": [],
+    "servers": [
+      {
+        "id": "default",
+        "name": "Default Server",
+        "moduleId": 5542963
+      }
+    ],
+    "cloudMock": {
+      "security": "free",
+      "enable": false,
+      "tokenKey": "apifoxToken"
+    }
+  },
+  "apiCollection": [
+    {
+      "name": "Root",
+      "id": 35705303,
+      "auth": {},
+      "securityScheme": {},
+      "parentId": 0,
+      "serverId": "",
+      "description": "",
+      "identityPattern": {
+        "httpApi": {
+          "type": "methodAndPath",
+          "bodyType": "",
+          "fields": []
+        }
+      },
+      "shareSettings": {},
+      "visibility": "SHARED",
+      "moduleId": 5542963,
+      "preProcessors": [
+        {
+          "id": "inheritProcessors",
+          "type": "inheritProcessors",
+          "data": {}
+        }
+      ],
+      "postProcessors": [
+        {
+          "id": "inheritProcessors",
+          "type": "inheritProcessors",
+          "data": {}
+        }
+      ],
+      "inheritPostProcessors": {},
+      "inheritPreProcessors": {},
+      "items": [
+        {
+          "name": "Video通用接口（持续开发中）",
+          "id": 41211527,
+          "auth": {},
+          "securityScheme": {},
+          "parentId": 0,
+          "serverId": "",
+          "description": "",
+          "identityPattern": {
+            "httpApi": {
+              "type": "inherit",
+              "bodyType": "",
+              "fields": []
+            }
+          },
+          "shareSettings": {},
+          "visibility": "INHERITED",
+          "moduleId": 5542963,
+          "preProcessors": [
+            {
+              "id": "inheritProcessors",
+              "type": "inheritProcessors",
+              "data": {}
+            }
+          ],
+          "postProcessors": [
+            {
+              "id": "inheritProcessors",
+              "type": "inheritProcessors",
+              "data": {}
+            }
+          ],
+          "inheritPostProcessors": {},
+          "inheritPreProcessors": {},
+          "items": [
+            {
+              "name": "Veo视频生成",
+              "api": {
+                "id": "321866034",
+                "method": "post",
+                "path": "/v1/video/generations",
+                "parameters": {
+                  "query": [],
+                  "path": [],
+                  "cookie": [],
+                  "header": [
+                    {
+                      "id": "po4BxhIG7g",
+                      "name": "Content-Type",
+                      "required": false,
+                      "description": "请求体类型，固定为 application/json",
+                      "example": "application/json",
+                      "type": "string",
+                      "schema": {
+                        "type": "string"
+                      },
+                      "enable": true
+                    },
+                    {
+                      "id": "yuu2x03uqE",
+                      "name": "Authorization",
+                      "required": false,
+                      "description": "API 鉴权 Token，格式为 Bearer {API_KEY}",
+                      "example": "Bearer sk-soMNI5jlatIxMzwDA8A7A7D079A2475bA00bE92b52E39b4b",
+                      "type": "string",
+                      "schema": {
+                        "type": "string"
+                      },
+                      "enable": true
+                    }
+                  ]
+                },
+                "auth": {
+                  "type": "bearer",
+                  "bearer": {
+                    "token": "{{bear}}"
+                  }
+                },
+                "securityScheme": {},
+                "commonParameters": {
+                  "query": [],
+                  "body": [],
+                  "cookie": [],
+                  "header": []
+                },
+                "responses": [
+                  {
+                    "id": "720806438",
+                    "code": 200,
+                    "name": "OK",
+                    "headers": [],
+                    "jsonSchema": {
+                      "type": "object",
+                      "properties": {
+                        "task_id": {
+                          "type": "string",
+                          "description": "生成任务ID",
+                          "examples": [
+                            "veo3-20250714221020-668xc"
+                          ]
+                        },
+                        "task_status": {
+                          "type": "string",
+                          "description": "任务状态",
+                          "examples": [
+                            "succeed"
+                          ]
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "响应消息",
+                          "examples": [
+                            ""
+                          ]
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "task_status",
+                        "message"
+                      ],
+                      "x-apifox-orders": [
+                        "task_id",
+                        "task_status",
+                        "message"
+                      ]
+                    },
+                    "itemSchema": {},
+                    "description": "Veo视频生成任务提交成功",
+                    "contentType": "json",
+                    "mediaType": "application/json",
+                    "oasExtensions": ""
+                  }
+                ],
+                "responseExamples": [],
+                "requestBody": {
+                  "type": "application/json",
+                  "parameters": [],
+                  "jsonSchema": {
+                    "$ref": "#/definitions/184020027"
+                  },
+                  "required": false,
+                  "mediaType": "application/json",
+                  "examples": [
+                    {
+                      "name": "Veo文生视频示例",
+                      "value": "{\n    \"model\": \"veo-3.1-generate-preview\",\n    \"instances\": [\n        {\n            \"prompt\": \"A cat playing piano in the rain, cinematic, 4K\"\n        }\n    ],\n    \"parameters\": {\n        \"aspectRatio\": \"16:9\",\n        \"durationSeconds\": 8,\n        \"generateAudio\": true,\n        \"negativePrompt\": \"blurry, low quality\",\n        \"personGeneration\": \"allow_adult\",\n        \"sampleCount\": 1\n    }\n}",
+                      "oasKey": "veo3_text_to_video",
+                      "oasExtensions": "",
+                      "mediaType": "application/json"
+                    },
+                    {
+                      "name": "Veo图生视频示例",
+                      "value": "{\n    \"model\": \"veo-3.1-fast-generate-preview\",\n    \"instances\": [\n        {\n            \"prompt\": \"Beautiful sunset over the ocean with gentle waves, cinematic camera movement\",\n            \"image\": {\n                \"bytesBase64Encoded\": \"iVBORw0KGgoAAAANSUhEUgAA...\",\n                \"mimeType\": \"image/png\"\n            }\n        }\n    ],\n    \"parameters\": {\n        \"aspectRatio\": \"16:9\",\n        \"durationSeconds\": 8,\n        \"generateAudio\": true,\n        \"resizeMode\": \"pad\",\n        \"sampleCount\": 1\n    }\n}",
+                      "oasKey": "veo3_image_to_video",
+                      "oasExtensions": "",
+                      "mediaType": "application/json"
+                    },
+                    {
+                      "name": "Veo首帧+末帧控制示例",
+                      "value": "{\n    \"model\": \"veo-3.1-generate-preview\",\n    \"instances\": [\n        {\n            \"prompt\": \"小狗在草地上奔跑，叼起了一张海报\",\n            \"image\": {\n                \"bytesBase64Encoded\": \"/9j/4AAQSkZJRg...\",\n                \"mimeType\": \"image/jpeg\"\n            },\n            \"lastFrame\": {\n                \"bytesBase64Encoded\": \"iVBORw0KGgo...\",\n                \"mimeType\": \"image/png\"\n            }\n        }\n    ],\n    \"parameters\": {\n        \"aspectRatio\": \"16:9\",\n        \"durationSeconds\": 8,\n        \"generateAudio\": true\n    }\n}",
+                      "oasKey": "veo3_lastframe_example",
+                      "oasExtensions": "",
+                      "mediaType": "application/json"
+                    },
+                    {
+                      "name": "Veo素材参考图示例",
+                      "value": "{\n    \"model\": \"veo-3.1-generate-preview\",\n    \"instances\": [\n        {\n            \"prompt\": \"一个人在海边漫步，夕阳西下\",\n            \"referenceImages\": [\n                {\n                    \"image\": {\n                        \"bytesBase64Encoded\": \"/9j/4AAQSkZJRg...\",\n                        \"mimeType\": \"image/jpeg\"\n                    },\n                    \"referenceType\": \"asset\"\n                }\n            ]\n        }\n    ],\n    \"parameters\": {\n        \"aspectRatio\": \"16:9\",\n        \"durationSeconds\": 8,\n        \"generateAudio\": true\n    }\n}",
+                      "oasKey": "veo3_reference_example",
+                      "oasExtensions": "",
+                      "mediaType": "application/json"
+                    }
+                  ],
+                  "oasExtensions": ""
+                },
+                "description": "使用 Google Veo 系列模型进行视频生成。请求体与 Vertex AI 官方 API 保持一致（透传），仅需额外添加 model 字段用于路由。\n\n## 支持的模型\n\n- **Veo 2：** `veo-2.0-generate-001`\n- **Veo 3.0：** `veo-3.0-generate-001`、`veo-3.0-fast-generate-001`、`veo-3.0-generate-preview`、`veo-3.0-fast-generate-preview`\n- **Veo 3.1：** `veo-3.1-generate-preview`、`veo-3.1-fast-generate-preview`、`veo-3.1-generate-001`、`veo-3.1-fast-generate-001`\n\n## 请求体格式\n\n使用 `instances` 和 `parameters` 格式（与 Vertex AI 官方一致）：\n- **model**：模型 ID\n- **instances**：实例数组，包含 prompt 和可选的 image、lastFrame、video、mask、referenceImages\n- **parameters**：生成参数\n\n> 注意：本 API 仅支持 bytesBase64Encoded 方式传递媒体数据，不支持 gcsUri。\n\n## 功能支持\n\n| 功能 | Veo 2 | Veo 3.0 | Veo 3.1 |\n|------|-------|---------|--------|\n| 文生视频 (prompt) | ✅ | ✅ | ✅ |\n| 图生视频 (image) | ✅ | ✅ | ✅ |\n| 末帧控制 (lastFrame) | ✅ veo-2.0-generate-001 | ❌ | ✅ |\n| 视频延长 (video) | ✅ veo-2.0-generate-001 | ❌ | ❌ |\n| 遮罩编辑 (mask) | ✅ veo-2.0-generate-preview | ❌ | ❌ |\n| 素材参考图 (referenceImages) | ✅ veo-2.0-generate-exp | ❌ | ✅ veo-3.1-generate-preview |\n\n## 媒体对象格式\n\nimage / lastFrame / video 等字段使用扁平的 `bytesBase64Encoded` + `mimeType` 结构（不支持 gcsUri）：\n```json\n{\"bytesBase64Encoded\": \"BASE64...\", \"mimeType\": \"image/jpeg\"}\n```\n\n⚠️ **不要**使用 Gemini API 的 `inlineData` 嵌套格式，否则会报 `image is empty` 错误。\n\n## 参数说明\n\n- **durationSeconds**（必填）：Veo 2 支持 5-8 秒，Veo 3/3.1 支持 4、6、8 秒\n- **generateAudio**：Veo 3/3.1 必填\n- **enhancePrompt**：仅 Veo 2 支持\n- **resizeMode**：仅 Veo 3 系列图生视频时可用，可选 pad（默认）或 crop\n- **resolution**：仅 Veo 3/3.1 支持，可选 720p（默认）或 1080p\n- **personGeneration**：可选 allow_adult（默认）或 dont_allow\n- **sampleCount**：生成数量 1-4\n- **seed**：随机种子（0-4294967295）",
+                "tags": [
+                  "视频生成"
+                ],
+                "status": "released",
+                "serverId": "",
+                "operationId": "generateVideoVeo",
+                "sourceUrl": "",
+                "ordering": 0,
+                "cases": [
+                  {
+                    "id": 281654840,
+                    "type": "DEBUG_CASE",
+                    "path": null,
+                    "name": "Success",
+                    "responseId": "720806438",
+                    "parameters": {
+                      "path": [],
+                      "query": [],
+                      "cookie": [],
+                      "header": [
+                        {
+                          "name": "Content-Type",
+                          "value": "application/json",
+                          "enable": true,
+                          "id": "BtxKsgjSmi",
+                          "relatedName": "Content-Type"
+                        },
+                        {
+                          "name": "Authorization",
+                          "value": "Bearer sk-soMNI5jlatIxMzwDA8A7A7D079A2475bA00bE92b52E39b4b",
+                          "enable": true,
+                          "id": "bvNsLLbzDh",
+                          "relatedName": "Authorization"
+                        }
+                      ]
+                    },
+                    "commonParameters": {},
+                    "requestBody": {
+                      "parameters": [],
+                      "data": "{\n    \"model\": \"veo-3.1-generate-preview\",\n    \"instances\": [\n        {\n            \"prompt\": \"A cat playing piano in the rain, cinematic, 4K\"\n        }\n    ],\n    \"parameters\": {\n        \"aspectRatio\": \"16:9\",\n        \"durationSeconds\": 8,\n        \"generateAudio\": true,\n        \"negativePrompt\": \"blurry, low quality\",\n        \"personGeneration\": \"allow_adult\",\n        \"sampleCount\": 1\n    }\n}",
+                      "type": "application/json",
+                      "generateMode": "normal"
+                    },
+                    "auth": {},
+                    "securityScheme": {},
+                    "advancedSettings": {
+                      "disabledSystemHeaders": {}
+                    },
+                    "requestResult": null,
+                    "visibility": "INHERITED",
+                    "moduleId": 5542963,
+                    "categoryId": 0,
+                    "tagIds": [],
+                    "apiTestDataList": [],
+                    "preProcessors": [],
+                    "postProcessors": [],
+                    "inheritPostProcessors": {},
+                    "inheritPreProcessors": {}
+                  }
+                ],
+                "mocks": [],
+                "customApiFields": "{}",
+                "advancedSettings": {
+                  "disabledSystemHeaders": {}
+                },
+                "mockScript": {},
+                "codeSamples": [],
+                "commonResponseStatus": {},
+                "responseChildren": [],
+                "visibility": "INHERITED",
+                "moduleId": 5542963,
+                "oasExtensions": "",
+                "type": "http",
+                "preProcessors": [],
+                "postProcessors": [],
+                "inheritPostProcessors": {},
+                "inheritPreProcessors": {}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "socketCollection": [],
+  "docCollection": [],
+  "webSocketCollection": [],
+  "socketIOCollection": [],
+  "mcpClientCollection": [],
+  "responseCollection": [],
+  "schemaCollection": [
+    {
+      "id": 9388069,
+      "name": "Root",
+      "visibility": "SHARED",
+      "moduleId": 5542963,
+      "items": [
+        {
+          "id": 15406482,
+          "name": "Schemas",
+          "visibility": "INHERITED",
+          "moduleId": 5542963,
+          "items": [
+            {
+              "name": "VeoVideoGenerationRequest",
+              "displayName": "",
+              "id": "#/definitions/184020027",
+              "description": "",
+              "schema": {
+                "jsonSchema": {
+                  "type": "object",
+                  "required": [
+                    "model",
+                    "instances",
+                    "parameters"
+                  ],
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "description": "Veo模型名称",
+                      "enum": [
+                        "veo-2.0-generate-001",
+                        "veo-3.0-generate-001",
+                        "veo-3.0-fast-generate-001",
+                        "veo-3.0-generate-preview",
+                        "veo-3.0-fast-generate-preview",
+                        "veo-3.1-generate-preview",
+                        "veo-3.1-fast-generate-preview",
+                        "veo-3.1-generate-001",
+                        "veo-3.1-fast-generate-001"
+                      ],
+                      "examples": [
+                        "veo-3.1-generate-preview"
+                      ]
+                    },
+                    "instances": {
+                      "type": "array",
+                      "description": "生成实例列表，每个实例可包含文本和图片提示词",
+                      "items": {
+                        "$ref": "#/definitions/184020028"
+                      }
+                    },
+                    "parameters": {
+                      "$ref": "#/definitions/184020030"
+                    }
+                  },
+                  "x-apifox-orders": [
+                    "model",
+                    "instances",
+                    "parameters"
+                  ]
+                }
+              },
+              "visibility": "INHERITED",
+              "moduleId": 5542963
+            },
+            {
+              "name": "Veo3Instance",
+              "displayName": "",
+              "id": "#/definitions/184020028",
+              "description": "",
+              "schema": {
+                "jsonSchema": {
+                  "type": "object",
+                  "required": [],
+                  "properties": {
+                    "prompt": {
+                      "type": "string",
+                      "description": "文本提示词，描述希望生成的视频内容。文生视频时必填，图生视频时可选"
+                    },
+                    "image": {
+                      "$ref": "#/definitions/184020029",
+                      "description": "可选，起始帧图片（用于图生视频）。包含 bytesBase64Encoded/gcsUri 和 mimeType"
+                    },
+                    "lastFrame": {
+                      "$ref": "#/definitions/184020029",
+                      "description": "可选，结束帧图片（模型生成首帧到末帧之间的过渡视频）。仅 veo-2.0-generate-001 和 Veo 3.1 系列支持"
+                    },
+                    "video": {
+                      "$ref": "#/definitions/184020029",
+                      "description": "可选，输入视频（用于视频延长）。仅 veo-2.0-generate-001 支持"
+                    },
+                    "mask": {
+                      "type": "object",
+                      "description": "可选，遮罩图片（用于在视频中添加/移除对象）。仅 veo-2.0-generate-preview 支持",
+                      "properties": {
+                        "bytesBase64Encoded": {
+                          "type": "string",
+                          "description": "Base64 编码的遮罩图片"
+                        },
+                        "mimeType": {
+                          "type": "string",
+                          "description": "媒体类型，如 image/png、image/jpeg"
+                        },
+                        "maskMode": {
+                          "type": "string",
+                          "description": "遮罩模式"
+                        }
+                      },
+                      "required": [
+                        "bytesBase64Encoded",
+                        "mimeType"
+                      ]
+                    },
+                    "referenceImages": {
+                      "type": "array",
+                      "description": "可选，参考图片列表（最多 3 张素材图或 1 张风格图）。仅 veo-2.0-generate-exp 和 veo-3.1-generate-preview 支持",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "image": {
+                            "$ref": "#/definitions/184020029",
+                            "description": "参考图片对象"
+                          },
+                          "referenceType": {
+                            "type": "string",
+                            "description": "参考类型：asset（素材参考，最多3张）或 style（风格参考，最多1张）",
+                            "enum": [
+                              "asset",
+                              "style"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "image",
+                          "referenceType"
+                        ]
+                      }
+                    }
+                  },
+                  "x-apifox-orders": [
+                    "prompt",
+                    "image",
+                    "lastFrame",
+                    "video",
+                    "mask",
+                    "referenceImages"
+                  ]
+                }
+              },
+              "visibility": "INHERITED",
+              "moduleId": 5542963
+            },
+            {
+              "name": "VeoMediaObject",
+              "displayName": "",
+              "id": "#/definitions/184020029",
+              "description": "媒体对象",
+              "schema": {
+                "jsonSchema": {
+                  "type": "object",
+                  "required": [
+                    "bytesBase64Encoded",
+                    "mimeType"
+                  ],
+                  "properties": {
+                    "bytesBase64Encoded": {
+                      "type": "string",
+                      "description": "Base64 编码的媒体数据。注意：不要使用 inlineData 嵌套格式"
+                    },
+                    "mimeType": {
+                      "type": "string",
+                      "description": "媒体类型。图片支持：image/jpeg、image/png、image/webp；视频支持：video/mp4、video/mov 等"
+                    }
+                  },
+                  "x-apifox-orders": [
+                    "bytesBase64Encoded",
+                    "mimeType"
+                  ]
+                }
+              },
+              "visibility": "INHERITED",
+              "moduleId": 5542963
+            },
+            {
+              "name": "VeoParameters",
+              "displayName": "",
+              "id": "#/definitions/184020030",
+              "description": "",
+              "schema": {
+                "jsonSchema": {
+                  "type": "object",
+                  "required": [
+                    "durationSeconds"
+                  ],
+                  "properties": {
+                    "aspectRatio": {
+                      "type": "string",
+                      "description": "视频宽高比。可选值：16:9（默认）、9:16",
+                      "enum": [
+                        "16:9",
+                        "9:16"
+                      ],
+                      "examples": [
+                        "16:9"
+                      ]
+                    },
+                    "compressionQuality": {
+                      "type": "string",
+                      "description": "压缩质量。可选值：optimized（默认）、lossless",
+                      "enum": [
+                        "optimized",
+                        "lossless"
+                      ]
+                    },
+                    "durationSeconds": {
+                      "type": "integer",
+                      "description": "视频时长（秒）。Veo 2：5-8（默认8）；Veo 3/3.1：4、6、8（默认8）；使用 referenceImages 时固定为 8",
+                      "examples": [
+                        8
+                      ]
+                    },
+                    "enhancePrompt": {
+                      "type": "boolean",
+                      "description": "使用 Gemini 优化提示词，默认 true。仅 Veo 2 模型支持"
+                    },
+                    "generateAudio": {
+                      "type": "boolean",
+                      "description": "是否生成音频。Veo 3/3.1 模型必填；Veo 2 不支持此参数"
+                    },
+                    "negativePrompt": {
+                      "type": "string",
+                      "description": "反向提示词，描述不希望出现的内容"
+                    },
+                    "personGeneration": {
+                      "type": "string",
+                      "description": "人物生成安全设置",
+                      "enum": [
+                        "allow_adult",
+                        "dont_allow"
+                      ],
+                      "examples": [
+                        "allow_adult"
+                      ]
+                    },
+                    "resizeMode": {
+                      "type": "string",
+                      "description": "图生视频时的调整模式。仅 Veo 3 系列图生视频时可用",
+                      "enum": [
+                        "pad",
+                        "crop"
+                      ]
+                    },
+                    "resolution": {
+                      "type": "string",
+                      "description": "视频分辨率。仅 Veo 3/3.1 模型支持",
+                      "enum": [
+                        "720p",
+                        "1080p"
+                      ],
+                      "examples": [
+                        "720p"
+                      ]
+                    },
+                    "sampleCount": {
+                      "type": "integer",
+                      "description": "生成样本数量（1-4）",
+                      "minimum": 1,
+                      "maximum": 4,
+                      "examples": [
+                        1
+                      ]
+                    },
+                    "seed": {
+                      "type": "integer",
+                      "format": "uint32",
+                      "description": "随机种子（0-4294967295），用于复现生成结果"
+                    }
+                  },
+                  "x-apifox-orders": [
+                    "aspectRatio",
+                    "compressionQuality",
+                    "durationSeconds",
+                    "enhancePrompt",
+                    "generateAudio",
+                    "negativePrompt",
+                    "personGeneration",
+                    "resizeMode",
+                    "resolution",
+                    "sampleCount",
+                    "seed"
+                  ]
+                }
+              },
+              "visibility": "INHERITED",
+              "moduleId": 5542963
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "securitySchemeCollection": [],
+  "oasComponentCollection": [],
+  "requestCollection": [
+    {
+      "name": "Root",
+      "children": [],
+      "items": [
+        {
+          "id": 3733154,
+          "createdAt": "2025-09-05T05:59:18.000Z",
+          "updatedAt": "2025-09-05T05:59:18.000Z",
+          "name": "德莫",
+          "method": "post",
+          "path": "https://api.ezlinkai.com/v1/images/generations",
+          "requestBody": {
+            "type": "application/json",
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "n": {
+                  "type": "integer"
+                },
+                "size": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "model",
+                "prompt",
+                "n",
+                "size"
+              ]
+            },
+            "example": "{\n    \"model\": \"gemini-2.5-flash-image-preview\",\n    \"prompt\": \"A cute baby sea otter\",\n    \"n\": 1,\n    \"size\": \"1024x1024\"\n  }",
+            "data": "{\n    \"model\": \"gemini-2.5-flash-image-preview\",\n    \"prompt\": \"A cute baby sea otter\",\n    \"n\": 1,\n    \"size\": \"1024x1024\"\n  }"
+          },
+          "parameters": {
+            "header": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "sampleValue": "application/json",
+                "enable": true
+              },
+              {
+                "name": "Authorization",
+                "value": "Bearer uh2jAbQg5ImWDweyD98452AfF225463181C14006A3Cc89Db",
+                "sampleValue": "Bearer uh2jAbQg5ImWDweyD98452AfF225463181C14006A3Cc89Db",
+                "enable": true
+              }
+            ]
+          },
+          "commonParameters": {
+            "query": [],
+            "body": [],
+            "header": [],
+            "cookie": []
+          },
+          "preProcessors": [],
+          "postProcessors": [],
+          "auth": {},
+          "advancedSettings": {
+            "disabledSystemHeaders": {}
+          },
+          "folderId": 0,
+          "projectId": 4630041,
+          "creatorId": 1780226,
+          "editorId": 1780226
+        },
+        {
+          "id": 3741732,
+          "createdAt": "2025-09-08T04:03:43.000Z",
+          "updatedAt": "2026-02-25T07:42:02.000Z",
+          "name": "openai通用",
+          "method": "post",
+          "path": "https://api.ezai88.com/v1/chat/completions",
+          "requestBody": {
+            "type": "application/json",
+            "parameters": [],
+            "jsonSchema": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "messages": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "role": {
+                        "type": "string"
+                      },
+                      "content": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "role",
+                      "content"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "model",
+                "messages"
+              ]
+            },
+            "example": "{\n    \"model\": \"gemini-2.5-pro-thinking\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"You are a helpful assistant.\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": \"Hello!\"\n      }\n    ]\n  }",
+            "data": "{\n    \"model\": \"gemini-2.5-pro-thinking\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": \"You are a helpful assistant.\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": \"Hello!\"\n      }\n    ]\n  }"
+          },
+          "parameters": {
+            "header": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "sampleValue": "application/json",
+                "enable": true
+              },
+              {
+                "name": "Authorization",
+                "value": "Bearer sk-HCIhA9jaDOnctc97rqX6Y5IQoGzlGhGmju9AU7nmWubdG49S-32380",
+                "sampleValue": "Bearer sk-HCIhA9jaDOnctc97rqX6Y5IQoGzlGhGmju9AU7nmWubdG49S-32380",
+                "enable": true
+              }
+            ]
+          },
+          "commonParameters": {
+            "query": [],
+            "body": [],
+            "header": [],
+            "cookie": []
+          },
+          "preProcessors": [],
+          "postProcessors": [],
+          "auth": {},
+          "advancedSettings": {
+            "disabledSystemHeaders": {}
+          },
+          "folderId": 0,
+          "projectId": 4630041,
+          "creatorId": 1780226,
+          "editorId": 1780226
+        },
+        {
+          "id": 3768250,
+          "createdAt": "2025-09-11T17:20:44.000Z",
+          "updatedAt": "2025-09-11T17:20:44.000Z",
+          "name": "图片编辑通用",
+          "method": "post",
+          "path": "http://104.238.221.23:5000/v1/images/edits",
+          "requestBody": {
+            "type": "multipart/form-data",
+            "parameters": [
+              {
+                "type": "file",
+                "name": "image",
+                "sampleValue": [
+                  "MA==/c65b01f3559c46bff7d7c2ef27e850b2.jpg",
+                  "cmMtdXBsb2FkLTE3NTc1NzU0NzAxMjAtNA==/995edd5b20a133069e26798d09ce2265.jpg"
+                ],
+                "value": [
+                  "MA==/c65b01f3559c46bff7d7c2ef27e850b2.jpg",
+                  "cmMtdXBsb2FkLTE3NTc1NzU0NzAxMjAtNA==/995edd5b20a133069e26798d09ce2265.jpg"
+                ],
+                "enable": true
+              },
+              {
+                "type": "string",
+                "name": "prompt",
+                "sampleValue": "帮我画一张图，把二者合在一起",
+                "value": "帮我画一张图，把二者合在一起",
+                "enable": true
+              },
+              {
+                "type": "string",
+                "name": "model",
+                "sampleValue": "gemini-2.5-flash-image-preview",
+                "value": "gemini-2.5-flash-image-preview",
+                "enable": true
+              }
+            ]
+          },
+          "parameters": {
+            "header": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "sampleValue": "application/json",
+                "enable": true
+              },
+              {
+                "name": "Authorization",
+                "value": "Bearer XOar2pwWMUCQMGPf2a3d4a23C4Bd4fD68cC943Ba012c6e1a",
+                "sampleValue": "Bearer XOar2pwWMUCQMGPf2a3d4a23C4Bd4fD68cC943Ba012c6e1a",
+                "enable": true
+              }
+            ]
+          },
+          "commonParameters": {
+            "query": [],
+            "body": [],
+            "header": [],
+            "cookie": []
+          },
+          "preProcessors": [],
+          "postProcessors": [],
+          "auth": {},
+          "advancedSettings": {
+            "disabledSystemHeaders": {}
+          },
+          "folderId": 0,
+          "projectId": 4630041,
+          "creatorId": 1780226,
+          "editorId": 1780226
+        }
+      ]
+    }
+  ],
+  "environments": [],
+  "commonScripts": [],
+  "globalVariables": [
+    {
+      "id": "4630041",
+      "variables": [
+        {
+          "name": "BaseURL",
+          "value": "https://api.rcouyi.com",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "https://api.rcouyi.com",
+          "isSync": true
+        }
+      ]
+    }
+  ],
+  "commonParameters": null,
+  "customFunctions": [],
+  "projectTestCaseCategories": [
+    {
+      "id": 36431,
+      "name": "Positive",
+      "description": null
+    },
+    {
+      "id": 36432,
+      "name": "Negative",
+      "description": null
+    },
+    {
+      "id": 36433,
+      "name": "Boundary",
+      "description": null
+    },
+    {
+      "id": 36434,
+      "name": "Security",
+      "description": null
+    },
+    {
+      "id": 36435,
+      "name": "Other",
+      "description": null
+    },
+    {
+      "id": 7564053,
+      "name": "正向",
+      "description": ""
+    },
+    {
+      "id": 7564054,
+      "name": "负向",
+      "description": ""
+    },
+    {
+      "id": 7564055,
+      "name": "边界值",
+      "description": ""
+    },
+    {
+      "id": 7564056,
+      "name": "安全性",
+      "description": ""
+    },
+    {
+      "id": 7564057,
+      "name": "其他",
+      "description": ""
+    }
+  ],
+  "projectTestCaseTags": [
+    {
+      "id": 25309,
+      "name": "Required Fields Only",
+      "description": "Send only the required fields with valid values, omitting all optional fields, to test minimal valid requests."
+    },
+    {
+      "id": 25310,
+      "name": "Valid Semantic",
+      "description": "Use values that are syntactically correct and also make sense in the business logic or domain context."
+    },
+    {
+      "id": 25311,
+      "name": "Enum Combination Coverage",
+      "description": "For all enum-type parameters, apply orthogonal design to systematically construct test case combinations of parameters and their enum values, dedicated to testing enum coverage."
+    },
+    {
+      "id": 25312,
+      "name": "Other Positive Case",
+      "description": "Provide realistic and valid inputs that match the API specification, producing the correct and expected result."
+    },
+    {
+      "id": 25313,
+      "name": "Missing Required Fields",
+      "description": "Omit one or more required fields in the request body or parameters."
+    },
+    {
+      "id": 25314,
+      "name": "Invalid Values",
+      "description": "Provide values that are within the correct type and format, but logically invalid for the field."
+    },
+    {
+      "id": 25315,
+      "name": "Type Errors",
+      "description": "Use values with incorrect data types, such as sending a string instead of an integer."
+    },
+    {
+      "id": 25316,
+      "name": "Format Errors",
+      "description": "Provide values in an incorrect format, e.g., wrong date pattern, malformed email address."
+    },
+    {
+      "id": 25317,
+      "name": "Semantic Errors",
+      "description": "Use syntactically correct and properly formatted values that are logically impossible or violate domain rules."
+    },
+    {
+      "id": 25318,
+      "name": "Other Negative Case",
+      "description": "Provide invalid or unexpected inputs that should trigger error handling or rejection by the API."
+    },
+    {
+      "id": 25319,
+      "name": "Null",
+      "description": "Must be the JSON literal `null` (not empty, not \"null\")."
+    },
+    {
+      "id": 25320,
+      "name": "Zero",
+      "description": "Must be the numeric literal 0."
+    },
+    {
+      "id": 25321,
+      "name": "Empty Values",
+      "description": "Must be \"\"."
+    },
+    {
+      "id": 25322,
+      "name": "Max Values",
+      "description": "Provide the exact minimum and maximum allowed values for numeric or date fields."
+    },
+    {
+      "id": 25323,
+      "name": "Min Values",
+      "description": "Provide the exact minimum and maximum allowed values for numeric or date fields."
+    },
+    {
+      "id": 25324,
+      "name": "Overflow",
+      "description": "Provide values just beyond the allowed minimum or maximum boundaries."
+    },
+    {
+      "id": 25325,
+      "name": "Underflow",
+      "description": "Provide values just beyond the allowed minimum or maximum boundaries."
+    },
+    {
+      "id": 25326,
+      "name": "Overly Long Strings",
+      "description": "Provide strings longer than the maximum allowed length, or shorter than the minimum required length."
+    },
+    {
+      "id": 25327,
+      "name": "Overly Short Strings",
+      "description": "Provide strings longer than the maximum allowed length, or shorter than the minimum required length."
+    },
+    {
+      "id": 25328,
+      "name": "Broken Object Level Authorization",
+      "description": "Users access or manipulate data objects without proper authorization."
+    },
+    {
+      "id": 25329,
+      "name": "Access Control",
+      "description": "Restricting resources and actions users can access based on roles, permissions, or attributes."
+    },
+    {
+      "id": 25330,
+      "name": "Auth Failures",
+      "description": "Authentication is weak, misconfigured, or bypassed, allowing unauthorized access."
+    },
+    {
+      "id": 25331,
+      "name": "SQL Injection",
+      "description": "Insert malicious SQL code into input fields to test for SQL injection vulnerabilities."
+    },
+    {
+      "id": 25332,
+      "name": "XSS Injection",
+      "description": "Inject JavaScript or HTML tags to test for cross-site scripting vulnerabilities."
+    },
+    {
+      "id": 25333,
+      "name": "Fuzzy Input",
+      "description": "Send large or randomly generated payloads to test input validation and stability."
+    },
+    {
+      "id": 25334,
+      "name": "Command Injection",
+      "description": "Insert shell commands into inputs to test for command execution vulnerabilities."
+    },
+    {
+      "id": 25335,
+      "name": "JSON Injection",
+      "description": "Insert malicious or unexpected JSON structures to test parsing and validation."
+    },
+    {
+      "id": 25336,
+      "name": "NoSQL Injection",
+      "description": "Provide NoSQL-specific malicious queries or operators to test for injection vulnerabilities."
+    },
+    {
+      "id": 25337,
+      "name": "Other",
+      "description": "Test cases not classified under existing categories."
+    },
+    {
+      "id": 29145398,
+      "name": "仅传必要字段",
+      "description": "仅发送具有有效值的必填字段，省略所有可选字段，以测试最小有效请求。"
+    },
+    {
+      "id": 29145399,
+      "name": "语义合法",
+      "description": "使用语法正确且在业务逻辑或域上下文中也有意义的值。"
+    },
+    {
+      "id": 29145400,
+      "name": "覆盖枚举组合",
+      "description": "对所有枚举型参数，应用正交设计系统地构建参数及其枚举值的测试用例组合，专用于测试枚举覆盖率"
+    },
+    {
+      "id": 29145401,
+      "name": "其他正向",
+      "description": "提供符合API规范的真实有效的输入，产生正确和预期的结果。"
+    },
+    {
+      "id": 29145402,
+      "name": "缺失必填字段",
+      "description": "在请求主体或参数中省略一个或多个必需字段。"
+    },
+    {
+      "id": 29145403,
+      "name": "无效值",
+      "description": "提供的值类型和格式正确，但在逻辑上对该字段无效。"
+    },
+    {
+      "id": 29145404,
+      "name": "类型错误",
+      "description": "使用数据类型不正确的值，例如发送字符串而不是整数。"
+    },
+    {
+      "id": 29145405,
+      "name": "格式错误",
+      "description": "以不正确的格式提供值，例如，错误的日期模式，格式错误的电子邮件地址。"
+    },
+    {
+      "id": 29145406,
+      "name": "语义非法",
+      "description": "使用语法正确且格式正确的值，这些值在逻辑上不可能或违反域规则。"
+    },
+    {
+      "id": 29145407,
+      "name": "其他负向",
+      "description": "提供无效或意外的输入，应触发错误处理或拒绝API。"
+    },
+    {
+      "id": 29145408,
+      "name": "零值",
+      "description": "必须是数字字面值0。"
+    },
+    {
+      "id": 29145409,
+      "name": "空值",
+      "description": "必须是\"\"。"
+    },
+    {
+      "id": 29145410,
+      "name": "极大值",
+      "description": "Max/min值 - 为数字或日期字段提供精确的最小值和最大值。"
+    },
+    {
+      "id": 29145411,
+      "name": "极小值",
+      "description": "Max/min值 - 为数字或日期字段提供精确的最小值和最大值。"
+    },
+    {
+      "id": 29145412,
+      "name": "超出最大边界值",
+      "description": "过长/过短字符串 - 提供超出允许的最小或最大边界的值。"
+    },
+    {
+      "id": 29145413,
+      "name": "超出最小边界值",
+      "description": "过长/过短字符串 - 提供超出允许的最小或最大边界的值。"
+    },
+    {
+      "id": 29145414,
+      "name": "字符串过长",
+      "description": "超出范围的值 - 提供大于允许的最大长度或小于要求的最小长度的字符串。"
+    },
+    {
+      "id": 29145415,
+      "name": "字符串过短",
+      "description": "超出范围的值 - 提供大于允许的最大长度或小于要求的最小长度的字符串。"
+    },
+    {
+      "id": 29145416,
+      "name": "对象级别授权缺失",
+      "description": "对象级别授权缺失 - 用户在没有适当授权的情况下访问或操作数据对象。"
+    },
+    {
+      "id": 29145417,
+      "name": "访问控制",
+      "description": "基于角色、权限或属性来限制用户能访问哪些资源、能执行哪些操作"
+    },
+    {
+      "id": 29145418,
+      "name": "认证失败",
+      "description": "认证失败 - 认证薄弱、配置错误或被绕过，导致未授权访问。"
+    },
+    {
+      "id": 29145419,
+      "name": "SQL注入",
+      "description": "在输入字段中插入恶意SQL代码，测试是否存在SQL注入漏洞。"
+    },
+    {
+      "id": 29145420,
+      "name": "XSS注入",
+      "description": "注入JavaScript或HTML标签来测试跨站点脚本漏洞。"
+    },
+    {
+      "id": 29145421,
+      "name": "模糊输入",
+      "description": "发送大型或随机生成的有效载荷，以测试输入的有效性和稳定性。"
+    },
+    {
+      "id": 29145422,
+      "name": "命令行注入",
+      "description": "将shell命令插入输入以测试命令执行漏洞。"
+    },
+    {
+      "id": 29145423,
+      "name": "JSON注入",
+      "description": "插入恶意或意外的JSON结构来测试解析和验证。"
+    },
+    {
+      "id": 29145424,
+      "name": "NoSQL注入",
+      "description": "提供NoSQL特定的恶意查询或操作符来测试注入漏洞。"
+    },
+    {
+      "id": 29145425,
+      "name": "其他",
+      "description": "其他未归属的测试用例。"
+    }
+  ],
+  "projectAssociations": [],
+  "moduleSettings": [
+    {
+      "id": "5542963",
+      "name": "Default module",
+      "description": "Gemini 原生格式 API 接口，支持 generateContent 和 streamGenerateContent。\n\nGemini模型同时支持OpenAI请求格式与官方原生请求格式。走OpenAI格式调用Gemini模型，请使用 `/v1/chat/completions` 接口。走原生格式则使用本接口。",
+      "moduleVariables": [
+        {
+          "name": "bear-local",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        },
+        {
+          "name": "local",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        },
+        {
+          "name": "test",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        },
+        {
+          "name": "prod",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        },
+        {
+          "name": "bear-test",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        },
+        {
+          "name": "bear-prod",
+          "value": "",
+          "description": "",
+          "isBindInitial": true,
+          "initialValue": "",
+          "isSync": true
+        }
+      ],
+      "openApiInfo": {
+        "title": "Gemini（原生）",
+        "version": "1.0.0"
+      }
+    }
+  ]
+}

@@ -252,11 +252,18 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	if quota != 0 {
 		// 获取渠道历史信息
 		otherInfo := getChannelHistoryInfo(c)
+		// 追加模型重定向信息
+		otherInfo = appendModelMappingInfo(otherInfo, meta.OriginModelName, meta.ActualModelName)
 		// 获取 X-Request-ID
 		xRequestID := c.GetString("X-Request-ID")
 		xResponseID := c.GetString("x_response_id")
 
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, textRequest.Model, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, 0, xResponseID)
+		// 使用原始模型名（重定向前）记录日志
+		logModelName := textRequest.Model
+		if meta.OriginModelName != "" {
+			logModelName = meta.OriginModelName
+		}
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, 0, xResponseID)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
@@ -301,6 +308,18 @@ func getChannelHistoryInfo(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// appendModelMappingInfo 向 other 字段追加模型重定向信息
+func appendModelMappingInfo(other string, originModel string, actualModel string) string {
+	if originModel == "" || actualModel == "" || originModel == actualModel {
+		return other
+	}
+	mappingInfo := fmt.Sprintf("is_model_mapped:true;upstream_model_name:%s", actualModel)
+	if other != "" {
+		return other + ";" + mappingInfo
+	}
+	return mappingInfo
 }
 
 // UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计

@@ -71,6 +71,8 @@ type Channel struct {
 	AutoDisabledModel  *string `json:"auto_disabled_model" gorm:"type:varchar(255)"`
 	// 自定义请求头覆盖，JSON格式，用于在请求转发时添加或覆盖HTTP请求头
 	HeaderOverride *string `json:"header_override" gorm:"type:text"`
+	// 渠道折扣倍率，如 0.7 表示七折（30% off），默认 1.0 无折扣
+	Discount *float64 `json:"discount" gorm:"type:decimal(4,2);default:1.0"`
 }
 
 // 多Key聚合信息结构

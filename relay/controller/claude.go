@@ -184,6 +184,12 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 	adminInfo := extractAdminInfoFromContext(c)
 	// 构建 other 字段，包含 adminInfo 和 usageDetails
 	other := buildClaudeOtherInfoWithUsageDetails(adminInfo, usageDetails)
+	// 追加模型重定向信息
+	originModel := c.GetString("original_model")
+	modelMapping := c.GetStringMapString("model_mapping")
+	if mappedModel, ok := modelMapping[originModel]; ok {
+		other = appendModelMappingInfo(other, originModel, mappedModel)
+	}
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
