@@ -120,6 +120,13 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	if err != nil {
 		logger.Error(ctx, "failed to record log: "+err.Error())
 	}
+
+	// 增量更新直方图（用于 P50/P95/P99 计算，零 DB 查询）
+	// 注意：log.Provider 当前未在此处赋值（logs 表中 provider 字段也为空），
+	// 直方图按 model_name + channel_id 维度区分，provider 维度在 cache 层通过 channel 信息补充
+	if config.ModelMetricsEnabled {
+		RecordMetricsHistogram(modelName, "", channelId, duration, speed)
+	}
 }
 
 // RecordErrorLogWithRequestID 记录错误日志（Type 为 LogTypeError）

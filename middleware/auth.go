@@ -88,6 +88,43 @@ func RootAuth() func(c *gin.Context) {
 	}
 }
 
+// TryUserAuth 可选认证中间件：有认证信息就解析并设置 role/id，没有则跳过（不 abort）
+// 用于公开端点需要根据角色返回不同数据的场景
+func TryUserAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		session := sessions.Default(c)
+		username := session.Get("username")
+		role := session.Get("role")
+		id := session.Get("id")
+
+		if username != nil {
+			logger.SysLog("TryUserAuth: resolved from session, username=" + username.(string))
+		} else {
+			// 尝试从 access token 解析
+			accessToken := c.Request.Header.Get("Authorization")
+			if accessToken != "" {
+				user := model.ValidateAccessToken(accessToken)
+				if user != nil && user.Username != "" {
+					username = user.Username
+					role = user.Role
+					id = user.Id
+					logger.SysLog("TryUserAuth: resolved from token, username=" + user.Username)
+				} else {
+					logger.SysLog("TryUserAuth: token provided but validation failed, token prefix: " + accessToken[:min(len(accessToken), 20)])
+				}
+			}
+		}
+
+		// 有认证信息就设置，没有就跳过
+		if username != nil {
+			c.Set("username", username)
+			c.Set("role", role)
+			c.Set("id", id)
+		}
+		c.Next()
+	}
+}
+
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		// Claude API 从 x-api-key header 中获取 key

@@ -216,6 +216,12 @@ var MetricFailChanSize = env.Int("METRIC_FAIL_CHAN_SIZE", 128)
 
 var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
 
+// 模型监控指标配置
+var ModelMetricsEnabled = env.Bool("MODEL_METRICS_ENABLED", true)
+var ModelMetricsAggregationInterval = env.Int("MODEL_METRICS_AGGREGATION_INTERVAL", 300)  // 聚合间隔（秒）
+var ModelMetricsRetentionDays = env.Int("MODEL_METRICS_RETENTION_DAYS", 30)               // 数据保留天数
+var ModelMetricsBackfillDays = env.Int("MODEL_METRICS_BACKFILL_DAYS", 7)                  // 首次回填天数
+
 // Claude Thinking 模型配置
 var ClaudeThinkingEnabled = true                      // 是否启用 Claude 思考适配（-thinking 后缀）
 var ClaudeThinkingBudgetRatio = 0.8                   // 默认思考 token 百分比（80%）

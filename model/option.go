@@ -123,6 +123,9 @@ func InitOptionMap() {
 	config.OptionMap["ClaudeDefaultMaxTokens"] = common.ClaudeDefaultMaxTokens2JSONString()
 	config.OptionMap["ClaudeReasoningEffortMap"] = common.ClaudeReasoningEffortMap2JSONString()
 	config.OptionMap["ClaudeRequestHeaders"] = common.ClaudeRequestHeaders2JSONString()
+
+	// 模型监控配置
+	config.OptionMap["ModelMetricsEnabled"] = strconv.FormatBool(config.ModelMetricsEnabled)
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -245,6 +248,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.PingIntervalEnabled = boolValue
 		case "EpayPaymentEnabled":
 			config.EpayPaymentEnabled = boolValue
+		case "ModelMetricsEnabled":
+			config.ModelMetricsEnabled = boolValue
 		}
 
 	}

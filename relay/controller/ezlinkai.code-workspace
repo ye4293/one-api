@@ -20,6 +20,9 @@
 		},
 		{
 			"path": "../../../new-api"
+		},
+		{
+			"path": "../../../auto-azure"
 		}
 	],
 	"settings": {}

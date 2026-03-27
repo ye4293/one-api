@@ -202,6 +202,36 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	return preConsumedQuota, nil
 }
 
+// preConsumeImageQuota 图片请求专用的预扣费函数
+// 与 preConsumeQuota 逻辑一致，但不依赖 GeneralOpenAIRequest
+func preConsumeImageQuota(ctx context.Context, estimatedQuota int64, meta *util.RelayMeta) (int64, *relaymodel.ErrorWithStatusCode) {
+	preConsumedQuota := estimatedQuota
+
+	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
+	if err != nil {
+		return 0, openai.ErrorWrapper(err, "get_user_quota_failed", http.StatusInternalServerError)
+	}
+	if userQuota-preConsumedQuota < 0 {
+		return 0, openai.ErrorWrapper(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)
+	}
+	err = model.CacheDecreaseUserQuota(meta.UserId, preConsumedQuota)
+	if err != nil {
+		return 0, openai.ErrorWrapper(err, "decrease_user_quota_failed", http.StatusInternalServerError)
+	}
+	if userQuota > 100*preConsumedQuota {
+		// 用户余额充足，信任用户，不做 token 级预扣
+		preConsumedQuota = 0
+		logger.Info(ctx, fmt.Sprintf("user %d has enough quota %d, trusted and no need to pre-consume for image request", meta.UserId, userQuota))
+	}
+	if preConsumedQuota > 0 {
+		err := model.PreConsumeTokenQuota(meta.TokenId, preConsumedQuota)
+		if err != nil {
+			return preConsumedQuota, openai.ErrorWrapper(err, "pre_consume_token_quota_failed", http.StatusForbidden)
+		}
+	}
+	return preConsumedQuota, nil
+}
+
 func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
 	// 更新多Key使用统计
 	updateMultiKeyUsage(meta, usage != nil)

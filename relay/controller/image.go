@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -347,6 +346,80 @@ func calculateGeminiImageQuota(modelName string, groupRatio float64, usageDetail
 		totalRatioTokens, groupRatio, config.QuotaPerUnit, quota))
 
 	return quota
+}
+
+// imageConsumeParams 图片计费统一参数
+type imageConsumeParams struct {
+	ctx              context.Context
+	c                *gin.Context
+	meta             *util.RelayMeta
+	actualQuota      int64
+	preConsumedQuota int64
+	promptTokens     int
+	completionTokens int
+	modelName        string
+	logContent       string
+	startTime        time.Time
+	usageDetails     *GeminiUsageDetails
+}
+
+// consumeImageQuota 统一的图片计费处理函数
+// 核心修复：使用 quotaDelta = actualQuota - preConsumedQuota（多退少补）
+func consumeImageQuota(params *imageConsumeParams) {
+	quotaDelta := params.actualQuota - params.preConsumedQuota
+	err := model.PostConsumeTokenQuota(params.meta.TokenId, quotaDelta)
+	if err != nil {
+		logger.SysError("error consuming token remain quota: " + err.Error())
+	}
+
+	err = model.CacheUpdateUserQuota(params.ctx, params.meta.UserId)
+	if err != nil {
+		logger.SysError("error update user quota cache: " + err.Error())
+	}
+
+	if params.actualQuota == 0 {
+		return
+	}
+
+	// 计算耗时
+	rowDuration := time.Since(params.startTime).Seconds()
+	duration := math.Round(rowDuration*1000) / 1000
+
+	// 从 gin.Context 提取日志所需字段
+	referer := params.c.Request.Header.Get("HTTP-Referer")
+	title := params.c.Request.Header.Get("X-Title")
+	tokenName := params.c.GetString("token_name")
+	xRequestID := params.c.GetString("X-Request-ID")
+
+	// 模型名
+	logModelName := params.modelName
+	if logModelName == "" {
+		logModelName = params.meta.OriginModelName
+		if logModelName == "" {
+			logModelName = params.meta.ActualModelName
+		}
+	}
+
+	// 构建 otherInfo
+	adminInfo := extractAdminInfoFromContext(params.c)
+	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, params.usageDetails)
+
+	if otherInfo != "" {
+		model.RecordConsumeLogWithOtherAndRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
+			params.promptTokens, params.completionTokens, logModelName, tokenName,
+			params.actualQuota, params.logContent, duration, title, referer, false, 0.0,
+			otherInfo, xRequestID, 0, "")
+	} else {
+		model.RecordConsumeLogWithRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
+			params.promptTokens, params.completionTokens, logModelName, tokenName,
+			params.actualQuota, params.logContent, duration, title, referer, false, 0.0, xRequestID)
+	}
+	model.UpdateUserUsedQuotaAndRequestCount(params.meta.UserId, params.actualQuota)
+	channelId := params.c.GetInt("channel_id")
+	model.UpdateChannelUsedQuota(channelId, params.actualQuota)
+
+	// 更新多Key使用统计
+	UpdateMultiKeyUsageFromContext(params.c, params.actualQuota > 0)
 }
 
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
@@ -894,20 +967,19 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	groupRatio := common.GetGroupRatio(meta.Group)
 	// userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, imageRequest.Model)
 	ratio := groupRatio
-	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "failed to get user quota", http.StatusInternalServerError)
-	}
 
 	modelPrice := common.GetModelPrice(imageRequest.Model, false)
 	if modelPrice == -1 {
 		modelPrice = 0.1 // 默认价格
 	}
-	quota := int64(modelPrice*500000*imageCostRatio*ratio) * int64(imageRequest.N)
+	estimatedQuota := int64(modelPrice*500000*imageCostRatio*ratio) * int64(imageRequest.N)
 
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)
+	// 预扣费：实际扣减用户余额，防止并发请求超刷
+	preConsumedQuota, bizErr := preConsumeImageQuota(ctx, estimatedQuota, meta)
+	if bizErr != nil {
+		return bizErr
 	}
+	quota := estimatedQuota // 保持 quota 变量供 defer 块兼容使用
 
 	// 设置通用请求头
 	token := c.Request.Header.Get("Authorization")
@@ -937,6 +1009,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
 				if err != nil {
 					logger.Errorf(ctx, "VertexAI 获取访问令牌失败: %v", err)
+					util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 					return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
 				}
 
@@ -970,6 +1043,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	logger.Infof(ctx, "Model API request took %v", apiReqDuration)
 
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 
@@ -1093,8 +1167,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				logger.Infof(ctx, "Doubao Image per-call pricing: generated_images=%d, price=$%.2f, old quota=%d, new quota=%d",
 					generatedImages, modelPrice, oldQuota, quota)
 
-				// 处理配额消费和日志记录
-				err := model.PostConsumeTokenQuota(meta.TokenId, quota)
+				// 处理配额消费和日志记录（使用 delta = actual - preConsumed）
+				quotaDelta := quota - preConsumedQuota
+				err := model.PostConsumeTokenQuota(meta.TokenId, quotaDelta)
 				if err != nil {
 					logger.SysError("error consuming token remain quota for doubao image: " + err.Error())
 				}
@@ -1155,8 +1230,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return // 跳过 Gemini 的处理
 		}
 
-		// 然后再处理配额消费
-		err := model.PostConsumeTokenQuota(meta.TokenId, quota)
+		// 然后再处理配额消费（使用 delta = actual - preConsumed）
+		quotaDelta := quota - preConsumedQuota
+		err := model.PostConsumeTokenQuota(meta.TokenId, quotaDelta)
 		if err != nil {
 			logger.SysError("error consuming token remain quota: " + err.Error())
 		}
@@ -1222,11 +1298,13 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(
 			fmt.Errorf("API请求失败，状态码: %d，响应: %s", resp.StatusCode, string(responseBody)),
 			"api_error",
@@ -1277,6 +1355,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				statusCode = http.StatusBadRequest
 			}
 
+			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 			return openai.ErrorWrapper(errorMsg, errorCode, statusCode)
 		}
 
@@ -1316,6 +1395,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 		err = json.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
+			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
 
@@ -1369,10 +1449,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 直接返回响应
 			c.JSON(http.StatusBadRequest, errorResponse)
 
-			// 计算请求耗时
-			rowDuration := time.Since(startTime).Seconds()
-			duration := math.Round(rowDuration*1000) / 1000
-
 			// 处理配额消费 - 使用精确计费
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
@@ -1381,53 +1457,26 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-			// 消费配额
-			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
-			}
+			logContent := fmt.Sprintf("Gemini JSON Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d",
+				meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota)
 
-			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
-			}
-
-			// 记录消费日志
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
-			tokenName := c.GetString("token_name")
-			xRequestID := c.GetString("X-Request-ID")
-
-			logContent := fmt.Sprintf("Gemini JSON Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
-				meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
-
-			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-			adminInfo := extractAdminInfoFromContext(c)
-			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-			// 记录日志
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-			channelId := c.GetInt("channel_id")
-			model.UpdateChannelUsedQuota(channelId, actualQuota)
+			consumeImageQuota(&imageConsumeParams{
+				ctx: ctx, c: c, meta: meta,
+				actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+				promptTokens: promptTokens, completionTokens: completionTokens,
+				logContent: logContent, startTime: startTime, usageDetails: &usageDetails,
+			})
 
 			return nil
 		}
 
 		// 检查是否有候选项
 		if len(geminiResponse.Candidates) == 0 {
-			// 记录消费日志（即使没有候选项，也要记录请求消耗）
-			rowDuration := time.Since(startTime).Seconds()
-			duration := math.Round(rowDuration*1000) / 1000
-
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 			completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
 			thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-			// 提取详细的 Token 信息
 			usageDetails := extractGeminiUsageDetails(
 				geminiResponse.UsageMetadata.PromptTokensDetails,
 				geminiResponse.UsageMetadata.CandidatesTokensDetails,
@@ -1436,37 +1485,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-			// 消费配额
-			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
-			}
+			logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d",
+				meta.OriginModelName, promptTokens, completionTokens, actualQuota)
 
-			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
-			}
-
-			// 记录消费日志
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
-			tokenName := c.GetString("token_name")
-			xRequestID := c.GetString("X-Request-ID")
-
-			logContent := fmt.Sprintf("Gemini JSON No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
-				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
-
-			// 构建 otherInfo（usageDetails 已在上方计费时提取）
-			adminInfo := extractAdminInfoFromContext(c)
-			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-			// 记录日志
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-			channelId := c.GetInt("channel_id")
-			model.UpdateChannelUsedQuota(channelId, actualQuota)
+			consumeImageQuota(&imageConsumeParams{
+				ctx: ctx, c: c, meta: meta,
+				actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+				promptTokens: promptTokens, completionTokens: completionTokens,
+				logContent: logContent, startTime: startTime, usageDetails: &usageDetails,
+			})
 
 			return openai.ErrorWrapper(
 				fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
@@ -1514,17 +1541,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				// 直接返回响应
 				c.JSON(http.StatusBadRequest, errorResponse)
 
-				// 计算请求耗时
-				rowDuration := time.Since(startTime).Seconds()
-				duration := math.Round(rowDuration*1000) / 1000
-
 				// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 				groupRatio := common.GetGroupRatio(meta.Group)
 				promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
 				completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
 				thinkingTokens := geminiResponse.UsageMetadata.ThoughtsTokenCount
 
-				// 提取详细的 Token 信息
 				errUsageDetails := extractGeminiUsageDetails(
 					geminiResponse.UsageMetadata.PromptTokensDetails,
 					geminiResponse.UsageMetadata.CandidatesTokensDetails,
@@ -1533,37 +1555,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 				actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &errUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-				// 消费配额
-				err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-				if err != nil {
-					logger.SysError("error consuming token remain quota: " + err.Error())
-				}
+				logContent := fmt.Sprintf("Gemini JSON Error - Model: %s, FinishReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d",
+					meta.OriginModelName, candidate.FinishReason, promptTokens, completionTokens, actualQuota)
 
-				err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-				if err != nil {
-					logger.SysError("error update user quota cache: " + err.Error())
-				}
-
-				// 记录消费日志
-				referer := c.Request.Header.Get("HTTP-Referer")
-				title := c.Request.Header.Get("X-Title")
-				tokenName := c.GetString("token_name")
-				xRequestID := c.GetString("X-Request-ID")
-
-				logContent := fmt.Sprintf("Gemini JSON Error - Model: %s, FinishReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
-					meta.OriginModelName, candidate.FinishReason, promptTokens, completionTokens, actualQuota, duration)
-
-				// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-				adminInfo := extractAdminInfoFromContext(c)
-				otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-				// 记录日志
-				model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-					tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-				model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-				channelId := c.GetInt("channel_id")
-				model.UpdateChannelUsedQuota(channelId, actualQuota)
+				consumeImageQuota(&imageConsumeParams{
+					ctx: ctx, c: c, meta: meta,
+					actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+					promptTokens: promptTokens, completionTokens: completionTokens,
+					logContent: logContent, startTime: startTime, usageDetails: &errUsageDetails,
+				})
 
 				return nil
 			}
@@ -1659,10 +1659,6 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 直接返回响应
 			c.JSON(http.StatusBadRequest, errorResponse)
 
-			// 计算请求耗时
-			rowDuration := time.Since(startTime).Seconds()
-			duration := math.Round(rowDuration*1000) / 1000
-
 			// 处理配额消费（即使失败也要扣费，因为已经消耗了token）- 使用精确计费
 			groupRatio := common.GetGroupRatio(meta.Group)
 			promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
@@ -1671,37 +1667,15 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-			// 消费配额
-			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
-			}
+			logContent := fmt.Sprintf("Gemini JSON No Image - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d",
+				meta.OriginModelName, promptTokens, completionTokens, actualQuota)
 
-			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
-			}
-
-			// 记录消费日志
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
-			tokenName := c.GetString("token_name")
-			xRequestID := c.GetString("X-Request-ID")
-
-			logContent := fmt.Sprintf("Gemini JSON No Image - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
-				meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
-
-			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-			adminInfo := extractAdminInfoFromContext(c)
-			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-			// 记录日志
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-			channelId := c.GetInt("channel_id")
-			model.UpdateChannelUsedQuota(channelId, actualQuota)
+			consumeImageQuota(&imageConsumeParams{
+				ctx: ctx, c: c, meta: meta,
+				actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+				promptTokens: promptTokens, completionTokens: completionTokens,
+				logContent: logContent, startTime: startTime, usageDetails: &usageDetails,
+			})
 
 			return nil
 		}
@@ -1820,11 +1794,12 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	responseBody, err = json.Marshal(imageResponseWithUsage)
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
+			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 			return openai.ErrorWrapper(err, "marshal_converted_response_failed", http.StatusInternalServerError)
 		}
 
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
-		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, startTime)
+		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, preConsumedQuota, startTime)
 	} else if meta.ChannelType == 40 && imageRequest.Stream {
 		// 豆包图片流式响应（SSE）→ 标准 JSON
 		logger.Debugf(ctx, "Doubao image stream raw response (len=%d):\n%s", len(responseBody), string(responseBody))
@@ -3283,18 +3258,12 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	}
 
 	groupRatio := common.GetGroupRatio(meta.Group)
-	quota := int64(modelPrice*500000*groupRatio) * int64(imageRequest.N)
+	estimatedQuota := int64(modelPrice*500000*groupRatio) * int64(imageRequest.N)
 
-	// 注意：Gemini Form 请求的实际配额将在响应处理后根据真实 token 使用重新计算
-
-	// 检查用户配额是否足够
-	userQuota, err := model.CacheGetUserQuota(ctx, meta.UserId)
-	if err != nil {
-		return openai.ErrorWrapper(err, "failed to get user quota", http.StatusInternalServerError)
-	}
-
-	if userQuota-quota < 0 {
-		return openai.ErrorWrapper(errors.New("user quota is not enough"), "insufficient_user_quota", http.StatusForbidden)
+	// 预扣费：实际扣减用户余额，防止并发请求超刷
+	preConsumedQuota, bizErr := preConsumeImageQuota(ctx, estimatedQuota, meta)
+	if bizErr != nil {
+		return bizErr
 	}
 
 	// 从 form 中获取 prompt
@@ -3303,6 +3272,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		prompt = prompts[0]
 	}
 	if prompt == "" {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
 	}
 
@@ -3322,6 +3292,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		for i, fileHeader := range fileHeaders {
 			file, err := fileHeader.Open()
 			if err != nil {
+				util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 				return openai.ErrorWrapper(fmt.Errorf("open_image_file_%d_failed: %v", i+1, err), "open_image_file_failed", http.StatusBadRequest)
 			}
 
@@ -3375,10 +3346,12 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 			// 检查是否有处理错误
 			if fileErr != nil {
+				util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 				return openai.ErrorWrapper(fileErr, "read_image_file_failed", http.StatusBadRequest)
 			}
 		}
 	} else {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(fmt.Errorf("image 或 image[] 文件不能为空"), "missing_image_file", http.StatusBadRequest)
 	}
 
@@ -3445,6 +3418,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	// 转换为 JSON
 	jsonBytes, err := json.Marshal(geminiRequest)
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "marshal_gemini_request_failed", http.StatusInternalServerError)
 	}
 
@@ -3522,6 +3496,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 
 			if projectID == "" {
 				logger.Errorf(ctx, "VertexAI Form请求 无法获取ProjectID")
+				util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 				return openai.ErrorWrapper(fmt.Errorf("VertexAI project ID not found"), "vertex_ai_project_id_missing", http.StatusBadRequest)
 			}
 
@@ -3563,6 +3538,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 			accessToken, err := vertexai.GetAccessToken(vertexAIAdaptor, meta)
 			if err != nil {
 				logger.Errorf(ctx, "VertexAI Form请求 获取访问令牌失败: %v", err)
+				util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 				return openai.ErrorWrapper(fmt.Errorf("failed to get VertexAI access token: %v", err), "vertex_ai_auth_failed", http.StatusUnauthorized)
 			}
 
@@ -3577,6 +3553,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	logger.Debugf(ctx, "Gemini Form image generation: using LongRunningHTTPClient with independent context")
 	resp, cancelFunc, err := util.DoLongRunningRequest(req)
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
 	defer resp.Body.Close()
@@ -3585,19 +3562,21 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	}
 
 	// 处理响应
-	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, quota, startTime)
+	return handleGeminiResponse(c, ctx, resp, imageRequest, meta, estimatedQuota, preConsumedQuota, startTime)
 }
 
 // handleGeminiResponse 处理 Gemini API 的响应
-func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Response, imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta, quota int64, startTime time.Time) *relaymodel.ErrorWithStatusCode {
+func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Response, imageRequest *relaymodel.ImageRequest, meta *util.RelayMeta, quota int64, preConsumedQuota int64, startTime time.Time) *relaymodel.ErrorWithStatusCode {
 	// 读取响应体
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 
 		// 尝试解析错误响应
 		var geminiError struct {
@@ -3665,6 +3644,7 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	err = json.Unmarshal(responseBody, &geminiResponse)
 	if err != nil {
+		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 	}
 
@@ -3727,37 +3707,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &blockUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-		// 消费配额
-		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-		if err != nil {
-			logger.SysError("error consuming token remain quota: " + err.Error())
-		}
-
-		err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-		if err != nil {
-			logger.SysError("error update user quota cache: " + err.Error())
-		}
-
-		// 记录消费日志
-		referer := c.Request.Header.Get("HTTP-Referer")
-		title := c.Request.Header.Get("X-Title")
-		tokenName := c.GetString("token_name")
-		xRequestID := c.GetString("X-Request-ID")
-
 		logContent := fmt.Sprintf("Gemini Form Prompt Blocked - Model: %s, BlockReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, geminiResponse.PromptFeedback.BlockReason, promptTokens, completionTokens, actualQuota, duration)
-
-		// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-		adminInfo := extractAdminInfoFromContext(c)
-		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-		// 记录日志
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-		channelId := c.GetInt("channel_id")
-		model.UpdateChannelUsedQuota(channelId, actualQuota)
+		consumeImageQuota(&imageConsumeParams{
+			ctx: ctx, c: c, meta: meta,
+			actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+			promptTokens: promptTokens, completionTokens: completionTokens,
+			logContent: logContent, startTime: startTime, usageDetails: &blockUsageDetails,
+		})
 
 		return nil
 	}
@@ -3783,37 +3740,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-		// 消费配额
-		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-		if err != nil {
-			logger.SysError("error consuming token remain quota: " + err.Error())
-		}
-
-		err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-		if err != nil {
-			logger.SysError("error update user quota cache: " + err.Error())
-		}
-
-		// 记录消费日志
-		referer := c.Request.Header.Get("HTTP-Referer")
-		title := c.Request.Header.Get("X-Title")
-		tokenName := c.GetString("token_name")
-		xRequestID := c.GetString("X-Request-ID")
-
 		logContent := fmt.Sprintf("Gemini Form No Candidates - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
-
-		// 构建 otherInfo（usageDetails 已在上方计费时提取）
-		adminInfo := extractAdminInfoFromContext(c)
-		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-		// 记录日志
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-		channelId := c.GetInt("channel_id")
-		model.UpdateChannelUsedQuota(channelId, actualQuota)
+		consumeImageQuota(&imageConsumeParams{
+			ctx: ctx, c: c, meta: meta,
+			actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+			promptTokens: promptTokens, completionTokens: completionTokens,
+			logContent: logContent, startTime: startTime, usageDetails: &usageDetails,
+		})
 
 		return openai.ErrorWrapper(
 			fmt.Errorf("Gemini API 错误: 未返回任何候选项"),
@@ -3880,37 +3814,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 			actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formErrUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-			// 消费配额
-			err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
-			}
-
-			err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
-			}
-
-			// 记录消费日志
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
-			tokenName := c.GetString("token_name")
-			xRequestID := c.GetString("X-Request-ID")
-
 			logContent := fmt.Sprintf("Gemini Form Error - Model: %s, FinishReason: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 				meta.OriginModelName, candidate.FinishReason, promptTokens, completionTokens, actualQuota, duration)
-
-			// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-			adminInfo := extractAdminInfoFromContext(c)
-			otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-			// 记录日志
-			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-				tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-			model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-			channelId := c.GetInt("channel_id")
-			model.UpdateChannelUsedQuota(channelId, actualQuota)
+			consumeImageQuota(&imageConsumeParams{
+				ctx: ctx, c: c, meta: meta,
+				actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+				promptTokens: promptTokens, completionTokens: completionTokens,
+				logContent: logContent, startTime: startTime, usageDetails: &formErrUsageDetails,
+			})
 
 			return nil
 		}
@@ -4018,37 +3929,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 		actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &noImgUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-		// 消费配额
-		err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-		if err != nil {
-			logger.SysError("error consuming token remain quota: " + err.Error())
-		}
-
-		err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-		if err != nil {
-			logger.SysError("error update user quota cache: " + err.Error())
-		}
-
-		// 记录消费日志
-		referer := c.Request.Header.Get("HTTP-Referer")
-		title := c.Request.Header.Get("X-Title")
-		tokenName := c.GetString("token_name")
-		xRequestID := c.GetString("X-Request-ID")
-
 		logContent := fmt.Sprintf("Gemini Form No Image - Model: %s, 输入: %d tokens, 输出: %d tokens, 配额: %d, 耗时: %.3fs",
 			meta.OriginModelName, promptTokens, completionTokens, actualQuota, duration)
-
-		// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-		adminInfo := extractAdminInfoFromContext(c)
-		otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-		// 记录日志
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName,
-			tokenName, actualQuota, logContent, duration, title, referer, false, 0, otherInfo, xRequestID, 0, "")
-
-		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-		channelId := c.GetInt("channel_id")
-		model.UpdateChannelUsedQuota(channelId, actualQuota)
+		consumeImageQuota(&imageConsumeParams{
+			ctx: ctx, c: c, meta: meta,
+			actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+			promptTokens: promptTokens, completionTokens: completionTokens,
+			logContent: logContent, startTime: startTime, usageDetails: &noImgUsageDetails,
+		})
 
 		return nil
 	}
@@ -4166,23 +4054,6 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, &formUsageDetails, promptTokens, completionTokens, thinkingTokens)
 
-	// 处理配额消费（使用重新计算的配额）
-	err = model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
-	}
-
-	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
-	}
-
-	// 记录消费日志
-	referer := c.Request.Header.Get("HTTP-Referer")
-	title := c.Request.Header.Get("X-Title")
-	tokenName := c.GetString("token_name")
-	xRequestID := c.GetString("X-Request-ID")
-
 	// 计算详细的成本信息
 	inputCost := float64(promptTokens) / 1000000.0 * 0.3
 	outputCost := float64(completionTokens) / 1000000.0 * 30.0
@@ -4190,33 +4061,22 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 
 	logContent := fmt.Sprintf("Gemini Form Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
 		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
-
-	// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-	adminInfo := extractAdminInfoFromContext(c)
-	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, &usageDetails)
-
-	if otherInfo != "" {
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0, "")
-	} else {
-		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
-	}
-	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-	channelId := c.GetInt("channel_id")
-	model.UpdateChannelUsedQuota(channelId, actualQuota)
+	consumeImageQuota(&imageConsumeParams{
+		ctx: ctx, c: c, meta: meta,
+		actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+		promptTokens: promptTokens, completionTokens: completionTokens,
+		logContent: logContent, startTime: startTime, usageDetails: &formUsageDetails,
+	})
 
 	return nil
 }
 
 // handleGeminiTokenConsumption 处理 Gemini JSON 请求的 token 消费和日志记录
-func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64, startTime time.Time) error {
+func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64, preConsumedQuota int64, startTime time.Time) error {
 	// 检查是否已经记录过（通过检查是否已经设置了响应状态码）
 	if c.Writer.Status() == http.StatusBadRequest {
 		return nil
 	}
-
-	// 计算请求耗时
-	rowDuration := time.Since(startTime).Seconds()
-	duration := math.Round(rowDuration*1000) / 1000
 
 	// 从 geminiResponse 中提取 token 信息
 	var promptTokens, completionTokens int
@@ -4256,7 +4116,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 			} `json:"candidatesTokensDetails,omitempty"`
 		} `json:"usageMetadata,omitempty"`
 	}); ok {
-		// 检查是否有有效的 UsageMetadata
 		if respStruct.UsageMetadata.TotalTokenCount == 0 {
 			return nil
 		}
@@ -4264,7 +4123,6 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		promptTokens = respStruct.UsageMetadata.PromptTokenCount
 		completionTokens = respStruct.UsageMetadata.CandidatesTokenCount
 
-		// 提取 token 详情
 		details := extractGeminiUsageDetails(
 			respStruct.UsageMetadata.PromptTokensDetails,
 			respStruct.UsageMetadata.CandidatesTokensDetails,
@@ -4272,7 +4130,7 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 		)
 		usageDetails = &details
 	} else {
-		return nil // 不返回错误，避免影响成功响应
+		return nil
 	}
 
 	// 使用精确计费机制
@@ -4284,45 +4142,21 @@ func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *uti
 
 	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, usageDetails, promptTokens, completionTokens, thinkingTokens)
 
-	// 处理配额消费（使用重新计算的配额）
-	err := model.PostConsumeTokenQuota(meta.TokenId, actualQuota)
-	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
-		return err
-	}
-
-	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
-	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
-		return err
-	}
-
-	// 记录消费日志
-	referer := c.Request.Header.Get("HTTP-Referer")
-	title := c.Request.Header.Get("X-Title")
-	tokenName := c.GetString("token_name")
-	xRequestID := c.GetString("X-Request-ID")
-
 	// 计算详细的成本信息
 	inputCost := float64(promptTokens) / 1000000.0 * 0.3
 	outputCost := float64(completionTokens) / 1000000.0 * 30.0
 	totalCost := inputCost + outputCost
 
-	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d, 耗时: %.3fs",
-		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota, duration)
+	logContent := fmt.Sprintf("Gemini JSON Request - Model: %s, 输入成本: $%.6f (%d tokens), 输出成本: $%.6f (%d tokens), 总成本: $%.6f, 分组倍率: %.2f, 配额: %d",
+		meta.OriginModelName, inputCost, promptTokens, outputCost, completionTokens, totalCost, groupRatio, actualQuota)
 
-	// 构建包含 adminInfo 和 usageDetails 的 otherInfo
-	adminInfo := extractAdminInfoFromContext(c)
-	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, usageDetails)
-
-	if otherInfo != "" {
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0, "")
-	} else {
-		model.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, meta.OriginModelName, tokenName, actualQuota, logContent, duration, title, referer, false, 0.0, xRequestID)
-	}
-	model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, actualQuota)
-	channelId := c.GetInt("channel_id")
-	model.UpdateChannelUsedQuota(channelId, actualQuota)
+	// 使用统一计费函数（自动计算 delta = actualQuota - preConsumedQuota）
+	consumeImageQuota(&imageConsumeParams{
+		ctx: ctx, c: c, meta: meta,
+		actualQuota: actualQuota, preConsumedQuota: preConsumedQuota,
+		promptTokens: promptTokens, completionTokens: completionTokens,
+		logContent: logContent, startTime: startTime, usageDetails: usageDetails,
+	})
 
 	return nil
 }

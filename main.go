@@ -179,6 +179,14 @@ func main() {
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 
+	// 启动模型指标聚合 Worker
+	if config.ModelMetricsEnabled {
+		common.SafeGoroutine(func() {
+			model.StartModelMetricsAggregator()
+		})
+		logger.SysLog("model metrics aggregator started")
+	}
+
 	// Initialize HTTP server
 	server := gin.New()
 	server.Use(gin.Recovery())

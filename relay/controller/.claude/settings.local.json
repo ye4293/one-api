@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:platform.ephone.ai)",
+      "Bash(grep -E \"\\\\.\\(go|sql|db\\)$\")",
+      "Bash(xargs grep:*)",
+      "Bash(xargs basename:*)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(find C:/Users/brows/Desktop/ezlinkai/web -name *.jsx -o -name *.tsx -o -name *.js)"
+    ]
+  }
+}
