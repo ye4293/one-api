@@ -106,6 +106,7 @@ func Relay(c *gin.Context) {
 	firstChannelHistory = append(firstChannelHistory, channelId)
 	c.Set("admin_channel_history", firstChannelHistory)
 
+	attemptStartTime := time.Now()
 	bizErr := relayHelper(c, relayMode)
 
 	if bizErr == nil {
@@ -145,8 +146,8 @@ func Relay(c *gin.Context) {
 	// 初始就排除首次失败渠道，确保同优先级补重试不会再次命中它
 	failedChannelIds := []int{channelId}
 
-	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
-	cumulativeDuration := time.Since(totalStartTime).Seconds()
+	// 记录第一次调用的失败信息（单次渠道耗时）
+	channelDuration := time.Since(attemptStartTime).Seconds()
 
 	// 检查是否是xAI内容违规错误，如果是则记录扣费日志而不是普通失败日志
 	if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
@@ -154,7 +155,7 @@ func Relay(c *gin.Context) {
 		recordXAIContentViolationCharge(ctx, c, channelHistory)
 	} else {
 		// 普通失败：记录失败日志
-		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, cumulativeDuration, bizErr.Error.Message, channelName, channelHistory)
+		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, channelDuration, bizErr.Error.Message, channelName, channelHistory)
 	}
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
@@ -214,6 +215,7 @@ func Relay(c *gin.Context) {
 		// 在调用relayHelper之前设置渠道历史，这样RelayImageHelper就能获取到了
 		c.Set("admin_channel_history", channelHistory)
 
+		attemptStartTime = time.Now()
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			// 重试成功，直接返回（无需记录错误日志）
@@ -221,8 +223,8 @@ func Relay(c *gin.Context) {
 			return
 		}
 
-		// 计算累计耗时（从请求开始到当前失败的时间）
-		cumulativeDuration = time.Since(totalStartTime).Seconds()
+		// 计算单次渠道耗时
+		channelDuration = time.Since(attemptStartTime).Seconds()
 
 		channelId = c.GetInt("channel_id")
 		channelName = c.GetString("channel_name")
@@ -240,8 +242,8 @@ func Relay(c *gin.Context) {
 			break
 		}
 
-		// 普通失败：记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, bizErr.Error.Message, channel.Name, channelHistory)
+		// 普通失败：记录本次重试失败的日志（单次渠道耗时）
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, bizErr.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
@@ -2623,14 +2625,15 @@ func RelayGemini(c *gin.Context) {
 	channelHistory := []int{originalChannelId}
 	c.Set("admin_channel_history", channelHistory)
 
+	attemptStartTime := time.Now()
 	geminiErr := relayGeminiHelper(c, relayMode)
 	if geminiErr == nil {
 		return
 	}
 
-	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
-	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, cumulativeDuration, geminiErr.Error.Message, originalChannelName, channelHistory)
+	// 记录第一次调用的失败信息（单次渠道耗时）
+	channelDuration := time.Since(attemptStartTime).Seconds()
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, geminiErr.Error.Message, originalChannelName, channelHistory)
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, geminiErr, originalModel)
@@ -2691,14 +2694,15 @@ func RelayGemini(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		attemptStartTime = time.Now()
 		geminiErr = relayGeminiHelper(c, relayMode)
 		if geminiErr == nil {
 			// 重试成功，直接返回（无需记录错误日志）
 			return
 		}
 
-		// 计算累计耗时（从请求开始到当前失败的时间）
-		cumulativeDuration = time.Since(totalStartTime).Seconds()
+		// 计算单次渠道耗时
+		channelDuration = time.Since(attemptStartTime).Seconds()
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
@@ -2707,8 +2711,8 @@ func RelayGemini(c *gin.Context) {
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
-		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, geminiErr.Error.Message, channel.Name, channelHistory)
+		// 记录本次重试失败的日志（单次渠道耗时）
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, geminiErr.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 	}
@@ -2758,14 +2762,15 @@ func RelayClaude(c *gin.Context) {
 	channelHistory := []int{originalChannelId}
 	c.Set("admin_channel_history", channelHistory)
 
+	attemptStartTime := time.Now()
 	relayError := controller.RelayClaudeNative(c)
 	if relayError == nil {
 		return
 	}
 
-	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
-	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, cumulativeDuration, relayError.Error.Message, originalChannelName, channelHistory)
+	// 记录第一次调用的失败信息（单次渠道耗时）
+	channelDuration := time.Since(attemptStartTime).Seconds()
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory)
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
@@ -2825,14 +2830,15 @@ func RelayClaude(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		attemptStartTime = time.Now()
 		relayError = controller.RelayClaudeNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
 			return
 		}
 
-		// 计算累计耗时（从请求开始到当前失败的时间）
-		cumulativeDuration = time.Since(totalStartTime).Seconds()
+		// 计算单次渠道耗时
+		channelDuration = time.Since(attemptStartTime).Seconds()
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
@@ -2841,8 +2847,8 @@ func RelayClaude(c *gin.Context) {
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
-		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)
+		// 记录本次重试失败的日志（单次渠道耗时）
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
@@ -2893,14 +2899,15 @@ func RelayResponse(c *gin.Context) {
 	channelHistory := []int{originalChannelId}
 	c.Set("admin_channel_history", channelHistory)
 
+	attemptStartTime := time.Now()
 	relayError := controller.RelayOpenaiResponseNative(c)
 	if relayError == nil {
 		return
 	}
 
-	// 记录第一次调用的失败信息（累计耗时：从请求开始到当前失败的时间，同步记录保证顺序）
-	cumulativeDuration := time.Since(totalStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, cumulativeDuration, relayError.Error.Message, originalChannelName, channelHistory)
+	// 记录第一次调用的失败信息（单次渠道耗时）
+	channelDuration := time.Since(attemptStartTime).Seconds()
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory)
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
@@ -2964,14 +2971,15 @@ func RelayResponse(c *gin.Context) {
 		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		attemptStartTime = time.Now()
 		relayError = controller.RelayOpenaiResponseNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
 			return
 		}
 
-		// 计算累计耗时（从请求开始到当前失败的时间）
-		cumulativeDuration = time.Since(totalStartTime).Seconds()
+		// 计算单次渠道耗时
+		channelDuration = time.Since(attemptStartTime).Seconds()
 
 		channelId = c.GetInt("channel_id")
 		channelName := c.GetString("channel_name")
@@ -2980,8 +2988,8 @@ func RelayResponse(c *gin.Context) {
 		// 记录失败的渠道ID，下次重试时排除
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
-		// 记录本次重试失败的日志（耗时为累计耗时，同步记录保证顺序）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, cumulativeDuration, relayError.Error.Message, channel.Name, channelHistory)
+		// 记录本次重试失败的日志（单次渠道耗时）
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}

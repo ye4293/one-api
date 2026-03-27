@@ -17,7 +17,10 @@
       "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/sections/model-plaza)",
       "Bash(mkdir -p /c/Users/brows/Desktop/ezlinkai-web-next/app/model-plaza)",
       "Bash(npx next:*)",
-      "Bash(grep -r \"localStorage.*status\\\\|localStorage.*setItem.*status\" /c/Users/brows/Desktop/ezlinkai-web-next/app /c/Users/brows/Desktop/ezlinkai-web-next/sections --include=*.ts --include=*.tsx)"
+      "Bash(grep -r \"localStorage.*status\\\\|localStorage.*setItem.*status\" /c/Users/brows/Desktop/ezlinkai-web-next/app /c/Users/brows/Desktop/ezlinkai-web-next/sections --include=*.ts --include=*.tsx)",
+      "Bash(git pull:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
