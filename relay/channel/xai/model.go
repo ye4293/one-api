@@ -9,11 +9,18 @@ type GrokVideoResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// GrokVideoUsage 视频生成费用信息
+type GrokVideoUsage struct {
+	CostInUsdTicks int64 `json:"cost_in_usd_ticks,omitempty"`
+}
+
 // GrokVideoResult Grok 视频结果查询响应
 type GrokVideoResult struct {
-	Status string         `json:"status,omitempty"` // 状态：pending 或 done
-	Video  *GrokVideoData `json:"video,omitempty"`  // 视频数据（完成时）
-	Model  string         `json:"model,omitempty"`  // 使用的模型
+	Status   string          `json:"status,omitempty"`   // 状态：pending 或 done
+	Video    *GrokVideoData  `json:"video,omitempty"`    // 视频数据（完成时）
+	Model    string          `json:"model,omitempty"`    // 使用的模型
+	Usage    *GrokVideoUsage `json:"usage,omitempty"`    // 费用信息
+	Progress int             `json:"progress,omitempty"` // 进度 0-100
 	// 错误响应字段
 	Code  string `json:"code,omitempty"`
 	Error string `json:"error,omitempty"`

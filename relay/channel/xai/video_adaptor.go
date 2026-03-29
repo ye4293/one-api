@@ -39,7 +39,7 @@ type VideoAdaptor struct {
 func (a *VideoAdaptor) GetProviderName() string { return "grok" }
 func (a *VideoAdaptor) GetChannelName() string  { return "xAI Grok" }
 func (a *VideoAdaptor) GetSupportedModels() []string {
-	return []string{"grok-imagine-video"}
+	return []string{"grok-imagine-video", "grok-imagine-video-extensions"}
 }
 
 func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoRequest, meta *util.RelayMeta) (*relaychannel.VideoTaskResult, *model.ErrorWithStatusCode) {
@@ -47,6 +47,8 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	if baseUrl == "" {
 		baseUrl = "https://api.x.ai"
 	}
+
+	isExtension := strings.HasSuffix(meta.OriginModelName, "-extensions")
 
 	var grokParams struct {
 		Duration   int    `json:"duration"`
@@ -68,11 +70,18 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	}
 
 	duration := grokParams.Duration
-	if duration <= 0 {
-		duration = 8
-	}
-	if duration > 15 {
-		duration = 15
+	hasVideoInput := grokParams.Video != nil && grokParams.Video.URL != ""
+	hasImageInput := grokParams.Image != nil && grokParams.Image.URL != ""
+
+	// 解析输入视频时长（编辑或延长时）
+	var videoDuration float64
+	if hasVideoInput {
+		if dur, durErr := GetRemoteMP4Duration(grokParams.Video.URL); durErr != nil {
+			log.Printf("[Grok Video] 解析输入视频时长失败 - url=%s, error=%v", grokParams.Video.URL, durErr)
+		} else {
+			videoDuration = dur
+			log.Printf("[Grok Video] 输入视频时长 - %.2f 秒", videoDuration)
+		}
 	}
 
 	resolution := grokParams.Resolution
@@ -80,27 +89,101 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		resolution = "480p"
 	}
 
-	hasVideoInput := grokParams.Video != nil && grokParams.Video.URL != ""
-	hasImageInput := grokParams.Image != nil && grokParams.Image.URL != ""
-
+	// 确定请求端点 & duration 校验
 	var fullRequestUrl string
-	if hasVideoInput {
+	var sendBody []byte
+
+	if isExtension {
+		// extensions: duration 1-10, 默认 6
+		if duration <= 0 {
+			duration = 6
+		}
+		if duration > 10 {
+			duration = 10
+		}
+		if !hasVideoInput {
+			return nil, openaiAdaptor.ErrorWrapper(
+				fmt.Errorf("video.url is required for video extensions"),
+				"invalid_video_request", http.StatusBadRequest)
+		}
+		fullRequestUrl = baseUrl + "/v1/videos/extensions"
+		// xAI API 只认识 grok-imagine-video，需要把 model 名替换回去
+		var bodyMap map[string]any
+		if err := json.Unmarshal(bodyBytes, &bodyMap); err == nil {
+			bodyMap["model"] = "grok-imagine-video"
+			if modified, err := json.Marshal(bodyMap); err == nil {
+				sendBody = modified
+			} else {
+				sendBody = bodyBytes
+			}
+		} else {
+			sendBody = bodyBytes
+		}
+		log.Printf("[Grok Video] 视频延长请求 - video_url=%s, duration=%d, resolution=%s", grokParams.Video.URL, duration, resolution)
+	} else if hasVideoInput {
+		// edits: 没有 duration 字段，需要从请求体中移除
 		fullRequestUrl = baseUrl + "/v1/videos/edits"
-		log.Printf("[Grok Video] 视频编辑请求 - video_url=%s, duration=%d, resolution=%s", grokParams.Video.URL, duration, resolution)
+		var bodyMap map[string]any
+		if err := json.Unmarshal(bodyBytes, &bodyMap); err == nil {
+			delete(bodyMap, "duration")
+			if modified, err := json.Marshal(bodyMap); err == nil {
+				sendBody = modified
+			} else {
+				sendBody = bodyBytes
+			}
+		} else {
+			sendBody = bodyBytes
+		}
+		log.Printf("[Grok Video] 视频编辑请求 - video_url=%s, video_duration=%.2f, resolution=%s", grokParams.Video.URL, videoDuration, resolution)
 	} else {
+		// generations: duration 1-15, 默认 8
+		if duration <= 0 {
+			duration = 8
+		}
+		if duration > 15 {
+			duration = 15
+		}
 		fullRequestUrl = baseUrl + "/v1/videos/generations"
+		sendBody = bodyBytes
 		log.Printf("[Grok Video] 视频生成请求 - duration=%d, resolution=%s", duration, resolution)
 	}
 
-	quota := computeGrokQuota(duration, resolution, hasVideoInput, hasImageInput)
-	log.Printf("[Grok Video] 预扣费用 - duration=%d, resolution=%s, quota=%d", duration, resolution, quota)
+	// 计算 quota
+	outputPrice := 0.05
+	if resolution == "720p" {
+		outputPrice = 0.07
+	}
 
-	// 基于实际请求参数做精确余额校验，与重构前行为一致
+	var quota int64
+	if isExtension {
+		// extensions: 输出费 = outputPrice × extension_duration, 输入费 = $0.01 × 输入视频时长
+		total := float64(duration)*outputPrice + videoDuration*0.01
+		quota = int64(total * config.QuotaPerUnit)
+	} else if hasVideoInput {
+		// edits: 输出费 = outputPrice × 输入视频时长, 输入费 = $0.01 × 输入视频时长
+		// 如果解析失败 videoDuration=0, 用预扣费兜底
+		if videoDuration > 0 {
+			total := videoDuration*(outputPrice+0.01)
+			quota = int64(total * config.QuotaPerUnit)
+		} else {
+			// 解析失败，使用预扣费默认值 $0.20
+			quota = int64(0.2 * config.QuotaPerUnit)
+		}
+	} else {
+		// generations: 输出费 = outputPrice × duration, 输入费按图片/文本
+		total := float64(duration) * outputPrice
+		if hasImageInput {
+			total += 0.002
+		}
+		quota = int64(total * config.QuotaPerUnit)
+	}
+	log.Printf("[Grok Video] 预扣费用 - quota=%d, resolution=%s", quota, resolution)
+
 	if balErr := checkBalance(c, meta, quota); balErr != nil {
 		return nil, balErr
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, fullRequestUrl, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequest(http.MethodPost, fullRequestUrl, bytes.NewReader(sendBody))
 	if err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "create_request_error", http.StatusInternalServerError)
 	}
@@ -139,13 +222,23 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 
 	// Credentials 字段由 invokeVideoAdaptorRequest 在 CreateVideoLog 之后写入 DB
 	// 此处不直接调用 UpdateVideoCredentials，避免记录未创建导致写入失败
+	durationStr := strconv.Itoa(duration)
+	if hasVideoInput && !isExtension {
+		// edits 没有 duration 字段，用解析出的输入视频时长
+		if videoDuration > 0 {
+			durationStr = fmt.Sprintf("%.0f", videoDuration)
+		} else {
+			durationStr = ""
+		}
+	}
 	return &relaychannel.VideoTaskResult{
-		TaskId:      grokResponse.RequestId,
-		TaskStatus:  "succeed",
-		Duration:    strconv.Itoa(duration),
-		Resolution:  resolution,
-		Quota:       quota,
-		Credentials: meta.APIKey,
+		TaskId:        grokResponse.RequestId,
+		TaskStatus:    "succeed",
+		Duration:      durationStr,
+		Resolution:    resolution,
+		Quota:         quota,
+		Credentials:   meta.APIKey,
+		VideoDuration: videoDuration,
 	}, nil
 }
 
@@ -250,6 +343,12 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		if grokResult.Video.Duration > 0 {
 			generalResponse.Duration = strconv.Itoa(grokResult.Video.Duration)
 		}
+		// 转换 usage: cost_in_usd_ticks → cost_in_usd (1 USD = 10,000,000,000 ticks)
+		if grokResult.Usage != nil && grokResult.Usage.CostInUsdTicks > 0 {
+			costInUsd := float64(grokResult.Usage.CostInUsdTicks) / 10_000_000_000.0
+			generalResponse.Usage = &model.VideoUsage{CostInUsd: costInUsd}
+			log.Printf("[Grok Video] 费用 - taskId=%s, ticks=%d, usd=%.6f", taskId, grokResult.Usage.CostInUsdTicks, costInUsd)
+		}
 	} else if grokResult.Status == "pending" {
 		generalResponse.TaskStatus = "processing"
 		generalResponse.Message = "Video generation in progress"
@@ -262,18 +361,4 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	}
 
 	return generalResponse, nil
-}
-
-func computeGrokQuota(duration int, resolution string, hasVideoInput, hasImageInput bool) int64 {
-	outputPrice := 0.05
-	if resolution == "720p" {
-		outputPrice = 0.07
-	}
-	total := float64(duration) * outputPrice
-	if hasVideoInput {
-		total += float64(duration) * 0.01
-	} else if hasImageInput {
-		total += 0.002
-	}
-	return int64(total * config.QuotaPerUnit)
 }

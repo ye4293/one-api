@@ -767,9 +767,10 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 
 	// 响应客户端
 	c.JSON(http.StatusOK, model.GeneralVideoResponse{
-		TaskId:     taskResult.TaskId,
-		TaskStatus: taskResult.TaskStatus,
-		Message:    taskResult.Message,
+		TaskId:        taskResult.TaskId,
+		TaskStatus:    taskResult.TaskStatus,
+		Message:       taskResult.Message,
+		VideoDuration: taskResult.VideoDuration,
 	})
 
 	return handleSuccessfulResponseWithQuota(c, ctx, meta,

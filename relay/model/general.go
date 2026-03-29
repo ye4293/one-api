@@ -93,13 +93,19 @@ func (r GeneralOpenAIRequest) ParseInput() []string {
 }
 
 type GeneralVideoResponse struct {
-	TaskId     string `json:"task_id"`
-	TaskStatus string `json:"task_status"`
-	Message    string `json:"message"`
+	TaskId        string  `json:"task_id"`
+	TaskStatus    string  `json:"task_status"`
+	Message       string  `json:"message"`
+	VideoDuration float64 `json:"video_duration,omitempty"` // 输入视频时长（秒），仅编辑/延长时返回
 }
 
 type VideoResultItem struct {
 	Url string `json:"url"`
+}
+
+// VideoUsage 视频费用信息
+type VideoUsage struct {
+	CostInUsd float64 `json:"cost_in_usd"`
 }
 
 type GeneralFinalVideoResponse struct {
@@ -110,6 +116,7 @@ type GeneralFinalVideoResponse struct {
 	TaskStatus   string            `json:"task_status"`
 	Message      string            `json:"message"`
 	Duration     string            `json:"duration"`
+	Usage        *VideoUsage       `json:"usage,omitempty"`
 }
 
 type GeneralImageResponseAsync struct {

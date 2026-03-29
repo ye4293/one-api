@@ -49,14 +49,15 @@ type VideoAdaptor interface {
 
 // VideoTaskResult 封装视频任务提交后的结果元数据
 type VideoTaskResult struct {
-	TaskId      string
-	TaskStatus  string // "succeed"、"failed"、"processing"
-	Message     string
-	Mode        string
-	Duration    string
-	VideoType   string
-	VideoId     string
-	Quota       int64
-	Resolution  string
-	Credentials string // 用于 VertexAI 保存凭证
+	TaskId        string
+	TaskStatus    string // "succeed"、"failed"、"processing"
+	Message       string
+	Mode          string
+	Duration      string
+	VideoType     string
+	VideoId       string
+	Quota         int64
+	Resolution    string
+	Credentials   string  // 用于 VertexAI 保存凭证
+	VideoDuration float64 // 输入视频时长（秒），仅编辑/延长时有值
 }
