@@ -69,7 +69,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 
 	duration := grokParams.Duration
 	if duration <= 0 {
-		duration = 6
+		duration = 8
 	}
 	if duration > 15 {
 		duration = 15

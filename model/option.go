@@ -283,6 +283,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.ServerAddress = value
 	case "FrontendServerAddress":
 		config.FrontendServerAddress = value
+	case "DocsAddress":
+		config.DocsAddress = value
 	case "GoogleClientId":
 		config.GoogleClientId = value
 	case "GoogleClientSecret":
