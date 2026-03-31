@@ -45,9 +45,11 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	meta := util.GetRelayMeta(c)
 	meta.ActualModelName = meta.OriginModelName
+	isModelMapped := false
 	if len(meta.ModelMapping) > 0 {
 		if mappedModel, ok := meta.ModelMapping[meta.OriginModelName]; ok && mappedModel != "" {
 			meta.ActualModelName = mappedModel
+			isModelMapped = true
 		}
 	}
 	adaptor := helper.GetAdaptor(meta.APIType)
@@ -58,6 +60,17 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	var openaiResponseRequest openai.OpeanaiResaponseRequest
 	if err := json.Unmarshal(originRequestBody, &openaiResponseRequest); err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse claude request: %w", err), "failed_to_parse_request", http.StatusInternalServerError)
+	}
+
+	// 如果模型发生了重定向，替换请求体中的 model 字段
+	if isModelMapped {
+		openaiResponseRequest.Model = meta.ActualModelName
+		newBody, err := json.Marshal(openaiResponseRequest)
+		if err != nil {
+			return openai.ErrorWrapper(err, "json_marshal_failed", http.StatusInternalServerError)
+		}
+		originRequestBody = newBody
+		logger.Infof(ctx, "model mapping applied: %s -> %s", meta.OriginModelName, meta.ActualModelName)
 	}
 
 	meta.IsStream = openaiResponseRequest.Stream
@@ -159,6 +172,12 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	adminInfo := extractAdminInfoFromContext(c)
 	// 构建 other 字段，包含 adminInfo 和 usageDetails
 	other := buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo, usageDetails)
+	// 追加模型重定向信息
+	originModel := c.GetString("original_model")
+	modelMapping := c.GetStringMapString("model_mapping")
+	if mappedModel, ok := modelMapping[originModel]; ok && mappedModel != "" {
+		other = appendModelMappingInfo(other, originModel, mappedModel)
+	}
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
