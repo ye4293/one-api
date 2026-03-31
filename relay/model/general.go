@@ -109,14 +109,15 @@ type VideoUsage struct {
 }
 
 type GeneralFinalVideoResponse struct {
-	TaskId       string            `json:"task_id"`
-	VideoResult  string            `json:"video_result,omitempty"`
-	VideoResults []VideoResultItem `json:"video_results,omitempty"`
-	VideoId      string            `json:"video_id"`
-	TaskStatus   string            `json:"task_status"`
-	Message      string            `json:"message"`
-	Duration     string            `json:"duration"`
-	Usage        *VideoUsage       `json:"usage,omitempty"`
+	TaskId        string            `json:"task_id"`
+	VideoResult   string            `json:"video_result,omitempty"`
+	VideoResults  []VideoResultItem `json:"video_results,omitempty"`
+	VideoId       string            `json:"video_id"`
+	TaskStatus    string            `json:"task_status"`
+	Message       string            `json:"message"`
+	Duration      string            `json:"duration"`
+	Usage         *VideoUsage       `json:"usage,omitempty"`
+	VideoDuration float64           `json:"video_duration,omitempty"` // 输入视频时长（秒），仅编辑/延伸场景
 }
 
 type GeneralImageResponseAsync struct {

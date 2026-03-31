@@ -165,8 +165,13 @@ func getPreConsumedQuota(textRequest *relaymodel.GeneralOpenAIRequest, promptTok
 func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64, meta *util.RelayMeta) (int64, *relaymodel.ErrorWithStatusCode) {
 	var preConsumedQuota int64
 
+	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
+	billingModelName := meta.OriginModelName
+	if billingModelName == "" {
+		billingModelName = textRequest.Model
+	}
 	// 先检查是否有固定价格
-	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	modelPrice := common.GetModelPrice(billingModelName, false)
 	if modelPrice != -1 {
 		// 使用固定价格计费（按次计费）
 		groupRatio := common.GetGroupRatio(meta.Group)
@@ -248,15 +253,20 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 
+	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
+	billingModelName := meta.OriginModelName
+	if billingModelName == "" {
+		billingModelName = textRequest.Model
+	}
 	// 先检查是否有固定价格
-	modelPrice := common.GetModelPrice(textRequest.Model, false)
+	modelPrice := common.GetModelPrice(billingModelName, false)
 	if modelPrice != -1 {
 		// 使用固定价格计费（按次计费）
 		quota = int64(modelPrice * 500000 * groupRatio)
 		logContent = fmt.Sprintf("模型固定价格 %.2f$，分组倍率 %.2f", modelPrice, groupRatio)
 	} else {
 		// 使用基于token的倍率计费
-		completionRatio := common.GetCompletionRatio(textRequest.Model)
+		completionRatio := common.GetCompletionRatio(billingModelName)
 		quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
 		if ratio != 0 && quota <= 0 {
 			quota = 1

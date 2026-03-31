@@ -350,7 +350,7 @@ func handleMinimaxVideoResponse(c *gin.Context, ctx context.Context, videoRespon
 		}
 
 		// 将 resolution 存储到 mode 参数中
-		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, resolutionStr, durationStr, "", "", quota, resolutionStr)
+		err := CreateVideoLog("minimax", videoResponse.TaskID, meta, resolutionStr, durationStr, "", "", quota, 0, resolutionStr)
 		if err != nil {
 
 		}
@@ -412,7 +412,7 @@ func handleMZhipuVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 先计算quota
 		quota := calculateQuota(meta, modelName, "", "", c)
 
-		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "", "", quota)
+		err := CreateVideoLog("zhipu", videoResponse.ID, meta, "", "", "", "", quota, 0)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", videoResponse.ZhipuError.Message),
@@ -475,7 +475,7 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 		// 先计算quota
 		quota := calculateQuota(meta, modelName, "", "", c)
 
-		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "", "", quota)
+		err := CreateVideoLog("runway", videoResponse.Id, meta, "", "", "", "", quota, 0)
 		if err != nil {
 			return openai.ErrorWrapper(
 				fmt.Errorf("API error: %s", err.Error()),
@@ -756,7 +756,7 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 	// 创建视频任务日志
 	_ = CreateVideoLog(adaptor.GetProviderName(), taskResult.TaskId, meta,
 		taskResult.Mode, taskResult.Duration, taskResult.VideoType,
-		taskResult.VideoId, taskResult.Quota, taskResult.Resolution)
+		taskResult.VideoId, taskResult.Quota, taskResult.VideoDuration, taskResult.Resolution)
 
 	// 保存 provider 凭证（需在 CreateVideoLog 之后，确保记录已创建）
 	if taskResult.Credentials != "" {
@@ -807,11 +807,16 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		}
 	}
 
+	// 将数据库中存储的 video_duration 填充到响应中
+	if videoTask.VideoDuration > 0 {
+		result.VideoDuration = videoTask.VideoDuration
+	}
+
 	c.JSON(http.StatusOK, result)
 	return nil
 }
 
-func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64, resolution ...string) error {
+func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode string, duration string, videoType string, videoId string, quota int64, videoDuration float64, resolution ...string) error {
 	// 对于VertexAI，保存完整的JSON凭证
 	var credentialsJSON string
 	if provider == "vertexai" {
@@ -870,6 +875,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		Quota:       quota,
 		Credentials: credentialsJSON, // 保存完整的JSON凭证
 		Status:      "processing",    // 初始状态设置为处理中
+		VideoDuration: videoDuration, // 输入视频时长
 	}
 
 	// 调用 Insert 方法插入记录
