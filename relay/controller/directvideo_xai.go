@@ -75,7 +75,7 @@ func directRelayXaiVideo(c *gin.Context, meta *util.RelayMeta, endpoint string) 
 		if resolution == "" {
 			resolution = "480p"
 		}
-		if logErr := CreateVideoLog("xai", resp.RequestId, meta, endpoint, duration, "grok-video", resp.RequestId, quota, resolution); logErr != nil {
+		if logErr := CreateVideoLog("xai", resp.RequestId, meta, endpoint, duration, "grok-video", resp.RequestId, quota, 0, resolution); logErr != nil {
 			logger.Errorf(ctx, "[xAI Video] 创建视频日志失败: %v", logErr)
 		}
 	}
