@@ -50,9 +50,10 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	textRequest.Model, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = textRequest.Model
 	// get model ratio & group ratio
-	modelRatio := common.GetModelRatio(textRequest.Model)
+	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
+	billingModelName := meta.OriginModelName
+	modelRatio := common.GetModelRatio(billingModelName)
 	groupRatio := common.GetGroupRatio(meta.Group)
-	// userModelTypeRatio := common.GetUserModelTypeRation(meta.Group, textRequest.Model)
 	ratio := modelRatio * groupRatio
 	// pre-consume quota
 	promptTokens := getPromptTokens(textRequest, meta.Mode)
