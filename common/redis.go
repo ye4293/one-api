@@ -2,10 +2,12 @@ package common
 
 import (
 	"context"
-	"github.com/go-redis/redis/v8"
-	"github.com/songquanpeng/one-api/common/logger"
+	"fmt"
 	"os"
 	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/songquanpeng/one-api/common/logger"
 )
 
 var RDB *redis.Client
@@ -66,4 +68,34 @@ func RedisDel(key string) error {
 func RedisDecrease(key string, value int64) error {
 	ctx := context.Background()
 	return RDB.DecrBy(ctx, key, value).Err()
+}
+
+// RedisLockAcquire tries to acquire a distributed lock using SET NX.
+// Returns a non-empty token if the lock was acquired, empty string if not.
+// Pass the returned token to RedisLockRelease to safely release.
+func RedisLockAcquire(key string, ttl time.Duration) string {
+	if !RedisEnabled || RDB == nil {
+		return "local"
+	}
+	ctx := context.Background()
+	token := fmt.Sprintf("%d:%d", time.Now().UnixNano(), os.Getpid())
+	ok, err := RDB.SetNX(ctx, key, token, ttl).Result()
+	if err != nil {
+		logger.SysError("redis lock acquire error: " + err.Error())
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return token
+}
+
+// RedisLockRelease releases a distributed lock only if the token matches (compare-and-delete).
+func RedisLockRelease(key string, token string) {
+	if !RedisEnabled || RDB == nil || token == "" || token == "local" {
+		return
+	}
+	ctx := context.Background()
+	const luaScript = `if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end`
+	_ = RDB.Eval(ctx, luaScript, []string{key}, token).Err()
 }

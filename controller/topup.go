@@ -13,6 +13,7 @@ import (
 	"github.com/Calcium-Ion/go-epay/epay"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/model"
@@ -161,6 +162,7 @@ func RequestEpay(c *gin.Context) {
 		Money:         payMoney,
 		TradeNo:       tradeNo,
 		PaymentMethod: req.PaymentMethod,
+		Currency:      "CNY",
 		CreateTime:    time.Now().Unix(),
 		Status:        "pending",
 	}
@@ -281,6 +283,40 @@ func EpayNotify(c *gin.Context) {
 	_, _ = c.Writer.Write([]byte("success"))
 }
 
+func CompleteTopUp(c *gin.Context) {
+	role := c.GetInt("role")
+	if role < common.RoleAdminUser {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "无权操作，仅管理员可补单"})
+		return
+	}
+
+	var req struct {
+		TradeNo string `json:"trade_no"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.TradeNo == "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "缺少订单号"})
+		return
+	}
+
+	LockOrder(req.TradeNo)
+	defer UnlockOrder(req.TradeNo)
+
+	opId := c.GetInt("id")
+	meta := model.TopUpManualCompleteMeta{
+		Source:         "manual_complete",
+		OperatorUserId: opId,
+		OperatorUsername: c.GetString("username"),
+		CompletedAt:    helper.GetTimestamp(),
+	}
+	
+	err := model.CompleteTopUpOrderManual(req.TradeNo, meta)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "补单成功"})
+}
+
 func GetUserTopUps(c *gin.Context) {
 	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
@@ -290,38 +326,21 @@ func GetUserTopUps(c *gin.Context) {
 	if pageSize <= 0 {
 		pageSize = 10
 	}
-	userId := c.GetInt("id")
-	topups, total, err := model.GetUserTopUps(userId, page, pageSize)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data": gin.H{
-			"list":        topups,
-			"currentPage": page,
-			"pageSize":    pageSize,
-			"total":       total,
-		},
-	})
-}
+	tradeNo := c.Query("trade_no")
 
-func GetAllTopUps(c *gin.Context) {
-	page, _ := strconv.Atoi(c.Query("page"))
-	if page < 1 {
-		page = 1
+	userId := c.GetInt("id")
+	role := c.GetInt("role")
+	queryUserId := userId
+	if role >= common.RoleAdminUser {
+		queryUserId = 0
 	}
-	pageSize, _ := strconv.Atoi(c.Query("pagesize"))
-	if pageSize <= 0 {
-		pageSize = 10
-	}
-	topups, total, err := model.GetAllTopUps(page, pageSize)
+
+	topups, total, err := model.SearchTopUps(queryUserId, tradeNo, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/songquanpeng/one-api/common/helper"
 	"gorm.io/gorm"
@@ -18,12 +19,26 @@ func CreateStripeTopUp(userID int, amount int64, money float64, tradeNo string) 
 		PaymentMethod: StripeTopUpPaymentMethod,
 		CreateTime:    helper.GetTimestamp(),
 		Status:        "pending",
+		Currency:      "USD",
 	}
 	return topUp.Insert()
 }
 
+// CompleteStripeTopUp 无 Checkout 金额信息时完成订单（兼容旧逻辑）
 func CompleteStripeTopUp(tradeNo string) error {
 	return CompleteTopUpOrder(tradeNo)
+}
+
+// CompleteStripeTopUpFromCheckout 使用 Stripe Checkout Session 回调中的 amount_total、currency 写回订单并入账
+func CompleteStripeTopUpFromCheckout(tradeNo string, amountTotal int64, currency string) error {
+	major := StripeAmountTotalToMajor(amountTotal, currency)
+	m := major
+	cur := strings.ToUpper(strings.TrimSpace(currency))
+	var cPtr *string
+	if cur != "" {
+		cPtr = &cur
+	}
+	return completeTopUpOrder(tradeNo, &m, cPtr, "")
 }
 
 func ExpireStripeTopUp(tradeNo string) error {

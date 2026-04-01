@@ -193,6 +193,7 @@ func GetCurrentAllVideosAndCount(
 
 	// 执行分页查询
 	err = tx.
+		Omit("credentials").
 		Order("created_at DESC").
 		Offset(offset).
 		Limit(pageSize).
@@ -264,7 +265,8 @@ func GetCurrentUserVideosAndCount(
 
 	// 执行分页查询
 	err = tx.
-		Order("created_at DESC"). // 按创建时间降序
+		Omit("credentials").
+		Order("created_at DESC").
 		Offset(offset).
 		Limit(pageSize).
 		Find(&videos).Error

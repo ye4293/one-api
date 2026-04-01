@@ -2029,6 +2029,237 @@ func RelaySoraVideoExtension(c *gin.Context) {
 	controller.DirectRelaySoraVideoExtension(c)
 }
 
+// ========================================
+// xAI Grok Video 原生透传（带渠道重试）
+// ========================================
+
+func RelayXaiVideoGeneration(c *gin.Context) {
+	relayXaiVideoWithRetry(c, "generations")
+}
+
+func RelayXaiVideoEdit(c *gin.Context) {
+	relayXaiVideoWithRetry(c, "edits")
+}
+
+func RelayXaiVideoExtension(c *gin.Context) {
+	relayXaiVideoWithRetry(c, "extensions")
+}
+
+func RelayXaiVideoResult(c *gin.Context) {
+	requestId := c.Param("requestId")
+	if requestId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "requestId is required"})
+		return
+	}
+	controller.GetXaiVideoResult(c, requestId)
+}
+
+func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
+	ctx := c.Request.Context()
+	requestID := c.GetHeader("X-Request-ID")
+	c.Set("X-Request-ID", requestID)
+
+	channelId := c.GetInt("channel_id")
+	userId := c.GetInt("id")
+	modelName := c.GetString("original_model")
+
+	logger.Infof(ctx, "[xAI Video] %s start - userId: %d, channelId: %d, model: %s",
+		endpoint, userId, channelId, modelName)
+
+	success, statusCode, errorMessage := tryXaiVideoRequest(c, endpoint)
+	if success {
+		logger.Infof(ctx, "[xAI Video] %s success on first try - channelId: %d", endpoint, channelId)
+		return
+	}
+
+	channelName := c.GetString("channel_name")
+	group := c.GetString("group")
+
+	logger.Errorf(ctx, "[xAI Video] %s first attempt failed - channelId: %d (%s), statusCode: %d, error: %s",
+		endpoint, channelId, channelName, statusCode, truncateString(errorMessage, 100))
+
+	keyIndex := c.GetInt("key_index")
+	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		StatusCode: statusCode,
+		Error:      model.Error{Message: errorMessage},
+	}, modelName)
+
+	retryTimes := config.RetryTimes
+	if !shouldRetry(c, statusCode, errorMessage) {
+		logger.Errorf(ctx, "[xAI Video] status code %d, won't retry", statusCode)
+		recordXaiVideoFailedLog(ctx, c, endpoint, statusCode, []int{channelId})
+		writeLastFailureResponse(c, statusCode)
+		return
+	}
+
+	logger.Infof(ctx, "[xAI Video] %s will retry %d times - statusCode: %d", endpoint, retryTimes, statusCode)
+
+	originalChannelId := channelId
+	originalChannelName := channelName
+	originalKeyIndex := keyIndex
+
+	var channelHistory []int
+	channelHistory = append(channelHistory, originalChannelId)
+	failedChannelIds := []int{originalChannelId}
+	lastChannel := getLastRetryFallbackChannel(originalChannelId)
+
+	for i := retryTimes; i > 0; i-- {
+		currentAttempt := retryTimes - i + 1
+		logger.Infof(ctx, "[xAI Video] %s retry %d/%d - looking for new channel", endpoint, currentAttempt, retryTimes)
+
+		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		if err != nil {
+			if lastChannel == nil {
+				logger.Errorf(ctx, "[xAI Video] no channel available on retry %d/%d (excluded: %v)", currentAttempt, retryTimes, failedChannelIds)
+				break
+			}
+			logger.Infof(ctx, "[xAI Video] no new channel, retrying with last channel #%d (%d/%d)", lastChannel.Id, currentAttempt, retryTimes)
+			channel = lastChannel
+		}
+		lastChannel = channel
+
+		retryReason := fmt.Sprintf("HTTP状态码: %d", statusCode)
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
+		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
+			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
+			currentAttempt, retryTimes, isMultiKey, userId, requestID)
+		logger.Infof(ctx, retryLog)
+
+		channelHistory = append(channelHistory, channel.Id)
+		middleware.SetupContextForSelectedChannel(c, channel, modelName)
+
+		requestBody, err := common.GetRequestBody(c)
+		if err != nil {
+			logger.Errorf(ctx, "[xAI Video] get request body for retry %d/%d failed: %v", currentAttempt, retryTimes, err)
+			break
+		}
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+
+		success, statusCode, errorMessage = tryXaiVideoRequest(c, endpoint)
+		if success {
+			logger.Infof(ctx, "[xAI Video] %s retry %d/%d SUCCESS on channel #%d", endpoint, currentAttempt, retryTimes, channel.Id)
+			c.Set("admin_channel_history", channelHistory)
+			return
+		}
+
+		channelId = c.GetInt("channel_id")
+		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
+
+		channelName = c.GetString("channel_name")
+		logger.Errorf(ctx, "[xAI Video] %s retry %d/%d FAILED on channel #%d (%s) - statusCode: %d",
+			endpoint, currentAttempt, retryTimes, channelId, channelName, statusCode)
+
+		keyIndex = c.GetInt("key_index")
+		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+			StatusCode: statusCode,
+			Error:      model.Error{Message: errorMessage},
+		}, modelName)
+
+		if !shouldRetry(c, statusCode, errorMessage) {
+			logger.Errorf(ctx, "[xAI Video] non-retryable error on retry, statusCode: %d, stopping", statusCode)
+			break
+		}
+	}
+
+	logger.Errorf(ctx, "[xAI Video] %s ALL RETRIES FAILED - userId: %d, statusCode: %d", endpoint, userId, statusCode)
+	c.Set("admin_channel_history", channelHistory)
+	recordXaiVideoFailedLog(ctx, c, endpoint, statusCode, channelHistory)
+	writeLastFailureResponse(c, statusCode)
+}
+
+func tryXaiVideoRequest(c *gin.Context, endpoint string) (success bool, statusCode int, errorMessage string) {
+	ctx := c.Request.Context()
+	channelId := c.GetInt("channel_id")
+
+	meta := util.GetRelayMeta(c)
+	if meta == nil {
+		return false, http.StatusInternalServerError, "missing relay meta"
+	}
+
+	originalWriter := c.Writer
+	rec := newResponseRecorder(originalWriter)
+	c.Writer = rec
+
+	defer func() {
+		c.Writer = originalWriter
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf(ctx, "[xAI Video] tryRequest panic - channelId: %d, error: %v", channelId, r)
+			statusCode = http.StatusInternalServerError
+			errorMessage = "internal server error: request panic"
+			success = false
+		}
+	}()
+
+	switch endpoint {
+	case "generations":
+		controller.DirectRelayXaiVideoGeneration(c, meta)
+	case "edits":
+		controller.DirectRelayXaiVideoEdit(c, meta)
+	case "extensions":
+		controller.DirectRelayXaiVideoExtension(c, meta)
+	}
+
+	statusCode = rec.statusCode
+
+	if statusCode >= 400 {
+		errorMessage = extractErrorMessage(rec.body.String())
+		logger.Debugf(ctx, "[xAI Video] tryRequest FAILED - channelId: %d, statusCode: %d", channelId, statusCode)
+		return false, statusCode, errorMessage
+	}
+
+	logger.Debugf(ctx, "[xAI Video] tryRequest SUCCESS - channelId: %d, statusCode: %d", channelId, statusCode)
+	originalWriter.WriteHeader(rec.statusCode)
+	for k, v := range rec.Header() {
+		originalWriter.Header()[k] = v
+	}
+	originalWriter.Write(rec.body.Bytes())
+
+	return true, statusCode, ""
+}
+
+func recordXaiVideoFailedLog(ctx context.Context, c *gin.Context, endpoint string, statusCode int, channelHistory []int) {
+	userId := c.GetInt("id")
+	originalModel := c.GetString("original_model")
+	tokenName := c.GetString("token_name")
+	requestID := c.GetHeader("X-Request-ID")
+
+	var otherInfo string
+	if len(channelHistory) > 0 {
+		if historyBytes, err := json.Marshal(channelHistory); err == nil {
+			otherInfo = fmt.Sprintf("adminInfo:%s", string(historyBytes))
+		}
+	}
+
+	errorMsg := fmt.Sprintf("HTTP状态码: %d", statusCode)
+	logContent := fmt.Sprintf("xAI Video %s 请求失败: %s", endpoint, errorMsg)
+	if requestID != "" {
+		logContent = fmt.Sprintf("xAI Video %s 请求失败 [%s]: %s", endpoint, requestID, errorMsg)
+	}
+
+	channelId := 0
+	if len(channelHistory) > 0 {
+		channelId = channelHistory[len(channelHistory)-1]
+	}
+
+	dbmodel.RecordConsumeLogWithOtherAndRequestID(
+		ctx, userId, channelId,
+		0, 0, originalModel, tokenName,
+		0, logContent, 0.0, "", "", false, 0.0,
+		otherInfo, requestID, 0, "",
+	)
+
+	logger.Infof(ctx, "[xAI Video] Recorded failed log: userId=%d, model=%s, endpoint=%s, channels=%v",
+		userId, originalModel, endpoint, channelHistory)
+}
+
 func RelaySoraCharacter(c *gin.Context) {
 	ctx := c.Request.Context()
 	requestID := c.GetHeader("X-Request-ID")

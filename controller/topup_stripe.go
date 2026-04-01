@@ -229,14 +229,24 @@ func stripeSessionCompleted(event stripe.Event) {
 	LockOrder(referenceId)
 	defer UnlockOrder(referenceId)
 
-	if err := model.CompleteStripeTopUp(referenceId); err != nil {
+	amountStr := event.GetObjectValue("amount_total")
+	currency := event.GetObjectValue("currency")
+	amountTotal, parseErr := strconv.ParseInt(amountStr, 10, 64)
+	if parseErr != nil || amountStr == "" {
+		log.Printf("Stripe Webhook amount_total 解析失败(%v)，使用订单内金额: tradeNo=%s\n", parseErr, referenceId)
+		if err := model.CompleteStripeTopUp(referenceId); err != nil {
+			log.Printf("Stripe 充值完成失败: %s, 错误: %v\n", referenceId, err)
+		}
+		return
+	}
+
+	if err := model.CompleteStripeTopUpFromCheckout(referenceId, amountTotal, currency); err != nil {
 		log.Printf("Stripe 充值完成失败: %s, 错误: %v\n", referenceId, err)
 		return
 	}
 
-	total, _ := strconv.ParseFloat(event.GetObjectValue("amount_total"), 64)
-	currency := strings.ToUpper(event.GetObjectValue("currency"))
-	log.Printf("Stripe 收到款项: %s, %.2f(%s)\n", referenceId, total/100, currency)
+	major := model.StripeAmountTotalToMajor(amountTotal, currency)
+	log.Printf("Stripe 收到款项: %s, %.2f %s\n", referenceId, major, strings.ToUpper(currency))
 }
 
 func stripeSessionExpired(event stripe.Event) {

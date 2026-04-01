@@ -74,7 +74,8 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.PUT("/", controller.UpdateUser)
 				adminRoute.POST("/batchdelete", controller.BatchDelteUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
-				adminRoute.GET("/topup", controller.GetAllTopUps)
+				adminRoute.GET("/topup", controller.GetUserTopUps)
+			    adminRoute.POST("/topup/complete", controller.CompleteTopUp)
 			}
 		}
 		optionRoute := apiRouter.Group("/option")
