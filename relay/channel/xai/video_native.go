@@ -216,7 +216,10 @@ func UpdateNativeVideoTaskStatus(requestId string, body []byte, task *dbmodel.Vi
 	newStatus := mapXaiVideoStatus(result.Status)
 	isTerminal := newStatus == "succeed" || newStatus == "failed" || newStatus == "expired"
 	oldIsTerminal := task.Status == "succeed" || task.Status == "failed" || task.Status == "expired"
-
+    // 如果任务已经结束，则直接返回
+	if oldIsTerminal {
+		return
+	}
 	if isTerminal && !oldIsTerminal {
 		lockKey := fmt.Sprintf("lock:xai_video_task:%s", requestId)
 		token := common.RedisLockAcquire(lockKey, 60*time.Second)
@@ -248,8 +251,8 @@ func UpdateNativeVideoTaskStatus(requestId string, body []byte, task *dbmodel.Vi
 			}
 		}
 	case "failed":
-		if result.Error != "" {
-			task.FailReason = result.Error
+		if result.Error != nil && result.Error.Message != "" {
+			task.FailReason = result.Error.Message
 		}
 	}
 

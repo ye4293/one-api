@@ -320,12 +320,16 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	}
 
 	if resp.StatusCode != 200 && resp.StatusCode != 202 {
-		errorMsg := grokResult.Error
-		if errorMsg == "" {
-			errorMsg = string(body)
+		errorMsg := string(body)
+		errorCode := ""
+		if grokResult.Error != nil {
+			errorCode = grokResult.Error.Code
+			if grokResult.Error.Message != "" {
+				errorMsg = grokResult.Error.Message
+			}
 		}
-		failMessage := fmt.Sprintf("%s: %s", grokResult.Code, errorMsg)
-		log.Printf("[Grok Video] 查询错误 - taskId=%s, code: %s, error: %s", taskId, grokResult.Code, errorMsg)
+		failMessage := fmt.Sprintf("%s: %s", errorCode, errorMsg)
+		log.Printf("[Grok Video] 查询错误 - taskId=%s, code: %s, error: %s", taskId, errorCode, errorMsg)
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = failMessage
 		return generalResponse, nil
@@ -352,9 +356,9 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	} else if grokResult.Status == "pending" {
 		generalResponse.TaskStatus = "processing"
 		generalResponse.Message = "Video generation in progress"
-	} else if grokResult.Error != "" {
+	} else if grokResult.Error != nil && grokResult.Error.Message != "" {
 		generalResponse.TaskStatus = "failed"
-		generalResponse.Message = fmt.Sprintf("Video generation failed: %s", grokResult.Error)
+		generalResponse.Message = fmt.Sprintf("Video generation failed: %s", grokResult.Error.Message)
 	} else {
 		generalResponse.TaskStatus = "processing"
 		generalResponse.Message = fmt.Sprintf("Video status: %s", grokResult.Status)

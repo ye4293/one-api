@@ -13,7 +13,7 @@ import (
 
 const (
 	xaiVideoProvider        = "xai"
-	xaiVideoPollingInterval = 30 * time.Second
+	xaiVideoPollingInterval = 300 * time.Second
 )
 
 func StartXaiVideoTaskPoller(ctx context.Context) {
@@ -35,10 +35,22 @@ func StartXaiVideoTaskPoller(ctx context.Context) {
 	}
 }
 
+const (
+	xaiVideoPollLockKey = "lock:xai_video_poller"
+	xaiVideoPollLockTTL = 280 * time.Second
+)
+
 func pollXaiVideoTasks(ctx context.Context) {
+	token := common.RedisLockAcquire(xaiVideoPollLockKey, xaiVideoPollLockTTL)
+	if token == "" {
+		logger.Info(ctx, "[xai-video-poller] another instance holds the lock, skipping")
+		return
+	}
+	defer common.RedisLockRelease(xaiVideoPollLockKey, token)
+
 	var tasks []dbmodel.Video
 	if err := dbmodel.DB.Where("provider = ? AND status IN ?", xaiVideoProvider, []string{"processing", "pending"}).
-		Order("id ASC").Limit(10).
+		Order("id ASC").Limit(20).
 		Find(&tasks).Error; err != nil {
 		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] query tasks failed: %v", err))
 		return
