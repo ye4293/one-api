@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -401,8 +402,17 @@ func compensateAliWanTask(taskID string, v *dbmodel.Video) {
 
 // ─── 定时轮询器 ────────────────────────────────────────────────────────────────
 
+func isAliWanTaskPollerEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_ALI_WAN_POLLER")))
+	return v == "true" || v == "1"
+}
+
 // StartAliWanTaskPoller 启动轮询器，定期扫描 processing 状态的任务
 func StartAliWanTaskPoller(ctx context.Context) {
+	if !isAliWanTaskPollerEnabled() {
+		logger.SysLog("[ali-wan-poller] disabled by ENABLE_ALI_WAN_POLLER env, not starting")
+		return
+	}
 	ticker := time.NewTicker(aliWanPollingInterval)
 	defer ticker.Stop()
 

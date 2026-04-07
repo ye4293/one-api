@@ -3,9 +3,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
-	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/xai"
@@ -17,10 +18,15 @@ const (
 )
 
 func StartXaiVideoTaskPoller(ctx context.Context) {
+	if !isXaiVideoPollerEnabled() {
+		logger.SysLog("[xai-video-poller] disabled by ENABLE_XAI_VIDEO_POLLER env, not starting")
+		return
+	}
+
 	ticker := time.NewTicker(xaiVideoPollingInterval)
 	defer ticker.Stop()
 
-	logger.SysLog(fmt.Sprintf("[xai-video-poller] started, interval=%v, redis_enabled=%v", xaiVideoPollingInterval, common.RedisEnabled))
+	logger.SysLog(fmt.Sprintf("[xai-video-poller] started, interval=%v", xaiVideoPollingInterval))
 
 	pollXaiVideoTasks(ctx)
 
@@ -35,19 +41,12 @@ func StartXaiVideoTaskPoller(ctx context.Context) {
 	}
 }
 
-const (
-	xaiVideoPollLockKey = "lock:xai_video_poller"
-	xaiVideoPollLockTTL = 280 * time.Second
-)
+func isXaiVideoPollerEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_XAI_VIDEO_POLLER")))
+	return v == "true" || v == "1"
+}
 
 func pollXaiVideoTasks(ctx context.Context) {
-	token := common.RedisLockAcquire(xaiVideoPollLockKey, xaiVideoPollLockTTL)
-	if token == "" {
-		logger.Info(ctx, "[xai-video-poller] another instance holds the lock, skipping")
-		return
-	}
-	defer common.RedisLockRelease(xaiVideoPollLockKey, token)
-
 	var tasks []dbmodel.Video
 	if err := dbmodel.DB.Where("provider = ? AND status IN ?", xaiVideoProvider, []string{"processing", "pending"}).
 		Order("id ASC").Limit(20).
@@ -75,7 +74,6 @@ func pollSingleXaiVideoTask(ctx context.Context, task *dbmodel.Video) {
 	}()
 
 	if task.Result != "" && (task.Status == "succeed" || task.Status == "failed" || task.Status == "expired") {
-		logger.Debugf(ctx, "[xAI Video] GetResult from db - requestId=%s, status=%s", task.TaskId, task.Status)
 		return
 	}
 
@@ -85,7 +83,6 @@ func pollSingleXaiVideoTask(ctx context.Context, task *dbmodel.Video) {
 			task.TaskId, task.ChannelId, err))
 		return
 	}
-
 
 	apiKey := xai.ResolveAPIKey(task, channel)
 	baseURL := xai.ResolveBaseURL(channel)
