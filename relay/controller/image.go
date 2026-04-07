@@ -81,6 +81,7 @@ type GeminiUsageDetails struct {
 	OutputTextTokens  int // output_text = candidatesTokenCount - output_image
 	OutputImageTokens int
 	ReasoningTokens   int
+	CachedTokens      int // 缓存命中的 token 数量（包含在 promptTokenCount 中）
 }
 
 // extractGeminiUsageDetails 从 Gemini UsageMetadata 提取详细的使用信息
@@ -147,6 +148,7 @@ type UsageDetailsForLog struct {
 	OutputText      int `json:"output_text"`
 	OutputImage     int `json:"output_image"`
 	OutputReasoning int `json:"output_reasoning"`
+	CachedTokens    int `json:"cached_tokens,omitempty"`
 }
 
 // buildOtherInfoWithUsageDetails 构建包含 adminInfo 和 usageDetails 的 otherInfo 字符串
@@ -166,6 +168,7 @@ func buildOtherInfoWithUsageDetails(adminInfo string, usageDetails *GeminiUsageD
 			OutputText:      usageDetails.OutputTextTokens,
 			OutputImage:     usageDetails.OutputImageTokens,
 			OutputReasoning: usageDetails.ReasoningTokens,
+			CachedTokens:    usageDetails.CachedTokens,
 		}
 		if detailsBytes, err := json.Marshal(detailsForLog); err == nil {
 			parts = append(parts, fmt.Sprintf("usageDetails:%s", string(detailsBytes)))
