@@ -210,6 +210,13 @@ var CacheRatio = map[string]float64{
 	"claude-3-sonnet-20240229":   0.1,
 	"claude-3-haiku-20240307":    0.1,
 	"claude-sonnet-4-20250514":   0.1,
+	// Gemini 模型的缓存读取倍率（官方定价：缓存读取为输入价格的 25%）
+	"gemini-2.5-pro":             0.25,
+	"gemini-2.5-flash":           0.25,
+	"gemini-2.0-flash":           0.25,
+	"gemini-2.0-flash-lite":      0.25,
+	"gemini-1.5-pro":             0.25,
+	"gemini-1.5-flash":           0.25,
 }
 
 var DefaultModelRatio map[string]float64
