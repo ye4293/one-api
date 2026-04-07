@@ -457,6 +457,7 @@ func extractGeminiNativeUsageDetails(usageMetadata *gemini.UsageMetadata) *Gemin
 
 	details := &GeminiUsageDetails{
 		ReasoningTokens: usageMetadata.ThoughtsTokenCount,
+		CachedTokens:    usageMetadata.CachedContentTokenCount,
 	}
 
 	// 从 promptTokensDetails 提取 input_text 和 input_image
@@ -584,7 +585,8 @@ type GeminiTokenCost struct {
 //   - AudioInputRatio / AudioOutputRatio 同理
 //
 // 【配额计算公式】
-//   - 输入文字配额 = inputTextTokens × ModelRatio
+//   - 输入文字配额 = (inputTextTokens - cachedTokens) × ModelRatio
+//   - 缓存读取配额 = cachedTokens × ModelRatio × CacheRatio
 //   - 输入图片配额 = inputImageTokens × ModelRatio × ImageInputRatio
 //   - 输入音频配额 = inputAudioTokens × ModelRatio × AudioInputRatio
 //   - 输出文字配额 = outputTextTokens × ModelRatio × CompletionRatio
@@ -667,10 +669,17 @@ func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName 
 	completionRatio := common.GetCompletionRatio(modelName)
 	imageOutputRatio := common.GetImageOutputRatio(modelName)
 	audioOutputRatio := common.GetAudioOutputRatio(modelName)
+	cacheRatio := common.GetCacheRatio(modelName)
 
 	// ========== 计算各部分的等效 ratio tokens ==========
-	// 输入部分：tokens × modelRatio × 相对倍率
-	inputTextQuota := float64(cost.InputTextTokens) * modelRatio
+	// 输入部分：cachedTokens 是 promptTokenCount 的子集，需从输入文字中扣除
+	nonCachedInputTextTokens := cost.InputTextTokens - cost.CachedTokens
+	if nonCachedInputTextTokens < 0 {
+		nonCachedInputTextTokens = 0
+	}
+	inputTextQuota := float64(nonCachedInputTextTokens) * modelRatio
+	// 缓存读取部分：按 cacheRatio 折扣计费
+	cacheQuota := float64(cost.CachedTokens) * modelRatio * cacheRatio
 	inputImageQuota := float64(cost.InputImageTokens) * modelRatio * imageInputRatio
 	inputAudioQuota := float64(cost.InputAudioTokens) * modelRatio * audioInputRatio
 
@@ -685,10 +694,15 @@ func CalculateGeminiQuotaByRatio(usageMetadata *gemini.UsageMetadata, modelName 
 	// 思考 token：与输出文字相同的倍率
 	thinkingQuota := float64(cost.ThinkingTokens) * modelRatio * completionRatio
 
+	if cost.CachedTokens > 0 {
+		logger.SysLog(fmt.Sprintf("[Gemini计费] 模型: %s, 缓存Token: %d, 非缓存输入Token: %d, CacheRatio=%.4f, 缓存配额=%.2f, 输入配额=%.2f",
+			modelName, cost.CachedTokens, nonCachedInputTextTokens, cacheRatio, cacheQuota, inputTextQuota))
+	}
+
 	// ========== 计算最终配额 ==========
 	// 公式: 总RatioTokens / 1000000 × 2 × groupRatio × QuotaPerUnit
 	// 乘以 2 是因为 ModelRatio = 官方价格 / 2，需要还原真实价格
-	totalRatioTokens := inputTextQuota + inputImageQuota + inputAudioQuota +
+	totalRatioTokens := inputTextQuota + cacheQuota + inputImageQuota + inputAudioQuota +
 		outputTextQuota + outputImageQuota + outputAudioQuota + thinkingQuota
 
 	quota := int64(totalRatioTokens / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
