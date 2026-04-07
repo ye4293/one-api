@@ -42,7 +42,7 @@ func StartXaiVideoTaskPoller(ctx context.Context) {
 }
 
 func isXaiVideoPollerEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_XAI_VIDEO_POLLER")))
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_VIDEO_TASK_POLLER")))
 	return v == "true" || v == "1"
 }
 

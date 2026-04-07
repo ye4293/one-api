@@ -403,7 +403,7 @@ func compensateAliWanTask(taskID string, v *dbmodel.Video) {
 // ─── 定时轮询器 ────────────────────────────────────────────────────────────────
 
 func isAliWanTaskPollerEnabled() bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_ALI_WAN_POLLER")))
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_VIDEO_TASK_POLLER")))
 	return v == "true" || v == "1"
 }
 

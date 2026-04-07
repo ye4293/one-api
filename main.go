@@ -174,14 +174,12 @@ func main() {
 	common.SafeGoroutine(func() {
 		controller.StartAliWanTaskPoller(context.Background())
 	})
-	logger.SysLog("ali-wan video task poller started")
-
+	
 	// 启动 xAI 视频任务轮询器（带 Redis 分布式锁）
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())
 	})
-	logger.SysLog("xai video task poller started")
-
+	
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 
