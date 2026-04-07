@@ -251,8 +251,8 @@ func UpdateNativeVideoTaskStatus(requestId string, body []byte, task *dbmodel.Vi
 			}
 		}
 	case "failed":
-		if result.Error != nil && result.Error.Message != "" {
-			task.FailReason = result.Error.Message
+		if result.GetError() != "" {
+			task.FailReason = result.GetError()
 		}
 	}
 
