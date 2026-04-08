@@ -18,12 +18,12 @@ type Log struct {
 	Id               int     `json:"id"`
 	RequestId        string  `json:"request_id"`
 	UserId           int     `json:"user_id" gorm:"index"`
-	CreatedAt        int64   `json:"created_at" gorm:"bigint;index:idx_created_at_type"`
-	Type             int     `json:"type" gorm:"index:idx_created_at_type"`
+	CreatedAt        int64   `json:"created_at" gorm:"bigint"`
+	Type             int     `json:"type" gorm:"index:idx_type"`
 	Content          string  `json:"content"`
-	Username         string  `json:"username" gorm:"index:index_username_model_name,priority:2;default:''"`
-	TokenName        string  `json:"token_name" gorm:"index;default:''"`
-	ModelName        string  `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
+	Username         string  `json:"username" gorm:"index:idx_username;index:index_username_model_name,priority:2;default:''"`
+	TokenName        string  `json:"token_name" gorm:"index:idx_token_name;default:''"`
+	ModelName        string  `json:"model_name" gorm:"index:idx_model_name;index:index_username_model_name,priority:1;default:''"`
 	Quota            int     `json:"quota" gorm:"default:0"`
 	PromptTokens     int     `json:"prompt_tokens" gorm:"default:0"`
 	CompletionTokens int     `json:"completion_tokens" gorm:"default:0"`
@@ -34,12 +34,17 @@ type Log struct {
 	Title            string  `json:"title" gorm:"type:varchar(200)"`
 	HttpReferer      string  `json:"http_referer" gorm:"type:varchar(200)"`
 	Provider         string  `json:"provider" gorm:"type:varchar(200)"`
-	XRequestID       string  `json:"x_request_id" gorm:"type:varchar(200)"`
-	XResponseID      string  `json:"x_response_id" gorm:"type:varchar(200)"`
+	XRequestID       string  `json:"x_request_id" gorm:"type:varchar(200);index:idx_x_request_id"`
+	XResponseID      string  `json:"x_response_id" gorm:"type:varchar(200);index:idx_x_response_id"`
 	FirstWordLatency float64 `json:"first_word_latency" gorm:"default:0"`
 	VideoTaskId      string  `json:"video_task_id" gorm:"type:varchar(200);index:idx_video_task_id;default:''"`
 	IsStream         bool    `json:"is_stream" gorm:"default:false"`
 	Other            string  `json:"other"`
+}
+
+// applyLogIdRange 将时间范围转为 id 范围并应用到 logs 查询
+func applyLogIdRange(tx *gorm.DB, startTimestamp, endTimestamp int64) *gorm.DB {
+	return applyTimestampIdRange(tx, LOG_DB, "logs", startTimestamp, endTimestamp)
 }
 
 const (
@@ -163,6 +168,9 @@ func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp i
 		tx = LOG_DB.Where("type = ?", logType)
 	}
 
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyLogIdRange(tx, startTimestamp, endTimestamp)
+
 	// 进一步根据提供的参数筛选日志
 	if modelName != "" {
 		tx = tx.Where("model_name = ?", modelName)
@@ -178,12 +186,6 @@ func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp i
 	}
 	if xResponseId != "" {
 		tx = tx.Where("x_response_id = ?", xResponseId)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 	if channel != 0 {
 		tx = tx.Where("channel_id = ?", channel)
@@ -218,6 +220,9 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 		tx = LOG_DB.Where("user_id = ? and type = ?", userId, logType)
 	}
 
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyLogIdRange(tx, startTimestamp, endTimestamp)
+
 	// 进一步根据提供的参数筛选日志
 	if modelName != "" {
 		tx = tx.Where("model_name = ?", modelName)
@@ -230,12 +235,6 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 	}
 	if xResponseId != "" {
 		tx = tx.Where("x_response_id = ?", xResponseId)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 
 	// 首先计算满足条件的总数
@@ -269,17 +268,13 @@ func SearchUserLogs(userId int, keyword string) (logs []*Log, err error) {
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int) (quota int64) {
 	tx := LOG_DB.Table("logs").Select("ifnull(sum(quota),0)")
+	// 时间范围转 id 范围
+	tx = applyLogIdRange(tx, startTimestamp, endTimestamp)
 	if username != "" {
 		tx = tx.Where("username = ?", username)
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 	if modelName != "" {
 		tx = tx.Where("model_name = ?", modelName)
@@ -293,17 +288,13 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 
 func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string) (token int) {
 	tx := LOG_DB.Table("logs").Select("ifnull(sum(prompt_tokens),0) + ifnull(sum(completion_tokens),0)")
+	// 时间范围转 id 范围
+	tx = applyLogIdRange(tx, startTimestamp, endTimestamp)
 	if username != "" {
 		tx = tx.Where("username = ?", username)
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 	if modelName != "" {
 		tx = tx.Where("model_name = ?", modelName)
@@ -313,7 +304,16 @@ func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelNa
 }
 
 func DeleteOldLog(targetTimestamp int64) (int64, error) {
-	result := LOG_DB.Where("created_at < ?", targetTimestamp).Delete(&Log{})
+	id, found := findMaxIdByTimestampGeneric(LOG_DB, "logs", targetTimestamp)
+	if !found {
+		// 表为空或 DB 错误
+		return 0, nil
+	}
+	if id == 0 {
+		// 所有记录都 >= targetTimestamp，没有需要删除的
+		return 0, nil
+	}
+	result := LOG_DB.Where("id <= ?", id).Delete(&Log{})
 	return result.RowsAffected, result.Error
 }
 
@@ -348,10 +348,9 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 
 	// 执行查询
 	var results []HourlyData
-	err := LOG_DB.Model(&Log{}).
-		Select(field).
-		Where("created_at >= ? AND created_at < ?", startOfDay.Unix(), endOfDay.Unix()).
-		Group(hourExpr).
+	tx := LOG_DB.Model(&Log{}).Select(field)
+	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
+	err := tx.Group(hourExpr).
 		Scan(&results).Error
 
 	if err != nil {
@@ -397,10 +396,9 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 
 	// 执行查询
 	var results []HourlyData
-	err := LOG_DB.Model(&Log{}).
-		Select(field).
-		Where("user_id = ? AND created_at >= ? AND created_at < ?", userId, startOfDay.Unix(), endOfDay.Unix()).
-		Group(hourExpr).
+	tx := LOG_DB.Model(&Log{}).Select(field).Where("user_id = ?", userId)
+	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
+	err := tx.Group(hourExpr).
 		Scan(&results).Error
 
 	if err != nil {
@@ -420,155 +418,100 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	return hourlyData, nil
 }
 
-func GetAllMetrics() (rpm int64, tpm int64, quotaSum int64, err error) {
-	// 获取当前时间戳
-	currentTime := time.Now().Unix()
-	// 一分钟前的时间戳
-	oneMinuteAgo := currentTime - 60
-
-	// 单次查询获取所有指标
-	err = LOG_DB.Model(&Log{}).
-		Select(`
-            COUNT(*) as rpm, 
-            COALESCE(SUM(prompt_tokens + completion_tokens), 0) as tpm,
-            COALESCE(SUM(quota), 0) as quota_sum
-        `).
-		Where("created_at >= ? AND created_at <= ?",
-			oneMinuteAgo, currentTime).
-		Row().Scan(&rpm, &tpm, &quotaSum)
-
-	if err != nil {
-		return 0, 0, 0, err
-	}
-
-	return rpm, tpm, quotaSum, nil
-}
-
-func GetUserMetrics(userId int) (rpm int64, tpm int64, quotaSum int64, err error) {
-	// 获取当前时间戳
-	currentTime := time.Now().Unix()
-	// 一分钟前的时间戳
-	oneMinuteAgo := currentTime - 60
-
-	// 单次查询获取所有指标
-	err = LOG_DB.Model(&Log{}).
-		Select(`
-            COUNT(*) as rpm, 
-            COALESCE(SUM(prompt_tokens + completion_tokens), 0) as tpm,
-            COALESCE(SUM(quota), 0) as quota_sum
-        `).
-		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
-			userId, oneMinuteAgo, currentTime).
-		Row().Scan(&rpm, &tpm, &quotaSum)
-
-	if err != nil {
-		return 0, 0, 0, err
-	}
-
-	return rpm, tpm, quotaSum, nil
-}
-
-// GetDailyMetrics 获取当天所有用户的请求总数和配额消耗总数
-func GetDailyMetrics() (requestPD int64, usedPD int64, err error) {
-	// 获取当天开始和结束的时间戳
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
-
-	// 单次查询获取当天的统计数据
-	err = LOG_DB.Model(&Log{}).
-		Select(`
-            COUNT(*) as request_pd,
-            COALESCE(SUM(quota), 0) as used_pd
-        `).
-		Where("created_at >= ? AND created_at <= ?",
-			startOfDay, endOfDay).
-		Row().Scan(&requestPD, &usedPD)
-
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return requestPD, usedPD, nil
-}
-
-// GetUserDailyMetrics 获取指定用户当天的请求总数和配额消耗总数
-func GetUserDailyMetrics(userId int) (requestPD int64, usedPD int64, err error) {
-	// 获取当天开始和结束的时间戳
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
-
-	// 单次查询获取当天的统计数据
-	err = LOG_DB.Model(&Log{}).
-		Select(`
-            COUNT(*) as request_pd,
-            COALESCE(SUM(quota), 0) as used_pd
-        `).
-		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
-			userId, startOfDay, endOfDay).
-		Row().Scan(&requestPD, &usedPD)
-
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return requestPD, usedPD, nil
-}
-
 // ModelQuotaStats 模型消耗统计结构
 type ModelQuotaStats struct {
 	ModelName string `json:"model_name"`
 	QuotaSum  int64  `json:"quota_sum"`
 }
 
-// GetTopModelQuotaStats 管理员查询当天消耗最高的前5个模型
-func GetTopModelQuotaStats() ([]ModelQuotaStats, error) {
-	// 获取当天的开始和结束时间戳
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
-	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
-
-	var stats []ModelQuotaStats
-
-	err := LOG_DB.Model(&Log{}).
-		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum").
-		Where("created_at >= ? AND created_at <= ?", startOfDay, endOfDay).
-		Group("model_name").
-		Order("quota_sum DESC").
-		Limit(5).
-		Scan(&stats).Error
-
-	if err != nil {
-		return nil, err
-	}
-
-	return stats, nil
+// DashboardMetrics Dashboard 页面所需的所有指标
+type DashboardMetrics struct {
+	RPM        int64             // 最近一分钟请求数
+	TPM        int64             // 最近一分钟 token 数
+	QuotaPM    int64             // 最近一分钟配额消耗
+	RequestPD  int64             // 今日请求总数
+	UsedPD     int64             // 今日配额消耗总数
+	ModelStats []ModelQuotaStats // 今日 Top 5 模型
 }
 
-// GetUserTopModelQuotaStats 普通用户查询自己当天消耗最高的前5个模型
-func GetUserTopModelQuotaStats(userId int) ([]ModelQuotaStats, error) {
-	// 获取当天的开始和结束时间戳
+// GetAllDashboardMetrics 一次性获取管理员 Dashboard 所有指标
+func GetAllDashboardMetrics() (*DashboardMetrics, error) {
+	return getDashboardMetrics(0)
+}
+
+// GetUserDashboardMetrics 一次性获取用户 Dashboard 所有指标
+func GetUserDashboardMetrics(userId int) (*DashboardMetrics, error) {
+	return getDashboardMetrics(userId)
+}
+
+// getDashboardMetrics 内部实现，userId=0 表示查所有用户
+func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	now := time.Now()
+	currentTime := now.Unix()
+	oneMinuteAgo := currentTime - 60
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location()).Unix()
 
-	var stats []ModelQuotaStats
+	// 预计算 today 的 id 范围，复用给查询2和查询3，避免重复二分查找
+	todayStartId, _ := findMaxIdByTimestampGeneric(LOG_DB, "logs", startOfDay)
+	todayEndId, todayEndFound := findMaxIdByTimestampGeneric(LOG_DB, "logs", endOfDay+1)
 
-	err := LOG_DB.Model(&Log{}).
-		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum").
-		Where("user_id = ? AND created_at >= ? AND created_at <= ?",
-			userId, startOfDay, endOfDay).
-		Group("model_name").
-		Order("quota_sum DESC").
-		Limit(5).
-		Scan(&stats).Error
+	applyTodayIdRange := func(tx *gorm.DB) *gorm.DB {
+		if todayStartId > 0 {
+			tx = tx.Where("id > ?", todayStartId)
+		}
+		if todayEndFound && todayEndId == 0 {
+			tx = tx.Where("1 = 0")
+		} else if todayEndId > 0 {
+			tx = tx.Where("id <= ?", todayEndId)
+		}
+		return tx
+	}
 
-	if err != nil {
+	applyUserFilter := func(tx *gorm.DB) *gorm.DB {
+		if userId > 0 {
+			tx = tx.Where("user_id = ?", userId)
+		}
+		return tx
+	}
+
+	result := &DashboardMetrics{}
+
+	// 查询1: 最近一分钟指标
+	txMinute := LOG_DB.Model(&Log{}).
+		Select(`
+			COUNT(*) as rpm,
+			COALESCE(SUM(prompt_tokens + completion_tokens), 0) as tpm,
+			COALESCE(SUM(quota), 0) as quota_sum
+		`)
+	txMinute = applyUserFilter(txMinute)
+	txMinute = applyLogIdRange(txMinute, oneMinuteAgo, currentTime)
+	if err := txMinute.Row().Scan(&result.RPM, &result.TPM, &result.QuotaPM); err != nil {
 		return nil, err
 	}
 
-	return stats, nil
+	// 查询2: 今日统计（复用预计算的 today id 范围）
+	txDaily := LOG_DB.Model(&Log{}).
+		Select(`
+			COUNT(*) as request_pd,
+			COALESCE(SUM(quota), 0) as used_pd
+		`)
+	txDaily = applyUserFilter(txDaily)
+	txDaily = applyTodayIdRange(txDaily)
+	if err := txDaily.Row().Scan(&result.RequestPD, &result.UsedPD); err != nil {
+		return nil, err
+	}
+
+	// 查询3: Top 5 模型（复用预计算的 today id 范围）
+	txModels := LOG_DB.Model(&Log{}).
+		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum")
+	txModels = applyUserFilter(txModels)
+	txModels = applyTodayIdRange(txModels)
+	if err := txModels.Group("model_name").Order("quota_sum DESC").Limit(5).Scan(&result.ModelStats).Error; err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
 
 // GetLogsByVideoTaskId 通过视频任务ID查找日志记录
