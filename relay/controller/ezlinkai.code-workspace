@@ -19,10 +19,10 @@
 			"path": "../../../key-provider"
 		},
 		{
-			"path": "../../../new-api"
+			"path": "../../../auto-azure"
 		},
 		{
-			"path": "../../../auto-azure"
+			"path": "../../../new-api"
 		}
 	],
 	"settings": {}

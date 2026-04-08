@@ -141,13 +141,13 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
+	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
 	return nil
 }
 
-// recordClaudeConsumption 记录 Claude 消费日志
-func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64) {
+// recordOpenaiResponseConsumption 记录 OpenAI Response API 消费日志
+func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -178,6 +178,18 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	if mappedModel, ok := modelMapping[originModel]; ok && mappedModel != "" {
 		other = appendModelMappingInfo(other, originModel, mappedModel)
 	}
+	// 追加计费详情
+	billingDetails := map[string]interface{}{
+		"billing_type":     "token",
+		"model_ratio":      modelRatio,
+		"completion_ratio": common.GetCompletionRatio(modelName),
+		"group_ratio":      groupRatio,
+	}
+	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil && usageMetadata.InputTokensDetails.CachedTokens > 0 {
+		billingDetails["cached_tokens"] = usageMetadata.InputTokensDetails.CachedTokens
+		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
+	}
+	other = appendBillingDetails(other, billingDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))

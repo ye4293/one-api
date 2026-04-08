@@ -58,12 +58,41 @@ var ModelList = []string{
 	// GPT-5.2 系列 (2025-12-11)
 	"gpt-5.2", "gpt-5.2-2025-12-11", "gpt-5.2-chat-latest",
 	"gpt-5.2-pro", "gpt-5.2-pro-2025-12-11",
+	"gpt-5.2-codex",
+
+	// GPT-5.3 系列 (Codex)
+	"gpt-5.3-codex",
+
+	// GPT-5.4 系列 (2026-03)
+	"gpt-5.4", "gpt-5.4-2026-03-05",
+	"gpt-5.4-pro", "gpt-5.4-pro-2026-03-05",
+	"gpt-5.4-mini", "gpt-5.4-mini-2026-03-17",
+	"gpt-5.4-nano", "gpt-5.4-nano-2026-03-17",
+
+	// O3 补充
+	"o3-pro", "o3-pro-2025-06-10",
+
+	// Deep Research 系列
+	"o3-deep-research", "o3-deep-research-2025-06-26",
+	"o4-mini-deep-research", "o4-mini-deep-research-2025-06-26",
+
+	// Codex 补充
+	"codex-mini-latest",
+
+	// Computer Use
+	"computer-use-preview", "computer-use-preview-2025-03-11",
 
 	// 音频和实时模型
-	"gpt-audio", "gpt-audio-2025-08-28", "gpt-realtime", "gpt-realtime-2025-08-28",
+	"gpt-audio", "gpt-audio-2025-08-28", "gpt-audio-1.5", "gpt-audio-mini",
+	"gpt-realtime", "gpt-realtime-2025-08-28", "gpt-realtime-1.5", "gpt-realtime-mini",
 
 	// 图像模型
-	"dall-e-2", "dall-e-3", "gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5", "gpt-image-1.5-mini", "chatgpt-image-latest",
+	"dall-e-2", "dall-e-3", "gpt-image-1", "gpt-image-1-mini",
+	"gpt-image-1.5", "gpt-image-1.5-2025-12-16", "gpt-image-1.5-mini", "chatgpt-image-latest",
+
+	// 语音识别
+	"whisper-1",
+	"gpt-4o-transcribe-diarize",
 
 	// 嵌入模型
 	"text-embedding-ada-002", "text-embedding-3-small", "text-embedding-3-large",
@@ -77,10 +106,11 @@ var ModelList = []string{
 	// TTS 模型
 	"tts-1", "tts-1-1106", "tts-1-hd", "tts-1-hd-1106",
 
-	// 语音识别
-	"whisper-1",
+	// 开源模型
+	"gpt-oss-120b", "gpt-oss-20b",
 
-	"sora-2	", "sora-2-pro",
+	// 视频模型
+	"sora-2", "sora-2-pro",
 }
 
 var ModelDetails = []model.APIModel{

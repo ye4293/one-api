@@ -252,22 +252,36 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	var logContent string
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
+	cachedTokens := usage.PromptTokensDetails.CachedTokens
 
 	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
 	billingModelName := meta.OriginModelName
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
-	// 先检查是否有固定价格
+	// 预先获取计费参数，避免后续重复调用
 	modelPrice := common.GetModelPrice(billingModelName, false)
+	completionRatio := common.GetCompletionRatio(billingModelName)
 	if modelPrice != -1 {
 		// 使用固定价格计费（按次计费）
 		quota = int64(modelPrice * 500000 * groupRatio)
 		logContent = fmt.Sprintf("模型固定价格 %.2f$，分组倍率 %.2f", modelPrice, groupRatio)
 	} else {
 		// 使用基于token的倍率计费
-		completionRatio := common.GetCompletionRatio(billingModelName)
-		quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+		if cachedTokens > 0 {
+			// 有缓存命中：从输入 token 中扣除缓存部分，缓存按 cacheRatio 折扣计费
+			cacheRatio := common.GetCacheRatio(billingModelName)
+			nonCachedPromptTokens := promptTokens - cachedTokens
+			if nonCachedPromptTokens < 0 {
+				nonCachedPromptTokens = 0
+			}
+			inputQuota := float64(nonCachedPromptTokens) * modelRatio * groupRatio
+			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * groupRatio
+			outputQuota := float64(completionTokens) * modelRatio * completionRatio * groupRatio
+			quota = int64(math.Ceil(inputQuota + cacheQuota + outputQuota))
+		} else {
+			quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+		}
 		if ratio != 0 && quota <= 0 {
 			quota = 1
 		}
@@ -294,6 +308,24 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		otherInfo := getChannelHistoryInfo(c)
 		// 追加模型重定向信息
 		otherInfo = appendModelMappingInfo(otherInfo, meta.OriginModelName, meta.ActualModelName)
+		// 追加计费详情
+		billingDetails := map[string]interface{}{
+			"group_ratio": groupRatio,
+		}
+		if modelPrice != -1 {
+			billingDetails["billing_type"] = "fixed_price"
+			billingDetails["model_price"] = modelPrice
+		} else {
+			billingDetails["billing_type"] = "token"
+			billingDetails["model_ratio"] = modelRatio
+			billingDetails["completion_ratio"] = completionRatio
+		}
+		// 追加缓存 token 信息
+		if cachedTokens > 0 {
+			billingDetails["cached_tokens"] = cachedTokens
+			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
+		}
+		otherInfo = appendBillingDetails(otherInfo, billingDetails)
 		// 获取 X-Request-ID
 		xRequestID := c.GetString("X-Request-ID")
 		xResponseID := c.GetString("x_response_id")
@@ -303,7 +335,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if meta.OriginModelName != "" {
 			logModelName = meta.OriginModelName
 		}
-		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, 0, xResponseID)
+		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, cachedTokens, xResponseID)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
@@ -348,6 +380,23 @@ func getChannelHistoryInfo(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// appendBillingDetails 向 other 字段追加计费详情 JSON
+func appendBillingDetails(other string, details map[string]interface{}) string {
+	if len(details) == 0 {
+		return other
+	}
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		logger.SysError("error marshalling billing details: " + err.Error())
+		return other
+	}
+	billingInfo := fmt.Sprintf("billingDetails:%s", string(detailsBytes))
+	if other != "" {
+		return other + ";" + billingInfo
+	}
+	return billingInfo
 }
 
 // appendModelMappingInfo 向 other 字段追加模型重定向信息
