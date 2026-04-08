@@ -2,20 +2,22 @@ package model
 
 import (
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
 type Image struct {
 	Id            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
 	TaskId        string `gorm:"type:varchar(255);index:idx_images_task_id,length:40" json:"task_id"`
-	Username      string `json:"username"`
-	ChannelId     int    `json:"channel_id"`
-	UserId        int    `json:"user_id"`
-	Model         string `json:"model"`
-	Status        string `json:"status"`
+	Username      string `gorm:"index:idx_images_username" json:"username"`
+	ChannelId     int    `gorm:"index:idx_images_channel_id" json:"channel_id"`
+	UserId        int    `gorm:"index:idx_images_user_id" json:"user_id"`
+	Model         string `gorm:"index:idx_images_model" json:"model"`
+	Status        string `gorm:"index:idx_images_status" json:"status"`
 	FailReason    string `json:"fail_reason"`
 	ImageId       string `json:"image_id"`
 	StoreUrl      string `json:"store_url"`
-	Provider      string `json:"provider"`
+	Provider      string `gorm:"index:idx_images_provider" json:"provider"`
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `gorm:"autoUpdateTime" json:"updated_at"`
 	Mode          string `json:"mode"`
@@ -24,6 +26,11 @@ type Image struct {
 	Detail        string `json:"detail"`
 	TotalDuration int    `json:"total_duration"`          // 总时长（秒）
 	Result        string `gorm:"type:text" json:"result"` // API 响应结果（JSON 格式）
+}
+
+// applyImageIdRange 将时间范围转为 id 范围并应用到 images 查询
+func applyImageIdRange(tx *gorm.DB, startTimestamp, endTimestamp int64) *gorm.DB {
+	return applyTimestampIdRange(tx, DB, "images", startTimestamp, endTimestamp)
 }
 
 func (image *Image) Insert() error {
@@ -68,6 +75,9 @@ func GetCurrentAllImagesAndCount(
 	// 初始化查询，直接指定模型
 	tx := DB.Model(&Image{})
 
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyImageIdRange(tx, startTimestamp, endTimestamp)
+
 	// 添加查询条件
 	if taskId != "" {
 		tx = tx.Where("task_id = ?", taskId)
@@ -80,12 +90,6 @@ func GetCurrentAllImagesAndCount(
 	}
 	if modelName != "" {
 		tx = tx.Where("model = ?", modelName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 	if channel != 0 {
 		tx = tx.Where("channel_id = ?", channel)
@@ -113,7 +117,7 @@ func GetCurrentAllImagesAndCount(
 
 	// 执行分页查询
 	err = tx.
-		Order("created_at DESC").
+		Order("id DESC").
 		Offset(offset).
 		Limit(pageSize).
 		Find(&images).Error
@@ -136,18 +140,13 @@ func GetCurrentUserImagesAndCount(
 	pageSize int,
 ) (images []Image, total int64, err error) {
 	// 初始化查询，并指定模型
-	tx := DB.Model(&Image{}) // 明确指定使用 Image 模型
+	tx := DB.Model(&Image{})
 
 	// 构建查询条件
 	tx = tx.Where("user_id = ?", userId)
 
-	// 添加时间范围条件
-	if startTimestamp > 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp > 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyImageIdRange(tx, startTimestamp, endTimestamp)
 
 	// 添加其他可选条件
 	if taskId != "" {
@@ -182,7 +181,7 @@ func GetCurrentUserImagesAndCount(
 
 	// 执行分页查询
 	err = tx.
-		Order("created_at DESC"). // 按创建时间降序
+		Order("id DESC").
 		Offset(offset).
 		Limit(pageSize).
 		Find(&images).Error
