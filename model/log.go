@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/config"
@@ -573,4 +574,207 @@ func UpdateLogQuotaAndTokens(videoTaskId string, quota int64, completionTokens i
 	}
 
 	return nil
+}
+
+// ===== 性能统计相关结构体和查询函数 =====
+
+// PerformanceStatSummary 性能统计汇总
+type PerformanceStatSummary struct {
+	TotalRequests       int64   `json:"total_requests"`
+	AvgDuration         float64 `json:"avg_duration"`
+	P50Duration         float64 `json:"p50_duration"`
+	P95Duration         float64 `json:"p95_duration"`
+	P99Duration         float64 `json:"p99_duration"`
+	AvgFirstWordLatency float64 `json:"avg_first_word_latency"`
+	P95FirstWordLatency float64 `json:"p95_first_word_latency"`
+	AvgSpeed            float64 `json:"avg_speed"`
+	SuccessCount        int64   `json:"success_count"`
+	ErrorCount          int64   `json:"error_count"`
+}
+
+// PerformanceStatTimeSeriesPoint 时间序列数据点
+type PerformanceStatTimeSeriesPoint struct {
+	Timestamp           int64   `json:"timestamp"`
+	TotalRequests       int64   `json:"total_requests"`
+	AvgDuration         float64 `json:"avg_duration"`
+	AvgFirstWordLatency float64 `json:"avg_first_word_latency"`
+	AvgSpeed            float64 `json:"avg_speed"`
+	SuccessRate         float64 `json:"success_rate"`
+}
+
+// PerformanceStatResult 性能统计完整结果
+type PerformanceStatResult struct {
+	Summary    PerformanceStatSummary           `json:"summary"`
+	Timeseries []PerformanceStatTimeSeriesPoint `json:"timeseries"`
+}
+
+// percentile 从已排序的 float64 切片中计算百分位数
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := p * float64(len(sorted)-1)
+	lower := int(math.Floor(idx))
+	upper := int(math.Ceil(idx))
+	if lower == upper || upper >= len(sorted) {
+		return sorted[lower]
+	}
+	frac := idx - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
+}
+
+// applyPerformanceFilters 将性能统计的通用过滤条件应用到查询
+func applyPerformanceFilters(tx *gorm.DB, logType int, startTimestamp, endTimestamp int64, modelName, username, tokenName string, channel int, userId int) *gorm.DB {
+	if logType != LogTypeUnknown {
+		tx = tx.Where("type = ?", logType)
+	}
+	tx = applyLogIdRange(tx, startTimestamp, endTimestamp)
+	if modelName != "" {
+		tx = tx.Where("model_name = ?", modelName)
+	}
+	if username != "" {
+		tx = tx.Where("username = ?", username)
+	}
+	if tokenName != "" {
+		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if channel != 0 {
+		tx = tx.Where("channel_id = ?", channel)
+	}
+	if userId > 0 {
+		tx = tx.Where("user_id = ?", userId)
+	}
+	return tx
+}
+
+// GetPerformanceStat 获取性能统计数据（管理员：全部数据）
+func GetPerformanceStat(logType int, startTimestamp, endTimestamp int64, modelName, username, tokenName string, channel int, bucketSeconds int64) (*PerformanceStatResult, error) {
+	return getPerformanceStat(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, 0, bucketSeconds)
+}
+
+// GetUserPerformanceStat 获取性能统计数据（普通用户：仅自己的数据）
+func GetUserPerformanceStat(userId int, logType int, startTimestamp, endTimestamp int64, modelName, tokenName string, channel int, bucketSeconds int64) (*PerformanceStatResult, error) {
+	return getPerformanceStat(logType, startTimestamp, endTimestamp, modelName, "", tokenName, channel, userId, bucketSeconds)
+}
+
+func getPerformanceStat(logType int, startTimestamp, endTimestamp int64, modelName, username, tokenName string, channel int, userId int, bucketSeconds int64) (*PerformanceStatResult, error) {
+	result := &PerformanceStatResult{}
+
+	// === 1. Summary: 聚合查询 ===
+	var summaryRow struct {
+		TotalRequests int64   `gorm:"column:total_requests"`
+		AvgDuration   float64 `gorm:"column:avg_duration"`
+		AvgFwl        float64 `gorm:"column:avg_fwl"`
+		AvgSpeed      float64 `gorm:"column:avg_speed"`
+		SuccessCount  int64   `gorm:"column:success_count"`
+		ErrorCount    int64   `gorm:"column:error_count"`
+	}
+
+	summaryTx := LOG_DB.Model(&Log{}).
+		Select(`
+			COUNT(*) as total_requests,
+			COALESCE(AVG(CASE WHEN duration > 0 THEN duration END), 0) as avg_duration,
+			COALESCE(AVG(CASE WHEN first_word_latency > 0 THEN first_word_latency END), 0) as avg_fwl,
+			COALESCE(AVG(CASE WHEN speed > 0 THEN speed END), 0) as avg_speed,
+			SUM(CASE WHEN type != ? THEN 1 ELSE 0 END) as success_count,
+			SUM(CASE WHEN type = ? THEN 1 ELSE 0 END) as error_count
+		`, LogTypeError, LogTypeError)
+	summaryTx = applyPerformanceFilters(summaryTx, logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, userId)
+
+	if err := summaryTx.Scan(&summaryRow).Error; err != nil {
+		return nil, fmt.Errorf("summary query failed: %w", err)
+	}
+
+	result.Summary = PerformanceStatSummary{
+		TotalRequests:       summaryRow.TotalRequests,
+		AvgDuration:         math.Round(summaryRow.AvgDuration*1000) / 1000,
+		AvgFirstWordLatency: math.Round(summaryRow.AvgFwl*1000) / 1000,
+		AvgSpeed:            math.Round(summaryRow.AvgSpeed*100) / 100,
+		SuccessCount:        summaryRow.SuccessCount,
+		ErrorCount:          summaryRow.ErrorCount,
+	}
+
+	// === 2. Summary: 百分位数计算（在 Go 中排序计算） ===
+	if summaryRow.TotalRequests > 0 {
+		// 获取所有 duration > 0 的值
+		var durations []float64
+		durationTx := applyPerformanceFilters(
+			LOG_DB.Model(&Log{}).Where("duration > 0"),
+			logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, userId,
+		)
+		if err := durationTx.Pluck("duration", &durations).Error; err != nil {
+			return nil, fmt.Errorf("duration percentile query failed: %w", err)
+		}
+
+		if len(durations) > 0 {
+			sort.Float64s(durations)
+			result.Summary.P50Duration = math.Round(percentile(durations, 0.50)*1000) / 1000
+			result.Summary.P95Duration = math.Round(percentile(durations, 0.95)*1000) / 1000
+			result.Summary.P99Duration = math.Round(percentile(durations, 0.99)*1000) / 1000
+		}
+
+		// 获取 first_word_latency 的 P95
+		var latencies []float64
+		latencyTx := applyPerformanceFilters(
+			LOG_DB.Model(&Log{}).Where("first_word_latency > 0"),
+			logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, userId,
+		)
+		if err := latencyTx.Pluck("first_word_latency", &latencies).Error; err != nil {
+			return nil, fmt.Errorf("latency percentile query failed: %w", err)
+		}
+
+		if len(latencies) > 0 {
+			sort.Float64s(latencies)
+			result.Summary.P95FirstWordLatency = math.Round(percentile(latencies, 0.95)*1000) / 1000
+		}
+	}
+
+	// === 3. Timeseries: 按时间桶聚合 ===
+	// 使用取模运算代替 FLOOR，兼容 MySQL 和 SQLite
+	bucketExpr := fmt.Sprintf("(created_at - created_at %% %d)", bucketSeconds)
+
+	type timeseriesRow struct {
+		Timestamp    int64   `gorm:"column:timestamp"`
+		TotalReqs    int64   `gorm:"column:total_requests"`
+		AvgDuration  float64 `gorm:"column:avg_duration"`
+		AvgFwl       float64 `gorm:"column:avg_fwl"`
+		AvgSpeed     float64 `gorm:"column:avg_speed"`
+		SuccessCount int64   `gorm:"column:success_count"`
+		TotalCount   int64   `gorm:"column:total_count"`
+	}
+
+	var tsRows []timeseriesRow
+	tsTx := LOG_DB.Model(&Log{}).
+		Select(fmt.Sprintf(`
+			%s as timestamp,
+			COUNT(*) as total_requests,
+			COALESCE(AVG(CASE WHEN duration > 0 THEN duration END), 0) as avg_duration,
+			COALESCE(AVG(CASE WHEN first_word_latency > 0 THEN first_word_latency END), 0) as avg_fwl,
+			COALESCE(AVG(CASE WHEN speed > 0 THEN speed END), 0) as avg_speed,
+			SUM(CASE WHEN type != %d THEN 1 ELSE 0 END) as success_count,
+			COUNT(*) as total_count
+		`, bucketExpr, LogTypeError))
+	tsTx = applyPerformanceFilters(tsTx, logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, userId)
+
+	if err := tsTx.Group(bucketExpr).Order("timestamp ASC").Scan(&tsRows).Error; err != nil {
+		return nil, fmt.Errorf("timeseries query failed: %w", err)
+	}
+
+	result.Timeseries = make([]PerformanceStatTimeSeriesPoint, 0, len(tsRows))
+	for _, row := range tsRows {
+		successRate := 0.0
+		if row.TotalCount > 0 {
+			successRate = math.Round(float64(row.SuccessCount)/float64(row.TotalCount)*10000) / 10000
+		}
+		result.Timeseries = append(result.Timeseries, PerformanceStatTimeSeriesPoint{
+			Timestamp:           row.Timestamp,
+			TotalRequests:       row.TotalReqs,
+			AvgDuration:         math.Round(row.AvgDuration*1000) / 1000,
+			AvgFirstWordLatency: math.Round(row.AvgFwl*1000) / 1000,
+			AvgSpeed:            math.Round(row.AvgSpeed*100) / 100,
+			SuccessRate:         successRate,
+		})
+	}
+
+	return result, nil
 }

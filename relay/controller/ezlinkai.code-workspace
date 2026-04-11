@@ -23,6 +23,9 @@
 		},
 		{
 			"path": "../../../new-api"
+		},
+		{
+			"path": "../../../tanhua-diary"
 		}
 	],
 	"settings": {}
