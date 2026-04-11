@@ -153,13 +153,13 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordClaudeConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency)
+	go recordClaudeConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
 	return nil
 }
 
 // recordClaudeConsumption 记录 Claude 消费日志
-func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *anthropic.Usage, firstWordLatency float64) {
+func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *anthropic.Usage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.SysError("error consuming token remain quota: " + err.Error())
@@ -190,6 +190,14 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 	if mappedModel, ok := modelMapping[originModel]; ok {
 		other = appendModelMappingInfo(other, originModel, mappedModel)
 	}
+	// 追加计费详情
+	billingDetails := map[string]interface{}{
+		"billing_type":     "token",
+		"model_ratio":      modelRatio,
+		"completion_ratio": common.GetCompletionRatio(modelName),
+		"group_ratio":      groupRatio,
+	}
+	other = appendBillingDetails(other, billingDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
