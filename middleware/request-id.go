@@ -9,8 +9,11 @@ import (
 
 func RequestId() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		// 用户传了 X-Request-ID 以用户为准，没传用系统生成的
+		// 优先使用 X-Request-ID，其次 Request-ID（均 case-insensitive），没传用系统生成的
 		id := c.GetHeader(logger.RequestIdKey)
+		if id == "" {
+			id = c.GetHeader("Request-ID")
+		}
 		if id == "" {
 			id = helper.GenRequestID()
 		}

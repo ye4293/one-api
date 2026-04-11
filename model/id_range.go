@@ -1,6 +1,10 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"database/sql"
+
+	"gorm.io/gorm"
+)
 
 // findMaxIdByTimestampGeneric 二分查找某张表中 created_at < timestamp 的最大 id。
 // 返回值：
@@ -8,13 +12,14 @@ import "gorm.io/gorm"
 //   - id == 0, found == true：表不为空，但所有记录都 >= timestamp（即没有满足条件的记录）
 //   - id == 0, found == false：表为空或查询出错
 func findMaxIdByTimestampGeneric(db *gorm.DB, tableName string, timestamp int64) (id int64, found bool) {
-	var minId, maxId int64
-	if err := db.Table(tableName).Select("MIN(id)").Scan(&minId).Error; err != nil || minId == 0 {
+	var nullableMinId, nullableMaxId sql.NullInt64
+	if err := db.Table(tableName).Select("MIN(id)").Scan(&nullableMinId).Error; err != nil || !nullableMinId.Valid || nullableMinId.Int64 == 0 {
 		return 0, false
 	}
-	if err := db.Table(tableName).Select("MAX(id)").Scan(&maxId).Error; err != nil || maxId == 0 {
+	if err := db.Table(tableName).Select("MAX(id)").Scan(&nullableMaxId).Error; err != nil || !nullableMaxId.Valid || nullableMaxId.Int64 == 0 {
 		return 0, false
 	}
+	minId, maxId := nullableMinId.Int64, nullableMaxId.Int64
 
 	// 边界快速判断：最小 id 的记录是否 >= timestamp
 	var createdAt int64

@@ -87,7 +87,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						content := conv.AsString(choice.Delta.Content)
 						if content != "" {
 							// 第一次有内容输出时缓存 ID
-							dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Chat Completions Stream Cache")
+							dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Chat Completions Stream Cache")
 							idCached = true
 							break // 已缓存，跳出循环
 						}
@@ -124,7 +124,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						for _, choice := range streamResponse.Choices {
 							if choice.Text != "" {
 								// 第一次有内容输出时缓存 ID
-								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), "Text Completions Stream Cache")
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Text Completions Stream Cache")
 								idCached = true
 								break // 已缓存，跳出循环
 							}
@@ -226,7 +226,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 
 	// 缓存 response_id 到 Redis
-	dbmodel.CacheResponseIdToChannel(textResponse.Id, c.GetInt("channel_id"), "Text Completions Cache")
+	dbmodel.CacheResponseIdToChannel(textResponse.Id, c.GetInt("channel_id"), c.GetInt("key_index"), "Text Completions Cache")
 	c.Set("x_response_id", textResponse.Id)
 
 	return nil, &textResponse.Usage

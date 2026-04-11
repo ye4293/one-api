@@ -274,7 +274,7 @@ func getSortedSatisfiedChannelPriorities(group string, model string, groupCol st
 	return priorities, nil
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, error) {
+func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -289,11 +289,8 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	}
 	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
 	if skipPriorityLevels == 0 && responseID != "" {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 尝试从Redis获取缓存的Channel - ResponseID: %s", responseID))
-		// 从 Redis 中获取缓存的 channel ID
-		cachedChannelID, err := GetClaudeCacheIdFromRedis(responseID)
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis查询结果 - ResponseID: %s, CachedChannelID: %s, Error: %v",
-			responseID, cachedChannelID, err))
+		// 从 Redis 中获取缓存的 channel ID 和 Key 索引
+		cachedChannelID, cachedKeyIndex, err := GetClaudeCacheIdFromRedis(responseID)
 		if err == nil && cachedChannelID != "" {
 			// 将 channel ID 字符串转换为整数
 			channelID, parseErr := strconv.Atoi(cachedChannelID)
@@ -328,9 +325,9 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 
 							// 如果都匹配，直接返回该 channel
 							if groupMatched && modelMatched {
-								logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d for responseID: %s, group: %s, model: %s",
-									channelID, responseID, group, model))
-								return channel, nil
+								logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d) for responseID: %s, group: %s, model: %s",
+									channelID, cachedKeyIndex, responseID, group, model))
+								return channel, cachedKeyIndex, nil
 							} else {
 								logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
 									channelID, groupMatched, modelMatched))
@@ -348,17 +345,17 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 		}
 	}
 
-	// 查询所有优先级。这里不能应用排除条件，否则 skipPriorityLevels 会按“剩余优先级”错位。
+	// 查询所有优先级。这里不能应用排除条件，否则 skipPriorityLevels 会按"剩余优先级"错位。
 	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
 	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v, excludeIds=%v", group, model, priorities, excludeIds)) // 调试用，生产环境可注释
 
 	if len(priorities) == 0 {
 		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s, excludeIds=%v", group, model, excludeIds))
-		return nil, errors.New("no priorities available")
+		return nil, -1, errors.New("no priorities available")
 	}
 
 	// 确定使用哪个优先级
@@ -386,7 +383,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 
 	err = channelQuery.Find(&channels).Error
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch channels: %w", err)
+		return nil, -1, fmt.Errorf("failed to fetch channels: %w", err)
 	}
 
 	if len(channels) == 0 {
@@ -408,7 +405,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 
 			err = fallbackQuery.Find(&channels).Error
 			if err != nil {
-				return nil, fmt.Errorf("failed to fetch channels in fallback: %w", err)
+				return nil, -1, fmt.Errorf("failed to fetch channels in fallback: %w", err)
 			}
 
 			if len(channels) > 0 {
@@ -418,7 +415,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 		}
 
 		if len(channels) == 0 {
-			return nil, errors.New("no channels available with the required priority and weight")
+			return nil, -1, errors.New("no channels available with the required priority and weight")
 		}
 	}
 
@@ -435,7 +432,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	}
 
 	if totalWeight == 0 {
-		return nil, errors.New("total weight of channels is zero")
+		return nil, -1, errors.New("total weight of channels is zero")
 	}
 
 	randSource := rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(10000)))
@@ -447,11 +444,11 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 		currentWeight += channelWeights[i]
 		if currentWeight >= weightThreshold {
 			// logger.SysLog(fmt.Sprintf("Selected channel %d (name=%s) with weight %d, threshold=%d", channel.Id, channel.Name, channelWeights[i], weightThreshold)) // 调试用，生产环境可注释
-			return &channel, nil
+			return &channel, -1, nil
 		}
 	}
 
-	return nil, errors.New("unable to select a channel based on weight")
+	return nil, -1, errors.New("unable to select a channel based on weight")
 }
 
 // ChannelCapabilityFilter 渠道能力过滤器类型
@@ -587,7 +584,8 @@ func CacheGetChannel(id int) (*Channel, error) {
 // id: Claude 响应 ID
 // channel: 渠道 ID
 // expire: 过期时间（分钟）
-func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
+// keyIndex: 多Key渠道的Key索引（< 0 表示不记录Key索引）
+func SetClaudeCacheIdToRedis(id string, channel string, expire int64, keyIndex int) error {
 	if !common.RedisEnabled {
 		return errors.New("redis disabled")
 	}
@@ -605,9 +603,15 @@ func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
 	cacheLength := fmt.Sprintf(common.CacheClaudeLength, id)
 	expireDuration := time.Duration(expire) * time.Minute
 
+	// 缓存值格式：channelId 或 channelId:keyIndex（多Key渠道）
+	cacheValue := channel
+	if keyIndex >= 0 {
+		cacheValue = fmt.Sprintf("%s:%d", channel, keyIndex)
+	}
+
 	// 原子性设置两个 key，使用 Pipeline 提高性能并保证一致性
 	pipe := common.RDB.Pipeline()
-	pipe.Set(context.Background(), cacheKey, channel, expireDuration)
+	pipe.Set(context.Background(), cacheKey, cacheValue, expireDuration)
 	pipe.Set(context.Background(), cacheLength, expire, expireDuration)
 
 	_, err := pipe.Exec(context.Background())
@@ -618,24 +622,31 @@ func SetClaudeCacheIdToRedis(id string, channel string, expire int64) error {
 	return nil
 }
 
-func GetClaudeCacheIdFromRedis(id string) (string, error) {
+// GetClaudeCacheIdFromRedis 从 Redis 获取缓存的渠道ID和Key索引
+// 返回 channelID 字符串、keyIndex（-1 表示无Key索引，兼容旧缓存）、error
+func GetClaudeCacheIdFromRedis(id string) (string, int, error) {
 	if !common.RedisEnabled {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis未启用 - ResponseID: %s", id))
-		return "", errors.New("redis disabled")
+		return "", -1, errors.New("redis disabled")
 	}
 	if id == "" {
-		logger.SysLog("[Claude Cache Debug] ResponseID为空")
-		return "", errors.New("empty id")
+		return "", -1, errors.New("empty id")
 	}
 	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 从Redis读取 - Key: %s, ResponseID: %s", cacheKey, id))
-	channel, err := common.RedisGet(cacheKey)
+	value, err := common.RedisGet(cacheKey)
 	if err != nil {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取失败 - Key: %s, Error: %v", cacheKey, err))
-		return "", err
+		return "", -1, err
 	}
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Redis读取成功 - Key: %s, ChannelID: %s", cacheKey, channel))
-	return channel, nil
+
+	// 解析缓存值：格式为 "channelId" 或 "channelId:keyIndex"
+	parts := strings.SplitN(value, ":", 2)
+	channelID := parts[0]
+	keyIndex := -1
+	if len(parts) == 2 {
+		if idx, parseErr := strconv.Atoi(parts[1]); parseErr == nil {
+			keyIndex = idx
+		}
+	}
+	return channelID, keyIndex, nil
 }
 
 // CacheResponseIdToChannel 缓存 response_id 到 channel_id 的映射（通用辅助函数）
@@ -644,25 +655,26 @@ func GetClaudeCacheIdFromRedis(id string) (string, error) {
 // 参数:
 //   - responseId: 响应 ID（如 chatcmpl-xxx, resp_xxx, msg_xxx, cmpl-xxx 等）
 //   - channelId: 渠道 ID（整数）
+//   - keyIndex: 多Key渠道的Key索引（< 0 表示不记录）
 //   - logPrefix: 日志前缀，用于区分不同的调用场景
 //
 // 功能:
 //   - 使用 24 小时 TTL 写入 Redis
 //   - Redis 写入失败不影响主流程，仅记录日志
 //   - 如果 responseId 为空或 channelId <= 0，则跳过
-func CacheResponseIdToChannel(responseId string, channelId int, logPrefix string) {
+func CacheResponseIdToChannel(responseId string, channelId int, keyIndex int, logPrefix string) {
 	if responseId == "" || channelId <= 0 {
 		return
 	}
 
 	// 使用 24 小时 TTL (1440 分钟)
 	expireMinutes := int64(1440)
-	if err := SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes); err != nil {
+	if err := SetClaudeCacheIdToRedis(responseId, fmt.Sprintf("%d", channelId), expireMinutes, keyIndex); err != nil {
 		// Redis 写入失败不影响主流程，只记录日志
-		logger.SysLog(fmt.Sprintf("[%s] Failed to cache response_id=%s to channel_id=%d: %v",
-			logPrefix, responseId, channelId, err))
+		logger.SysLog(fmt.Sprintf("[%s] Failed to cache response_id=%s to channel_id=%d keyIndex=%d: %v",
+			logPrefix, responseId, channelId, keyIndex, err))
 	} else {
-		logger.SysLog(fmt.Sprintf("[%s] Cached response_id=%s -> channel_id=%d (TTL: 24h)",
-			logPrefix, responseId, channelId))
+		logger.SysLog(fmt.Sprintf("[%s] Cached response_id=%s -> channel_id=%d keyIndex=%d (TTL: 24h)",
+			logPrefix, responseId, channelId, keyIndex))
 	}
 }

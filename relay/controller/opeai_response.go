@@ -396,7 +396,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
-	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), "OpenAI Response Cache")
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
 
 	return openaiResponse.Usage, nil
@@ -447,7 +447,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				}
 
 				// 缓存 response_id 到 Redis
-				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), "OpenAI Response Cache Stream")
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache Stream")
 				c.Set("x_response_id", streamResponse.Response.ID)
 
 				if len(streamResponse.Response.Output) > 0 {

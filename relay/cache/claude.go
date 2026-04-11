@@ -103,7 +103,7 @@ func HandleClaudeCache(c *gin.Context, responseID string, usage *anthropic.Usage
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备写入Redis - ResponseID: %s, ChannelID: %s, ExpireTime: %d分钟",
 			responseID, channelId, expireTime))
 
-		if err := dbmodel.SetClaudeCacheIdToRedis(responseID, channelId, expireTime); err != nil {
+		if err := dbmodel.SetClaudeCacheIdToRedis(responseID, channelId, expireTime, c.GetInt("key_index")); err != nil {
 			logger.Error(c.Request.Context(), fmt.Sprintf("[Claude Cache] 写入Redis失败 - ResponseID: %s, Error: %s",
 				responseID, err.Error()))
 		} else {

@@ -2307,7 +2307,7 @@ func RelaySoraCharacter(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelaySoraCharacter retry attempt %d/%d", retryTimes-i+1, retryTimes)
 
-		channel, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
 			break
