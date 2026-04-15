@@ -741,18 +741,23 @@ func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, 
 		}
 	}
 
-	// 处理特定Key的错误
 	if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
-		keyErr := channel.HandleKeyError(keyIndex, err.Error.Message, err.StatusCode, modelName)
-		if keyErr != nil {
-			logger.Errorf(ctx, "failed to handle key error for channel %d, key %d: %s",
-				channel.Id, keyIndex, keyErr.Error())
-		}
-
-		// 如果有gin.Context，将失败的Key索引添加到排除列表中，以便重试时跳过
+		// ① 同步：立即更新本次请求的重试排除列表，保证当前请求重试时跳过该 Key
 		if ginCtx != nil {
 			addExcludedKeyIndexToContext(ginCtx, keyIndex)
 		}
+
+		// ② 异步：缓存更新 + DB 持久化，不阻塞主流程
+		//    显式捕获不可变参数，避免闭包持有可能被外层修改的变量
+		chSnapshot := channel
+		errMsg := err.Error.Message
+		errCode := err.StatusCode
+		chId := channel.Id
+		common.ChannelDisablePool.Go(func() {
+			if keyErr := chSnapshot.HandleKeyError(keyIndex, errMsg, errCode, modelName); keyErr != nil {
+				logger.SysError(fmt.Sprintf("HandleKeyError channel %d key %d: %v", chId, keyIndex, keyErr))
+			}
+		})
 	}
 
 	// 发送监控事件

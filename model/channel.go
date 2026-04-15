@@ -1351,35 +1351,29 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 		return nil
 	}
 
-	// Step 1: 获取进程内 per-channel 状态锁（所有写路径都经过这把锁）
+	// ======== Phase 1: 缓存优先（持锁，纯内存操作，< 0.1ms）========
+	//
+	// 获取 per-channel 状态锁，保护「读缓存 → 计算新状态 → 写缓存」的原子性。
+	// 不再持有 Redis 分布式锁：Phase2 DB 写入使用条件 UPDATE 保证幂等，
+	// 多节点极小概率的 last-write-wins 属于可接受的自愈场景（下次请求重触发）。
 	statusLock := getChannelStatusLock(channel.Id)
 	statusLock.Lock()
-	defer statusLock.Unlock()
 
-	// Step 2: 可选获取 Redis 分布式锁（保护多节点并发写同一渠道）
-	redisLockKey := fmt.Sprintf("channel:key_lock:%d", channel.Id)
-	redisToken := common.RedisLockAcquire(redisLockKey, 15*time.Second)
-	if redisToken != "" {
-		defer common.RedisLockRelease(redisLockKey, redisToken)
-	}
-	// 注意：redisToken == "" 表示 Redis 不可用或锁未获取到。
-	// 单节点部署时进程内锁已足够；多节点场景下强烈建议配置 Redis。
-
-	// Step 3: 从 DB 重新读取最新状态（不用调用方传入的过时快照）
-	fresh, err := GetChannelById(channel.Id, true)
+	// 从缓存读取深拷贝（纯内存，< 1μs；缓存未启用时降级为 DB 读取）。
+	// 使用深拷贝而非直接引用，确保后续修改不影响缓存中的共享对象。
+	fresh, err := CacheGetChannelCopy(channel.Id)
 	if err != nil {
-		return fmt.Errorf("HandleKeyError: failed to re-read channel %d: %w", channel.Id, err)
+		statusLock.Unlock()
+		return fmt.Errorf("HandleKeyError: failed to read channel %d: %w", channel.Id, err)
 	}
 
-	// Step 4: 幂等检查 —— auto_disabled 关闭或该 key 已经是禁用状态则跳过
-	if !fresh.AutoDisabled {
-		return nil
-	}
-	if fresh.GetKeyStatus(keyIndex) == common.ChannelStatusAutoDisabled {
+	// 幂等检查：auto_disabled 关闭或该 key 已禁用则跳过
+	if !fresh.AutoDisabled || fresh.GetKeyStatus(keyIndex) == common.ChannelStatusAutoDisabled {
+		statusLock.Unlock()
 		return nil
 	}
 
-	// Step 5: 在内存副本上应用变更
+	// 在内存副本上应用变更
 	if fresh.MultiKeyInfo.KeyStatusList == nil {
 		fresh.MultiKeyInfo.KeyStatusList = make(map[int]int)
 	}
@@ -1396,6 +1390,23 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	metadata.DisabledModel = &modelName
 	fresh.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
 
+	// 计算渠道整体状态
+	prevStatus := fresh.Status
+	fresh.checkAndUpdateChannelStatus()
+	channelNowDisabled := prevStatus != common.ChannelStatusAutoDisabled &&
+		fresh.Status == common.ChannelStatusAutoDisabled
+
+	// 立即更新缓存：后续新请求即刻看到该 key 已禁用，无需等待 DB 写入完成
+	newCacheStatus := fresh.Status
+	if !channelNowDisabled {
+		newCacheStatus = common.ChannelStatusEnabled
+	}
+	CacheUpdateChannelMultiKeyInfo(fresh.Id, fresh.MultiKeyInfo, newCacheStatus)
+
+	// 释放锁：Phase2 DB I/O 在锁外执行，大幅缩短锁持有时间
+	statusLock.Unlock()
+
+	// 记录日志（锁外，不影响临界区）
 	keys := fresh.ParseKeys()
 	maskedKey := "unknown"
 	if keyIndex < len(keys) {
@@ -1406,21 +1417,16 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 			maskedKey = k
 		}
 	}
-
 	logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s (status: %d)",
 		keyIndex, maskedKey, fresh.Id, errorMessage, statusCode))
 
-	// 检查是否所有 Key 都被禁用 → 更新渠道整体状态
-	prevStatus := fresh.Status
-	fresh.checkAndUpdateChannelStatus()
-	channelNowDisabled := prevStatus != common.ChannelStatusAutoDisabled &&
-		fresh.Status == common.ChannelStatusAutoDisabled
-
-	// Step 6: 异步发送通知（不阻塞主路径）
+	// 异步发送通知（不阻塞）
 	go fresh.notifyKeyDisabled(keyIndex, maskedKey, errorMessage, statusCode)
 
-	// Step 7: 单一原子事务写入所有变更
-	// 锁顺序：abilities 先于 channels（与 UpdateChannelStatusById 一致，防止死锁）
+	// ======== Phase 2: DB 持久化（锁外，I/O 操作）========
+	//
+	// 缓存已在 Phase1 更新完毕，此处只做持久化。
+	// abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，防死锁）。
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if channelNowDisabled {
 			if err := tx.Model(&Ability{}).
@@ -1434,9 +1440,8 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 			"multi_key_info": fresh.MultiKeyInfo,
 		}
 		if channelNowDisabled {
-			reason := "all keys disabled"
 			updates["status"] = common.ChannelStatusAutoDisabled
-			updates["auto_disabled_reason"] = reason
+			updates["auto_disabled_reason"] = "all keys disabled"
 			updates["auto_disabled_time"] = currentTime
 		}
 
@@ -1447,18 +1452,8 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 		}
 		return nil
 	})
-	if err != nil {
-		return err
-	}
 
-	// Step 8: DB 写入成功后，同步更新内存缓存，避免 CacheGetChannel 在下次全量同步
-	// 前返回过时的 key 状态（参考 new-api UpdateChannelStatus 的同步策略）
-	newStatus := fresh.Status
-	if !channelNowDisabled {
-		newStatus = common.ChannelStatusEnabled // 渠道未被禁用，仅 key 状态变更
-	}
-	CacheUpdateChannelMultiKeyInfo(fresh.Id, fresh.MultiKeyInfo, newStatus)
-	return nil
+	return err
 }
 
 // notifyKeyDisabled 发送Key禁用邮件通知
