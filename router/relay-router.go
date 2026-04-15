@@ -201,6 +201,11 @@ func SetRelayRouter(router *gin.Engine) {
 	doubaoApiRouter.Use(middleware.TokenAuth()).GET("/tasks/:taskid", controller.RelayDouBaoVideoResultById)
 	doubaoApiRouter.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayVideoGenerate)
 
+	// 豆包 v2 路由组 - 带 doubao/ 前缀，走独立 controller + 后台轮询器
+	doubaoV2Router := router.Group("/doubao/api/v3/contents/generations")
+	doubaoV2Router.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayDoubaoVideoCreate)
+	doubaoV2Router.Use(middleware.TokenAuth()).GET("/tasks/:taskId", controller.RelayDoubaoVideoResult)
+
 	// Runway AI 路由组 - 在官方API路径中间插入"runway"
 	// Runway API 使用直接代理模式，不需要 Distribute 中间件
 	runwayRouter := router.Group("/runway/v1")
