@@ -50,6 +50,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
+	github.com/volcengine/volcengine-go-sdk v1.2.23 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 )
 
