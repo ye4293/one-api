@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	doubaomodel "github.com/songquanpeng/one-api/relay/channel/doubao"
@@ -79,6 +80,9 @@ func RelayDoubaoVideoCreate(c *gin.Context) {
 	if channel.BaseURL != nil && *channel.BaseURL != "" {
 		meta.BaseURL = *channel.BaseURL
 	}
+
+	// 注入回调地址，让豆包上游在任务完成后主动通知我们
+	body = injectDoubaoCallbackURL(ctx, body)
 
 	adaptor := &doubaomodel.VideoAdaptor{}
 	resp, err := adaptor.DoCreate(ctx, meta, body)
@@ -329,4 +333,31 @@ func HandleDoubaoCallback(c *gin.Context) {
 	updateDoubaoTaskStatus(ctx, taskID, videoTask, callbackResp)
 
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+}
+
+// ─── 工具函数 ─────────────────────────────────────────────────────────────────
+
+// injectDoubaoCallbackURL 在请求体中注入 callback_url 字段。
+// 如果 ServerAddress 未配置或 body 解析失败，返回原始 body 不做修改。
+func injectDoubaoCallbackURL(ctx context.Context, body []byte) []byte {
+	if config.ServerAddress == "" {
+		logger.Error(ctx, "[doubao] ServerAddress not configured, skipping callback_url injection")
+		return body
+	}
+	callbackURL := config.ServerAddress + "/doubao/internal/callback"
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao] failed to parse body for callback injection: %v", err))
+		return body
+	}
+	req["callback_url"] = callbackURL
+
+	injected, err := json.Marshal(req)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao] failed to re-marshal body after callback injection: %v", err))
+		return body
+	}
+	logger.Info(ctx, fmt.Sprintf("[doubao] callback_url injected: %s", callbackURL))
+	return injected
 }
