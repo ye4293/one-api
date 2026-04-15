@@ -843,6 +843,8 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		if credentialsJSON == "" {
 			log.Printf("[VEO任务创建] ⚠️  未能保存凭证，查询时将使用当前渠道配置 - 任务:%s", taskId)
 		}
+	}else if provider == "xai" {
+		credentialsJSON = meta.APIKey
 	}
 
 	// 根据模型名称确定最终的视频类型

@@ -31,10 +31,8 @@ func GetAdminDashboard(c *gin.Context) {
 		return
 	}
 
-	// 获取所有用户的总配额和已使用配额
-
-	// 获取最近一分钟的统计数据
-	rpm, tpm, quotaPM, err := model.GetAllMetrics()
+	// 一次性获取所有 Dashboard 指标
+	metrics, err := model.GetAllDashboardMetrics()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -43,34 +41,16 @@ func GetAdminDashboard(c *gin.Context) {
 		return
 	}
 
-	requestPd, usedPd, err := model.GetDailyMetrics()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Failed to get metrics: " + err.Error(),
-		})
-		return
-	}
-
-	var modelStats []model.ModelQuotaStats
-	modelStats, err = model.GetTopModelQuotaStats()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Failed to get model statistics: " + err.Error(),
-		})
-		return
-	}
 	// 构造返回数据
 	dashboard := DashboardData{
 		CurrentQuota: user.Quota,
 		UsedQuota:    user.UsedQuota,
-		TPM:          tpm,
-		RPM:          rpm,
-		QuotaPM:      quotaPM,
-		RequestPD:    requestPd,
-		UsedPD:       usedPd,
-		ModelStats:   modelStats, // 添加模型统计数据
+		TPM:          metrics.TPM,
+		RPM:          metrics.RPM,
+		QuotaPM:      metrics.QuotaPM,
+		RequestPD:    metrics.RequestPD,
+		UsedPD:       metrics.UsedPD,
+		ModelStats:   metrics.ModelStats,
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -81,7 +61,7 @@ func GetAdminDashboard(c *gin.Context) {
 }
 
 func GetUserDashboard(c *gin.Context) {
-	// 获取管理员用户信息
+	// 获取用户信息
 	userId := c.GetInt("id")
 	user, err := model.GetUserById(userId, false)
 	if err != nil {
@@ -92,8 +72,8 @@ func GetUserDashboard(c *gin.Context) {
 		return
 	}
 
-	// 获取最近一分钟的统计数据
-	rpm, tpm, quotaPM, err := model.GetUserMetrics(userId)
+	// 一次性获取所有 Dashboard 指标
+	metrics, err := model.GetUserDashboardMetrics(userId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -102,33 +82,16 @@ func GetUserDashboard(c *gin.Context) {
 		return
 	}
 
-	requestPd, usedPd, err := model.GetUserDailyMetrics(userId)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Failed to get metrics: " + err.Error(),
-		})
-		return
-	}
-	var modelStats []model.ModelQuotaStats
-	modelStats, err = model.GetUserTopModelQuotaStats(userId)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "Failed to get model statistics: " + err.Error(),
-		})
-		return
-	}
 	// 构造返回数据
 	dashboard := DashboardData{
 		CurrentQuota: user.Quota,
 		UsedQuota:    user.UsedQuota,
-		TPM:          tpm,
-		RPM:          rpm,
-		QuotaPM:      quotaPM,
-		RequestPD:    requestPd,
-		UsedPD:       usedPd,
-		ModelStats:   modelStats, // 添加模型统计数据
+		TPM:          metrics.TPM,
+		RPM:          metrics.RPM,
+		QuotaPM:      metrics.QuotaPM,
+		RequestPD:    metrics.RequestPD,
+		UsedPD:       metrics.UsedPD,
+		ModelStats:   metrics.ModelStats,
 	}
 
 	c.JSON(http.StatusOK, gin.H{

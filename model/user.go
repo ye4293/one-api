@@ -495,38 +495,13 @@ func GetUsernameById(id int) (username string) {
 }
 
 // CompensateVideoTaskQuota 补偿视频任务失败时的用户配额
-// 此函数会：1. 增加用户余额 2. 减少已使用配额 3. 减少请求次数
+// 单条 SQL 同时更新余额、已使用配额和请求次数
 func CompensateVideoTaskQuota(userId int, quota int64) error {
-	// 开启事务以确保所有操作的原子性
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 1. 增加用户余额
-	err := tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", quota)).Error
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	// 2. 减少用户已使用配额和请求次数
-	err = tx.Model(&User{}).Where("id = ?", userId).Updates(
+	return DB.Model(&User{}).Where("id = ?", userId).Updates(
 		map[string]interface{}{
+			"quota":         gorm.Expr("quota + ?", quota),
 			"used_quota":    gorm.Expr("used_quota - ?", quota),
 			"request_count": gorm.Expr("request_count - 1"),
 		},
 	).Error
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	// 提交事务
-	return tx.Commit().Error
 }

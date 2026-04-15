@@ -4334,42 +4334,42 @@ func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data str
 
 	logger.Debugf(ctx, "Image data read successfully: URL=%s, Size=%d bytes (elapsed: %v)", imageURL, len(imageBytes), time.Since(startTime))
 
-	// 获取Content-Type
-	contentType := resp.Header.Get("Content-Type")
+	// 获取Content-Type；仅当为 image/* 时才信任（CDN 可能误返回 multipart/form-data 等，会导致 Vertex/Gemini 400）
+	contentTypeHdr := resp.Header.Get("Content-Type")
+	baseMIME := strings.TrimSpace(strings.ToLower(strings.SplitN(contentTypeHdr, ";", 2)[0]))
+	genericBinary := baseMIME == "" || baseMIME == "application/octet-stream" || baseMIME == "binary/octet-stream" || baseMIME == "application/x-octet-stream" || baseMIME == "text/plain"
+	nonImage := !strings.HasPrefix(baseMIME, "image/")
 
-	// 如果Content-Type为空或者是通用二进制类型，需要推断真实类型
-	// 常见的通用二进制类型：application/octet-stream, binary/octet-stream, application/x-octet-stream, text/plain
-	if contentType == "" || contentType == "application/octet-stream" || contentType == "binary/octet-stream" || contentType == "application/x-octet-stream" || contentType == "text/plain" {
-		// 优先尝试从URL扩展名推断
+	contentType := contentTypeHdr
+	if genericBinary || nonImage {
+		if nonImage && baseMIME != "" && !genericBinary {
+			logger.Debugf(ctx, "Image download: ignoring server Content-Type %q (not image/*), inferring from URL or magic bytes", contentTypeHdr)
+		}
 		inferredType := inferContentTypeFromURL(imageURL)
 		if inferredType != "" {
-			logger.Debugf(ctx, "Content-Type is '%s', inferred from URL extension: %s", contentType, inferredType)
+			logger.Debugf(ctx, "Content-Type inferred from URL extension: %s (was %q)", inferredType, contentTypeHdr)
 			contentType = inferredType
 		} else {
-			// URL没有扩展名，尝试从图片数据的魔数推断
 			inferredType = detectImageTypeByMagicBytes(imageBytes)
 			if inferredType != "" {
-				logger.Debugf(ctx, "Content-Type is '%s', inferred from magic bytes: %s", contentType, inferredType)
+				logger.Debugf(ctx, "Content-Type inferred from magic bytes: %s (was %q)", inferredType, contentTypeHdr)
 				contentType = inferredType
-			} else if contentType == "" {
+			} else {
 				contentType = "application/octet-stream"
 			}
 		}
 	}
 
-	// 不限制图片类型，直接使用获取到的Content-Type
-	// 把类型验证交给Gemini官方API处理
 	logger.Debugf(ctx, "Final Content-Type for image: %s", contentType)
 
-	// 转换为base64
 	base64Data = base64.StdEncoding.EncodeToString(imageBytes)
 
-	// 标准化MIME类型，但不限制类型
-	switch contentType {
+	mimeBase := strings.TrimSpace(strings.ToLower(strings.SplitN(contentType, ";", 2)[0]))
+	switch mimeBase {
 	case "image/jpg":
 		mimeType = "image/jpeg"
 	default:
-		mimeType = contentType
+		mimeType = mimeBase
 	}
 
 	// 所有类型都转换为base64，让Gemini官方API判断是否支持

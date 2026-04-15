@@ -192,3 +192,83 @@ func DeleteHistoryLogs(c *gin.Context) {
 	})
 	return
 }
+
+// parseTimeBucket 将前端传入的时间粒度字符串转换为秒数
+func parseTimeBucket(bucket string) int64 {
+	switch bucket {
+	case "15m":
+		return 900
+	case "1h":
+		return 3600
+	default: // "5m" 或其他
+		return 300
+	}
+}
+
+func GetLogsPerformanceStat(c *gin.Context) {
+	logType, _ := strconv.Atoi(c.Query("type"))
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	tokenName := c.Query("token_name")
+	username := c.Query("username")
+	modelName := c.Query("model_name")
+	channel, _ := strconv.Atoi(c.Query("channel"))
+	bucketSeconds := parseTimeBucket(c.Query("time_bucket"))
+
+	if startTimestamp == 0 || endTimestamp == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "start_timestamp and end_timestamp are required",
+		})
+		return
+	}
+
+	result, err := model.GetPerformanceStat(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, bucketSeconds)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    result,
+	})
+}
+
+func GetLogsSelfPerformanceStat(c *gin.Context) {
+	userId := c.GetInt("id")
+	logType, _ := strconv.Atoi(c.Query("type"))
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	tokenName := c.Query("token_name")
+	modelName := c.Query("model_name")
+	channel, _ := strconv.Atoi(c.Query("channel"))
+	bucketSeconds := parseTimeBucket(c.Query("time_bucket"))
+
+	if startTimestamp == 0 || endTimestamp == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "start_timestamp and end_timestamp are required",
+		})
+		return
+	}
+
+	result, err := model.GetUserPerformanceStat(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, channel, bucketSeconds)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    result,
+	})
+}

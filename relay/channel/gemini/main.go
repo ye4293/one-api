@@ -113,6 +113,18 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 			MaxOutputTokens: textRequest.MaxTokens,
 		},
 	}
+
+	// Handle response_format -> responseMimeType + responseSchema
+	if textRequest.ResponseFormat != nil &&
+		(textRequest.ResponseFormat.Type == "json_object" || textRequest.ResponseFormat.Type == "json_schema") {
+		geminiRequest.GenerationConfig.ResponseMimeType = "application/json"
+		if textRequest.ResponseFormat.Type == "json_schema" && len(textRequest.ResponseFormat.JSONSchema) > 0 {
+			if schema, ok := textRequest.ResponseFormat.JSONSchema["schema"]; ok {
+				geminiRequest.GenerationConfig.ResponseSchema = removeAdditionalProperties(schema, 0)
+			}
+		}
+	}
+
 	// Handle thinking models
 	baseModel := textRequest.Model
 	if strings.HasSuffix(baseModel, "-thinking") {
@@ -1075,4 +1087,42 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError), nil
 	}
 	return nil, &usage
+}
+
+// removeAdditionalProperties 递归清理 JSON Schema 中 Gemini 不支持的字段
+func removeAdditionalProperties(schema any, depth int) any {
+	if depth >= 5 {
+		return schema
+	}
+	v, ok := schema.(map[string]any)
+	if !ok || len(v) == 0 {
+		return schema
+	}
+	delete(v, "title")
+	delete(v, "$schema")
+	typeVal, exists := v["type"]
+	if !exists || (typeVal != "object" && typeVal != "array") {
+		return schema
+	}
+	switch typeVal {
+	case "object":
+		delete(v, "additionalProperties")
+		if properties, ok := v["properties"].(map[string]any); ok {
+			for key, value := range properties {
+				properties[key] = removeAdditionalProperties(value, depth+1)
+			}
+		}
+		for _, field := range []string{"allOf", "anyOf", "oneOf"} {
+			if nested, ok := v[field].([]any); ok {
+				for i, item := range nested {
+					nested[i] = removeAdditionalProperties(item, depth+1)
+				}
+			}
+		}
+	case "array":
+		if items, ok := v["items"].(map[string]any); ok {
+			v["items"] = removeAdditionalProperties(items, depth+1)
+		}
+	}
+	return v
 }

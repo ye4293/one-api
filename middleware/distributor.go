@@ -90,7 +90,11 @@ func Distribute() func(c *gin.Context) {
 				}
 				// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
 				responseID := c.GetHeader("X-Response-ID")
-				channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
+				var cachedKeyIndex int
+				channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
+				if cachedKeyIndex >= 0 {
+					c.Set("cached_key_index", cachedKeyIndex)
+				}
 				if err != nil {
 					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 					if channel != nil {
@@ -219,23 +223,39 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	// 获取实际使用的Key（支持多Key聚合）
 	var actualKey string
 	var keyIndex int
-	var err error
 
-	// 检查是否有排除的Key索引（用于重试时跳过失败的Key）
-	excludeIndices := getExcludedKeyIndices(c)
-
-	if channel.MultiKeyInfo.IsMultiKey && len(excludeIndices) > 0 {
-		// 多Key模式且有排除列表，使用带重试的方法
-		actualKey, keyIndex, err = channel.GetNextAvailableKeyWithRetry(excludeIndices)
-	} else {
-		// 正常获取Key
-		actualKey, keyIndex, err = channel.GetNextAvailableKey()
+	// 优先使用缓存的Key索引（response-id 缓存命中时设置）
+	if idx, ok := c.Get("cached_key_index"); ok {
+		if cachedIdx, valid := idx.(int); valid && cachedIdx >= 0 {
+			if key, keyErr := channel.GetKeyByIndex(cachedIdx); keyErr == nil {
+				actualKey = key
+				keyIndex = cachedIdx
+				logger.SysLog(fmt.Sprintf("channel:%d;using cached key index:%d for response-id cache hit", channel.Id, cachedIdx))
+			} else {
+				logger.SysLog(fmt.Sprintf("channel:%d;cached key index %d invalid (%v), falling back to normal selection", channel.Id, cachedIdx, keyErr))
+			}
+		}
+		// 清除 cached_key_index，避免重试时误用
+		c.Set("cached_key_index", -1)
 	}
 
-	if err != nil {
-		logger.SysError(fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
-		actualKey = channel.Key // 回退到原始Key
-		keyIndex = 0
+	if actualKey == "" {
+		// 检查是否有排除的Key索引（用于重试时跳过失败的Key）
+		excludeIndices := getExcludedKeyIndices(c)
+
+		var err error
+		if channel.MultiKeyInfo.IsMultiKey && len(excludeIndices) > 0 {
+			// 多Key模式且有排除列表，使用带重试的方法
+			actualKey, keyIndex, err = channel.GetNextAvailableKeyWithRetry(excludeIndices)
+		} else {
+			// 正常获取Key
+			actualKey, keyIndex, err = channel.GetNextAvailableKey()
+		}
+		if err != nil {
+			logger.SysError(fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
+			actualKey = channel.Key // 回退到原始Key
+			keyIndex = 0
+		}
 	}
 
 	// 存储Key信息供后续使用

@@ -19,10 +19,13 @@
 			"path": "../../../key-provider"
 		},
 		{
+			"path": "../../../auto-azure"
+		},
+		{
 			"path": "../../../new-api"
 		},
 		{
-			"path": "../../../auto-azure"
+			"path": "../../../tanhua-diary"
 		}
 	],
 	"settings": {}

@@ -9,36 +9,41 @@ import (
 )
 
 type Video struct {
-	Id             int64  `json:"id" gorm:"primaryKey;autoIncrement"`                           // 自增主键,用于高效范围查询和排序
-	TaskId         string `json:"task_id" gorm:"type:varchar(200);index:idx_task_id,length:40"` // 唯一索引,用于业务查询
-	Prompt         string `json:"prompt"`
-	CreatedAt      int64  `json:"created_at"`     // 创建时间戳
-	UpdatedAt      int64  `json:"updated_at"`     // 更新时间戳
-	TotalDuration  int64  `json:"total_duration"` // 请求总耗时(秒)
-	Type           string `json:"type"`
-	Provider       string `json:"provider"`
-	Mode           string `json:"mode"`
-	Duration       string `json:"duration"`
-	Resolution     string `json:"resolution"` // 视频分辨率
-	Username       string `json:"username"`
-	ChannelId      int    `json:"channel_id"`                       // 添加渠道索引
-	UserId         int    `json:"user_id" gorm:"index:idx_user_id"` // 添加用户索引
-	Model          string `json:"model"`
-	Status         string `json:"status" gorm:"index:idx_status"` // 添加状态索引
-	FailReason     string `json:"fail_reason"`
-	VideoId        string `json:"video_id" gorm:"index:idx_video_id"` // 添加视频ID索引
-	StoreUrl       string `json:"store_url"`                          // 直接存储JSON化的URL数组字符串
-	Quota          int64  `json:"quota"`
-	N              int    `json:"n"`
-	Credentials    string `json:"credentials"`                     // 保存任务创建时使用的完整JSON凭证
-	Result         string `json:"result" gorm:"type:text"`         // 保存 Kling 回调的完整 JSON 数据
-	CallbackUrl    string `json:"callback_url"`                    // 用户提供的回调地址
-	CallbackStatus string `json:"callback_status"`                 // 回调状态：pending/success/failed/none
-	CallbackTime   int64  `json:"callback_time"`                   // 回调时间戳
-	CallbackError  string `json:"callback_error" gorm:"type:text"` // 回调失败原因
-	Sound          string  `json:"sound"`                           // 是否有声：on/off（视频V2.6模型）
+	Id             int64   `json:"id" gorm:"primaryKey;autoIncrement"`                           // 自增主键,用于高效范围查询和排序
+	TaskId         string  `json:"task_id" gorm:"type:varchar(200);index:idx_videos_task_id,length:40"` // 唯一索引,用于业务查询
+	Prompt         string  `json:"prompt"`
+	CreatedAt      int64   `json:"created_at"`     // 创建时间戳
+	UpdatedAt      int64   `json:"updated_at"`     // 更新时间戳
+	TotalDuration  int64   `json:"total_duration"` // 请求总耗时(秒)
+	Type           string  `json:"type"`
+	Provider       string  `json:"provider" gorm:"index:idx_videos_provider;index:idx_videos_provider_status,priority:1"`
+	Mode           string  `json:"mode"`
+	Duration       string  `json:"duration"`
+	Resolution     string  `json:"resolution"` // 视频分辨率
+	Username       string  `json:"username" gorm:"index:idx_videos_username"`
+	ChannelId      int     `json:"channel_id" gorm:"index:idx_videos_channel_id"`
+	UserId         int     `json:"user_id" gorm:"index:idx_videos_user_id"` // 添加用户索引
+	Model          string  `json:"model" gorm:"index:idx_videos_model"`
+	Status         string  `json:"status" gorm:"index:idx_videos_status;index:idx_videos_provider_status,priority:2"` // 添加状态索引
+	FailReason     string  `json:"fail_reason"`
+	VideoId        string  `json:"video_id" gorm:"index:idx_videos_video_id"` // 添加视频ID索引
+	StoreUrl       string  `json:"store_url"`                          // 直接存储JSON化的URL数组字符串
+	Quota          int64   `json:"quota"`
+	N              int     `json:"n"`
+	Credentials    string  `json:"credentials"`                     // 保存任务创建时使用的完整JSON凭证
+	Result         string  `json:"result" gorm:"type:text"`         // 保存 Kling 回调的完整 JSON 数据
+	CallbackUrl    string  `json:"callback_url"`                    // 用户提供的回调地址
+	CallbackStatus string  `json:"callback_status"`                 // 回调状态：pending/success/failed/none
+	CallbackTime   int64   `json:"callback_time"`                   // 回调时间戳
+	CallbackError  string  `json:"callback_error" gorm:"type:text"` // 回调失败原因
+	Sound          string  `json:"sound"`                            // 是否有声：on/off（视频V2.6模型）
 	VoiceList      string  `json:"voice_list" gorm:"type:text"`     // 指定的音色列表（JSON格式，视频V2.6模型）
-	VideoDuration  float64 `json:"video_duration"`                  // 输入视频时长（秒），仅编辑/延伸场景
+	VideoDuration  float64 `json:"video_duration"`                   // 输入视频时长（秒），仅编辑/延伸场景
+}
+
+// applyVideoIdRange 将时间范围转为 id 范围并应用到 videos 查询
+func applyVideoIdRange(tx *gorm.DB, startTimestamp, endTimestamp int64) *gorm.DB {
+	return applyTimestampIdRange(tx, DB, "videos", startTimestamp, endTimestamp)
 }
 
 func (video *Video) Insert() error {
@@ -149,6 +154,9 @@ func GetCurrentAllVideosAndCount(
 	// 初始化查询，直接指定模型
 	tx := DB.Model(&Video{})
 
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyVideoIdRange(tx, startTimestamp, endTimestamp)
+
 	// 添加查询条件
 	if taskId != "" {
 		tx = tx.Where("task_id = ?", taskId)
@@ -161,12 +169,6 @@ func GetCurrentAllVideosAndCount(
 	}
 	if modelName != "" {
 		tx = tx.Where("model = ?", modelName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
 	if channel != 0 {
 		tx = tx.Where("channel_id = ?", channel)
@@ -194,7 +196,7 @@ func GetCurrentAllVideosAndCount(
 
 	// 执行分页查询
 	err = tx.
-		Order("created_at DESC").
+		Order("id DESC").
 		Offset(offset).
 		Limit(pageSize).
 		Find(&videos).Error
@@ -216,21 +218,14 @@ func GetCurrentUserVideosAndCount(
 	page int,
 	pageSize int,
 ) (videos []*Video, total int64, err error) {
-	var tx *gorm.DB
-
 	// 初始化查询，并指定模型
-	tx = DB.Model(&Video{}) // 明确指定使用 Video 模型
+	tx := DB.Model(&Video{})
 
 	// 构建查询条件
 	tx = tx.Where("user_id = ?", userId)
 
-	// 添加时间范围条件
-	if startTimestamp > 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp > 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
+	// 时间范围转 id 范围（二分查找主键）
+	tx = applyVideoIdRange(tx, startTimestamp, endTimestamp)
 
 	// 添加其他可选条件
 	if taskId != "" {
@@ -265,7 +260,7 @@ func GetCurrentUserVideosAndCount(
 
 	// 执行分页查询
 	err = tx.
-		Order("created_at DESC"). // 按创建时间降序
+		Order("id DESC"). // 按 id 降序（与创建时间正相关）
 		Offset(offset).
 		Limit(pageSize).
 		Find(&videos).Error

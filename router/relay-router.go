@@ -357,4 +357,22 @@ func SetRelayRouter(router *gin.Engine) {
 		aliVideoRouter.POST("/services/aigc/video-generation/video-synthesis", controller.RelayAliVideoCreate)
 		aliVideoRouter.GET("/tasks/:taskId", controller.RelayAliVideoResult)
 	}
+
+	// xAI Grok Video 原生透传路由组
+	// POST 端点需要 Distribute 中间件进行渠道选择
+	xaiVideoRouter := router.Group("/xai/v1/videos")
+	xaiVideoRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	{
+		xaiVideoRouter.POST("/generations", controller.RelayXaiVideoGeneration)
+		xaiVideoRouter.POST("/edits", controller.RelayXaiVideoEdit)
+		xaiVideoRouter.POST("/extensions", controller.RelayXaiVideoExtension)
+		
+	}
+
+	// xAI Grok Video 查询路由 - 不需要 Distribute，从数据库查找渠道
+	xaiVideoResultRouter := router.Group("/xai/v1/videos")
+	xaiVideoResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		xaiVideoResultRouter.GET("/:requestId", controller.RelayXaiVideoResult)
+	}
 }

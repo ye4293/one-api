@@ -859,6 +859,28 @@ func (channel *Channel) GetKeyStatus(index int) int {
 	return common.ChannelStatusEnabled
 }
 
+// GetKeyByIndex 按索引获取指定Key（用于缓存命中时复用原始Key）
+// 校验索引范围和Key启用状态，失败返回 error
+func (channel *Channel) GetKeyByIndex(index int) (string, error) {
+	if !channel.MultiKeyInfo.IsMultiKey {
+		if index == 0 {
+			return channel.Key, nil
+		}
+		return "", fmt.Errorf("key index %d out of range for single-key channel", index)
+	}
+
+	keys := channel.ParseKeys()
+	if index < 0 || index >= len(keys) {
+		return "", fmt.Errorf("key index %d out of range (total keys: %d)", index, len(keys))
+	}
+
+	if channel.GetKeyStatus(index) != common.ChannelStatusEnabled {
+		return "", fmt.Errorf("key at index %d is disabled", index)
+	}
+
+	return keys[index], nil
+}
+
 // 获取下一个可用的Key
 func (channel *Channel) GetNextAvailableKey() (string, int, error) {
 	// 如果不是多Key模式，直接返回原始Key

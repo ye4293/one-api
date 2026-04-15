@@ -24,13 +24,14 @@ func appendUniqueChannelID(channelIDs []int, channelID int) []int {
 }
 
 func selectRetryChannel(group string, model string, attempt int, responseID string, failedChannelIds []int) (*dbmodel.Channel, error) {
-	return dbmodel.CacheGetRandomSatisfiedChannel(
+	channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(
 		group,
 		model,
 		getRetrySkipPriorityLevels(attempt),
 		responseID,
 		failedChannelIds,
 	)
+	return channel, err
 }
 
 func getLastRetryFallbackChannel(channelID int) *dbmodel.Channel {

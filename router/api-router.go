@@ -74,7 +74,8 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.PUT("/", controller.UpdateUser)
 				adminRoute.POST("/batchdelete", controller.BatchDelteUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
-				adminRoute.GET("/topup", controller.GetAllTopUps)
+				adminRoute.GET("/topup", controller.GetUserTopUps)
+			    adminRoute.POST("/topup/complete", controller.CompleteTopUp)
 			}
 		}
 		optionRoute := apiRouter.Group("/option")
@@ -177,7 +178,9 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/", middleware.AdminAuth(), controller.GetAllLogs)
 		logRoute.DELETE("/", middleware.AdminAuth(), controller.DeleteHistoryLogs)
 		logRoute.GET("/stat", middleware.AdminAuth(), controller.GetLogsStat)
+		logRoute.GET("/stat/performance", middleware.AdminAuth(), controller.GetLogsPerformanceStat)
 		logRoute.GET("/self/stat", middleware.UserAuth(), controller.GetLogsSelfStat)
+		logRoute.GET("/self/stat/performance", middleware.UserAuth(), controller.GetLogsSelfPerformanceStat)
 		logRoute.GET("/search", middleware.AdminAuth(), controller.SearchAllLogs)
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), controller.SearchUserLogs)
