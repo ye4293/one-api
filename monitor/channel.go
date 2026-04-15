@@ -83,22 +83,15 @@ func disableChannelInternalWithStatusCode(channel *model.Channel, channelId int,
 		return
 	}
 
-	// 记录禁用原因和时间
-	currentTime := time.Now().Unix()
-	channel.AutoDisabledReason = &reason
-	channel.AutoDisabledTime = &currentTime
-	channel.AutoDisabledModel = &modelName
-	channel.Status = common.ChannelStatusAutoDisabled
-
-	// 保存到数据库
-	err := channel.Update()
+	disabled, err := model.AutoDisableChannelById(channelId, reason, modelName)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Failed to update channel %d with disable reason: %s", channelId, err.Error()))
-		// 如果更新失败，至少要更新状态
-		err = model.UpdateChannelStatusById(channelId, common.ChannelStatusAutoDisabled)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to disable channel %d: %s", channelId, err.Error()))
-		}
+		logger.SysError(fmt.Sprintf("Failed to auto disable channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	if !disabled {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) auto disable skipped because it was already disabled or not eligible, reason: %s", channelId, channelName, reason))
+		return
 	}
 
 	logger.SysLog(fmt.Sprintf("channel #%d has been disabled: %s", channelId, reason))

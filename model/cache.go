@@ -678,3 +678,36 @@ func CacheResponseIdToChannel(responseId string, channelId int, keyIndex int, lo
 			logPrefix, responseId, channelId, keyIndex))
 	}
 }
+
+// CacheUpdateChannelMultiKeyInfo 在 HandleKeyError 写 DB 成功后立即同步内存缓存中的
+// multi_key_info，避免 CacheGetChannel 在下次全量同步前返回过时的 key 状态。
+// 如果内存缓存未启用或该 channel 不在缓存中，静默忽略。
+func CacheUpdateChannelMultiKeyInfo(channelId int, info MultiKeyInfo, newStatus int) {
+	if !config.MemoryCacheEnabled {
+		return
+	}
+	channelSyncLock.Lock()
+	defer channelSyncLock.Unlock()
+
+	cached, ok := channelsIDM[channelId]
+	if !ok {
+		return
+	}
+
+	cached.MultiKeyInfo = info
+
+	if newStatus == common.ChannelStatusAutoDisabled && cached.Status != common.ChannelStatusAutoDisabled {
+		cached.Status = newStatus
+		// 将该渠道从可用渠道路由表中移除，使新请求不再分配到此渠道
+		for group, model2channels := range group2model2channels {
+			for model, channels := range model2channels {
+				for i, ch := range channels {
+					if ch.Id == channelId {
+						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
+						break
+					}
+				}
+			}
+		}
+	}
+}

@@ -99,3 +99,25 @@ func RedisLockRelease(key string, token string) {
 	const luaScript = `if redis.call("get",KEYS[1]) == ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end`
 	_ = RDB.Eval(ctx, luaScript, []string{key}, token).Err()
 }
+
+// RedisIncrMod atomically increments a counter and returns (counter-1) % n.
+// Used for distributed round-robin selection without DB writes.
+// The counter is kept alive with the given TTL on each access.
+// Returns an error if Redis is unavailable; callers should fall back to in-process logic.
+func RedisIncrMod(key string, n int, ttl time.Duration) (int, error) {
+	if !RedisEnabled || RDB == nil {
+		return 0, fmt.Errorf("redis not available")
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("n must be positive")
+	}
+	ctx := context.Background()
+	pipe := RDB.Pipeline()
+	incrCmd := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, ttl)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	// Incr returns 1-based counter; subtract 1 for 0-based index
+	return int((incrCmd.Val() - 1) % int64(n)), nil
+}

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -599,6 +600,11 @@ func (channel *Channel) Delete() error {
 		return err
 	}
 	err = channel.DeleteAbilities()
+	if err == nil {
+		// 清理进程内常驻 map，防止已删除 channel 的锁/计数器条目长期占用内存
+		channelStatusLocks.Delete(channel.Id)
+		channelPollingCounters.Delete(channel.Id)
+	}
 	return err
 }
 
@@ -624,10 +630,25 @@ func BatchDeleteChannel(ids []int) error {
 	}
 
 	// 提交事务
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+
+	// 清理进程内常驻 map，防止已删除 channel 的锁/计数器条目长期占用内存
+	for _, id := range ids {
+		channelStatusLocks.Delete(id)
+		channelPollingCounters.Delete(id)
+	}
+	return nil
 }
 
 func UpdateChannelStatusById(id int, status int) error {
+	// 与 AutoDisableChannelById / HandleKeyError 使用同一把 per-channel 锁，
+	// 防止并发修改同一渠道状态，同时避免与 HandleKeyError 的 Redis 分布式锁产生锁顺序问题。
+	statusLock := getChannelStatusLock(id)
+	statusLock.Lock()
+	defer statusLock.Unlock()
+
 	tx := DB.Begin()
 	defer func() {
 		if r := recover(); r != nil {
@@ -684,6 +705,63 @@ func UpdateChannelStatusById(id int, status int) error {
 
 	logger.SysLog(fmt.Sprintf("Successfully updated channel %d status to %s, affected %d abilities", id, statusText, abilityResult.RowsAffected))
 	return nil
+}
+
+// AutoDisableChannelById 幂等地自动禁用渠道。
+//
+// 跨进程幂等保证：channel UPDATE 使用 WHERE id=? AND status != auto_disabled 条件写，
+// MySQL 行锁保证两个并发实例中只有一个会得到 RowsAffected > 0。
+// RowsAffected == 0 的实例返回 disabled=false，不发送通知，避免重复告警。
+// 进程内 statusLock 作为短路优化，减少已知已禁用场景的无效 DB 往返。
+func AutoDisableChannelById(id int, reason string, modelName string) (bool, error) {
+	lock := getChannelStatusLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	currentTime := time.Now().Unix()
+	disabled := false
+
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		// SELECT：读取 AutoDisabled 与 IsMultiKey 标志，过早退出不符合条件的渠道。
+		// 注意：这里不用 SELECT FOR UPDATE —— 真正的幂等性由后面的条件 UPDATE 保证。
+		var channel Channel
+		if err := tx.Select("id", "status", "auto_disabled", "multi_key_info").
+			First(&channel, "id = ?", id).Error; err != nil {
+			return err
+		}
+
+		// 不满足自动禁用条件：auto_disabled 关闭、多 Key 渠道或已是禁用状态
+		if !channel.AutoDisabled || channel.MultiKeyInfo.IsMultiKey {
+			return nil
+		}
+
+		updates := map[string]interface{}{
+			"status":               common.ChannelStatusAutoDisabled,
+			"auto_disabled_reason": reason,
+			"auto_disabled_time":   currentTime,
+			"auto_disabled_model":  modelName,
+		}
+
+		// abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，防死锁）
+		if err := tx.Model(&Ability{}).Where("channel_id = ?", id).Update("enabled", false).Error; err != nil {
+			return err
+		}
+
+		// 条件 UPDATE：只有当前状态不是 auto_disabled 时才写入。
+		// 两个并发实例都能到达这里，但 MySQL 行锁确保 RowsAffected 只对"最先写入"的实例为 1。
+		result := tx.Model(&Channel{}).
+			Where("id = ? AND status != ?", id, common.ChannelStatusAutoDisabled).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+
+		// RowsAffected == 0：该渠道已被其他实例/事务禁用，本次不算"首次禁用"
+		disabled = result.RowsAffected > 0
+		return nil
+	})
+
+	return disabled, err
 }
 
 func UpdateChannelUsedQuota(id int, quota int64) {
@@ -802,15 +880,27 @@ func GetChannelModelsbyId(channelId int) ([]string, error) {
 // ==================== 多Key聚合管理方法 ====================
 
 // 线程安全的轮询索引锁
-var channelPollingLocks sync.Map
+var channelStatusLocks sync.Map
 
-// 获取渠道轮询锁
-func getChannelPollingLock(channelId int) *sync.Mutex {
-	if lock, exists := channelPollingLocks.Load(channelId); exists {
+// channelPollingCounters 是进程级全局原子轮询计数器，Redis 不可用时的降级方案。
+// 每个 channelId 对应一个 *int64，通过 atomic.AddInt64 无锁递增。
+// 进程重启后从 0 开始，但无需持久化——用于负载均衡，偶尔从 0 重置完全可接受。
+var channelPollingCounters sync.Map
+
+// incrChannelPollingIndex 原子递增全局轮询计数器并返回上一个值 mod n（0-based 索引）。
+// 线程安全，无锁。
+func incrChannelPollingIndex(channelId int, n int) int {
+	v, _ := channelPollingCounters.LoadOrStore(channelId, new(int64))
+	old := atomic.AddInt64(v.(*int64), 1) - 1
+	return int(old % int64(n))
+}
+
+func getChannelStatusLock(channelId int) *sync.Mutex {
+	if lock, exists := channelStatusLocks.Load(channelId); exists {
 		return lock.(*sync.Mutex)
 	}
 	newLock := &sync.Mutex{}
-	actual, _ := channelPollingLocks.LoadOrStore(channelId, newLock)
+	actual, _ := channelStatusLocks.LoadOrStore(channelId, newLock)
 	return actual.(*sync.Mutex)
 }
 
@@ -913,29 +1003,31 @@ func (channel *Channel) GetNextAvailableKey() (string, int, error) {
 		return keys[selectedIdx], selectedIdx, nil
 
 	case KeySelectionPolling:
-		// 轮询选择（线程安全）
-		lock := getChannelPollingLock(channel.Id)
-		lock.Lock()
-		defer lock.Unlock()
-
-		start := channel.MultiKeyInfo.PollingIndex
-		if start < 0 || start >= len(keys) {
-			start = 0
+		// 轮询选择。
+		// 策略：优先使用 Redis INCR（原子、分布式、无 DB 写入）；
+		// Redis 不可用时退化为进程内锁 + 纯内存计数器，不写 DB。
+		// 无论哪种方式，都不再执行 go saveMultiKeyInfo()，消除异步写竞态。
+		start, err := common.RedisIncrMod(
+			fmt.Sprintf("channel:polling:%d", channel.Id),
+			len(keys),
+			24*time.Hour,
+		)
+		if err != nil {
+			// Redis 不可用：退化到进程级原子计数器。
+			// 每个请求读到的 channel 是从 DB 读取的独立副本（PollingIndex 总是旧值），
+			// 因此不能用对象内的字段做共享计数——必须用全局原子计数器。
+			start = incrChannelPollingIndex(channel.Id, len(keys))
 		}
 
-		// 从当前索引开始查找下一个启用的Key
+		// 从 start 开始找下一个启用的 Key
 		for i := 0; i < len(keys); i++ {
 			idx := (start + i) % len(keys)
 			if channel.GetKeyStatus(idx) == common.ChannelStatusEnabled {
-				// 更新轮询索引到下一个位置
-				channel.MultiKeyInfo.PollingIndex = (idx + 1) % len(keys)
-				// 异步保存轮询索引
-				go channel.saveMultiKeyInfo()
 				return keys[idx], idx, nil
 			}
 		}
 
-		// 理论上不应该到达这里，因为前面已经检查了启用的Key数量
+		// 理论上不应到达（已确认 enabledIndices 非空）
 		return keys[enabledIndices[0]], enabledIndices[0], nil
 
 	default:
@@ -1247,71 +1339,125 @@ func (channel *Channel) HandleKeyUsed(keyIndex int, success bool) error {
 	return channel.saveMultiKeyInfo()
 }
 
-// HandleKeyError 处理特定Key的错误，决定是否需要自动禁用
+// HandleKeyError 处理特定Key的错误，决定是否需要自动禁用。
+//
+// 并发安全设计：
+//  1. 先获取 per-channel 进程内锁，再可选获取 Redis 分布式锁（多节点部署时）。
+//  2. 锁内重新从 DB 读取最新渠道状态（不依赖调用方传入的过时快照）。
+//  3. 幂等检查：该 key 已禁用则直接返回。
+//  4. 用单一事务写入所有变更：abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，避免死锁）。
 func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, statusCode int, modelName string) error {
 	if !channel.MultiKeyInfo.IsMultiKey {
 		return nil
 	}
 
-	// 直接检查渠道级别的自动禁用设置（已经在上层做过shouldDisable检查）
-	if channel.AutoDisabled {
-		// 禁用特定的Key（设置为自动禁用状态）
-		if channel.MultiKeyInfo.KeyStatusList == nil {
-			channel.MultiKeyInfo.KeyStatusList = make(map[int]int)
-		}
-		channel.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
+	// Step 1: 获取进程内 per-channel 状态锁（所有写路径都经过这把锁）
+	statusLock := getChannelStatusLock(channel.Id)
+	statusLock.Lock()
+	defer statusLock.Unlock()
 
-		// 记录禁用原因和时间
-		if channel.MultiKeyInfo.KeyMetadata == nil {
-			channel.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
-		}
-		metadata := channel.MultiKeyInfo.KeyMetadata[keyIndex]
-		currentTime := time.Now().Unix()
-		metadata.DisabledReason = &errorMessage
-		metadata.DisabledTime = &currentTime
-		metadata.StatusCode = &statusCode
-		metadata.DisabledModel = &modelName
-		channel.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
+	// Step 2: 可选获取 Redis 分布式锁（保护多节点并发写同一渠道）
+	redisLockKey := fmt.Sprintf("channel:key_lock:%d", channel.Id)
+	redisToken := common.RedisLockAcquire(redisLockKey, 15*time.Second)
+	if redisToken != "" {
+		defer common.RedisLockRelease(redisLockKey, redisToken)
+	}
+	// 注意：redisToken == "" 表示 Redis 不可用或锁未获取到。
+	// 单节点部署时进程内锁已足够；多节点场景下强烈建议配置 Redis。
 
-		keys := channel.ParseKeys()
-		maskedKey := "unknown"
-		if keyIndex < len(keys) {
-			key := keys[keyIndex]
-			if len(key) > 8 {
-				maskedKey = key[:4] + "***" + key[len(key)-4:]
-			} else {
-				maskedKey = key
-			}
-		}
+	// Step 3: 从 DB 重新读取最新状态（不用调用方传入的过时快照）
+	fresh, err := GetChannelById(channel.Id, true)
+	if err != nil {
+		return fmt.Errorf("HandleKeyError: failed to re-read channel %d: %w", channel.Id, err)
+	}
 
-		logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s (status: %d)",
-			keyIndex, maskedKey, channel.Id, errorMessage, statusCode))
+	// Step 4: 幂等检查 —— auto_disabled 关闭或该 key 已经是禁用状态则跳过
+	if !fresh.AutoDisabled {
+		return nil
+	}
+	if fresh.GetKeyStatus(keyIndex) == common.ChannelStatusAutoDisabled {
+		return nil
+	}
 
-		// 发送邮件通知
-		channel.notifyKeyDisabled(keyIndex, maskedKey, errorMessage, statusCode)
+	// Step 5: 在内存副本上应用变更
+	if fresh.MultiKeyInfo.KeyStatusList == nil {
+		fresh.MultiKeyInfo.KeyStatusList = make(map[int]int)
+	}
+	fresh.MultiKeyInfo.KeyStatusList[keyIndex] = common.ChannelStatusAutoDisabled
 
-		// 检查是否所有Key都被禁用，如果是则禁用整个渠道
-		channel.checkAndUpdateChannelStatus()
+	if fresh.MultiKeyInfo.KeyMetadata == nil {
+		fresh.MultiKeyInfo.KeyMetadata = make(map[int]KeyMetadata)
+	}
+	metadata := fresh.MultiKeyInfo.KeyMetadata[keyIndex]
+	currentTime := time.Now().Unix()
+	metadata.DisabledReason = &errorMessage
+	metadata.DisabledTime = &currentTime
+	metadata.StatusCode = &statusCode
+	metadata.DisabledModel = &modelName
+	fresh.MultiKeyInfo.KeyMetadata[keyIndex] = metadata
 
-		// 保存Key状态和渠道状态到数据库
-		err := channel.saveMultiKeyInfo()
-		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to save multi-key info for channel %d: %s",
-				channel.Id, err.Error()))
-			return err
-		}
-
-		// 如果渠道被自动禁用，需要单独更新渠道状态
-		if channel.Status == common.ChannelStatusAutoDisabled {
-			err = channel.updateChannelStatus()
-			if err != nil {
-				logger.SysError(fmt.Sprintf("Failed to update channel status for channel %d: %s",
-					channel.Id, err.Error()))
-				return err
-			}
+	keys := fresh.ParseKeys()
+	maskedKey := "unknown"
+	if keyIndex < len(keys) {
+		k := keys[keyIndex]
+		if len(k) > 8 {
+			maskedKey = k[:4] + "***" + k[len(k)-4:]
+		} else {
+			maskedKey = k
 		}
 	}
 
+	logger.SysLog(fmt.Sprintf("Auto-disabled key %d (%s) in multi-key channel %d due to error: %s (status: %d)",
+		keyIndex, maskedKey, fresh.Id, errorMessage, statusCode))
+
+	// 检查是否所有 Key 都被禁用 → 更新渠道整体状态
+	prevStatus := fresh.Status
+	fresh.checkAndUpdateChannelStatus()
+	channelNowDisabled := prevStatus != common.ChannelStatusAutoDisabled &&
+		fresh.Status == common.ChannelStatusAutoDisabled
+
+	// Step 6: 异步发送通知（不阻塞主路径）
+	go fresh.notifyKeyDisabled(keyIndex, maskedKey, errorMessage, statusCode)
+
+	// Step 7: 单一原子事务写入所有变更
+	// 锁顺序：abilities 先于 channels（与 UpdateChannelStatusById 一致，防止死锁）
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		if channelNowDisabled {
+			if err := tx.Model(&Ability{}).
+				Where("channel_id = ?", fresh.Id).
+				Update("enabled", false).Error; err != nil {
+				return fmt.Errorf("HandleKeyError: update abilities for channel %d: %w", fresh.Id, err)
+			}
+		}
+
+		updates := map[string]interface{}{
+			"multi_key_info": fresh.MultiKeyInfo,
+		}
+		if channelNowDisabled {
+			reason := "all keys disabled"
+			updates["status"] = common.ChannelStatusAutoDisabled
+			updates["auto_disabled_reason"] = reason
+			updates["auto_disabled_time"] = currentTime
+		}
+
+		if err := tx.Model(&Channel{}).
+			Where("id = ?", fresh.Id).
+			Updates(updates).Error; err != nil {
+			return fmt.Errorf("HandleKeyError: update channel %d: %w", fresh.Id, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Step 8: DB 写入成功后，同步更新内存缓存，避免 CacheGetChannel 在下次全量同步
+	// 前返回过时的 key 状态（参考 new-api UpdateChannelStatus 的同步策略）
+	newStatus := fresh.Status
+	if !channelNowDisabled {
+		newStatus = common.ChannelStatusEnabled // 渠道未被禁用，仅 key 状态变更
+	}
+	CacheUpdateChannelMultiKeyInfo(fresh.Id, fresh.MultiKeyInfo, newStatus)
 	return nil
 }
 
@@ -1395,20 +1541,26 @@ func (channel *Channel) GetNextAvailableKeyWithRetry(excludeIndices []int) (stri
 		return keys[selectedIdx], selectedIdx, nil
 
 	case KeySelectionPolling:
-		// 从当前轮询索引开始，找到下一个可用的Key
-		start := channel.MultiKeyInfo.PollingIndex
+		// 与 GetNextAvailableKey 一致：优先 Redis INCR，降级为内存计数器，不写 DB。
+		start, err := common.RedisIncrMod(
+			fmt.Sprintf("channel:polling:%d", channel.Id),
+			len(keys),
+			24*time.Hour,
+		)
+		if err != nil {
+			start = incrChannelPollingIndex(channel.Id, len(keys))
+		}
+
 		for i := 0; i < len(keys); i++ {
 			idx := (start + i) % len(keys)
 			for _, availableIdx := range availableIndices {
 				if idx == availableIdx {
-					channel.MultiKeyInfo.PollingIndex = (idx + 1) % len(keys)
-					go channel.saveMultiKeyInfo()
 					return keys[idx], idx, nil
 				}
 			}
 		}
 
-		// 如果没有找到，使用第一个可用的
+		// 没有找到，使用第一个可用的
 		selectedIdx := availableIndices[0]
 		return keys[selectedIdx], selectedIdx, nil
 
