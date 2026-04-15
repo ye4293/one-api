@@ -622,6 +622,14 @@ func copyMultiKeyInfo(src MultiKeyInfo) MultiKeyInfo {
 	return dst
 }
 
+// SetChannelForTest 直接将渠道写入内存缓存，仅供测试使用。
+// 调用前需确保 config.MemoryCacheEnabled = true。
+func SetChannelForTest(ch *Channel) {
+	channelSyncLock.Lock()
+	defer channelSyncLock.Unlock()
+	channelsIDM[ch.Id] = ch
+}
+
 // SetClaudeCacheIdToRedis 将 Claude 缓存信息存储到 Redis
 // id: Claude 响应 ID
 // channel: 渠道 ID

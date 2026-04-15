@@ -1342,34 +1342,32 @@ func (channel *Channel) HandleKeyUsed(keyIndex int, success bool) error {
 // HandleKeyError 处理特定Key的错误，决定是否需要自动禁用。
 //
 // 并发安全设计：
-//  1. 先获取 per-channel 进程内锁，再可选获取 Redis 分布式锁（多节点部署时）。
-//  2. 锁内重新从 DB 读取最新渠道状态（不依赖调用方传入的过时快照）。
+//  1. per-channel 进程内锁，序列化同一渠道的所有写入，防止 lost update。
+//  2. 锁内从缓存读取深拷贝（缓存未启用时降级为 DB 读）。
 //  3. 幂等检查：该 key 已禁用则直接返回。
-//  4. 用单一事务写入所有变更：abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，避免死锁）。
+//  4. 先更新缓存，再写 DB（缓存失效前新请求即刻生效）。
+//  5. DB 事务：abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，避免死锁）。
 func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, statusCode int, modelName string) error {
 	if !channel.MultiKeyInfo.IsMultiKey {
 		return nil
 	}
 
-	// ======== Phase 1: 缓存优先（持锁，纯内存操作，< 0.1ms）========
-	//
-	// 获取 per-channel 状态锁，保护「读缓存 → 计算新状态 → 写缓存」的原子性。
-	// 不再持有 Redis 分布式锁：Phase2 DB 写入使用条件 UPDATE 保证幂等，
-	// 多节点极小概率的 last-write-wins 属于可接受的自愈场景（下次请求重触发）。
+	// 获取 per-channel 进程内锁，保护「读缓存 → 计算新状态 → 写缓存 → 写 DB」的原子性。
+	// 整个操作（含 DB 写入）在锁内完成，防止并发 goroutine 使用过时快照造成 lost update。
+	// HandleKeyError 在 ChannelDisablePool 中运行，锁不阻塞 HTTP 主流程。
 	statusLock := getChannelStatusLock(channel.Id)
 	statusLock.Lock()
+	defer statusLock.Unlock()
 
 	// 从缓存读取深拷贝（纯内存，< 1μs；缓存未启用时降级为 DB 读取）。
 	// 使用深拷贝而非直接引用，确保后续修改不影响缓存中的共享对象。
 	fresh, err := CacheGetChannelCopy(channel.Id)
 	if err != nil {
-		statusLock.Unlock()
 		return fmt.Errorf("HandleKeyError: failed to read channel %d: %w", channel.Id, err)
 	}
 
 	// 幂等检查：auto_disabled 关闭或该 key 已禁用则跳过
 	if !fresh.AutoDisabled || fresh.GetKeyStatus(keyIndex) == common.ChannelStatusAutoDisabled {
-		statusLock.Unlock()
 		return nil
 	}
 
@@ -1396,17 +1394,13 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	channelNowDisabled := prevStatus != common.ChannelStatusAutoDisabled &&
 		fresh.Status == common.ChannelStatusAutoDisabled
 
-	// 立即更新缓存：后续新请求即刻看到该 key 已禁用，无需等待 DB 写入完成
+	// 先更新缓存，后续新请求即刻看到该 key 已禁用（即使 DB 写入尚未完成）
 	newCacheStatus := fresh.Status
 	if !channelNowDisabled {
 		newCacheStatus = common.ChannelStatusEnabled
 	}
 	CacheUpdateChannelMultiKeyInfo(fresh.Id, fresh.MultiKeyInfo, newCacheStatus)
 
-	// 释放锁：Phase2 DB I/O 在锁外执行，大幅缩短锁持有时间
-	statusLock.Unlock()
-
-	// 记录日志（锁外，不影响临界区）
 	keys := fresh.ParseKeys()
 	maskedKey := "unknown"
 	if keyIndex < len(keys) {
@@ -1423,10 +1417,7 @@ func (channel *Channel) HandleKeyError(keyIndex int, errorMessage string, status
 	// 异步发送通知（不阻塞）
 	go fresh.notifyKeyDisabled(keyIndex, maskedKey, errorMessage, statusCode)
 
-	// ======== Phase 2: DB 持久化（锁外，I/O 操作）========
-	//
-	// 缓存已在 Phase1 更新完毕，此处只做持久化。
-	// abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，防死锁）。
+	// DB 持久化：abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，防死锁）
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		if channelNowDisabled {
 			if err := tx.Model(&Ability{}).

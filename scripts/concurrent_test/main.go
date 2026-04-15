@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -141,6 +142,8 @@ func testNoLostUpdate(db *gorm.DB) bool {
 		fail(fmt.Sprintf("create channel: %v", err))
 		return false
 	}
+	// 预填充内存缓存，使 HandleKeyError 走缓存路径（与生产环境一致）
+	model.SetChannelForTest(ch)
 	info(fmt.Sprintf("channel id=%d, keys=%d", ch.Id, keyCount))
 
 	start := make(chan struct{})
@@ -203,6 +206,7 @@ func testIdempotency(db *gorm.DB) bool {
 		fail(fmt.Sprintf("create channel: %v", err))
 		return false
 	}
+	model.SetChannelForTest(ch)
 	info(fmt.Sprintf("channel id=%d", ch.Id))
 
 	start := make(chan struct{})
@@ -257,6 +261,7 @@ func testDeadlock(db *gorm.DB) bool {
 		fail(fmt.Sprintf("create channel: %v", err))
 		return false
 	}
+	model.SetChannelForTest(ch)
 	info(fmt.Sprintf("channel id=%d, rounds=%d", ch.Id, rounds))
 
 	done := make(chan struct{})
@@ -271,6 +276,10 @@ func testDeadlock(db *gorm.DB) bool {
 		go func() {
 			defer wg.Done()
 			resetChannel(db, ch.Id)
+			// reset 后从 DB 重读并同步缓存，确保 HandleKeyError 看到最新状态
+			var refreshed model.Channel
+			db.First(&refreshed, ch.Id)
+			model.SetChannelForTest(&refreshed)
 			if err := ch.HandleKeyError(i%3, "deadlock test", 500, "gpt-4"); err != nil {
 				atomic.AddInt64(&handleErrCount, 1)
 			}
@@ -392,6 +401,9 @@ func main() {
 
 	// 注入全局 DB（model 包直接使用 model.DB）
 	model.DB = db
+
+	// 启用内存缓存，与生产环境保持一致，避免 HandleKeyError 降级为 DB 读取
+	config.MemoryCacheEnabled = true
 
 	results := []bool{
 		testNoLostUpdate(db),
