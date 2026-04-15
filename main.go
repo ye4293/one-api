@@ -176,12 +176,6 @@ func main() {
 	})
 	logger.SysLog("ali-wan video task poller started")
 
-	// 启动豆包视频任务轮询器
-	common.SafeGoroutine(func() {
-		controller.StartDoubaoTaskPoller(context.Background())
-	})
-	logger.SysLog("doubao video task poller started")
-
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 

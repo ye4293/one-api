@@ -15,10 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-const (
-	doubaoVideoProvider     = "doubao"
-	doubaoPollingIntervalMin = 10 * time.Minute
-)
+const doubaoVideoProvider = "doubao"
 
 // ─── 状态映射 ─────────────────────────────────────────────────────────────────
 
@@ -232,7 +229,7 @@ func buildDoubaoCachedResponse(v *dbmodel.Video) map[string]interface{} {
 
 // ─── 共享：任务状态更新 ────────────────────────────────────────────────────────
 
-// updateDoubaoTaskStatus 处理状态变更并更新 DB（handler 和 poller 共用）
+// updateDoubaoTaskStatus 处理状态变更并更新 DB（GET handler 和 callback handler 共用）
 func updateDoubaoTaskStatus(ctx context.Context, taskID string, videoTask *dbmodel.Video, queryResp *doubaomodel.DoubaoVideoResult) {
 	dbStatus := mapDoubaoStatus(queryResp.Status)
 
@@ -289,78 +286,47 @@ func compensateDoubaoTask(taskID string, v *dbmodel.Video) {
 	logger.Info(ctx, fmt.Sprintf("[doubao] compensated: task_id=%s, user_id=%d, quota=%d", taskID, v.UserId, v.Quota))
 }
 
-// ─── 定时轮询器 ───────────────────────────────────────────────────────────────
+// ─── 回调 Handler ─────────────────────────────────────────────────────────────
 
-// StartDoubaoTaskPoller 启动轮询器，定期扫描 processing 状态的 doubao 任务
-func StartDoubaoTaskPoller(ctx context.Context) {
-	ticker := time.NewTicker(doubaoPollingIntervalMin)
-	defer ticker.Stop()
+// HandleDoubaoCallback 接收豆包上游的任务完成回调
+// 回调体格式与查询响应相同（DoubaoVideoResult）
+func HandleDoubaoCallback(c *gin.Context) {
+	ctx := c.Request.Context()
 
-	logger.Info(ctx, fmt.Sprintf("[doubao-poller] started, interval=%v", doubaoPollingIntervalMin))
-
-	pollDoubaoTasks(ctx)
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info(ctx, "[doubao-poller] stopped")
-			return
-		case <-ticker.C:
-			pollDoubaoTasks(ctx)
-		}
-	}
-}
-
-func pollDoubaoTasks(ctx context.Context) {
-	var tasks []dbmodel.Video
-	if err := dbmodel.DB.Where("provider = ? AND status = ?", doubaoVideoProvider, "processing").
-		Find(&tasks).Error; err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] query tasks failed: %v", err))
-		return
-	}
-
-	if len(tasks) == 0 {
-		logger.Info(ctx, "[doubao-poller] no processing tasks found")
-		return
-	}
-
-	logger.Info(ctx, fmt.Sprintf("[doubao-poller] found %d processing tasks", len(tasks)))
-
-	for i := range tasks {
-		go pollSingleDoubaoTask(ctx, &tasks[i])
-	}
-}
-
-func pollSingleDoubaoTask(ctx context.Context, task *dbmodel.Video) {
-	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
+	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
-			task.TaskId, task.ChannelId, err))
+		logger.Error(ctx, fmt.Sprintf("[doubao-callback] read body error: %v", err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+
+	logger.Info(ctx, fmt.Sprintf("[doubao-callback] received: %s", string(bodyBytes)))
 
 	adaptor := &doubaomodel.VideoAdaptor{}
-	meta := buildDoubaoMeta(channel)
-
-	resp, err := adaptor.DoQuery(ctx, meta, task.TaskId)
+	callbackResp, err := adaptor.ParseQueryResponse(bodyBytes)
 	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] request failed: task_id=%s, err=%v", task.TaskId, err))
-		return
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] read response failed: task_id=%s, err=%v", task.TaskId, err))
+		logger.Error(ctx, fmt.Sprintf("[doubao-callback] parse error: %v, body: %s", err, string(bodyBytes)))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
 
-	queryResp, err := adaptor.ParseQueryResponse(respBody)
-	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] parse response failed: task_id=%s, err=%v", task.TaskId, err))
+	taskID := callbackResp.ID
+	if taskID == "" {
+		logger.Error(ctx, fmt.Sprintf("[doubao-callback] missing task id, body: %s", string(bodyBytes)))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing task id"})
 		return
 	}
 
-	logger.Info(ctx, fmt.Sprintf("[doubao-poller] polled: task_id=%s, status=%s", task.TaskId, queryResp.Status))
-	updateDoubaoTaskStatus(ctx, task.TaskId, task, queryResp)
+	videoTask, err := dbmodel.GetVideoTaskById(taskID)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-callback] task not found: task_id=%s, err=%v", taskID, err))
+		// 仍返回 200，避免豆包重试
+		c.JSON(http.StatusOK, gin.H{"message": "ok"})
+		return
+	}
+
+	logger.Info(ctx, fmt.Sprintf("[doubao-callback] task_id=%s, status=%s", taskID, callbackResp.Status))
+	updateDoubaoTaskStatus(ctx, taskID, videoTask, callbackResp)
+
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
