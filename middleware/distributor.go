@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/service"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
@@ -88,21 +89,56 @@ func Distribute() func(c *gin.Context) {
 					abortWithMessage(c, http.StatusBadRequest, "Model name is required")
 					return
 				}
-				// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
+				// 路径 A：X-Response-ID 存在 → 内部走 GetClaudeCacheIdFromRedis（原有逻辑）
 				responseID := c.GetHeader("X-Response-ID")
-				var cachedKeyIndex int
-				channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
-				if cachedKeyIndex >= 0 {
-					c.Set("cached_key_index", cachedKeyIndex)
-				}
-				if err != nil {
-					message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
-					if channel != nil {
-						logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
-						message = "Database consistency has been violated, please contact the administrator"
+
+				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
+				if responseID == "" {
+					if preferredID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, userGroup); found {
+						preferred, getErr := model.CacheGetChannel(preferredID)
+						if getErr == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
+							groupOK := false
+							for _, g := range strings.Split(preferred.Group, ",") {
+								if strings.TrimSpace(g) == userGroup {
+									groupOK = true
+									break
+								}
+							}
+							modelOK := false
+							for _, m := range strings.Split(preferred.Models, ",") {
+								if strings.TrimSpace(m) == modelRequest.Model {
+									modelOK = true
+									break
+								}
+							}
+							if groupOK && modelOK {
+								channel = preferred
+								logger.SysLog(fmt.Sprintf("[Affinity] using preferred channel %d for model %s group %s",
+									preferredID, modelRequest.Model, userGroup))
+							} else {
+								logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d no longer valid (group=%v model=%v), fallback",
+									preferredID, groupOK, modelOK))
+							}
+						}
 					}
-					abortWithMessage(c, http.StatusServiceUnavailable, message)
-					return
+				}
+
+				// 路径 A/C：亲和未命中或 X-Response-ID 存在，走正常随机选渠
+				if channel == nil {
+					var cachedKeyIndex int
+					channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
+					if cachedKeyIndex >= 0 {
+						c.Set("cached_key_index", cachedKeyIndex)
+					}
+					if err != nil {
+						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
+						if channel != nil {
+							logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
+							message = "Database consistency has been violated, please contact the administrator"
+						}
+						abortWithMessage(c, http.StatusServiceUnavailable, message)
+						return
+					}
 				}
 			}
 		}
@@ -118,6 +154,10 @@ func Distribute() func(c *gin.Context) {
 			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
 		c.Next()
+		// 请求成功（HTTP < 400）后写回规则亲和缓存
+		if c.Writer.Status() < 400 {
+			service.RecordChannelAffinity(c, c.GetInt("channel_id"))
+		}
 	}
 }
 
@@ -331,3 +371,4 @@ func addExcludedKeyIndex(c *gin.Context, keyIndex int) {
 	excludedKeys = append(excludedKeys, keyIndex)
 	c.Set("excluded_key_indices", excludedKeys)
 }
+
