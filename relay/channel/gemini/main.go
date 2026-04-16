@@ -241,7 +241,8 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 
 	// 使用非system消息构建contents
 	messages := nonSystemMessages
-	if textRequest.Model == "gemini-2.0-flash-exp-image-generation" {
+	if textRequest.Model == "gemini-2.0-flash-exp-image-generation" ||
+		strings.Contains(textRequest.Model, "-image") {
 		geminiRequest.GenerationConfig.ResponseModalities = []string{"TEXT", "IMAGE"}
 	}
 	// Handle functions (legacy format)
@@ -628,12 +629,25 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 		var reasoningBuilder, actualBuilder strings.Builder
 		var thoughtSignature string
 		var toolCalls []model.Tool
+		var inlineImages []model.MessageContent // 收集内联图像
 		funcCallIdx := 0
 
 		for _, part := range parts {
 			// 收集 thoughtSignature
 			if part.ThoughtSignature != "" {
 				thoughtSignature = part.ThoughtSignature
+			}
+
+			// 处理 InlineData（图像等媒体数据）
+			if part.InlineData != nil && part.InlineData.Data != "" {
+				dataURI := fmt.Sprintf("data:%s;base64,%s", part.InlineData.MimeType, part.InlineData.Data)
+				inlineImages = append(inlineImages, model.MessageContent{
+					Type: model.ContentTypeImageURL,
+					ImageURL: &model.ImageURL{
+						Url: dataURI,
+					},
+				})
+				continue
 			}
 
 			// 处理 FunctionCall
@@ -685,6 +699,19 @@ func responseGeminiChat2OpenAI(response *ChatResponse) *openai.TextResponse {
 			}
 			choice.Message.ToolCalls = toolCalls
 			choice.FinishReason = "tool_calls"
+		} else if len(inlineImages) > 0 {
+			// 有图像数据时，返回 content parts 数组格式
+			var contentParts []model.MessageContent
+			if actualBuilder.Len() > 0 {
+				contentParts = append(contentParts, model.MessageContent{
+					Type: model.ContentTypeText,
+					Text: actualBuilder.String(),
+				})
+			}
+			contentParts = append(contentParts, inlineImages...)
+			choice.Message.Content = contentParts
+			choice.Message.ReasoningContent = reasoningBuilder.String()
+			choice.Message.ThoughtSignature = thoughtSignature
 		} else {
 			choice.Message.Content = actualBuilder.String()
 			choice.Message.ReasoningContent = reasoningBuilder.String()

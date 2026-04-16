@@ -117,27 +117,42 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 			claudeRequest.MaxTokens = common.GetClaudeDefaultMaxTokens(textRequest.Model)
 		}
 
-		// 2. 获取 thinking budget 百分比
-		budgetRatio := config.ClaudeThinkingBudgetRatio
-		if textRequest.ReasoningEffort != "" {
-			budgetRatio = common.GetClaudeThinkingBudgetRatio(textRequest.ReasoningEffort)
-		}
-
-		// 3. 计算 thinking budget（至少 1024，none 时直接使用 1024）
-		thinkingBudget := int(float64(claudeRequest.MaxTokens) * budgetRatio)
-		if thinkingBudget < 1024 {
-			thinkingBudget = 1024
-		}
-
-		claudeRequest.Thinking = &ThinkingConfig{
-			Type:         "enabled",
-			BudgetTokens: thinkingBudget,
+		if IsAdaptiveThinkingModel(actualModel) {
+			// 4.7+ 模型：使用 adaptive thinking（不支持 budget_tokens）
+			// display 设为 summarized，确保响应中包含思考内容（4.7 默认 omitted）
+			claudeRequest.Thinking = &ThinkingConfig{
+				Type:    "adaptive",
+				Display: "summarized",
+			}
+		} else {
+			// 4.6 及更早模型：使用 enabled thinking + budget_tokens
+			budgetRatio := config.ClaudeThinkingBudgetRatio
+			if textRequest.ReasoningEffort != "" {
+				budgetRatio = common.GetClaudeThinkingBudgetRatio(textRequest.ReasoningEffort)
+			}
+			thinkingBudget := int(float64(claudeRequest.MaxTokens) * budgetRatio)
+			if thinkingBudget < 1024 {
+				thinkingBudget = 1024
+			}
+			claudeRequest.Thinking = &ThinkingConfig{
+				Type:         "enabled",
+				BudgetTokens: thinkingBudget,
+			}
 		}
 		// thinking 模式要求 temperature 必须为 1，且不能设置 top_p 和 top_k
 		// https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations
 		claudeRequest.Temperature = 1.0
 		claudeRequest.TopP = 0
 		claudeRequest.TopK = 0
+	}
+
+	// 将 reasoning_effort 映射到 output_config.effort（所有模型通用，不限于 thinking 模型）
+	if textRequest.ReasoningEffort != "" {
+		effort := MapReasoningEffortToOutputEffort(textRequest.ReasoningEffort)
+		if claudeRequest.OutputConfig == nil {
+			claudeRequest.OutputConfig = &OutputConfig{}
+		}
+		claudeRequest.OutputConfig.Effort = effort
 	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}

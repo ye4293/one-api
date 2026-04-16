@@ -19,6 +19,36 @@ func GetBaseModelName(modelName string) string {
 	return modelName
 }
 
+// adaptiveThinkingModels 需要使用 adaptive thinking 的模型集合（4.7+）
+// 这些模型不再支持 type="enabled" + budget_tokens，必须使用 type="adaptive"
+// 注意：新增 4.7+ 模型时需同步更新此 map、ModelList 以及 claude-config.go 中的默认 MaxTokens
+var adaptiveThinkingModels = map[string]bool{
+	"claude-opus-4-7": true,
+}
+
+// IsAdaptiveThinkingModel 判断模型是否需要使用 adaptive thinking（4.7+ 模型）
+// 传入的 modelName 可以包含或不包含 -thinking 后缀
+func IsAdaptiveThinkingModel(modelName string) bool {
+	baseName := GetBaseModelName(modelName)
+	return adaptiveThinkingModels[baseName]
+}
+
+// MapReasoningEffortToOutputEffort 将 OpenAI reasoning_effort 映射到 Claude output_config.effort
+func MapReasoningEffortToOutputEffort(reasoningEffort string) string {
+	switch reasoningEffort {
+	case "none", "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "max"
+	default:
+		return "high"
+	}
+}
+
 var ModelList = []string{
 	// Claude 3 models
 	"claude-3-haiku-20240307",
@@ -37,6 +67,7 @@ var ModelList = []string{
 	"claude-opus-4-5-20251101",
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
+	"claude-opus-4-7",
 	// Claude thinking models
 	"claude-3-7-sonnet-20250219-thinking",
 	"claude-sonnet-4-20250514-thinking",
@@ -47,6 +78,7 @@ var ModelList = []string{
 	"claude-opus-4-5-20251101-thinking",
 	"claude-opus-4-6-thinking",
 	"claude-sonnet-4-6-thinking",
+	"claude-opus-4-7-thinking",
 }
 
 var ModelDetails = []model.APIModel{
