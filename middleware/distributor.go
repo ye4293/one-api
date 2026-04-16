@@ -95,7 +95,7 @@ func Distribute() func(c *gin.Context) {
 				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
 				if responseID == "" {
 					if preferredID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, userGroup); found {
-						preferred, getErr := model.CacheGetChannel(preferredID)
+						preferred, getErr := model.CacheGetChannelCopy(preferredID)
 						if getErr == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 							groupOK := false
 							for _, g := range strings.Split(preferred.Group, ",") {
