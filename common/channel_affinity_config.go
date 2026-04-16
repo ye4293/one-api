@@ -53,6 +53,7 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			TTLSeconds:         0,
 			SkipRetryOnFailure: true,
 			IncludeRuleName:    true,
+			IncludeModelName:   true,
 			IncludeUsingGroup:  true,
 		},
 		{
