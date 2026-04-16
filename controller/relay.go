@@ -27,6 +27,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/model"
 
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/songquanpeng/one-api/service"
 )
 
 // https://platform.openai.com/docs/api-reference/chat
@@ -122,6 +123,9 @@ func Relay(c *gin.Context) {
 				channelHistoryInterface, c.Request.URL.Path)
 		}
 
+		// 记录渠道亲和性（仅在有亲和 key 且 Redis 可用时生效）
+		recordRelayAffinity(c, channelId)
+
 		monitor.Emit(channelId, true)
 		return
 	}
@@ -165,6 +169,13 @@ func Relay(c *gin.Context) {
 	claudeResponseID := c.GetHeader("X-Response-ID")
 
 	lastChannel := getLastRetryFallbackChannel(channelId)
+
+	// 如果命中了亲和规则且配置了 skip_retry_on_failure，不跨渠道重试
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		logger.Infof(ctx, "Affinity skip_retry_on_failure=true, skipping retry for model=%s channel=%d", originalModel, channelId)
+		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+		return
+	}
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
@@ -219,6 +230,8 @@ func Relay(c *gin.Context) {
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			// 记录渠道亲和性（使用本次成功的渠道 ID）
+			recordRelayAffinity(c, c.GetInt("channel_id"))
 			monitor.Emit(channel.Id, true)
 			return
 		}
@@ -3611,4 +3624,27 @@ func getAwsModelIdForCountTokens(requestModel string) string {
 		return requestModel
 	}
 	return requestModel
+}
+
+// recordRelayAffinity 在请求成功后将 (X-Response-ID → channelID) 写入 Redis 亲和缓存
+// 仅对 openai/gemini 模型生效（Claude 由 relay/cache/claude.go 按 prompt cache TTL 写入）。
+// Redis 不可用时静默忽略，不影响主流程。
+func recordRelayAffinity(c *gin.Context, channelID int) {
+	responseID := c.GetHeader("X-Response-ID")
+	if responseID == "" {
+		return
+	}
+
+	model := c.GetString("original_model")
+	if !service.IsAffinityEligibleModel(model) {
+		return
+	}
+
+	// Claude 的写回由 relay/cache/claude.go 负责，避免重复写入覆盖其 TTL
+	if strings.HasPrefix(model, "claude-") {
+		return
+	}
+
+	keyIndex := c.GetInt("key_index")
+	dbmodel.CacheResponseIdToChannel(responseID, channelID, keyIndex, "ChannelAffinity")
 }
