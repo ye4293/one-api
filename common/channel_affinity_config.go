@@ -51,10 +51,11 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 				{Type: "gjson", Path: "metadata.user_id"},
 			},
 			TTLSeconds:         0,
-			SkipRetryOnFailure: true,
-			IncludeRuleName:    true,
-			IncludeModelName:   true,
-			IncludeUsingGroup:  true,
+			SkipRetryOnFailure: true, //如果你的场景是限速分散优先于 prompt cache，可以直接把 claude-cli 规则的 SkipRetryOnFailure 改为
+			// false，让渠道限速后允许重试到其他渠道，亲和缓存会在成功后更新到新渠道。
+			IncludeRuleName:   true,
+			IncludeModelName:  true, // key 变为 claude-cli:{group}:{model}:{user_id}
+			IncludeUsingGroup: true,
 		},
 		{
 			// OpenAI Responses API：通过 prompt_cache_key 识别缓存上下文
