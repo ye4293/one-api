@@ -154,8 +154,8 @@ func Distribute() func(c *gin.Context) {
 			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
 		c.Next()
-		// 请求成功（HTTP < 400）后写回规则亲和缓存
-		if c.Writer.Status() < 400 {
+		// relay 层标记成功后写回规则亲和缓存（避免 SSE 流式响应下 HTTP 200 但实际失败时写入错误渠道）
+		if service.IsAffinityRelaySuccess(c) {
 			service.RecordChannelAffinity(c, c.GetInt("channel_id"))
 		}
 	}

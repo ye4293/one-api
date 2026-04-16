@@ -29,14 +29,12 @@ type ChannelAffinityRule struct {
 // ChannelAffinitySetting 全局亲和配置
 type ChannelAffinitySetting struct {
 	Enabled           bool
-	SwitchOnSuccess   bool // true: 重试成功后更新缓存到实际成功渠道
 	DefaultTTLSeconds int
 	Rules             []ChannelAffinityRule
 }
 
 var defaultChannelAffinitySetting = ChannelAffinitySetting{
 	Enabled:           true,
-	SwitchOnSuccess:   true,
 	DefaultTTLSeconds: 3600,
 	Rules: []ChannelAffinityRule{
 		{
@@ -61,20 +59,6 @@ var defaultChannelAffinitySetting = ChannelAffinitySetting{
 			TTLSeconds:         0,
 			SkipRetryOnFailure: true,
 			IncludeRuleName:    true,
-			IncludeUsingGroup:  true,
-		},
-		{
-			Name:       "gemini-chat",
-			ModelRegex: []string{`^gemini-`},
-			PathRegex:  []string{},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "context_string", Key: "id"},
-				{Type: "context_int", Key: "id"},
-			},
-			TTLSeconds:         1800,
-			SkipRetryOnFailure: false,
-			IncludeRuleName:    true,
-			IncludeModelName:   true,
 			IncludeUsingGroup:  true,
 		},
 	},

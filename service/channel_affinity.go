@@ -243,13 +243,6 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		return
 	}
 
-	// SwitchOnSuccess: 使用实际成功的渠道（覆盖重试前的选择）
-	if setting.SwitchOnSuccess {
-		if finalID := c.GetInt("channel_id"); finalID > 0 {
-			channelID = finalID
-		}
-	}
-
 	keyAny, ok := c.Get(ginKeyAffinityCacheKey)
 	if !ok {
 		return
@@ -274,11 +267,44 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 }
 
 // ShouldSkipRetryAfterChannelAffinityFailure 亲和渠道失败时是否禁止重试。
+// 返回 true 时，调用方应同时调用 ClearChannelAffinityContext 防止 post-Next 写入失败渠道。
 func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
 	v, ok := c.Get(ginKeyAffinitySkipRetry)
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
+// ClearChannelAffinityContext 清除亲和缓存 key，阻止 post-Next 的 RecordChannelAffinity 写入。
+// 在 skip_retry_on_failure 提前返回时调用，防止将失败渠道 ID 写入亲和缓存。
+func ClearChannelAffinityContext(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(ginKeyAffinityCacheKey, "")
+}
+
+// MarkAffinityRelaySuccess 标记本次请求真正成功（relay 层调用）。
+// distributor 的 post-Next 通过此 flag 判断是否写回亲和缓存，
+// 避免流式响应下 HTTP 200 但实际传输失败时写入错误渠道。
+func MarkAffinityRelaySuccess(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set("affinity_relay_success", true)
+}
+
+// IsAffinityRelaySuccess 检查 relay 层是否标记为成功。
+func IsAffinityRelaySuccess(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get("affinity_relay_success")
 	if !ok {
 		return false
 	}

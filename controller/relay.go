@@ -125,6 +125,7 @@ func Relay(c *gin.Context) {
 
 		// 记录渠道亲和性（仅在有亲和 key 且 Redis 可用时生效）
 		recordRelayAffinity(c, channelId)
+		service.MarkAffinityRelaySuccess(c)
 
 		monitor.Emit(channelId, true)
 		return
@@ -173,6 +174,8 @@ func Relay(c *gin.Context) {
 	// 如果命中了亲和规则且配置了 skip_retry_on_failure，不跨渠道重试
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		logger.Infof(ctx, "Affinity skip_retry_on_failure=true, skipping retry for model=%s channel=%d", originalModel, channelId)
+		// 清除亲和 context，防止 distributor post-Next 把失败渠道 ID 写入缓存
+		service.ClearChannelAffinityContext(c)
 		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
 		return
 	}
@@ -232,6 +235,7 @@ func Relay(c *gin.Context) {
 			// 重试成功，直接返回（无需记录错误日志）
 			// 记录渠道亲和性（使用本次成功的渠道 ID）
 			recordRelayAffinity(c, c.GetInt("channel_id"))
+			service.MarkAffinityRelaySuccess(c)
 			monitor.Emit(channel.Id, true)
 			return
 		}
