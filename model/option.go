@@ -82,6 +82,7 @@ func InitOptionMap() {
 	config.OptionMap["CacheRatio"] = common.CacheRatio2JSONString()
 	config.OptionMap["PerCallPricing"] = common.ModelPrice2JSONString()
 	config.OptionMap["VideoPricingRules"] = common.VideoPricingRules2JSONString()
+	config.OptionMap["ChannelAffinitySetting"] = common.ChannelAffinitySetting2JSONString()
 	config.OptionMap["TopUpLink"] = config.TopUpLink
 	config.OptionMap["ChatLink"] = config.ChatLink
 	config.OptionMap["QuotaPerUnit"] = strconv.FormatFloat(config.QuotaPerUnit, 'f', -1, 64)
@@ -347,6 +348,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateModelPriceByJSONString(value)
 	case "VideoPricingRules":
 		err = common.UpdateVideoPricingRulesByJSONString(value)
+	case "ChannelAffinitySetting":
+		err = common.UpdateChannelAffinitySettingByJSONString(value)
 	case "TopUpLink":
 		config.TopUpLink = value
 	case "ChatLink":

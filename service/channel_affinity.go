@@ -62,7 +62,7 @@ func matchAnyInclude(patterns []string, s string) bool {
 
 // ─── key extraction ───────────────────────────────────────────────────────────
 
-func extractAffinityValue(c *gin.Context, src ChannelAffinityKeySource) string {
+func extractAffinityValue(c *gin.Context, src common.ChannelAffinityKeySource) string {
 	switch src.Type {
 	case "context_int":
 		v := c.GetInt(src.Key)
@@ -93,7 +93,7 @@ func extractAffinityValue(c *gin.Context, src ChannelAffinityKeySource) string {
 
 const affinityRedisNS = "channel_affinity:v1"
 
-func buildAffinityCacheKey(rule ChannelAffinityRule, model, group, value string) string {
+func buildAffinityCacheKey(rule common.ChannelAffinityRule, model, group, value string) string {
 	parts := make([]string, 0, 5)
 	parts = append(parts, affinityRedisNS)
 	if rule.IncludeRuleName && rule.Name != "" {
@@ -179,7 +179,7 @@ func affinityKeyHint(s string) string {
 // GetPreferredChannelByAffinity 从请求体提取亲和 key，查 Redis，返回上次成功的 channelID。
 // 仅在无 X-Response-ID 时调用。命中后会在 gin context 存储亲和元信息。
 func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int, bool) {
-	setting := GetChannelAffinitySetting()
+	setting := common.GetChannelAffinitySetting()
 	if !setting.Enabled {
 		return 0, false
 	}
@@ -281,7 +281,7 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if channelID <= 0 {
 		return
 	}
-	setting := GetChannelAffinitySetting()
+	setting := common.GetChannelAffinitySetting()
 	if !setting.Enabled {
 		return
 	}
