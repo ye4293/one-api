@@ -111,14 +111,22 @@ func buildAffinityCacheKey(rule ChannelAffinityRule, model, group, value string)
 
 // ─── Redis helpers ────────────────────────────────────────────────────────────
 
-func setAffinityRedis(key string, channelID int, ttlSeconds int) {
+// setAffinityRedis 将 channelID:keyIndex 写入 Redis。
+// keyIndex < 0 时退化为只存 channelID（单 key 渠道兼容旧格式）。
+func setAffinityRedis(key string, channelID, keyIndex, ttlSeconds int) {
 	if !common.RedisEnabled || common.RDB == nil {
 		return
+	}
+	var val string
+	if keyIndex >= 0 {
+		val = fmt.Sprintf("%d:%d", channelID, keyIndex)
+	} else {
+		val = strconv.Itoa(channelID)
 	}
 	err := common.RDB.Set(
 		context.Background(),
 		key,
-		strconv.Itoa(channelID),
+		val,
 		time.Duration(ttlSeconds)*time.Second,
 	).Err()
 	if err != nil {
@@ -126,19 +134,29 @@ func setAffinityRedis(key string, channelID int, ttlSeconds int) {
 	}
 }
 
-func getAffinityRedis(key string) (int, bool) {
+// getAffinityRedis 读取亲和缓存，返回 (channelID, keyIndex, found)。
+// 兼容旧格式（仅 channelID）：旧格式 keyIndex 返回 -1，表示不锁定具体 key。
+func getAffinityRedis(key string) (int, int, bool) {
 	if !common.RedisEnabled || common.RDB == nil {
-		return 0, false
+		return 0, -1, false
 	}
 	val, err := common.RDB.Get(context.Background(), key).Result()
 	if err != nil {
-		return 0, false
+		return 0, -1, false
 	}
-	id, err := strconv.Atoi(strings.TrimSpace(val))
+	val = strings.TrimSpace(val)
+	parts := strings.SplitN(val, ":", 2)
+	id, err := strconv.Atoi(parts[0])
 	if err != nil || id <= 0 {
-		return 0, false
+		return 0, -1, false
 	}
-	return id, true
+	keyIndex := -1
+	if len(parts) == 2 {
+		if ki, err2 := strconv.Atoi(parts[1]); err2 == nil && ki >= 0 {
+			keyIndex = ki
+		}
+	}
+	return id, keyIndex, true
 }
 
 // ─── fingerprint / hint ───────────────────────────────────────────────────────
@@ -222,15 +240,19 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int
 			"key_fp":    affinityFingerprint(value),
 		}
 
-		channelID, found := getAffinityRedis(cacheKey)
+		channelID, keyIndex, found := getAffinityRedis(cacheKey)
 		if found {
 			// 缓存命中：设置完整 context（含 skip_retry），立即返回
 			c.Set(ginKeyAffinityCacheKey, cacheKey)
 			c.Set(ginKeyAffinityTTL, ttl)
 			c.Set(ginKeyAffinitySkipRetry, rule.SkipRetryOnFailure)
 			c.Set(ginKeyAffinityLogInfo, logInfo)
-			logger.SysLog(fmt.Sprintf("[Affinity] hit rule=%s model=%s group=%s key_hint=%s -> channel=%d",
-				rule.Name, modelName, group, affinityKeyHint(value), channelID))
+			// 多 key 渠道：还原上次成功使用的 key 索引，供 SetupContextForSelectedChannel 使用
+			if keyIndex >= 0 {
+				c.Set("cached_key_index", keyIndex)
+			}
+			logger.SysLog(fmt.Sprintf("[Affinity] hit rule=%s model=%s group=%s key_hint=%s -> channel=%d key=%d",
+				rule.Name, modelName, group, affinityKeyHint(value), channelID, keyIndex))
 			return channelID, true
 		}
 
@@ -283,8 +305,15 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		ttl = 3600
 	}
 
-	setAffinityRedis(cacheKey, channelID, ttl)
-	logger.SysLog(fmt.Sprintf("[Affinity] recorded key=%s -> channel=%d ttl=%ds", cacheKey, channelID, ttl))
+	// 多 key 渠道：同时记录本次成功使用的 key 索引，实现 key 级别粘性
+	keyIndex := -1
+	if isMultiKeyAny, ok := c.Get("is_multi_key"); ok {
+		if isMultiKey, _ := isMultiKeyAny.(bool); isMultiKey {
+			keyIndex = c.GetInt("key_index")
+		}
+	}
+	setAffinityRedis(cacheKey, channelID, keyIndex, ttl)
+	logger.SysLog(fmt.Sprintf("[Affinity] recorded key=%s -> channel=%d key=%d ttl=%ds", cacheKey, channelID, keyIndex, ttl))
 }
 
 // ShouldSkipRetryAfterChannelAffinityFailure 亲和渠道失败时是否禁止重试。
