@@ -68,5 +68,20 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			IncludeRuleName:    true,
 			IncludeUsingGroup:  true,
 		},
+		{
+			// Gemini（OpenAI 兼容格式）：通过请求体 user 字段识别会话。
+			// 仅限 /v1/chat/completions；客户端不传 user 字段则不触发亲和。
+			// 原生 Gemini 路径（/v1beta/models/）暂不支持，缺乏会话级 key。
+			Name:       "gemini-chat",
+			ModelRegex: []string{`^gemini-`},
+			PathRegex:  []string{`/v1/chat/completions`},
+			KeySources: []ChannelAffinityKeySource{
+				{Type: "gjson", Path: "user"},
+			},
+			TTLSeconds:         0,
+			SkipRetryOnFailure: false,
+			IncludeRuleName:    true,
+			IncludeUsingGroup:  true,
+		},
 	},
 }
