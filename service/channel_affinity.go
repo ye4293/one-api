@@ -179,7 +179,7 @@ func affinityKeyHint(s string) string {
 // GetPreferredChannelByAffinity 从请求体提取亲和 key，查 Redis，返回上次成功的 channelID。
 // 仅在无 X-Response-ID 时调用。命中后会在 gin context 存储亲和元信息。
 func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int, bool) {
-	setting := common.GetChannelAffinitySetting()
+	setting := common.ChannelAffinityConfig
 	if !setting.Enabled {
 		return 0, false
 	}
@@ -281,7 +281,7 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if channelID <= 0 {
 		return
 	}
-	setting := common.GetChannelAffinitySetting()
+	setting := common.ChannelAffinityConfig
 	if !setting.Enabled {
 		return
 	}
