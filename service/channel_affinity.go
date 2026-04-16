@@ -174,6 +174,15 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int
 		ua = c.Request.UserAgent()
 	}
 
+	// firstMatch 保存第一条匹配（但缓存未命中）的规则信息，
+	// 用于在所有规则都未命中时设置 context，使 RecordChannelAffinity 能在本次请求成功后写入缓存。
+	type firstMatchInfo struct {
+		cacheKey string
+		ttl      int
+		logInfo  map[string]interface{}
+	}
+	var firstMatch *firstMatchInfo
+
 	for _, rule := range setting.Rules {
 		if !matchAnyRegex(rule.ModelRegex, modelName) {
 			continue
@@ -204,30 +213,42 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int
 			ttl = setting.DefaultTTLSeconds
 		}
 		cacheKey := buildAffinityCacheKey(rule, modelName, group, value)
-
-		// 存入 context，供 RecordChannelAffinity 写回时使用
-		c.Set(ginKeyAffinityCacheKey, cacheKey)
-		c.Set(ginKeyAffinityTTL, ttl)
-		c.Set(ginKeyAffinitySkipRetry, rule.SkipRetryOnFailure)
-		c.Set(ginKeyAffinityLogInfo, map[string]interface{}{
+		logInfo := map[string]interface{}{
 			"rule_name": rule.Name,
 			"model":     modelName,
 			"group":     group,
 			"path":      path,
 			"key_hint":  affinityKeyHint(value),
 			"key_fp":    affinityFingerprint(value),
-		})
+		}
 
 		channelID, found := getAffinityRedis(cacheKey)
 		if found {
+			// 缓存命中：设置完整 context（含 skip_retry），立即返回
+			c.Set(ginKeyAffinityCacheKey, cacheKey)
+			c.Set(ginKeyAffinityTTL, ttl)
+			c.Set(ginKeyAffinitySkipRetry, rule.SkipRetryOnFailure)
+			c.Set(ginKeyAffinityLogInfo, logInfo)
 			logger.SysLog(fmt.Sprintf("[Affinity] hit rule=%s model=%s group=%s key_hint=%s -> channel=%d",
 				rule.Name, modelName, group, affinityKeyHint(value), channelID))
 			return channelID, true
 		}
-		// 规则匹配但缓存未命中：context 已设置，首次请求后 RecordChannelAffinity 会写入
-		logger.SysLog(fmt.Sprintf("[Affinity] miss rule=%s model=%s group=%s key_hint=%s (first visit)",
-			rule.Name, modelName, group, affinityKeyHint(value)))
-		return 0, false
+
+		// 缓存未命中：记录第一条匹配规则，继续评估后续规则
+		// 注意：不设置 skip_retry——未命中时走随机渠道，失败后应允许正常重试
+		if firstMatch == nil {
+			firstMatch = &firstMatchInfo{cacheKey: cacheKey, ttl: ttl, logInfo: logInfo}
+			logger.SysLog(fmt.Sprintf("[Affinity] miss rule=%s model=%s group=%s key_hint=%s (first visit)",
+				rule.Name, modelName, group, affinityKeyHint(value)))
+		}
+	}
+
+	// 所有规则均未命中缓存，但有规则匹配：设置 context 供 RecordChannelAffinity 写回使用
+	if firstMatch != nil {
+		c.Set(ginKeyAffinityCacheKey, firstMatch.cacheKey)
+		c.Set(ginKeyAffinityTTL, firstMatch.ttl)
+		c.Set(ginKeyAffinitySkipRetry, false) // 未命中时不限制重试
+		c.Set(ginKeyAffinityLogInfo, firstMatch.logInfo)
 	}
 	return 0, false
 }
@@ -310,6 +331,29 @@ func IsAffinityRelaySuccess(c *gin.Context) bool {
 	}
 	b, _ := v.(bool)
 	return b
+}
+
+// GetAffinityLogTag 从 gin context 读取亲和日志信息，返回可追加到 otherInfo 的格式化字符串。
+// 格式：affinity_rule:<name>;affinity_key_fp:<fp>
+// 若当前请求未触发任何亲和规则，返回空字符串。
+func GetAffinityLogTag(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	v, ok := c.Get(ginKeyAffinityLogInfo)
+	if !ok {
+		return ""
+	}
+	info, ok := v.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	ruleName, _ := info["rule_name"].(string)
+	keyFP, _ := info["key_fp"].(string)
+	if ruleName == "" {
+		return ""
+	}
+	return fmt.Sprintf("affinity_rule:%s;affinity_key_fp:%s", ruleName, keyFP)
 }
 
 // IsAffinityEligibleModel 兼容旧版 recordRelayAffinity（X-Response-ID 路径）
