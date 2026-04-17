@@ -113,10 +113,10 @@ func Distribute() func(c *gin.Context) {
 							}
 							if groupOK && modelOK {
 								channel = preferred
-								logger.Infof(c.Request.Context(), "[亲和] 使用亲和渠道 渠道=%d 模型=%s 分组=%s",
+								logger.Infof(c.Request.Context(), "[Affinity] 使用亲和渠道 渠道=%d 模型=%s 分组=%s",
 									preferredID, modelRequest.Model, userGroup)
 							} else {
-								logger.Infof(c.Request.Context(), "[亲和] 缓存渠道已失效（分组匹配=%v 模型匹配=%v），正在清除 渠道=%d",
+								logger.Infof(c.Request.Context(), "[Affinity] 缓存渠道已失效（分组匹配=%v 模型匹配=%v），正在清除 渠道=%d",
 									groupOK, modelOK, preferredID)
 								service.InvalidateChannelAffinity(c, "group_or_model_mismatch")
 							}
@@ -126,7 +126,7 @@ func Distribute() func(c *gin.Context) {
 							if getErr != nil {
 								reason = "channel_not_found"
 							}
-							logger.Infof(c.Request.Context(), "[亲和] 缓存渠道不可用（%s），正在清除 渠道=%d", reason, preferredID)
+							logger.Infof(c.Request.Context(), "[Affinity] 缓存渠道不可用（%s），正在清除 渠道=%d", reason, preferredID)
 							service.InvalidateChannelAffinity(c, reason)
 						}
 					}

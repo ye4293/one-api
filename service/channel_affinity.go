@@ -137,7 +137,7 @@ func InvalidateChannelAffinity(c *gin.Context, reason string) {
 	}
 	deleteAffinityRedis(cacheKey)
 	c.Set(ginKeyAffinityCacheKey, "") // 同时清除 context，阻止 RecordChannelAffinity 重写
-	logger.Infof(c.Request.Context(), "[亲和] 缓存已失效 key=%s 原因=%s", cacheKey, reason)
+	logger.Infof(c.Request.Context(), "[Affinity] 缓存已失效 key=%s 原因=%s", cacheKey, reason)
 }
 
 // setAffinityRedis 将 channelID:keyIndex 写入 Redis。
@@ -280,7 +280,7 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int
 			if keyIndex >= 0 {
 				c.Set("cached_key_index", keyIndex)
 			}
-			logger.Infof(c.Request.Context(), "[亲和] 命中 规则=%s 模型=%s 分组=%s key摘要=%s -> 渠道=%d keyIndex=%d",
+			logger.Infof(c.Request.Context(), "[Affinity] 命中 规则=%s 模型=%s 分组=%s key摘要=%s -> 渠道=%d keyIndex=%d",
 				rule.Name, modelName, group, affinityKeyHint(value), channelID, keyIndex)
 			return channelID, true
 		}
@@ -289,7 +289,7 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName, group string) (int
 		// 注意：不设置 skip_retry——未命中时走随机渠道，失败后应允许正常重试
 		if firstMatch == nil {
 			firstMatch = &firstMatchInfo{cacheKey: cacheKey, ttl: ttl, logInfo: logInfo}
-			logger.Infof(c.Request.Context(), "[亲和] 未命中 规则=%s 模型=%s 分组=%s key摘要=%s（首次访问）",
+			logger.Infof(c.Request.Context(), "[Affinity] 未命中 规则=%s 模型=%s 分组=%s key摘要=%s（首次访问）",
 				rule.Name, modelName, group, affinityKeyHint(value))
 		}
 	}
@@ -342,7 +342,7 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		}
 	}
 	setAffinityRedis(cacheKey, channelID, keyIndex, ttl)
-	logger.Infof(c.Request.Context(), "[亲和] 已写入缓存 key=%s -> 渠道=%d keyIndex=%d ttl=%d秒", cacheKey, channelID, keyIndex, ttl)
+	logger.Infof(c.Request.Context(), "[Affinity] 已写入缓存 key=%s -> 渠道=%d keyIndex=%d ttl=%d秒", cacheKey, channelID, keyIndex, ttl)
 }
 
 // ShouldSkipRetryAfterChannelAffinityFailure 亲和渠道失败时是否禁止重试。
