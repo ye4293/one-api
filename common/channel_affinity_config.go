@@ -50,7 +50,7 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			PathRegex:  []string{`/v1/messages`},
 			KeySources: []ChannelAffinityKeySource{
 				{Type: "gjson", Path: "metadata.user_id"}, // Claude Code 会话 ID（优先）
-				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
+				//{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: true, // 如果你的场景是限速分散优先于 prompt cache，可以改为
@@ -67,7 +67,7 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			PathRegex:  []string{`/v1/responses`},
 			KeySources: []ChannelAffinityKeySource{
 				{Type: "gjson", Path: "prompt_cache_key"}, // 显式缓存 key（优先）
-				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
+				//{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: true,
@@ -80,8 +80,8 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			ModelRegex: []string{`^gemini-`},
 			PathRegex:  []string{`/v1/chat/completions`},
 			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "user"},  // 显式 user 字段（优先）
-				{Type: "context_int", Key: "id"}, // 兜底：认证用户 ID
+				{Type: "gjson", Path: "user"}, // 显式 user 字段（优先）
+				//{Type: "context_int", Key: "id"}, // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: false,
