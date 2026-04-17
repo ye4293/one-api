@@ -39,7 +39,7 @@ type ChannelAffinitySetting struct {
 
 // ChannelAffinityConfig 是全局亲和配置，修改此处即可控制哪些模型触发亲和。
 var ChannelAffinityConfig = ChannelAffinitySetting{
-	Enabled:           true,
+	Enabled:           false, // 临时关闭亲和性,排查渠道不均衡问题
 	DefaultTTLSeconds: 3600,
 	Rules: []ChannelAffinityRule{
 		{
