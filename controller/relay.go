@@ -3024,6 +3024,7 @@ func RelayClaude(c *gin.Context) {
 	attemptStartTime := time.Now()
 	relayError := controller.RelayClaudeNative(c)
 	if relayError == nil {
+		service.MarkAffinityRelaySuccess(c)
 		return
 	}
 
@@ -3093,6 +3094,7 @@ func RelayClaude(c *gin.Context) {
 		relayError = controller.RelayClaudeNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			service.MarkAffinityRelaySuccess(c)
 			return
 		}
 
@@ -3161,6 +3163,7 @@ func RelayResponse(c *gin.Context) {
 	attemptStartTime := time.Now()
 	relayError := controller.RelayOpenaiResponseNative(c)
 	if relayError == nil {
+		service.MarkAffinityRelaySuccess(c)
 		return
 	}
 
@@ -3234,6 +3237,7 @@ func RelayResponse(c *gin.Context) {
 		relayError = controller.RelayOpenaiResponseNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			service.MarkAffinityRelaySuccess(c)
 			return
 		}
 
