@@ -27,6 +27,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/model"
 
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/songquanpeng/one-api/service"
 )
 
 // https://platform.openai.com/docs/api-reference/chat
@@ -122,6 +123,10 @@ func Relay(c *gin.Context) {
 				channelHistoryInterface, c.Request.URL.Path)
 		}
 
+		// 记录渠道亲和性（仅在有亲和 key 且 Redis 可用时生效）
+		recordRelayAffinity(c, channelId)
+		service.MarkAffinityRelaySuccess(c)
+
 		monitor.Emit(channelId, true)
 		return
 	}
@@ -155,7 +160,7 @@ func Relay(c *gin.Context) {
 		recordXAIContentViolationCharge(ctx, c, channelHistory)
 	} else {
 		// 普通失败：记录失败日志
-		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, channelDuration, bizErr.Error.Message, channelName, channelHistory)
+		recordRetryFailureLog(ctx, userId, channelId, originalModel, tokenName, requestID, 0, channelDuration, bizErr.Error.Message, channelName, channelHistory, service.GetAffinityLogTag(c))
 	}
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
@@ -165,6 +170,15 @@ func Relay(c *gin.Context) {
 	claudeResponseID := c.GetHeader("X-Response-ID")
 
 	lastChannel := getLastRetryFallbackChannel(channelId)
+
+	// 如果命中了亲和规则且配置了 skip_retry_on_failure，不跨渠道重试
+	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		logger.Infof(ctx, "Affinity skip_retry_on_failure=true, skipping retry for model=%s channel=%d", originalModel, channelId)
+		// 清除亲和 context，防止 distributor post-Next 把失败渠道 ID 写入缓存
+		service.ClearChannelAffinityContext(c)
+		recordFailedRequestLog(ctx, c, bizErr, channelHistory)
+		return
+	}
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
@@ -219,6 +233,9 @@ func Relay(c *gin.Context) {
 		bizErr = relayHelper(c, relayMode)
 		if bizErr == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			// 记录渠道亲和性（使用本次成功的渠道 ID）
+			recordRelayAffinity(c, c.GetInt("channel_id"))
+			service.MarkAffinityRelaySuccess(c)
 			monitor.Emit(channel.Id, true)
 			return
 		}
@@ -243,7 +260,7 @@ func Relay(c *gin.Context) {
 		}
 
 		// 普通失败：记录本次重试失败的日志（单次渠道耗时）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, bizErr.Error.Message, channel.Name, channelHistory)
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, bizErr.Error.Message, channel.Name, channelHistory, service.GetAffinityLogTag(c))
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
@@ -283,6 +300,9 @@ func recordFailedRequestLog(ctx context.Context, c *gin.Context, bizErr *model.E
 		if channelHistoryBytes, err := json.Marshal(channelHistory); err == nil {
 			otherInfo = fmt.Sprintf("adminInfo:%s", string(channelHistoryBytes))
 		}
+	}
+	if tag := service.GetAffinityLogTag(c); tag != "" {
+		otherInfo += ";" + tag
 	}
 
 	// 构建失败日志内容
@@ -327,7 +347,7 @@ func recordFailedRequestLog(ctx context.Context, c *gin.Context, bizErr *model.E
 // 每次重试失败都会记录一条单独的日志，包含耗时、原因和RequestID
 // 使用 LogTypeError 类型，方便后续筛选查看错误日志
 // channelHistory 用于记录渠道重试历史
-func recordRetryFailureLog(ctx context.Context, userId int, channelId int, modelName string, tokenName string, requestID string, attempt int, duration float64, reason string, channelName string, channelHistory []int) {
+func recordRetryFailureLog(ctx context.Context, userId int, channelId int, modelName string, tokenName string, requestID string, attempt int, duration float64, reason string, channelName string, channelHistory []int, affinityTag string) {
 	// 构建失败日志内容
 	var logContent string
 	if attempt == 0 {
@@ -341,6 +361,9 @@ func recordRetryFailureLog(ctx context.Context, userId int, channelId int, model
 	// 构建 other 信息，包含渠道历史（用于前端显示重试栏）
 	channelHistoryJSON, _ := json.Marshal(channelHistory)
 	otherInfo := fmt.Sprintf("retryAttempt:%d;adminInfo:%s", attempt, string(channelHistoryJSON))
+	if affinityTag != "" {
+		otherInfo += ";" + affinityTag
+	}
 
 	// 记录失败日志，使用 LogTypeError 类型
 	dbmodel.RecordErrorLogWithRequestID(
@@ -2869,7 +2892,7 @@ func RelayGemini(c *gin.Context) {
 
 	// 记录第一次调用的失败信息（单次渠道耗时）
 	channelDuration := time.Since(attemptStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, geminiErr.Error.Message, originalChannelName, channelHistory)
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, geminiErr.Error.Message, originalChannelName, channelHistory, service.GetAffinityLogTag(c))
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, geminiErr, originalModel)
@@ -2948,7 +2971,7 @@ func RelayGemini(c *gin.Context) {
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（单次渠道耗时）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, geminiErr.Error.Message, channel.Name, channelHistory)
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, geminiErr.Error.Message, channel.Name, channelHistory, service.GetAffinityLogTag(c))
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 	}
@@ -3001,12 +3024,13 @@ func RelayClaude(c *gin.Context) {
 	attemptStartTime := time.Now()
 	relayError := controller.RelayClaudeNative(c)
 	if relayError == nil {
+		service.MarkAffinityRelaySuccess(c)
 		return
 	}
 
 	// 记录第一次调用的失败信息（单次渠道耗时）
 	channelDuration := time.Since(attemptStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory)
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory, service.GetAffinityLogTag(c))
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
@@ -3070,6 +3094,7 @@ func RelayClaude(c *gin.Context) {
 		relayError = controller.RelayClaudeNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			service.MarkAffinityRelaySuccess(c)
 			return
 		}
 
@@ -3084,7 +3109,7 @@ func RelayClaude(c *gin.Context) {
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（单次渠道耗时）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory)
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory, service.GetAffinityLogTag(c))
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
@@ -3138,12 +3163,13 @@ func RelayResponse(c *gin.Context) {
 	attemptStartTime := time.Now()
 	relayError := controller.RelayOpenaiResponseNative(c)
 	if relayError == nil {
+		service.MarkAffinityRelaySuccess(c)
 		return
 	}
 
 	// 记录第一次调用的失败信息（单次渠道耗时）
 	channelDuration := time.Since(attemptStartTime).Seconds()
-	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory)
+	recordRetryFailureLog(ctx, userId, originalChannelId, originalModel, tokenName, requestID, 0, channelDuration, relayError.Error.Message, originalChannelName, channelHistory, service.GetAffinityLogTag(c))
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
 	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
@@ -3211,6 +3237,7 @@ func RelayResponse(c *gin.Context) {
 		relayError = controller.RelayOpenaiResponseNative(c)
 		if relayError == nil {
 			// 重试成功，直接返回（无需记录错误日志）
+			service.MarkAffinityRelaySuccess(c)
 			return
 		}
 
@@ -3225,7 +3252,7 @@ func RelayResponse(c *gin.Context) {
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
 
 		// 记录本次重试失败的日志（单次渠道耗时）
-		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory)
+		recordRetryFailureLog(ctx, userId, channel.Id, originalModel, tokenName, requestID, currentAttempt, channelDuration, relayError.Error.Message, channel.Name, channelHistory, service.GetAffinityLogTag(c))
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
@@ -3611,4 +3638,27 @@ func getAwsModelIdForCountTokens(requestModel string) string {
 		return requestModel
 	}
 	return requestModel
+}
+
+// recordRelayAffinity 在请求成功后将 (X-Response-ID → channelID) 写入 Redis 亲和缓存
+// 仅对 openai/gemini 模型生效（Claude 由 relay/cache/claude.go 按 prompt cache TTL 写入）。
+// Redis 不可用时静默忽略，不影响主流程。
+func recordRelayAffinity(c *gin.Context, channelID int) {
+	responseID := c.GetHeader("X-Response-ID")
+	if responseID == "" {
+		return
+	}
+
+	model := c.GetString("original_model")
+	if !service.IsAffinityEligibleModel(model) {
+		return
+	}
+
+	// Claude 的写回由 relay/cache/claude.go 负责，避免重复写入覆盖其 TTL
+	if strings.HasPrefix(model, "claude-") {
+		return
+	}
+
+	keyIndex := c.GetInt("key_index")
+	dbmodel.CacheResponseIdToChannel(responseID, channelID, keyIndex, "ChannelAffinity")
 }
