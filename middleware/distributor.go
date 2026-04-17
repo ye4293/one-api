@@ -113,11 +113,11 @@ func Distribute() func(c *gin.Context) {
 							}
 							if groupOK && modelOK {
 								channel = preferred
-								logger.SysLog(fmt.Sprintf("[Affinity] using preferred channel %d for model %s group %s",
-									preferredID, modelRequest.Model, userGroup))
+								logger.Infof(c.Request.Context(), "[亲和] 使用亲和渠道 渠道=%d 模型=%s 分组=%s",
+									preferredID, modelRequest.Model, userGroup)
 							} else {
-								logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d no longer valid (group=%v model=%v), invalidating",
-									preferredID, groupOK, modelOK))
+								logger.Infof(c.Request.Context(), "[亲和] 缓存渠道已失效（分组匹配=%v 模型匹配=%v），正在清除 渠道=%d",
+									groupOK, modelOK, preferredID)
 								service.InvalidateChannelAffinity(c, "group_or_model_mismatch")
 							}
 						} else {
@@ -126,7 +126,7 @@ func Distribute() func(c *gin.Context) {
 							if getErr != nil {
 								reason = "channel_not_found"
 							}
-							logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d invalid (%s), invalidating", preferredID, reason))
+							logger.Infof(c.Request.Context(), "[亲和] 缓存渠道不可用（%s），正在清除 渠道=%d", reason, preferredID)
 							service.InvalidateChannelAffinity(c, reason)
 						}
 					}
