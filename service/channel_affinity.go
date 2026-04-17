@@ -111,6 +111,35 @@ func buildAffinityCacheKey(rule common.ChannelAffinityRule, model, group, value 
 
 // ─── Redis helpers ────────────────────────────────────────────────────────────
 
+// deleteAffinityRedis 删除亲和缓存 key（渠道失效时调用）。
+func deleteAffinityRedis(key string) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return
+	}
+	if err := common.RDB.Del(context.Background(), key).Err(); err != nil {
+		logger.SysLog(fmt.Sprintf("[Affinity] redis del failed key=%s err=%v", key, err))
+	}
+}
+
+// InvalidateChannelAffinity 删除 gin context 中记录的亲和缓存 key。
+// 在亲和渠道已禁用/不可用时调用，避免下次请求继续命中失效渠道。
+func InvalidateChannelAffinity(c *gin.Context, reason string) {
+	if c == nil {
+		return
+	}
+	keyAny, ok := c.Get(ginKeyAffinityCacheKey)
+	if !ok {
+		return
+	}
+	cacheKey, ok := keyAny.(string)
+	if !ok || cacheKey == "" {
+		return
+	}
+	deleteAffinityRedis(cacheKey)
+	c.Set(ginKeyAffinityCacheKey, "") // 同时清除 context，阻止 RecordChannelAffinity 重写
+	logger.SysLog(fmt.Sprintf("[Affinity] invalidated key=%s reason=%s", cacheKey, reason))
+}
+
 // setAffinityRedis 将 channelID:keyIndex 写入 Redis。
 // keyIndex < 0 时退化为只存 channelID（单 key 渠道兼容旧格式）。
 func setAffinityRedis(key string, channelID, keyIndex, ttlSeconds int) {

@@ -116,9 +116,18 @@ func Distribute() func(c *gin.Context) {
 								logger.SysLog(fmt.Sprintf("[Affinity] using preferred channel %d for model %s group %s",
 									preferredID, modelRequest.Model, userGroup))
 							} else {
-								logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d no longer valid (group=%v model=%v), fallback",
+								logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d no longer valid (group=%v model=%v), invalidating",
 									preferredID, groupOK, modelOK))
+								service.InvalidateChannelAffinity(c, "group_or_model_mismatch")
 							}
+						} else {
+							// 渠道不存在或已禁用，删除亲和缓存避免持续命中失效渠道
+							reason := "channel_disabled"
+							if getErr != nil {
+								reason = "channel_not_found"
+							}
+							logger.SysLog(fmt.Sprintf("[Affinity] cached channel %d invalid (%s), invalidating", preferredID, reason))
+							service.InvalidateChannelAffinity(c, reason)
 						}
 					}
 				}
