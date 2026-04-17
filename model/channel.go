@@ -703,6 +703,7 @@ func UpdateChannelStatusById(id int, status int) error {
 		statusText = fmt.Sprintf("状态%d", status)
 	}
 
+	InitChannelCache()
 	logger.SysLog(fmt.Sprintf("Successfully updated channel %d status to %s, affected %d abilities", id, statusText, abilityResult.RowsAffected))
 	return nil
 }
