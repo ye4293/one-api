@@ -43,27 +43,31 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 	DefaultTTLSeconds: 3600,
 	Rules: []ChannelAffinityRule{
 		{
-			// Claude CLI / Claude Code：通过请求体 metadata.user_id 识别会话
+			// Claude CLI / Claude Code：优先通过 metadata.user_id 识别会话（Claude Code 自动携带）；
+			// 普通 curl 请求无此字段时，回退到认证用户 ID，保证所有 Claude 请求都能触发亲和。
 			Name:       "claude-cli",
 			ModelRegex: []string{`^claude-`},
 			PathRegex:  []string{`/v1/messages`},
 			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "metadata.user_id"},
+				{Type: "gjson", Path: "metadata.user_id"}, // Claude Code 会话 ID（优先）
+				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
-			SkipRetryOnFailure: true, //如果你的场景是限速分散优先于 prompt cache，可以直接把 claude-cli 规则的 SkipRetryOnFailure 改为
+			SkipRetryOnFailure: true, // 如果你的场景是限速分散优先于 prompt cache，可以改为
 			// false，让渠道限速后允许重试到其他渠道，亲和缓存会在成功后更新到新渠道。
 			IncludeRuleName:   true,
-			IncludeModelName:  true, // key 变为 claude-cli:{group}:{model}:{user_id}
+			IncludeModelName:  true, // key 变为 claude-cli:{group}:{model}:{user_id or id}
 			IncludeUsingGroup: true,
 		},
 		{
-			// OpenAI Responses API：通过 prompt_cache_key 识别缓存上下文
+			// OpenAI Responses API：优先通过 prompt_cache_key 识别缓存上下文；
+			// 无此字段时回退到用户 ID。
 			Name:       "openai-responses",
 			ModelRegex: []string{`^gpt-`, `^o1`, `^o3`, `^o4`},
 			PathRegex:  []string{`/v1/responses`},
 			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "prompt_cache_key"},
+				{Type: "gjson", Path: "prompt_cache_key"}, // 显式缓存 key（优先）
+				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: true,
@@ -71,14 +75,13 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			IncludeUsingGroup:  true,
 		},
 		{
-			// Gemini（OpenAI 兼容格式）：通过请求体 user 字段识别会话。
-			// 仅限 /v1/chat/completions；客户端不传 user 字段则不触发亲和。
-			// 原生 Gemini 路径（/v1beta/models/）暂不支持，缺乏会话级 key。
+			// Gemini（OpenAI 兼容格式）：优先通过 user 字段识别；无此字段时回退到用户 ID。
 			Name:       "gemini-chat",
 			ModelRegex: []string{`^gemini-`},
 			PathRegex:  []string{`/v1/chat/completions`},
 			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "user"},
+				{Type: "gjson", Path: "user"},  // 显式 user 字段（优先）
+				{Type: "context_int", Key: "id"}, // 兜底：认证用户 ID
 			},
 			TTLSeconds:         0,
 			SkipRetryOnFailure: false,
