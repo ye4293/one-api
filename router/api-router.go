@@ -152,6 +152,14 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/keys/fix-status", controller.FixMultiKeyChannelStatus)
 			channelRoute.PUT("/multi-key/settings", controller.UpdateChannelMultiKeySettings)
 		}
+		affinityRoute := apiRouter.Group("/affinity")
+		affinityRoute.Use(middleware.AdminAuth())
+		{
+			affinityRoute.GET("/config", controller.GetAffinityConfig)
+			affinityRoute.PUT("/config", controller.UpdateAffinityConfig)
+			affinityRoute.GET("/cache", controller.GetAffinityCacheStats)
+			affinityRoute.DELETE("/cache", controller.ClearAffinityCache)
+		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{
