@@ -5,8 +5,11 @@
 - `model/` - 数据库模型
 - `relay/` - 各渠道适配器（含 VideoAdaptor）
 - `common/` - 公共工具（config、logger、helper）
-- `web/default/` - React 前端
+- `web/default/` - React 前端（仓库内置版本）
 - `.github/workflows/` - CI/CD（docker-dev.yml 触发分支：`dev`）
+
+## 关联仓库
+- **前端代码仓库**：`~/code/ezlinkai-web`（本项目实际使用的前端代码库，非仓库内置的 `web/default/`）
 
 ## 常用命令
 ```bash

@@ -1,5 +1,7 @@
 package common
 
+import "encoding/json"
+
 // ─── 数据结构 ─────────────────────────────────────────────────────────────────
 
 // ChannelAffinityKeySource 定义从请求中提取亲和 key 的方式
@@ -30,63 +32,36 @@ type ChannelAffinityRule struct {
 
 // ChannelAffinitySetting 全局亲和配置
 type ChannelAffinitySetting struct {
-	Enabled           bool
-	DefaultTTLSeconds int
-	Rules             []ChannelAffinityRule
+	Enabled                 bool
+	MaxSize                 int // 内存最大条目数，0 表示后端默认 100000
+	DefaultTTLSeconds       int
+	SwitchAffinityOnSuccess bool // 亲和渠道失败重试到其他渠道成功后，是否更新亲和
+	Rules                   []ChannelAffinityRule
 }
 
-// ─── 规则配置（在此处添加/修改支持亲和性的模型） ──────────────────────────────
-
-// ChannelAffinityConfig 是全局亲和配置，修改此处即可控制哪些模型触发亲和。
+// ChannelAffinityConfig 运行时全局状态，由 model/option.go 从数据库加载，通过前端 UI 管理。
 var ChannelAffinityConfig = ChannelAffinitySetting{
-	Enabled:           false, // 临时关闭亲和性,排查渠道不均衡问题
-	DefaultTTLSeconds: 3600,
-	Rules: []ChannelAffinityRule{
-		{
-			// Claude CLI / Claude Code：优先通过 metadata.user_id 识别会话（Claude Code 自动携带）；
-			// 普通 curl 请求无此字段时，回退到认证用户 ID，保证所有 Claude 请求都能触发亲和。
-			Name:       "claude-cli",
-			ModelRegex: []string{`^claude-`},
-			PathRegex:  []string{`/v1/messages`},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "metadata.user_id"}, // Claude Code 会话 ID（优先）
-				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
-			},
-			TTLSeconds:         0,
-			SkipRetryOnFailure: true, // 如果你的场景是限速分散优先于 prompt cache，可以改为
-			// false，让渠道限速后允许重试到其他渠道，亲和缓存会在成功后更新到新渠道。
-			IncludeRuleName:   true,
-			IncludeModelName:  true, // key 变为 claude-cli:{group}:{model}:{user_id or id}
-			IncludeUsingGroup: true,
-		},
-		{
-			// OpenAI Responses API：优先通过 prompt_cache_key 识别缓存上下文；
-			// 无此字段时回退到用户 ID。
-			Name:       "openai-responses",
-			ModelRegex: []string{`^gpt-`, `^o1`, `^o3`, `^o4`},
-			PathRegex:  []string{`/v1/responses`},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "prompt_cache_key"}, // 显式缓存 key（优先）
-				{Type: "context_int", Key: "id"},           // 兜底：认证用户 ID
-			},
-			TTLSeconds:         0,
-			SkipRetryOnFailure: true,
-			IncludeRuleName:    true,
-			IncludeUsingGroup:  true,
-		},
-		{
-			// Gemini（OpenAI 兼容格式）：优先通过 user 字段识别；无此字段时回退到用户 ID。
-			Name:       "gemini-chat",
-			ModelRegex: []string{`^gemini-`},
-			PathRegex:  []string{`/v1/chat/completions`},
-			KeySources: []ChannelAffinityKeySource{
-				{Type: "gjson", Path: "user"},  // 显式 user 字段（优先）
-				{Type: "context_int", Key: "id"}, // 兜底：认证用户 ID
-			},
-			TTLSeconds:         0,
-			SkipRetryOnFailure: false,
-			IncludeRuleName:    true,
-			IncludeUsingGroup:  true,
-		},
-	},
+	Enabled:                 false,
+	MaxSize:                 100000,
+	DefaultTTLSeconds:       3600,
+	SwitchAffinityOnSuccess: false,
+	Rules:                   []ChannelAffinityRule{},
+}
+
+// AffinityConfigToJSON 序列化为 JSON 字符串，失败返回空串
+func AffinityConfigToJSON(cfg ChannelAffinitySetting) string {
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// AffinityConfigFromJSON 反序列化，失败返回默认值
+func AffinityConfigFromJSON(s string) (ChannelAffinitySetting, error) {
+	var cfg ChannelAffinitySetting
+	if err := json.Unmarshal([]byte(s), &cfg); err != nil {
+		return ChannelAffinityConfig, err
+	}
+	return cfg, nil
 }
