@@ -53,7 +53,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
 	billingModelName := meta.OriginModelName
 	modelRatio := common.GetModelRatio(billingModelName)
-	groupRatio := common.GetGroupRatio(meta.Group)
+	// groupRatio 现在是"融合后的总折扣" = 等级折扣 × 渠道折扣 × 用户渠道折扣
+	groupRatio := meta.CombinedGroupRatio()
 	ratio := modelRatio * groupRatio
 	// pre-consume quota
 	promptTokens := getPromptTokens(textRequest, meta.Mode)

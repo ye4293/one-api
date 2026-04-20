@@ -133,6 +133,7 @@ func InitOptionMap() {
 
 	// 模型监控配置
 	config.OptionMap["ModelMetricsEnabled"] = strconv.FormatBool(config.ModelMetricsEnabled)
+	config.OptionMap["ChannelAffinityConfig"] = common.AffinityConfigToJSON(common.ChannelAffinityConfig)
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -444,6 +445,13 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	case "AutoTestChannelFrequency":
 		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
+	case "ChannelAffinityConfig":
+		cfg, parseErr := common.AffinityConfigFromJSON(value)
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			common.ChannelAffinityConfig = cfg
+		}
 	}
 	return err
 }

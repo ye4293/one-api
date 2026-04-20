@@ -65,6 +65,11 @@ type GeneralOpenAIRequest struct {
 	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
 	ThinkingTokens      int               `json:"thinking_token,omitempty"`
 	ReasoningContent    string            `json:"reasoning_content,omitempty"`
+	// EnableThinking 控制 Qwen3 / DeepSeek 等思考模型是否开启思维链。
+	// 阿里百炼 compatible-mode、OpenRouter reasoning 等均识别此字段。
+	EnableThinking *bool `json:"enable_thinking,omitempty"`
+	// ThinkingBudget 限制思维链最大 token 数，0 表示不传（由上游按模型默认处理）。
+	ThinkingBudget int `json:"thinking_budget,omitempty"`
 }
 
 // 新增音频配置结构体

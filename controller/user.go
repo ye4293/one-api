@@ -464,6 +464,14 @@ func UpdateUser(c *gin.Context) {
 		})
 		return
 	}
+	// ChannelRatios 可能需要清空（''），GORM Updates(struct) 会跳过零值字段，
+	// 所以若前后值不同则直接按列更新一次。
+	if updatedUser.ChannelRatios != originUser.ChannelRatios {
+		if err := model.DB.Model(&model.User{}).Where("id = ?", updatedUser.Id).Update("channel_ratios", updatedUser.ChannelRatios).Error; err != nil {
+			logger.SysError("failed to update channel_ratios: " + err.Error())
+		}
+		model.InvalidateUserChannelRatiosCache(updatedUser.Id)
+	}
 	if originUser.Quota != updatedUser.Quota {
 		model.RecordLog(originUser.Id, model.LogTypeManage, fmt.Sprintf("管理员将用户额度从 %s修改为 %s", common.LogQuota(originUser.Quota), common.LogQuota(updatedUser.Quota)))
 	}

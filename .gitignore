@@ -5,6 +5,8 @@ upload
 *.db
 build
 *.db-journal
+*.db-shm
+*.db-wal
 logs
 data
 /web/node_modules

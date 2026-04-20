@@ -20,6 +20,7 @@ import (
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
+	"github.com/songquanpeng/one-api/relay/util"
 )
 
 func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode {
@@ -143,7 +144,7 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode 
 			modelPrice = defaultPrice
 		}
 	}
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
 	if err != nil {
@@ -557,7 +558,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 
 	}
 	ctx := c.Request.Context()
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
 	logger.SysLog(fmt.Sprintf("erruserQuota1:%+v\n", err))

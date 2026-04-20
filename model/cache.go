@@ -15,13 +15,15 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	"gorm.io/gorm"
 )
 
 var (
-	TokenCacheSeconds         = config.SyncFrequency
-	UserId2GroupCacheSeconds  = config.SyncFrequency
-	UserId2QuotaCacheSeconds  = config.SyncFrequency
-	UserId2StatusCacheSeconds = config.SyncFrequency
+	TokenCacheSeconds                = config.SyncFrequency
+	UserId2GroupCacheSeconds         = config.SyncFrequency
+	UserId2QuotaCacheSeconds         = config.SyncFrequency
+	UserId2StatusCacheSeconds        = config.SyncFrequency
+	UserId2ChannelRatiosCacheSeconds = config.SyncFrequency
 )
 
 func CacheGetTokenByKey(key string) (*Token, error) {
@@ -70,6 +72,102 @@ func CacheGetUserGroup(id int) (group string, err error) {
 		}
 	}
 	return group, err
+}
+
+// CacheGetUserChannelRatios 读取用户针对每个渠道类型的折扣 map。
+// 未开 Redis 或缓存 miss 时回落 DB。查询失败返回空 map。
+func CacheGetUserChannelRatios(id int) (map[int]float64, error) {
+	if id <= 0 {
+		return map[int]float64{}, nil
+	}
+	if !common.RedisEnabled {
+		return fetchUserChannelRatiosFromDB(id)
+	}
+	redisKey := fmt.Sprintf("user_channel_ratios:%d", id)
+	cached, err := common.RedisGet(redisKey)
+	if err == nil {
+		// 缓存命中
+		if cached == "" {
+			return map[int]float64{}, nil
+		}
+		if m, parseErr := decodeChannelRatiosJSON(cached); parseErr == nil {
+			return m, nil
+		} else {
+			// 缓存内容损坏，主动清除，避免下次请求再读到同样的脏数据
+			logger.SysError("user channel ratios cache corrupted, dropping key: " + parseErr.Error())
+			_ = common.RedisDel(redisKey)
+		}
+	}
+	ratios, dbErr := fetchUserChannelRatiosFromDB(id)
+	if dbErr != nil {
+		return ratios, dbErr
+	}
+	// 写缓存（即使为空也写，避免反复穿透）
+	payload := ""
+	if len(ratios) > 0 {
+		raw := make(map[string]float64, len(ratios))
+		for k, v := range ratios {
+			raw[strconv.Itoa(k)] = v
+		}
+		if bs, mErr := json.Marshal(raw); mErr == nil {
+			payload = string(bs)
+		}
+	}
+	if setErr := common.RedisSet(redisKey, payload, time.Duration(UserId2ChannelRatiosCacheSeconds)*time.Second); setErr != nil {
+		logger.SysError("Redis set user channel ratios error: " + setErr.Error())
+	}
+	return ratios, nil
+}
+
+// InvalidateUserChannelRatiosCache 清除指定用户的渠道折扣缓存。
+func InvalidateUserChannelRatiosCache(id int) {
+	if id <= 0 || !common.RedisEnabled {
+		return
+	}
+	if err := common.RedisDel(fmt.Sprintf("user_channel_ratios:%d", id)); err != nil {
+		logger.SysError("Redis del user channel ratios error: " + err.Error())
+	}
+}
+
+// decodeChannelRatiosJSON 把 JSON 字符串解析为 map[channelType]ratio，过滤非法值。
+func decodeChannelRatiosJSON(s string) (map[int]float64, error) {
+	raw := map[string]float64{}
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[int]float64, len(raw))
+	for k, v := range raw {
+		if v <= 0 {
+			continue
+		}
+		ct, convErr := strconv.Atoi(k)
+		if convErr != nil {
+			continue
+		}
+		result[ct] = v
+	}
+	return result, nil
+}
+
+func fetchUserChannelRatiosFromDB(id int) (map[int]float64, error) {
+	var raw string
+	err := DB.Model(&User{}).Where("id = ?", id).Limit(1).Pluck("channel_ratios", &raw).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return map[int]float64{}, nil
+		}
+		return map[int]float64{}, err
+	}
+	if raw == "" {
+		return map[int]float64{}, nil
+	}
+	m, parseErr := decodeChannelRatiosJSON(raw)
+	if parseErr != nil {
+		// DB 里的数据破了，返回空 map 不阻塞计费，同时上报
+		logger.SysError(fmt.Sprintf("user %d channel_ratios in DB is not valid JSON: %s", id, parseErr.Error()))
+		return map[int]float64{}, nil
+	}
+	return m, nil
 }
 
 func fetchAndUpdateUserQuota(ctx context.Context, id int) (quota int64, err error) {

@@ -264,6 +264,22 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	c.Set("channel_create_time", channel.CreatedTime)
 	c.Set("model_mapping", channel.GetModelMapping())
 	c.Set("original_model", modelName) // for retry
+	// 渠道折扣倍率：0/nil 视为不打折
+	channelDiscount := 1.0
+	if channel.Discount != nil && *channel.Discount > 0 {
+		channelDiscount = *channel.Discount
+	}
+	c.Set("channel_discount", channelDiscount)
+	// 用户针对本渠道类型的额外折扣：未设置或 ≤0 视为 1.0
+	userChannelRatio := 1.0
+	if userId := c.GetInt("id"); userId > 0 && channel.Type > 0 {
+		if ratios, err := model.CacheGetUserChannelRatios(userId); err == nil {
+			if r, ok := ratios[channel.Type]; ok && r > 0 {
+				userChannelRatio = r
+			}
+		}
+	}
+	c.Set("user_channel_ratio", userChannelRatio)
 	// 设置自定义请求头覆盖配置
 	if headersOverride := channel.GetHeaderOverride(); headersOverride != nil {
 		c.Set("headers_override", headersOverride)

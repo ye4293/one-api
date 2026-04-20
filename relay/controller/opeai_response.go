@@ -75,7 +75,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	meta.IsStream = openaiResponseRequest.Stream
 	// 计算预消费配额
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	modelRatio := common.GetModelRatio(modelName)
 	ratio := modelRatio * groupRatio
 
@@ -185,6 +185,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 		"completion_ratio": common.GetCompletionRatio(modelName),
 		"group_ratio":      groupRatio,
 	}
+	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
 	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil && usageMetadata.InputTokensDetails.CachedTokens > 0 {
 		billingDetails["cached_tokens"] = usageMetadata.InputTokensDetails.CachedTokens
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)

@@ -345,7 +345,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 
 	// 计算预消费配额
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	modelRatio := common.GetModelRatio(modelName)
 	ratio := modelRatio * groupRatio
 
@@ -451,6 +451,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 		"completion_ratio": common.GetCompletionRatio(modelName),
 		"group_ratio":      groupRatio,
 	}
+	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
 	if cachedTokens > 0 {
 		billingDetails["cached_tokens"] = cachedTokens
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)

@@ -174,7 +174,8 @@ func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIR
 	modelPrice := common.GetModelPrice(billingModelName, false)
 	if modelPrice != -1 {
 		// 使用固定价格计费（按次计费）
-		groupRatio := common.GetGroupRatio(meta.Group)
+		// groupRatio 已融合 等级折扣 × 渠道折扣 × 用户渠道折扣
+		groupRatio := meta.CombinedGroupRatio()
 		preConsumedQuota = int64(modelPrice * 500000 * groupRatio)
 	} else {
 		// 使用基于token的倍率计费
@@ -262,10 +263,13 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	// 预先获取计费参数，避免后续重复调用
 	modelPrice := common.GetModelPrice(billingModelName, false)
 	completionRatio := common.GetCompletionRatio(billingModelName)
+	// groupRatio 此处已是"融合后的组合折扣" = 等级折扣 × 渠道折扣 × 用户渠道折扣
+	// 直接从 meta 取三个分量，用于日志/账单分项展示（比用除法反推更稳定）。
+	tierRatio := common.GetGroupRatio(meta.Group)
 	if modelPrice != -1 {
 		// 使用固定价格计费（按次计费）
 		quota = int64(modelPrice * 500000 * groupRatio)
-		logContent = fmt.Sprintf("模型固定价格 %.2f$，分组倍率 %.2f", modelPrice, groupRatio)
+		logContent = fmt.Sprintf("模型固定价格 %.2f$，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f", modelPrice, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio)
 	} else {
 		// 使用基于token的倍率计费
 		if cachedTokens > 0 {
@@ -291,7 +295,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			// we cannot just return, because we may have to return the pre-consumed quota
 			quota = 0
 		}
-		logContent = fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f，补全倍率 %.2f", modelRatio, groupRatio, completionRatio)
+		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio)
 	}
 
 	quotaDelta := quota - preConsumedQuota
@@ -310,7 +314,15 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		otherInfo = appendModelMappingInfo(otherInfo, meta.OriginModelName, meta.ActualModelName)
 		// 追加计费详情
 		billingDetails := map[string]interface{}{
-			"group_ratio": groupRatio,
+			"group_ratio":        groupRatio,
+			"tier_ratio":         tierRatio,
+			"channel_discount":   meta.ChannelDiscount,
+			"user_channel_ratio": meta.UserChannelRatio,
+		}
+		// 多 Key 渠道：记录本次实际使用的 Key 索引
+		if meta.IsMultiKey && meta.KeyIndex != nil {
+			billingDetails["is_multi_key"] = true
+			billingDetails["key_index"] = *meta.KeyIndex
 		}
 		if modelPrice != -1 {
 			billingDetails["billing_type"] = "fixed_price"
@@ -397,6 +409,37 @@ func appendBillingDetails(other string, details map[string]interface{}) string {
 		return other + ";" + billingInfo
 	}
 	return billingInfo
+}
+
+// enrichBillingDetailsFromContext 把三段折扣分量、多 Key 索引等通用字段写入 billingDetails。
+// 调用方填完 billing_type / model_ratio / model_price / completion_ratio / group_ratio 等业务字段后调用。
+func enrichBillingDetailsFromContext(c *gin.Context, details map[string]interface{}) map[string]interface{} {
+	if details == nil {
+		details = map[string]interface{}{}
+	}
+	channelDiscount := 1.0
+	if v := c.GetFloat64("channel_discount"); v > 0 {
+		channelDiscount = v
+	}
+	userChannelRatio := 1.0
+	if v := c.GetFloat64("user_channel_ratio"); v > 0 {
+		userChannelRatio = v
+	}
+	details["channel_discount"] = channelDiscount
+	details["user_channel_ratio"] = userChannelRatio
+	// 若调用方已填入 group_ratio（组合后的），反推一下 tier_ratio 方便前端显示。
+	if gr, ok := details["group_ratio"].(float64); ok && channelDiscount > 0 && userChannelRatio > 0 {
+		details["tier_ratio"] = gr / (channelDiscount * userChannelRatio)
+	}
+	if c.GetBool("is_multi_key") {
+		details["is_multi_key"] = true
+		if idx, ok := c.Get("key_index"); ok {
+			if idxInt, valid := idx.(int); valid {
+				details["key_index"] = idxInt
+			}
+		}
+	}
+	return details
 }
 
 // appendModelMappingInfo 向 other 字段追加模型重定向信息

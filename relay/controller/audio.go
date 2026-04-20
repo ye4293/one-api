@@ -99,7 +99,8 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// 配额相关处理
 	modelRatio := common.GetModelRatio(audioModel)
-	groupRatio := common.GetGroupRatio(group)
+	// groupRatio 融合 等级折扣 × 渠道折扣 × 用户渠道折扣
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	ratio := modelRatio * groupRatio
 	var quota int64
 	var preConsumedQuota int64
