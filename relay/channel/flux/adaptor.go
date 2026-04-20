@@ -389,7 +389,7 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 			logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
 			group = "Lv1" // 默认组
 		}
-		groupRatio := common.GetGroupRatio(group)
+		groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
 		quota = CalculateQuota(notification.Cost, groupRatio)
 		image.Quota = quota
 
@@ -408,7 +408,7 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 				logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
 				group = "Lv1"
 			}
-			groupRatio := common.GetGroupRatio(group)
+			groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
 			quota = EstimateQuota(image.Model, groupRatio)
 			image.Quota = quota
 		}
