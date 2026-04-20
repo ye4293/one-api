@@ -442,6 +442,13 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 			target.AutoDisabled = autoBool
 		}
 	}
+
+	// 测试模型：允许空字符串以支持清空
+	if testModelValue, exists := rawBody["test_model"]; exists {
+		if testModelStr, ok := testModelValue.(string); ok {
+			target.TestModel = testModelStr
+		}
+	}
 }
 
 // 工具函数：处理多密钥渠道更新
