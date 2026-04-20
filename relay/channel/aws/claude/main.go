@@ -502,6 +502,8 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		c.Set("x_response_id", claudeResponse.Id)
 	}
 	if claudeResponse.Usage != nil {
+		// 保留原始 anthropic.Usage 供上层计费/日志使用（包含 cache 字段）
+		c.Set("claude_usage_metadata", claudeResponse.Usage)
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
 		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
@@ -549,6 +551,8 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 
 	var usage relaymodel.Usage
+	// 保留完整的 anthropic.Usage（含 cache 字段），流结束时回填到 gin.Context
+	var claudeUsage *anthropic.Usage
 
 	for {
 		event, ok := <-stream.Events()
@@ -566,6 +570,7 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				// 安全地获取 usage 信息，避免 nil 指针
 				if claudeResp.Type == "message_start" && claudeResp.Message != nil && claudeResp.Message.Usage != nil {
 					usage.PromptTokens = claudeResp.Message.Usage.InputTokens
+					claudeUsage = claudeResp.Message.Usage
 					if claudeResp.Message.Id != "" {
 						c.Set("x_response_id", claudeResp.Message.Id)
 					}
@@ -577,6 +582,9 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				if claudeResp.Type == "message_delta" && claudeResp.Usage != nil {
 					usage.CompletionTokens = claudeResp.Usage.OutputTokens
 					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					if claudeUsage != nil {
+						claudeUsage.OutputTokens = claudeResp.Usage.OutputTokens
+					}
 				}
 			} else {
 				// JSON 解析失败时记录错误
@@ -594,6 +602,10 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 		default:
 			logger.SysError("union is nil or unknown type")
 		}
+	}
+
+	if claudeUsage != nil {
+		c.Set("claude_usage_metadata", claudeUsage)
 	}
 
 	return nil, &usage

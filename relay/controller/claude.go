@@ -120,8 +120,14 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		if doRespErr != nil {
 			return doRespErr
 		}
-		// 从 usage 构建 anthropic.Usage
-		if usage != nil {
+		// 优先使用 AWS handler 写入的原始 anthropic.Usage（保留 cache 字段），
+		// 否则从 model.Usage 回退构建（仅含 input/output）。
+		if v, ok := c.Get("claude_usage_metadata"); ok {
+			if au, ok := v.(*anthropic.Usage); ok && au != nil {
+				usageMetadata = au
+			}
+		}
+		if usageMetadata == nil && usage != nil {
 			usageMetadata = &anthropic.Usage{
 				InputTokens:  usage.PromptTokens,
 				OutputTokens: usage.CompletionTokens,
