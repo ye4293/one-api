@@ -29,6 +29,7 @@ const (
 	RelayModeGeminiGenerateContent
 	RelayModeGeminiStreamGenerateContent
 	RelayModeClaude
+	RelayModeOpenaiResponse
 )
 
 func Path2RelayMode(path string) int {
@@ -62,6 +63,8 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeAudioTranslation
 	}else if strings.HasPrefix(path, "/v1/messages") {
 		relayMode = RelayModeClaude
+	} else if strings.HasPrefix(path, "/v1/responses") {
+		relayMode = RelayModeOpenaiResponse
 	}
 	return relayMode
 }
