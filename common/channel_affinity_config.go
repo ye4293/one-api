@@ -1,5 +1,7 @@
 package common
 
+import "encoding/json"
+
 // ─── 数据结构 ─────────────────────────────────────────────────────────────────
 
 // ChannelAffinityKeySource 定义从请求中提取亲和 key 的方式
@@ -30,17 +32,21 @@ type ChannelAffinityRule struct {
 
 // ChannelAffinitySetting 全局亲和配置
 type ChannelAffinitySetting struct {
-	Enabled           bool
-	DefaultTTLSeconds int
-	Rules             []ChannelAffinityRule
+	Enabled                 bool
+	MaxSize                 int // 内存最大条目数，0 表示后端默认 100000
+	DefaultTTLSeconds       int
+	SwitchAffinityOnSuccess bool // 亲和渠道失败重试到其他渠道成功后，是否更新亲和
+	Rules                   []ChannelAffinityRule
 }
 
 // ─── 规则配置（在此处添加/修改支持亲和性的模型） ──────────────────────────────
 
 // ChannelAffinityConfig 是全局亲和配置，修改此处即可控制哪些模型触发亲和。
 var ChannelAffinityConfig = ChannelAffinitySetting{
-	Enabled:           false, // 临时关闭亲和性,排查渠道不均衡问题
-	DefaultTTLSeconds: 3600,
+	Enabled:                 false, // 临时关闭亲和性,排查渠道不均衡问题
+	MaxSize:                 100000,
+	DefaultTTLSeconds:       3600,
+	SwitchAffinityOnSuccess: false,
 	Rules: []ChannelAffinityRule{
 		{
 			// Claude CLI / Claude Code：优先通过 metadata.user_id 识别会话（Claude Code 自动携带）；
@@ -89,4 +95,22 @@ var ChannelAffinityConfig = ChannelAffinitySetting{
 			IncludeUsingGroup:  true,
 		},
 	},
+}
+
+// AffinityConfigToJSON 序列化为 JSON 字符串，失败返回空串
+func AffinityConfigToJSON(cfg ChannelAffinitySetting) string {
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// AffinityConfigFromJSON 反序列化，失败返回默认值
+func AffinityConfigFromJSON(s string) (ChannelAffinitySetting, error) {
+	var cfg ChannelAffinitySetting
+	if err := json.Unmarshal([]byte(s), &cfg); err != nil {
+		return ChannelAffinityConfig, err
+	}
+	return cfg, nil
 }
