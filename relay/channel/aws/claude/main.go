@@ -199,8 +199,25 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 		awsClaudeReq["anthropic_beta"] = json.RawMessage(betaJSON)
 	}
 
-	// thinking 模式要求 temperature 必须为 1
-	if thinking, exists := awsClaudeReq["thinking"]; exists && thinking != nil {
+	// Opus 4.7+ 适配：
+	// 1) thinking.type=enabled 不被接受，需改写为 adaptive；无论 type 如何，4.7 都不接受 budget_tokens
+	// 2) temperature / top_p / top_k 均已废弃，API 会 400
+	// 4.6 adaptive 仍接受 temperature，所以这里只对 4.7+ 动手
+	// 其他模型维持原逻辑：thinking 存在时强制 temperature=1
+	requestModel := c.GetString(ctxkey.RequestModel)
+	if anthropic.IsNoSamplingModel(requestModel) {
+		if thinking, ok := awsClaudeReq["thinking"].(map[string]any); ok {
+			if t, _ := thinking["type"].(string); t == "enabled" {
+				thinking["type"] = "adaptive"
+			}
+			// caller 即使已经用 adaptive 也可能顺带传了 budget_tokens，统一清理
+			delete(thinking, "budget_tokens")
+		}
+		delete(awsClaudeReq, "temperature")
+		delete(awsClaudeReq, "top_p")
+		delete(awsClaudeReq, "top_k")
+	} else if thinking, exists := awsClaudeReq["thinking"]; exists && thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（4.6 adaptive 下设 1 也无害）
 		awsClaudeReq["temperature"] = 1.0
 	}
 
@@ -243,8 +260,8 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 
-		// thinking 模式要求 temperature 必须为 1
-		if awsClaudeReq.Thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（仅 4.6 adaptive 与更早 enabled，4.7+ 不接受 temperature）
+		if awsClaudeReq.Thinking != nil && !anthropic.IsNoSamplingModel(c.GetString(ctxkey.RequestModel)) {
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}
@@ -319,8 +336,8 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 
-		// thinking 模式要求 temperature 必须为 1
-		if awsClaudeReq.Thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（仅 4.6 adaptive 与更早 enabled，4.7+ 不接受 temperature）
+		if awsClaudeReq.Thinking != nil && !anthropic.IsNoSamplingModel(c.GetString(ctxkey.RequestModel)) {
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}

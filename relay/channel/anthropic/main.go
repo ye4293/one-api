@@ -154,6 +154,14 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		}
 		claudeRequest.OutputConfig.Effort = effort
 	}
+
+	// Opus 4.7+ 模型不支持 temperature/top_p/top_k（API 会 400：temperature is deprecated for this model）
+	// 注意：4.6 走 adaptive 但仍接受 temperature，不要用 IsAdaptiveThinkingModel 判断
+	if IsNoSamplingModel(actualModel) {
+		claudeRequest.Temperature = 0
+		claudeRequest.TopP = 0
+		claudeRequest.TopK = 0
+	}
 	if stop, ok := textRequest.Stop.(string); ok && stop != "" {
 		claudeRequest.StopSequences = []string{stop}
 	}
