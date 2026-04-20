@@ -3,19 +3,20 @@ package ali
 import "github.com/songquanpeng/one-api/relay/model"
 
 var ModelList = []string{
-	"qwen-turbo", "qwen-plus", "qwen-max", "qwen-max-longcontext",
-	"text-embedding-v1",
+	// 旗舰
+	"qwen3-max", "qwen3-max-preview",
+	"qwen-max", "qwen-max-latest", "qwen-max-longcontext",
+	// 通用
+	"qwen-plus", "qwen-plus-latest",
+	"qwen-flash",
+	"qwen-turbo", "qwen-turbo-latest",
+	// 推理 / 代码
+	"qwq-plus", "qwq-32b",
+	"qwen3-coder-plus",
+	// 视觉
+	"qwen-vl-plus", "qwen-vl-max",
+	// 嵌入
+	"text-embedding-v1", "text-embedding-v2", "text-embedding-v3",
 }
 
-var ModelDetails = []model.APIModel{
-	{
-		Provider:    "Anthropic Claude",
-		Name:        "claude-3-haiku-20240307",
-		Tags:        []string{"claude", "chat"},
-		PriceType:   "pay-per-token",
-		Description: "Claude 3 Haiku - Fast and efficient for everyday tasks",
-		Prices: map[string]interface{}{
-			"InputTokens":  "$0.25 /M tokens",
-			"OutputTokens": "$1.25 /M tokens",
-		},
-	}}
+var ModelDetails = []model.APIModel{}
