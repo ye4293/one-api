@@ -19,18 +19,35 @@ func GetBaseModelName(modelName string) string {
 	return modelName
 }
 
-// adaptiveThinkingModels 需要使用 adaptive thinking 的模型集合（4.7+）
-// 这些模型不再支持 type="enabled" + budget_tokens，必须使用 type="adaptive"
-// 注意：新增 4.7+ 模型时需同步更新此 map、ModelList 以及 claude-config.go 中的默认 MaxTokens
+// adaptiveThinkingModels 需要使用 adaptive thinking 的模型集合（4.6+）
+// 官方文档：thinking.type="enabled" + budget_tokens 已在 Opus 4.6 / Sonnet 4.6 deprecated，
+// 推荐使用 thinking.type="adaptive"；Opus 4.7 起彻底只接受 adaptive。
+// 注意：新增此类模型时需同步更新此 map、ModelList 以及 claude-config.go 中的默认 MaxTokens
 var adaptiveThinkingModels = map[string]bool{
-	"claude-opus-4-7": true,
+	"claude-opus-4-7":   true,
+	"claude-opus-4-6":   true,
+	"claude-sonnet-4-6": true,
 }
 
-// IsAdaptiveThinkingModel 判断模型是否需要使用 adaptive thinking（4.7+ 模型）
+// IsAdaptiveThinkingModel 判断模型是否应使用 adaptive thinking（4.6+ 模型）
 // 传入的 modelName 可以包含或不包含 -thinking 后缀
 func IsAdaptiveThinkingModel(modelName string) bool {
 	baseName := GetBaseModelName(modelName)
 	return adaptiveThinkingModels[baseName]
+}
+
+// noSamplingModels 不接受 temperature/top_p/top_k 的模型集合（仅 4.7+）
+// 官方文档：Opus 4.7 起 sampling 参数全部移除，传任何一个都会 400。
+// 4.6 adaptive 仍然接受 temperature，不要把 4.6 加进来。
+var noSamplingModels = map[string]bool{
+	"claude-opus-4-7": true,
+}
+
+// IsNoSamplingModel 判断模型是否完全不接受 temperature/top_p/top_k
+// 传入的 modelName 可以包含或不包含 -thinking 后缀
+func IsNoSamplingModel(modelName string) bool {
+	baseName := GetBaseModelName(modelName)
+	return noSamplingModels[baseName]
 }
 
 // MapReasoningEffortToOutputEffort 将 OpenAI reasoning_effort 映射到 Claude output_config.effort
