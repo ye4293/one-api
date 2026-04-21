@@ -19,6 +19,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/tidwall/gjson"
 )
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
@@ -492,12 +493,12 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, channelId, keyIdx, "OpenAI Response Cache Stream")
 				c.Set("x_response_id", streamResponse.Response.ID)
 
-				// 流式场景：序列化 Response 对象后从 output[] 提取 encrypted_content 哈希
-				if streamResponse.Response.Output != nil {
-					if respBytes, errMarshal := json.Marshal(streamResponse.Response); errMarshal == nil {
-						for _, h := range common.ExtractOutputEncryptedContentHashes(respBytes) {
-							dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Stream Cache")
-						}
+				// 流式场景：直接从 SSE 原始 data 用 gjson 提取 encrypted_content，
+				// 避免反序列化到 ResponsesOutput 再 re-marshal 的 round-trip 丢失
+				// encrypted_content 字段（struct 未声明该字段）
+				if respRaw := gjson.Get(data, "response"); respRaw.Exists() {
+					for _, h := range common.ExtractOutputEncryptedContentHashes([]byte(respRaw.Raw)) {
+						dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Stream Cache")
 					}
 				}
 
