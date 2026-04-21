@@ -402,7 +402,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, channelId, keyIdx, "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
 	// 缓存 output[] 中 reasoning.encrypted_content 的哈希 → channel（支持下轮 encrypted_content 续轮定向）
-	for _, h := range ExtractOutputEncryptedContentHashes(responseBody) {
+	for _, h := range common.ExtractOutputEncryptedContentHashes(responseBody) {
 		dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Cache")
 	}
 
@@ -461,7 +461,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				// 流式场景：序列化 Response 对象后从 output[] 提取 encrypted_content 哈希
 				if streamResponse.Response.Output != nil {
 					if respBytes, errMarshal := json.Marshal(streamResponse.Response); errMarshal == nil {
-						for _, h := range ExtractOutputEncryptedContentHashes(respBytes) {
+						for _, h := range common.ExtractOutputEncryptedContentHashes(respBytes) {
 							dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Stream Cache")
 						}
 					}
