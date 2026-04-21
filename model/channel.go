@@ -64,6 +64,8 @@ type Channel struct {
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
+	// 是否允许被自动启用（响应时间超阈值/错误失败时跳过自动启用）
+	AutoEnabled bool `json:"auto_enabled" gorm:"default:true"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
 	// 新增自动禁用原因字段
@@ -559,6 +561,14 @@ func (channel *Channel) Update() error {
 	// Updates(struct) 会忽略零值（空字符串），所以需要用 map 强制写入
 	err = DB.Model(channel).Select("test_model").Updates(map[string]interface{}{
 		"test_model": channel.TestModel,
+	}).Error
+	if err != nil {
+		return err
+	}
+
+	// 单独处理 auto_enabled 字段，同 auto_disabled，避免 false 零值被忽略
+	err = DB.Model(channel).Select("auto_enabled").Updates(map[string]interface{}{
+		"auto_enabled": channel.AutoEnabled,
 	}).Error
 	if err != nil {
 		return err
