@@ -497,6 +497,13 @@ func testChannels(notify bool, scope string) error {
 	}
 	go func() {
 		for _, channel := range channels {
+			if !channel.AutoEnabled {
+				logger.SysLog(fmt.Sprintf(
+					"skip auto-enable channel #%d (%s): channel auto_enabled is disabled",
+					channel.Id, channel.Name,
+				))
+				continue
+			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			tik := time.Now()
 			err, openaiErr, _, _ := testChannel(channel, "",true)
@@ -517,12 +524,7 @@ func testChannels(notify bool, scope string) error {
 			// 若响应时间超过阈值，也跳过自动启用（避免把响应过慢的渠道误恢复）
 			// 若渠道关闭了自动启用（auto_enabled=false），同样跳过
 			if !isChannelEnabled && util.ShouldEnableChannel(err, openaiErr) {
-				if !channel.AutoEnabled {
-					logger.SysLog(fmt.Sprintf(
-						"skip auto-enable channel #%d (%s): channel auto_enabled is disabled",
-						channel.Id, channel.Name,
-					))
-				} else if milliseconds > disableThreshold {
+				 if milliseconds > disableThreshold {
 					logger.SysLog(fmt.Sprintf(
 						"skip auto-enable channel #%d (%s): response time %.2fs exceeds threshold %.2fs",
 						channel.Id, channel.Name,
