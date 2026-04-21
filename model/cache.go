@@ -844,13 +844,17 @@ func CacheEncryptedContentToChannel(hash string, channelId int, keyIndex int, lo
 		value = fmt.Sprintf("%d:%d", channelId, keyIndex)
 	}
 	expire := 24 * time.Hour
+	shortHash := hash
+	if len(shortHash) > 8 {
+		shortHash = shortHash[:8]
+	}
 	if err := common.RDB.Set(context.Background(), cacheKey, value, expire).Err(); err != nil {
 		logger.SysLog(fmt.Sprintf("[%s] Failed to cache enc_content_hash=%s -> channel=%d keyIndex=%d: %v",
-			logPrefix, hash[:8], channelId, keyIndex, err))
+			logPrefix, shortHash, channelId, keyIndex, err))
 		return
 	}
 	logger.SysLog(fmt.Sprintf("[%s] Cached enc_content_hash=%s... -> channel=%d keyIndex=%d (TTL: 24h)",
-		logPrefix, hash[:8], channelId, keyIndex))
+		logPrefix, shortHash, channelId, keyIndex))
 }
 
 // GetEncryptedContentCacheIdFromRedis 根据 encrypted_content 哈希查 channel
