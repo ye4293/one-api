@@ -92,8 +92,72 @@ func Distribute() func(c *gin.Context) {
 				// 路径 A：X-Response-ID 存在 → 内部走 GetClaudeCacheIdFromRedis（原有逻辑）
 				responseID := c.GetHeader("X-Response-ID")
 
-				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
-				if responseID == "" {
+				// 路径 A-2/A-3：OpenAI /v1/responses 自动从 body 读 previous_response_id / encrypted_content
+				// 上游官方 SDK 不会传 X-Response-ID header，改在 body 里传 previous_response_id；
+				// 另外在 stateless 模式下可能只有 encrypted_content，没有 previous_response_id。
+				if responseID == "" && strings.HasPrefix(c.Request.URL.Path, "/v1/responses") {
+					if body, bodyErr := common.GetRequestBody(c); bodyErr == nil {
+						if prevID := common.ExtractPreviousResponseID(body); prevID != "" {
+							// A-2：把 body.previous_response_id 视作等价的 responseID，
+							// 复用下面 Claude Cache 的读路径（CacheGetRandomSatisfiedChannel）
+							responseID = prevID
+							logger.Infof(c.Request.Context(), "[ResponsesAffinity] pinned by previous_response_id=%s", prevID)
+						} else {
+							// A-3：没有 previous_response_id，尝试用 encrypted_content 哈希查缓存
+							// 任意一个 hash 命中即 pin（通常多个 reasoning 会绑到同一 channel）
+							hashes := common.ExtractEncryptedContentHashes(body)
+							for _, h := range hashes {
+								cachedChannelID, cachedKeyIdx, encErr := model.GetEncryptedContentCacheIdFromRedis(h)
+								if encErr != nil || cachedChannelID == "" {
+									continue
+								}
+								chID, parseErr := strconv.Atoi(cachedChannelID)
+								if parseErr != nil || chID <= 0 {
+									continue
+								}
+								ch, getErr := model.CacheGetChannelCopy(chID)
+								if getErr != nil || ch == nil || ch.Status != common.ChannelStatusEnabled {
+									continue
+								}
+								// 校验 group/model 匹配（防止渠道被改配置后仍被命中）
+								groupOK := false
+								for _, g := range strings.Split(ch.Group, ",") {
+									if strings.TrimSpace(g) == userGroup {
+										groupOK = true
+										break
+									}
+								}
+								modelOK := false
+								for _, m := range strings.Split(ch.Models, ",") {
+									if strings.TrimSpace(m) == modelRequest.Model {
+										modelOK = true
+										break
+									}
+								}
+								if !groupOK || !modelOK {
+									continue
+								}
+								channel = ch
+								// 明确用 >= 0 作为哨兵；只有缓存明确给了 keyIndex 才覆盖 context
+								if cachedKeyIdx >= 0 {
+									c.Set("cached_key_index", cachedKeyIdx)
+								}
+								c.Set("responses_pinned_by_enc_content", true)
+								c.Set("responses_affinity_pinned", true)
+								hashPrefix := h
+								if len(hashPrefix) > 8 {
+									hashPrefix = hashPrefix[:8]
+								}
+								logger.Infof(c.Request.Context(), "[ResponsesAffinity] pinned by enc_content hash=%s... channel=%d keyIndex=%d",
+									hashPrefix, chID, cachedKeyIdx)
+								break
+							}
+						}
+					}
+				}
+
+				// 路径 B：X-Response-ID 不存在且还未 pin（A-3 enc_content 命中时 channel 已非 nil）→ 规则亲和预查
+				if responseID == "" && channel == nil {
 					if preferredID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, userGroup); found {
 						preferred, getErr := model.CacheGetChannelCopy(preferredID)
 						if getErr == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
@@ -138,6 +202,11 @@ func Distribute() func(c *gin.Context) {
 					channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
 					if cachedKeyIndex >= 0 {
 						c.Set("cached_key_index", cachedKeyIndex)
+					}
+					// 如果 responseID 非空（来自 header 或 body.previous_response_id）且命中了缓存的渠道，
+					// 标记 pinned 以便 Task 5 的 strip-and-retry 识别
+					if responseID != "" && channel != nil && err == nil {
+						c.Set("responses_affinity_pinned", true)
 					}
 					if err != nil {
 						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
