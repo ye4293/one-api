@@ -786,3 +786,24 @@ git commit -m "fix(affinity): post-validation adjustments"
 2. **`service` import in distributor**：`distributor.go` 当前没有 import `service` 包，需要新增
 3. **`recordRelayAffinity` 不删除**：它服务于 X-Response-ID 路径，两条路径独立工作，暂时保留
 4. **`recordFailureLog` 函数名**：Task 5 里 `recordFailureLog` 是 relay.go 中已有的失败日志函数，实际名字需查对（可能叫 `recordFailedRequestLog`），执行时需对照实际代码
+
+---
+
+## 2026-04-21 更新：OpenAI Responses API encrypted_content 亲和
+
+上游 OpenAI `/v1/responses` API 在续轮请求中会传 `reasoning.encrypted_content`，该 blob 绑定到特定上游账号。
+当前 channel_affinity 机制基于客户端传 X-Response-ID header 或 body 字段（gjson 规则），但 OpenAI 官方 SDK **不会**传 X-Response-ID。
+
+因此本次新增两条硬编码亲和路径（详见 `docs/plans/2026-04-21-openai-responses-encrypted-affinity.md`）：
+1. 从 body 自动提取 `previous_response_id`，视作等价的 X-Response-ID，复用 `CacheGetRandomSatisfiedChannel` 的 Claude Cache 读路径
+2. 无 `previous_response_id` 时，对请求体 `input[].reasoning.encrypted_content` 做 SHA-256 哈希，查新增的 Redis namespace `cache_enc_content_{hash}` → channelId[:keyIndex]
+
+**写入时机**：每次 `/v1/responses` 响应成功后，从响应 `output[]` 中提取 reasoning.encrypted_content 做哈希写缓存，24h TTL。
+
+**失败回退**：pinned 渠道返回 `invalid_encrypted_content` 时，`RelayOpenaiResponseNative` 内部 strip 掉请求体的 encrypted_content、写回 `common.KeyRequestBody`、设 `responses_affinity_retried=true`，然后把 error 抛给 `RelayResponse` 外层 retry loop——由外层在新渠道上用已 strip 的 body 重试。这种委托设计复用了 `middleware.SetupContextForSelectedChannel` 的完整 context 重建，避免了手工复制 context 字段漏项的陷阱。
+
+**补充**：`controller/relay.go` 的 `retryableErrorPatterns` 新增 `"invalid_encrypted_content"`，让 `shouldRetryBadRequest` 对该 400 返回 true。
+
+**已知局限**：
+- SSE 流式响应中、首 chunk 已经 flush 后才发生的 `response.failed` 事件（携带 encrypted_content 错误）未捕获——需要 chunk sniffer，本次未实现。
+- 亲和粒度为 `channel_id + key_index`；若同一 channel 下多个 key 绑定到不同 OpenAI 组织，仍可能在 key 池被动切换时解密失败。未来若需要可引入 `auth_id` 抽象层。
