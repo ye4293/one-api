@@ -114,6 +114,91 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		usageMetadata, openaiErr = doNativeOpenaiResponse(c, resp, meta)
 	}
 
+	// strip-and-retry fallback：pinned 渠道返回 invalid_encrypted_content →
+	// 剔除 encrypted_content 后以不 pin 方式重试一次
+	errCodeStr := ""
+	if openaiErr != nil {
+		if s, ok := openaiErr.Error.Code.(string); ok {
+			errCodeStr = s
+		} else if openaiErr.Error.Code != nil {
+			errCodeStr = fmt.Sprintf("%v", openaiErr.Error.Code)
+		}
+	}
+	if openaiErr != nil && c.GetBool("responses_affinity_pinned") && !c.GetBool("responses_affinity_retried") &&
+		common.IsInvalidEncryptedContentError(errCodeStr, openaiErr.Error.Message) {
+
+		failedChannelId := c.GetInt("channel_id")
+		logger.Infof(ctx, "[ResponsesAffinity] pinned channel %d failed with invalid_encrypted_content, stripping and retrying unpinned", failedChannelId)
+
+		strippedBody, stripErr := common.StripEncryptedContentFromInput(originRequestBody)
+		if stripErr != nil {
+			logger.Errorf(ctx, "[ResponsesAffinity] strip failed: %v, giving up fallback", stripErr)
+			return openaiErr
+		}
+
+		// 标记已重试、清除 pin 标记
+		c.Set("responses_affinity_retried", true)
+		c.Set("responses_affinity_pinned", false)
+
+		// 选一个不同的 channel
+		newChannel, newKeyIdx, selErr := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", []int{failedChannelId})
+		if selErr != nil || newChannel == nil {
+			logger.Errorf(ctx, "[ResponsesAffinity] no alternative channel for retry: %v", selErr)
+			return openaiErr
+		}
+
+		// 设置新渠道 context（精简版，核心字段）
+		c.Set("channel", newChannel.Type)
+		c.Set("channel_id", newChannel.Id)
+		c.Set("channel_name", newChannel.Name)
+		c.Set("base_url", newChannel.GetBaseURL())
+		if newKeyIdx >= 0 {
+			c.Set("cached_key_index", newKeyIdx)
+		}
+		// 取 key
+		actualKey, ki, kerr := newChannel.GetNextAvailableKey()
+		if kerr == nil {
+			c.Set("actual_key", actualKey)
+			c.Set("key_index", ki)
+			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
+		}
+
+		// 用 stripped body 重建 request body
+		originRequestBody = strippedBody
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(originRequestBody))
+
+		// 重新计算 meta
+		meta = util.GetRelayMeta(c)
+		meta.ActualModelName = meta.OriginModelName
+		if isModelMapped {
+			if mappedModel, ok := meta.ModelMapping[meta.OriginModelName]; ok && mappedModel != "" {
+				meta.ActualModelName = mappedModel
+			}
+		}
+		meta.PromptTokens = prePromptTokens
+		adaptor = helper.GetAdaptor(meta.APIType)
+		if adaptor == nil {
+			return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
+		}
+		adaptor.Init(meta)
+
+		resp2, err2 := adaptor.DoRequest(c, meta, bytes.NewBuffer(originRequestBody))
+		if err2 != nil {
+			return openai.ErrorWrapper(err2, "failed_to_send_request", http.StatusBadGateway)
+		}
+		if meta.IsStream {
+			usageMetadata, openaiErr = doNativeOpenaiResponseStream(c, resp2, meta)
+		} else {
+			usageMetadata, openaiErr = doNativeOpenaiResponse(c, resp2, meta)
+		}
+		if openaiErr != nil {
+			return openaiErr
+		}
+		// 重试成功：更新 channelId 供后续计费使用
+		channelId = newChannel.Id
+		logger.Infof(ctx, "[ResponsesAffinity] strip-and-retry succeeded on channel %d", newChannel.Id)
+	}
+
 	if openaiErr != nil {
 		return openaiErr
 	}
