@@ -135,6 +135,8 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 			strippedBody, stripErr := common.StripEncryptedContentFromInput(originRequestBody)
 			if stripErr != nil {
 				logger.Errorf(ctx, "[ResponsesAffinity] strip failed: %v, skipping fallback", stripErr)
+				// 避免外层 retry 循环反复进入 strip 分支重复失败
+				c.Set("responses_affinity_retried", true)
 			} else {
 				// 让外层 RelayResponse 的 retry 读到 stripped body
 				c.Set(common.KeyRequestBody, strippedBody)
