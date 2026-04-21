@@ -528,6 +528,9 @@ var retryableErrorPatterns = []string{
 	"billing limit has been reached", "hard limit has been reached",
 	// AWS封号错误
 	"operation not allowed",
+	// OpenAI Responses API encrypted_content 解密失败：由 RelayOpenaiResponseNative
+	// 内部 strip body 后，通过外层 retry 在新渠道上重试
+	"invalid_encrypted_content", "could not be decrypted or parsed",
 }
 
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
