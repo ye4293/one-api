@@ -3,6 +3,8 @@ package controller
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -22,14 +24,14 @@ func ExtractPreviousResponseID(body []byte) string {
 	return strings.TrimSpace(res.String())
 }
 
-// ExtractEncryptedContentHashes 从请求体的 input[] 中提取所有 reasoning.encrypted_content 字段并 SHA-256
-// 返回十六进制字符串数组（按出现顺序），长度 0 表示没有任何 encrypted_content
-func ExtractEncryptedContentHashes(body []byte) []string {
+// extractReasoningEncryptedHashes 从给定 JSON 字段（input 或 output 数组）中提取
+// 所有 type=reasoning 的 encrypted_content 并 SHA-256 后返回十六进制哈希数组
+func extractReasoningEncryptedHashes(body []byte, field string) []string {
 	if len(body) == 0 {
 		return nil
 	}
 	var hashes []string
-	gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+	gjson.GetBytes(body, field).ForEach(func(_, item gjson.Result) bool {
 		if item.Get("type").String() != "reasoning" {
 			return true
 		}
@@ -44,26 +46,16 @@ func ExtractEncryptedContentHashes(body []byte) []string {
 	return hashes
 }
 
+// ExtractEncryptedContentHashes 从请求体的 input[] 中提取所有 reasoning.encrypted_content 字段并 SHA-256
+// 返回十六进制字符串数组（按出现顺序），长度 0 表示没有任何 encrypted_content
+func ExtractEncryptedContentHashes(body []byte) []string {
+	return extractReasoningEncryptedHashes(body, "input")
+}
+
 // ExtractOutputEncryptedContentHashes 从响应体 output[] 中提取 reasoning.encrypted_content 哈希
 // 用途：响应成功后把本轮新生成的 reasoning 绑定到当前渠道，下一轮续轮时可定向回同渠道
 func ExtractOutputEncryptedContentHashes(body []byte) []string {
-	if len(body) == 0 {
-		return nil
-	}
-	var hashes []string
-	gjson.GetBytes(body, "output").ForEach(func(_, item gjson.Result) bool {
-		if item.Get("type").String() != "reasoning" {
-			return true
-		}
-		enc := item.Get("encrypted_content").String()
-		if enc == "" {
-			return true
-		}
-		sum := sha256.Sum256([]byte(enc))
-		hashes = append(hashes, hex.EncodeToString(sum[:]))
-		return true
-	})
-	return hashes
+	return extractReasoningEncryptedHashes(body, "output")
 }
 
 // StripEncryptedContentFromInput 清除请求体 input[] 中所有 reasoning.encrypted_content 字段
@@ -86,35 +78,12 @@ func StripEncryptedContentFromInput(body []byte) ([]byte, error) {
 		if !items[i].Get("encrypted_content").Exists() {
 			continue
 		}
-		out, err = sjson.DeleteBytes(out, "input."+itoa(i)+".encrypted_content")
+		out, err = sjson.DeleteBytes(out, "input."+strconv.Itoa(i)+".encrypted_content")
 		if err != nil {
-			return body, err
+			return out, fmt.Errorf("strip encrypted_content at input[%d]: %w", i, err)
 		}
 	}
 	return out, nil
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := false
-	if i < 0 {
-		neg = true
-		i = -i
-	}
-	var b [20]byte
-	pos := len(b)
-	for i > 0 {
-		pos--
-		b[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	if neg {
-		pos--
-		b[pos] = '-'
-	}
-	return string(b[pos:])
 }
 
 // IsInvalidEncryptedContentError 判断错误是否为 encrypted_content 解密失败

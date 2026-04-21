@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ func TestStripEncryptedContentFromInput(t *testing.T) {
 	if hashes := ExtractEncryptedContentHashes(out); len(hashes) > 0 {
 		t.Errorf("strip did not remove encrypted_content: %s", string(out))
 	}
-	if !bytesContains(out, `"id":"r1"`) || !bytesContains(out, `"content":"hi"`) {
+	if !bytes.Contains(out, []byte(`"id":"r1"`)) || !bytes.Contains(out, []byte(`"content":"hi"`)) {
 		t.Errorf("strip removed unrelated fields: %s", string(out))
 	}
 }
@@ -107,15 +108,3 @@ func TestIsInvalidEncryptedContentError(t *testing.T) {
 	}
 }
 
-func bytesContains(b []byte, s string) bool {
-	return len(b) > 0 && len(s) > 0 && indexOf(b, s) >= 0
-}
-
-func indexOf(b []byte, s string) int {
-	for i := 0; i+len(s) <= len(b); i++ {
-		if string(b[i:i+len(s)]) == s {
-			return i
-		}
-	}
-	return -1
-}
