@@ -397,8 +397,14 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
-	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
+	channelId := c.GetInt("channel_id")
+	keyIdx := c.GetInt("key_index")
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, channelId, keyIdx, "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
+	// 缓存 output[] 中 reasoning.encrypted_content 的哈希 → channel（支持下轮 encrypted_content 续轮定向）
+	for _, h := range ExtractOutputEncryptedContentHashes(responseBody) {
+		dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Cache")
+	}
 
 	return openaiResponse.Usage, nil
 }
@@ -447,9 +453,19 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 					lastUsageMetadata = streamResponse.Response.Usage
 				}
 
-				// 缓存 response_id 到 Redis
-				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache Stream")
+				channelId := c.GetInt("channel_id")
+				keyIdx := c.GetInt("key_index")
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, channelId, keyIdx, "OpenAI Response Cache Stream")
 				c.Set("x_response_id", streamResponse.Response.ID)
+
+				// 流式场景：序列化 Response 对象后从 output[] 提取 encrypted_content 哈希
+				if streamResponse.Response.Output != nil {
+					if respBytes, errMarshal := json.Marshal(streamResponse.Response); errMarshal == nil {
+						for _, h := range ExtractOutputEncryptedContentHashes(respBytes) {
+							dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Stream Cache")
+						}
+					}
+				}
 
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {
