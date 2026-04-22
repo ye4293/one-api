@@ -153,6 +153,7 @@ const (
 )
 
 const (
-	CacheClaudeRsID   = "cache_response_id_%s" // 改为通用格式（原：claude_cache_response_id_%s）
-	CacheClaudeLength = "claude_length_%s"     // 保持不变，仅 Claude 使用
+	CacheClaudeRsID     = "cache_response_id_%s" // 改为通用格式（原：claude_cache_response_id_%s）
+	CacheClaudeLength   = "claude_length_%s"     // 保持不变，仅 Claude 使用
+	CacheEncContentHash = "cache_enc_content_%s" // OpenAI Responses API encrypted_content 哈希 → channelId[:keyIndex]
 )

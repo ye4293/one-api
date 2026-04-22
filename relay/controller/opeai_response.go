@@ -19,6 +19,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/tidwall/gjson"
 )
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
@@ -112,6 +113,40 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		usageMetadata, openaiErr = doNativeOpenaiResponseStream(c, resp, meta)
 	} else {
 		usageMetadata, openaiErr = doNativeOpenaiResponse(c, resp, meta)
+	}
+
+	// strip-and-retry fallback：pinned 渠道返回 invalid_encrypted_content 时，
+	// 剥离 encrypted_content 后把 KeyRequestBody 替换为 stripped body，
+	// 返回 err 让外层 RelayResponse 的 retry loop 在新渠道上用 stripped body 重试。
+	// 这样可以复用外层 SetupContextForSelectedChannel、admin_channel_history、
+	// 计费等成熟逻辑，避免手工复制 context 漏字段。
+	if openaiErr != nil && c.GetBool("responses_affinity_pinned") && !c.GetBool("responses_affinity_retried") {
+		errCodeStr := ""
+		if openaiErr.Error.Code != nil {
+			if s, ok := openaiErr.Error.Code.(string); ok {
+				errCodeStr = s
+			} else {
+				errCodeStr = fmt.Sprintf("%v", openaiErr.Error.Code)
+			}
+		}
+		if common.IsInvalidEncryptedContentError(errCodeStr, openaiErr.Error.Message) {
+			failedChannelId := c.GetInt("channel_id")
+			logger.Infof(ctx, "[ResponsesAffinity] pinned channel %d failed with invalid_encrypted_content, stripping body for outer retry", failedChannelId)
+
+			strippedBody, stripErr := common.StripEncryptedContentFromInput(originRequestBody)
+			if stripErr != nil {
+				logger.Errorf(ctx, "[ResponsesAffinity] strip failed: %v, skipping fallback", stripErr)
+				// 避免外层 retry 循环反复进入 strip 分支重复失败
+				c.Set("responses_affinity_retried", true)
+			} else {
+				// 让外层 RelayResponse 的 retry 读到 stripped body
+				c.Set(common.KeyRequestBody, strippedBody)
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(strippedBody))
+				c.Set("responses_affinity_retried", true)
+				c.Set("responses_affinity_pinned", false)
+				logger.Infof(ctx, "[ResponsesAffinity] stripped body, returning error to trigger outer retry")
+			}
+		}
 	}
 
 	if openaiErr != nil {
@@ -397,8 +432,14 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
-	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
+	channelId := c.GetInt("channel_id")
+	keyIdx := c.GetInt("key_index")
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, channelId, keyIdx, "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
+	// 缓存 output[] 中 reasoning.encrypted_content 的哈希 → channel（支持下轮 encrypted_content 续轮定向）
+	for _, h := range common.ExtractOutputEncryptedContentHashes(responseBody) {
+		dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Cache")
+	}
 
 	return openaiResponse.Usage, nil
 }
@@ -447,9 +488,19 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 					lastUsageMetadata = streamResponse.Response.Usage
 				}
 
-				// 缓存 response_id 到 Redis
-				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache Stream")
+				channelId := c.GetInt("channel_id")
+				keyIdx := c.GetInt("key_index")
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, channelId, keyIdx, "OpenAI Response Cache Stream")
 				c.Set("x_response_id", streamResponse.Response.ID)
+
+				// 流式场景：直接从 SSE 原始 data 用 gjson 提取 encrypted_content，
+				// 避免反序列化到 ResponsesOutput 再 re-marshal 的 round-trip 丢失
+				// encrypted_content 字段（struct 未声明该字段）
+				if respRaw := gjson.Get(data, "response"); respRaw.Exists() {
+					for _, h := range common.ExtractOutputEncryptedContentHashes([]byte(respRaw.Raw)) {
+						dbmodel.CacheEncryptedContentToChannel(h, channelId, keyIdx, "OpenAI Response EncContent Stream Cache")
+					}
+				}
 
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {

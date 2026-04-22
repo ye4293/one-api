@@ -827,6 +827,61 @@ func CacheResponseIdToChannel(responseId string, channelId int, keyIndex int, lo
 	}
 }
 
+// CacheEncryptedContentToChannel 写入 encrypted_content 哈希到 channel_id 的映射
+// hash: sha256(encrypted_content) 的 hex 字符串
+// 24h TTL，与 CacheResponseIdToChannel 一致
+// Redis 写失败不阻断主流程
+func CacheEncryptedContentToChannel(hash string, channelId int, keyIndex int, logPrefix string) {
+	if hash == "" || channelId <= 0 {
+		return
+	}
+	if !common.RedisEnabled {
+		return
+	}
+	cacheKey := fmt.Sprintf(common.CacheEncContentHash, hash)
+	value := fmt.Sprintf("%d", channelId)
+	if keyIndex >= 0 {
+		value = fmt.Sprintf("%d:%d", channelId, keyIndex)
+	}
+	expire := 24 * time.Hour
+	shortHash := hash
+	if len(shortHash) > 8 {
+		shortHash = shortHash[:8]
+	}
+	if err := common.RDB.Set(context.Background(), cacheKey, value, expire).Err(); err != nil {
+		logger.SysLog(fmt.Sprintf("[%s] Failed to cache enc_content_hash=%s -> channel=%d keyIndex=%d: %v",
+			logPrefix, shortHash, channelId, keyIndex, err))
+		return
+	}
+	logger.SysLog(fmt.Sprintf("[%s] Cached enc_content_hash=%s... -> channel=%d keyIndex=%d (TTL: 24h)",
+		logPrefix, shortHash, channelId, keyIndex))
+}
+
+// GetEncryptedContentCacheIdFromRedis 根据 encrypted_content 哈希查 channel
+// 返回 (channelID 字符串, keyIndex, error)；keyIndex < 0 表示兼容旧值无 key 索引
+func GetEncryptedContentCacheIdFromRedis(hash string) (string, int, error) {
+	if !common.RedisEnabled {
+		return "", -1, errors.New("redis disabled")
+	}
+	if hash == "" {
+		return "", -1, errors.New("empty hash")
+	}
+	cacheKey := fmt.Sprintf(common.CacheEncContentHash, hash)
+	value, err := common.RedisGet(cacheKey)
+	if err != nil {
+		return "", -1, err
+	}
+	parts := strings.SplitN(value, ":", 2)
+	channelID := parts[0]
+	keyIndex := -1
+	if len(parts) == 2 {
+		if idx, parseErr := strconv.Atoi(parts[1]); parseErr == nil {
+			keyIndex = idx
+		}
+	}
+	return channelID, keyIndex, nil
+}
+
 // CacheUpdateChannelMultiKeyInfo 在 HandleKeyError 写 DB 成功后立即同步内存缓存中的
 // multi_key_info，避免 CacheGetChannel 在下次全量同步前返回过时的 key 状态。
 // 如果内存缓存未启用或该 channel 不在缓存中，静默忽略。
