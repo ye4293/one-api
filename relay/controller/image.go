@@ -1074,11 +1074,17 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return
 		}
 
-		// 对于 gpt-image-1 和 gpt-image-1-mini 模型，先解析响应并计算 quota
-		if meta.ActualModelName == "gpt-image-1" || meta.ActualModelName == "gpt-image-1-mini" {
+		// 对于 gpt-image-* 系列（gpt-image-1 / gpt-image-1-mini / gpt-image-1.5 /
+		// gpt-image-1.5-mini / gpt-image-2 等）以及 chatgpt-image-latest 模型，
+		// 统一按响应中的 usage.token 用量重新计算 quota 并回写日志。
+		// 之前使用精确匹配只覆盖了 gpt-image-1 / -mini，导致其他变体：
+		//   1) promptTokens / completionTokens 恒为 0；
+		//   2) quota 一直停留在预扣值 estimatedQuota，不反映真实消耗；
+		//   3) logContent 只能记录兜底的默认价格。
+		if isGPTImageModel(meta.ActualModelName) {
 			var parsedResponse openai.ImageResponse
 			if err := json.Unmarshal(responseBody, &parsedResponse); err != nil {
-				logger.SysError("error parsing gpt-image-1 response: " + err.Error())
+				logger.SysError("error parsing " + meta.ActualModelName + " response: " + err.Error())
 			} else {
 				// 先将令牌数转换为浮点数
 				textTokens := float64(parsedResponse.Usage.InputTokensDetails.TextTokens)
@@ -2150,6 +2156,21 @@ func gcd(a, b int) int {
 // 添加辅助函数用于转义引号 (在文件末尾添加)
 func escapeQuotes(s string) string {
 	return strings.Replace(s, `"`, `\"`, -1)
+}
+
+// isGPTImageModel 判断是否为 OpenAI gpt-image-* 系列图片模型
+// 覆盖 gpt-image-1 / gpt-image-1-mini / gpt-image-1.5 / gpt-image-1.5-mini /
+// gpt-image-2 等所有变体，以及 chatgpt-image-latest。
+// 这类模型在响应体中返回 usage.input_tokens / output_tokens，
+// 需要按实际 token 用量计费并写入日志。
+func isGPTImageModel(modelName string) bool {
+	if strings.HasPrefix(modelName, "gpt-image") {
+		return true
+	}
+	if modelName == "chatgpt-image-latest" {
+		return true
+	}
+	return false
 }
 
 func DoImageRequest(c *gin.Context, modelName string) *relaymodel.ErrorWithStatusCode {
