@@ -1,6 +1,7 @@
 package vertexai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -285,6 +286,21 @@ func (a *Adaptor) ConvertImageRequest(request *model.ImageRequest) (any, error) 
 
 // DoRequest implements channel.Adaptor.
 func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io.Reader) (*http.Response, error) {
+	// Claude on Vertex：RelayClaudeNative 直接把原始 Anthropic 请求体塞过来，
+	// 不走 ConvertRequest。这里需要注入 anthropic_version 并剔除 model 字段，
+	// 否则 Vertex 的 Anthropic publisher 会返回 400。
+	if isClaudeModel(meta.OriginModelName) || isClaudeModel(meta.ActualModelName) {
+		raw, readErr := io.ReadAll(requestBody)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read request body for claude rewrite: %w", readErr)
+		}
+		rewritten, rewriteErr := rewriteBodyForVertexClaude(raw)
+		if rewriteErr != nil {
+			return nil, rewriteErr
+		}
+		requestBody = bytes.NewReader(rewritten)
+	}
+
 	// 获取请求URL
 	url, err := a.GetRequestURL(meta)
 	if err != nil {
