@@ -246,6 +246,14 @@ func filterQueryParams(queryString string, excludeParams ...string) string {
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	req.Header.Set("Content-Type", "application/json")
 
+	// Claude on Vertex：显式清掉客户端传来的 anthropic 相关 header，
+	// 避免把无意义的 x-api-key / anthropic-version 透传给 Google 上游（Vertex 用 body 里的 anthropic_version，不认 header）
+	if isClaudeModel(meta.ActualModelName) {
+		req.Header.Del("x-api-key")
+		req.Header.Del("anthropic-version")
+		req.Header.Del("anthropic-beta")
+	}
+
 	// API Key 模式不需要 Authorization 头，key 已经在 URL 中
 	if a.IsAPIKeyMode {
 		return nil
