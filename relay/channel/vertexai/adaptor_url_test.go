@@ -59,6 +59,21 @@ func TestGetRequestURL_ClaudeStream(t *testing.T) {
 	}
 }
 
+func TestGetRequestURL_ThinkingSuffixStripped(t *testing.T) {
+	a := &Adaptor{AccountCredentials: Credentials{ProjectID: "test-proj"}}
+	meta := newVertexMetaForTest("claude-opus-4-7-thinking", "us-east5", false)
+	url, err := a.GetRequestURL(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(url, "-thinking") {
+		t.Errorf("URL must not contain -thinking suffix, got %s", url)
+	}
+	if !strings.Contains(url, "publishers/anthropic/models/claude-opus-4-7:rawPredict") {
+		t.Errorf("URL should use base model name claude-opus-4-7, got %s", url)
+	}
+}
+
 func TestGetRequestURL_GeminiStillWorks(t *testing.T) {
 	a := &Adaptor{
 		AccountCredentials: Credentials{ProjectID: "test-proj"},

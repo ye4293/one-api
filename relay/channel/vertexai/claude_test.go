@@ -46,7 +46,7 @@ func TestClaudeSuffix(t *testing.T) {
 
 func TestRewriteBodyForVertexClaude_InjectsAnthropicVersion(t *testing.T) {
 	in := []byte(`{"model":"claude-opus-4-1-20250805","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":false}`)
-	out, err := rewriteBodyForVertexClaude(in)
+	out, err := rewriteBodyForVertexClaude(in, "claude-opus-4-1-20250805")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -69,8 +69,9 @@ func TestRewriteBodyForVertexClaude_InjectsAnthropicVersion(t *testing.T) {
 }
 
 func TestRewriteBodyForVertexClaude_PreservesThinkingAndTools(t *testing.T) {
-	in := []byte(`{"model":"claude-opus-4-7","messages":[],"thinking":{"type":"enabled","budget_tokens":1024},"tools":[{"name":"calc"}]}`)
-	out, err := rewriteBodyForVertexClaude(in)
+	// Use a non-4.7 model so thinking/tools fields pass through unmodified.
+	in := []byte(`{"model":"claude-sonnet-4-5-20250929","messages":[],"thinking":{"type":"enabled","budget_tokens":1024},"tools":[{"name":"calc"}]}`)
+	out, err := rewriteBodyForVertexClaude(in, "claude-sonnet-4-5-20250929")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -85,8 +86,71 @@ func TestRewriteBodyForVertexClaude_PreservesThinkingAndTools(t *testing.T) {
 }
 
 func TestRewriteBodyForVertexClaude_InvalidJSON(t *testing.T) {
-	_, err := rewriteBodyForVertexClaude([]byte(`{not json`))
+	_, err := rewriteBodyForVertexClaude([]byte(`{not json`), "claude-opus-4-7")
 	if err == nil {
 		t.Fatal("expected error on invalid json")
+	}
+}
+
+func TestRewriteBodyForVertexClaude_Claude47_StripsSamplingAndAdaptsThinking(t *testing.T) {
+	in := []byte(`{"model":"claude-opus-4-7-thinking","messages":[],"thinking":{"type":"enabled","budget_tokens":2048},"temperature":0.7,"top_p":0.95,"top_k":40}`)
+	out, err := rewriteBodyForVertexClaude(in, "claude-opus-4-7-thinking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(out, &m)
+	// temperature/top_p/top_k removed
+	if _, ok := m["temperature"]; ok {
+		t.Error("temperature must be stripped for 4.7")
+	}
+	if _, ok := m["top_p"]; ok {
+		t.Error("top_p must be stripped for 4.7")
+	}
+	if _, ok := m["top_k"]; ok {
+		t.Error("top_k must be stripped for 4.7")
+	}
+	// thinking adapted
+	thinking, _ := m["thinking"].(map[string]interface{})
+	if thinking["type"] != "adaptive" {
+		t.Errorf("thinking.type must be adaptive, got %v", thinking["type"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Error("thinking.budget_tokens must be stripped for 4.7")
+	}
+}
+
+func TestRewriteBodyForVertexClaude_Claude45_ForcesTempOneWhenThinking(t *testing.T) {
+	in := []byte(`{"model":"claude-sonnet-4-5-20250929","messages":[],"thinking":{"type":"enabled","budget_tokens":1024},"temperature":0.5}`)
+	out, err := rewriteBodyForVertexClaude(in, "claude-sonnet-4-5-20250929")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(out, &m)
+	if m["temperature"] != 1.0 {
+		t.Errorf("thinking on non-4.7 should force temperature=1.0, got %v", m["temperature"])
+	}
+	// thinking left alone on 4.5
+	thinking, _ := m["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Errorf("thinking.type on 4.5 must remain enabled")
+	}
+	if thinking["budget_tokens"] != 1024.0 {
+		t.Errorf("budget_tokens must be preserved on 4.5, got %v", thinking["budget_tokens"])
+	}
+}
+
+func TestRewriteBodyForVertexClaude_NoThinking_NoTempForcing(t *testing.T) {
+	in := []byte(`{"model":"claude-opus-4-5-20251101","messages":[],"temperature":0.3}`)
+	out, err := rewriteBodyForVertexClaude(in, "claude-opus-4-5-20251101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	_ = json.Unmarshal(out, &m)
+	// temperature unchanged because no thinking field
+	if m["temperature"] != 0.3 {
+		t.Errorf("temperature should be preserved when no thinking, got %v", m["temperature"])
 	}
 }

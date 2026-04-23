@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -297,12 +298,21 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 	// Claude on Vertex：RelayClaudeNative 直接把原始 Anthropic 请求体塞过来，
 	// 不走 ConvertRequest。这里需要注入 anthropic_version 并剔除 model 字段，
 	// 否则 Vertex 的 Anthropic publisher 会返回 400。
-	if isClaudeModel(meta.OriginModelName) || isClaudeModel(meta.ActualModelName) {
+	// 同时兼容 OriginModelName / ActualModelName 其一为 Claude 的情况（某些 Alias
+	// 渠道下 OriginModelName 可能不是 claude-* 但 ActualModelName 是）。
+	var claudeModel string
+	switch {
+	case isClaudeModel(meta.OriginModelName):
+		claudeModel = meta.OriginModelName
+	case isClaudeModel(meta.ActualModelName):
+		claudeModel = meta.ActualModelName
+	}
+	if claudeModel != "" {
 		raw, readErr := io.ReadAll(requestBody)
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read request body for claude rewrite: %w", readErr)
 		}
-		rewritten, rewriteErr := rewriteBodyForVertexClaude(raw)
+		rewritten, rewriteErr := rewriteBodyForVertexClaude(raw, claudeModel)
 		if rewriteErr != nil {
 			return nil, rewriteErr
 		}
@@ -380,7 +390,8 @@ func (a *Adaptor) buildClaudeRequestURL(meta *util.RelayMeta, modelName string) 
 
 	region := a.getModelRegion(meta, modelName)
 	suffix := claudeSuffix(meta.IsStream)
-	urlModel := mapClaudeModelForURL(modelName)
+	// -thinking 只是适配层后缀，Vertex URL 只认基础模型名
+	urlModel := mapClaudeModelForURL(anthropic.GetBaseModelName(modelName))
 
 	// 获取 project ID（同 Gemini 路径逻辑）
 	keyIndex := 0

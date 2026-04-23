@@ -24,6 +24,12 @@ var ModelList = []string{
 	"claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-opus-4-1-20250805",
 	"claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101",
 	"claude-opus-4-6", "claude-opus-4-7",
+	// Claude thinking variants（与 anthropic.ModelList 对齐；适配层后缀，URL 与 body 都会剥离）
+	"claude-opus-4-6-thinking", "claude-opus-4-7-thinking",
+	"claude-sonnet-4-5-20250929-thinking", "claude-haiku-4-5-20251001-thinking",
+	"claude-opus-4-5-20251101-thinking", "claude-opus-4-1-20250805-thinking",
+	"claude-sonnet-4-20250514-thinking", "claude-opus-4-20250514-thinking",
+	"claude-3-7-sonnet-20250219-thinking",
 }
 
 // anthropicVersion 是 Vertex 的 Anthropic publisher endpoint 要求注入到请求体顶层的版本号。
