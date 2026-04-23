@@ -72,6 +72,11 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 		modelName = "gemini-pro"
 	}
 
+	// Claude on Vertex 分支：URL 走 publishers/anthropic，action 用 rawPredict/streamRawPredict
+	if isClaudeModel(modelName) {
+		return a.buildClaudeRequestURL(meta, modelName)
+	}
+
 	// 处理 thinking 适配参数后缀
 	// -thinking, -thinking-<budget>, -nothinking 只是适配参数，不是实际模型名的一部分
 	modelName = stripThinkingSuffix(modelName)
@@ -337,6 +342,45 @@ func (a *Adaptor) GetChannelName() string {
 func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatusCode {
 	// 返回nil让通用处理器处理，保留原始错误信息
 	return nil
+}
+
+// buildClaudeRequestURL 拼 Vertex 上 Anthropic publisher 的请求 URL。
+// Claude 只支持 JSON 凭证模式（Google Cloud API Key 不能访问 Anthropic publisher）。
+// 与 Gemini 分支不同，这里**不**消费 meta.RequestURLPath 里的 action：
+// Anthropic publisher 只接受 rawPredict / streamRawPredict，由 meta.IsStream 唯一决定，
+// 客户端传来的任何自定义 action（例如 :countTokens）都会被忽略。
+func (a *Adaptor) buildClaudeRequestURL(meta *util.RelayMeta, modelName string) (string, error) {
+	if a.IsAPIKeyMode {
+		return "", fmt.Errorf("claude on Vertex does not support API Key auth mode; use service-account JSON credentials")
+	}
+
+	region := a.getModelRegion(meta, modelName)
+	suffix := claudeSuffix(meta.IsStream)
+	urlModel := mapClaudeModelForURL(modelName)
+
+	// 获取 project ID（同 Gemini 路径逻辑）
+	keyIndex := 0
+	if meta.KeyIndex != nil {
+		keyIndex = *meta.KeyIndex
+	}
+	projectID := extractProjectIDFromKey(meta, keyIndex)
+	if projectID == "" && a.AccountCredentials.ProjectID != "" {
+		projectID = a.AccountCredentials.ProjectID
+	}
+	if projectID == "" {
+		return "", fmt.Errorf("vertex AI project ID not found in Key field or credentials")
+	}
+
+	if region == "global" {
+		return fmt.Sprintf(
+			"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:%s",
+			projectID, urlModel, suffix,
+		), nil
+	}
+	return fmt.Sprintf(
+		"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s",
+		region, projectID, region, urlModel, suffix,
+	), nil
 }
 
 // stripThinkingSuffix 移除模型名称中的 thinking 适配参数后缀
