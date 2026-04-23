@@ -1305,6 +1305,18 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		return streamErr
 	}
 
+	// OpenAI gpt-image-* 流式请求：直接透传 SSE 给客户端，不缓冲全量 body。
+	// OpenAI 在 stream=true + partial_images>0 时返回 text/event-stream，
+	// 若走 io.ReadAll 再 json.Unmarshal 会把 SSE 文本当 JSON 解析失败，
+	// 导致客户端只收到 Connection closed，中间所有帧全部丢失。
+	if isGPTImageModel(meta.ActualModelName) && imageRequest.Stream && resp.StatusCode == http.StatusOK {
+		billingJSON, streamErr := proxyOpenAIImageSSE(c, ctx, resp)
+		if billingJSON != nil {
+			responseBody = billingJSON
+		}
+		return streamErr
+	}
+
 	responseBody, err = io.ReadAll(resp.Body)
 	if err != nil {
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
@@ -2029,6 +2041,153 @@ func proxyDoubaoImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 	billingBytes, _ := json.Marshal(b)
 
 	logger.Infof(ctx, "proxyDoubaoImageSSE done: generated_images=%d", generatedImages)
+	return billingBytes, nil
+}
+
+// proxyOpenAIImageSSE 将 OpenAI gpt-image-* 系列流式图片生成（partial_images）的
+// SSE 响应直接透传给客户端，同时从 completed 事件中提取 usage 用于计费。
+//
+// 实际 OpenAI SSE 事件格式（每个事件由 event: + data: 两行组成，事件间用空行分隔）：
+//
+//	event: image_generation.partial_image
+//	data: {"type":"image_generation.partial_image","partial_image_index":0,"b64_json":"...","sequence_number":0,...}
+//
+//	event: image_generation.partial_image
+//	data: {"type":"image_generation.partial_image","partial_image_index":1,"b64_json":"...","sequence_number":1,...}
+//
+//	event: image_generation.completed
+//	data: {"type":"image_generation.completed","b64_json":"...","usage":{"input_tokens":28,"output_tokens":5724,"total_tokens":5752,...},"sequence_number":2,...}
+//
+// 注意事项：
+//  1. OpenAI 不发 `data: [DONE]`，流通过 HTTP EOF 自然结束；
+//  2. completed 事件本身也带完整 b64_json（最终无损图），不需要另外拼接；
+//  3. 单帧 base64 可达数 MB，Scanner Buffer 必须足够大。
+func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Response) ([]byte, *relaymodel.ErrorWithStatusCode) {
+	// 透传上游响应头，排除 Content-Length（流式不能预先知道长度）
+	for k, v := range resp.Header {
+		if strings.ToLower(k) != "content-length" {
+			c.Writer.Header().Set(k, v[0])
+		}
+	}
+	c.Writer.WriteHeader(http.StatusOK)
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+
+	scanner := bufio.NewScanner(resp.Body)
+	// 单行最大 20MB，防止大 base64 截断（1536x1024 高质量 PNG base64 可达 5MB+）
+	scanner.Buffer(make([]byte, 20*1024*1024), 20*1024*1024)
+
+	// 用于从 completed 事件中提取计费信息
+	type inputTokensDetails struct {
+		TextTokens  int `json:"text_tokens"`
+		ImageTokens int `json:"image_tokens"`
+	}
+	type usagePayload struct {
+		InputTokens        int                 `json:"input_tokens"`
+		InputTokensDetails *inputTokensDetails `json:"input_tokens_details,omitempty"`
+		OutputTokens       int                 `json:"output_tokens"`
+		TotalTokens        int                 `json:"total_tokens"`
+	}
+	type sseEvent struct {
+		Type  string        `json:"type"`
+		Model string        `json:"model,omitempty"`
+		Usage *usagePayload `json:"usage,omitempty"`
+	}
+
+	// 对于 n>1 多图场景，OpenAI 可能发多个 completed 事件（每图一个），需要累加；
+	// 对于 n=1 场景，只有一个 completed，累加等价于直接取值。
+	var aggUsage usagePayload
+	var modelName string
+	var completedCount int
+	// 客户端是否已断开，断开后停止 Flush 但仍需排空上游（避免 upstream Goroutine 泄漏）
+	clientGone := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 原样透传每一行给客户端（event: / data: / 空行都要保留，SSE 事件靠空行分隔）
+		if !clientGone {
+			if _, werr := fmt.Fprintf(c.Writer, "%s\n", line); werr != nil {
+				// 客户端已断开，后续只排空上游，不再写入
+				logger.Warnf(ctx, "proxyOpenAIImageSSE: client disconnected: %v", werr)
+				clientGone = true
+			} else if canFlush {
+				flusher.Flush()
+			}
+		}
+
+		// 只解析 data: 行（event: 行不带 JSON）
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		// OpenAI 原生不发 [DONE]，但某些兼容代理会加，顺手容错一下
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+
+		var ev sseEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			continue
+		}
+		if modelName == "" && ev.Model != "" {
+			modelName = ev.Model
+		}
+		// 严格用 type 判断，避免误把带 usage 字段的非 completed 事件也计入
+		if ev.Type == "image_generation.completed" && ev.Usage != nil {
+			// 累加而非覆盖：n>1 多图时每张图各发一次 completed，需要汇总 token
+			aggUsage.InputTokens += ev.Usage.InputTokens
+			aggUsage.OutputTokens += ev.Usage.OutputTokens
+			aggUsage.TotalTokens += ev.Usage.TotalTokens
+			if ev.Usage.InputTokensDetails != nil {
+				if aggUsage.InputTokensDetails == nil {
+					aggUsage.InputTokensDetails = &inputTokensDetails{}
+				}
+				aggUsage.InputTokensDetails.TextTokens += ev.Usage.InputTokensDetails.TextTokens
+				aggUsage.InputTokensDetails.ImageTokens += ev.Usage.InputTokensDetails.ImageTokens
+			}
+			completedCount++
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Errorf(ctx, "proxyOpenAIImageSSE scanner error: %v", err)
+	}
+
+	if completedCount == 0 {
+		logger.Warnf(ctx, "proxyOpenAIImageSSE: upstream closed without completed event, billing may be inaccurate")
+	}
+	capturedUsage := aggUsage
+
+	logger.Infof(ctx, "proxyOpenAIImageSSE done: model=%s input_tokens=%d output_tokens=%d",
+		modelName, capturedUsage.InputTokens, capturedUsage.OutputTokens)
+
+	// 构造与非流式 gpt-image-* 响应兼容的计费 JSON，供外层 defer 解析
+	type billingUsageDetails struct {
+		TextTokens  int `json:"text_tokens"`
+		ImageTokens int `json:"image_tokens"`
+	}
+	type billingUsage struct {
+		InputTokens        int                  `json:"input_tokens"`
+		InputTokensDetails *billingUsageDetails `json:"input_tokens_details,omitempty"`
+		OutputTokens       int                  `json:"output_tokens"`
+		TotalTokens        int                  `json:"total_tokens"`
+	}
+	type billingBody struct {
+		Model string       `json:"model"`
+		Usage billingUsage `json:"usage"`
+	}
+	b := billingBody{Model: modelName}
+	b.Usage.InputTokens = capturedUsage.InputTokens
+	b.Usage.OutputTokens = capturedUsage.OutputTokens
+	b.Usage.TotalTokens = capturedUsage.TotalTokens
+	if capturedUsage.InputTokensDetails != nil {
+		b.Usage.InputTokensDetails = &billingUsageDetails{
+			TextTokens:  capturedUsage.InputTokensDetails.TextTokens,
+			ImageTokens: capturedUsage.InputTokensDetails.ImageTokens,
+		}
+	}
+	billingBytes, _ := json.Marshal(b)
 	return billingBytes, nil
 }
 
