@@ -58,6 +58,7 @@ type VideoTaskResult struct {
 	VideoId       string
 	Quota         int64
 	Resolution    string
+	Sound         string  // 是否有声: on/off
 	Credentials   string  // 用于 VertexAI 保存凭证
 	VideoDuration float64 // 输入视频时长（秒），仅编辑/延长时有值
 }
