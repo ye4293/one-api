@@ -28,6 +28,70 @@
 
 ---
 
+## Task 0：DB 迁移 — Video / Image 表添加 `key_index` 列
+
+**Files:**
+- Modify: `model/video.go:11-42`（`Video` 结构）
+- Modify: `model/image.go:9-29`（`Image` 结构）
+- Produce: 供用户手动执行的 SQL
+
+**背景**：Runway 任务 ID 绑定创建时用的 API key。multi-key 渠道下，查询时必须用创建时的那个 key。Video / Image 表现无 `key_index` 列。
+
+- [ ] **Step 1：在 `Video` 结构体中添加 `KeyIndex` 字段**
+
+定位到 `model/video.go` 中 `Video` 结构体的 `ChannelId` 字段（约第 24 行），在其后增加：
+
+```go
+KeyIndex       int     `json:"key_index" gorm:"default:0"` // 多Key渠道下创建任务使用的 key 索引
+```
+
+完整上下文（添加后）：
+```go
+ChannelId      int     `json:"channel_id" gorm:"index:idx_videos_channel_id"`
+KeyIndex       int     `json:"key_index" gorm:"default:0"` // 多Key渠道下创建任务使用的 key 索引
+UserId         int     `json:"user_id" gorm:"index:idx_videos_user_id"`
+```
+
+- [ ] **Step 2：在 `Image` 结构体中添加 `KeyIndex` 字段**
+
+定位到 `model/image.go` 中 `Image` 结构体的 `ChannelId` 字段（约第 13 行），在其后增加：
+
+```go
+KeyIndex      int    `json:"key_index" gorm:"default:0"` // 多Key渠道下创建任务使用的 key 索引
+```
+
+完整上下文：
+```go
+ChannelId     int    `gorm:"index:idx_images_channel_id" json:"channel_id"`
+KeyIndex      int    `json:"key_index" gorm:"default:0"` // 多Key渠道下创建任务使用的 key 索引
+UserId        int    `gorm:"index:idx_images_user_id" json:"user_id"`
+```
+
+- [ ] **Step 3：编译验证**
+
+Run: `go build ./... && go vet ./...`
+Expected: 无错误。GORM 的 `AutoMigrate` 会在下次启动时自动添加列；若项目不启用自动迁移，则用 Step 4 的 SQL。
+
+- [ ] **Step 4：输出供用户手动执行的 SQL（不自动执行）**
+
+**STOP** — 告知用户以下 SQL，由用户决策是否执行：
+
+```sql
+ALTER TABLE videos ADD COLUMN key_index INT DEFAULT 0;
+ALTER TABLE images ADD COLUMN key_index INT DEFAULT 0;
+```
+
+（若项目启用了 GORM AutoMigrate，重启服务即会自动执行，此步可跳过。）
+
+- [ ] **Step 5：Commit**
+
+```bash
+git add model/video.go model/image.go
+git commit -m "feat(runway): Video/Image 表添加 key_index 字段以支持 multi-key 查询"
+```
+
+---
+
 ## Task 1：新建 `runway` 包骨架 + 常量
 
 **Files:**
@@ -658,7 +722,8 @@ type UpstreamResult struct {
 
 // Proxy 把客户请求原样转发给 Runway。
 // - URL：meta.BaseURL + StripRoutePrefix(c.Request.URL.Path)
-// - 从 channel.Key 读取 bearer token
+// - key：优先用 middleware.Distribute 已选好的 actual_key（支持 multi-key 轮询），
+//   single-key 渠道下 actual_key 即 channel.Key
 // - 注入 X-Runway-Version
 // - body 参数即客户原始请求体，传什么发什么
 //
@@ -669,7 +734,13 @@ func Proxy(c *gin.Context, meta *util.RelayMeta, body []byte) (*UpstreamResult, 
 	if err != nil {
 		return nil, fmt.Errorf("获取渠道信息失败: %w", err)
 	}
-	if channel.Key == "" {
+
+	// 优先用 middleware 选好的真实 key（multi-key 正确性来源）
+	actualKey := c.GetString("actual_key")
+	if actualKey == "" {
+		actualKey = channel.Key
+	}
+	if actualKey == "" {
 		return nil, fmt.Errorf("渠道密钥为空")
 	}
 
@@ -688,7 +759,7 @@ func Proxy(c *gin.Context, meta *util.RelayMeta, body []byte) (*UpstreamResult, 
 	if accept := c.Request.Header.Get("Accept"); accept != "" {
 		req.Header.Set("Accept", accept)
 	}
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	req.Header.Set("Authorization", "Bearer "+actualKey)
 	req.Header.Set(HeaderVersion, APIVersion)
 
 	resp, err := util.HTTPClient.Do(req)
@@ -815,7 +886,8 @@ func Handler(c *gin.Context, meta *util.RelayMeta) {
 			upstream.Body = rewriteResponseID(upstream.Body, taskID)
 
 			quota := ComputeQuota(mode, body)
-			if err := bill(c, meta, mode, quota, body, taskID); err != nil {
+			keyIndex := c.GetInt("key_index") // middleware 设置
+			if err := bill(c, meta, mode, quota, body, taskID, keyIndex); err != nil {
 				logger.Errorf(ctx, "runway.Handler bill error: %v", err)
 			}
 		} else {
@@ -852,9 +924,9 @@ func rewriteResponseID(body []byte, newID string) []byte {
 	return out
 }
 
-// bill 统一扣费 + 日志 + DB 记录。
+// bill 统一扣费 + 日志 + DB 记录 + 记录 keyIndex（用于未来查询时定位到正确的 key）。
 // 失败时只记录错误不抛，避免破坏客户响应（扣费失败不影响客户拿到 task ID）。
-func bill(c *gin.Context, meta *util.RelayMeta, mode Mode, quota int64, body []byte, taskID string) error {
+func bill(c *gin.Context, meta *util.RelayMeta, mode Mode, quota int64, body []byte, taskID string, keyIndex int) error {
 	if quota == 0 {
 		return nil
 	}
@@ -891,12 +963,26 @@ func bill(c *gin.Context, meta *util.RelayMeta, mode Mode, quota int64, body []b
 	dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 	dbmodel.UpdateChannelUsedQuota(meta.ChannelId, quota)
 
-	// 3. 写 Image / Video 表
+	// 3. 写 Image / Video 表，再补写 key_index
 	if mode.Kind == KindImage {
-		return relaycontroller.CreateImageLog("runway", taskID, meta, "success", "", mode.Name, 1, quota)
+		if err := relaycontroller.CreateImageLog("runway", taskID, meta, "success", "", mode.Name, 1, quota); err != nil {
+			return err
+		}
+		if err := dbmodel.DB.Model(&dbmodel.Image{}).
+			Where("task_id = ?", taskID).Update("key_index", keyIndex).Error; err != nil {
+			logger.Errorf(ctx, "runway.bill 写入图像 key_index 失败 taskId=%s: %v", taskID, err)
+		}
+		return nil
 	}
 	duration := fmt.Sprintf("%.0f", extractDurationSeconds(body))
-	return relaycontroller.CreateVideoLog("runway", taskID, meta, mode.Name, duration, mode.Name, taskID, quota, 0, "", "")
+	if err := relaycontroller.CreateVideoLog("runway", taskID, meta, mode.Name, duration, mode.Name, taskID, quota, 0, "", ""); err != nil {
+		return err
+	}
+	if err := dbmodel.DB.Model(&dbmodel.Video{}).
+		Where("task_id = ?", taskID).Update("key_index", keyIndex).Error; err != nil {
+		logger.Errorf(ctx, "runway.bill 写入视频 key_index 失败 taskId=%s: %v", taskID, err)
+	}
+	return nil
 }
 ```
 
@@ -984,10 +1070,17 @@ func HandleResult(c *gin.Context, taskID string) {
 	ctx := c.Request.Context()
 
 	kind, rawID, _ := DecodeTaskID(taskID)
-	channel, err := lookupChannelByTaskID(kind, taskID)
+	channel, keyIndex, err := lookupChannelByTaskID(kind, taskID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 按 keyIndex 取创建时用的那个 key（multi-key 渠道关键）
+	key, err := channel.GetKeyByIndex(keyIndex)
+	if err != nil || key == "" {
+		// 兼容：旧数据 keyIndex=0 + single-key 渠道 → channel.Key
+		key = channel.Key
 	}
 
 	upstreamURL := fmt.Sprintf("%s/v1/tasks/%s", channel.GetBaseURL(), rawID)
@@ -996,7 +1089,7 @@ func HandleResult(c *gin.Context, taskID string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建请求失败: " + err.Error()})
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+channel.Key)
+	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set(HeaderVersion, APIVersion)
 	req.Header.Set("Accept", "application/json")
 
@@ -1047,24 +1140,27 @@ func HandleResult(c *gin.Context, taskID string) {
 	c.Data(resp.StatusCode, ct, body)
 }
 
-// lookupChannelByTaskID 根据 Kind 去对应表查渠道。
-func lookupChannelByTaskID(kind Kind, taskID string) (*dbmodel.Channel, error) {
-	var channelID int
+// lookupChannelByTaskID 根据 Kind 去对应表查渠道与创建时使用的 keyIndex。
+func lookupChannelByTaskID(kind Kind, taskID string) (*dbmodel.Channel, int, error) {
+	var channelID, keyIndex int
 	switch kind {
 	case KindImage:
 		task, err := dbmodel.GetImageByTaskId(taskID)
 		if err != nil {
-			return nil, fmt.Errorf("图像任务不存在: %w", err)
+			return nil, 0, fmt.Errorf("图像任务不存在: %w", err)
 		}
 		channelID = task.ChannelId
+		keyIndex = task.KeyIndex
 	default:
 		task, err := dbmodel.GetVideoTaskById(taskID)
 		if err != nil {
-			return nil, fmt.Errorf("视频任务不存在: %w", err)
+			return nil, 0, fmt.Errorf("视频任务不存在: %w", err)
 		}
 		channelID = task.ChannelId
+		keyIndex = task.KeyIndex
 	}
-	return dbmodel.GetChannelById(channelID, true)
+	channel, err := dbmodel.GetChannelById(channelID, true)
+	return channel, keyIndex, err
 }
 
 // syncTaskStatus 根据上游响应更新 DB 并在状态转为失败终态时退款（幂等）。
@@ -1396,6 +1492,10 @@ Expected: 无新 warning
 | `POST /runway/v1/character_performance` | 参考官方 | 200，id 以 `video-` 开头 |
 | `POST /runway/v1/video_upscale` | 参考官方 | 200，id 以 `video-` 开头 |
 | `GET /runway/v1/tasks/video-<id>` | 从上面任一创建返回拿 ID | 200，id 字段保留前缀 |
+
+**额外 multi-key 场景验证（若有 multi-key 的 Runway 渠道）：**
+- 用一个带多个 key 的 Runway 渠道重复发 3-5 次 `image_to_video`，确认每次 DB `videos.key_index` 值反映当次被选中的 key
+- 对每个任务 ID 单独查询，全部返回 200（证明查询用的是创建时那个 key）
 
 - [ ] **Step 4：最终整体 commit（如仍有 uncommitted）**
 

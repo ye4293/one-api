@@ -281,13 +281,34 @@ func Handler(c *gin.Context, meta *util.RelayMeta) {
 | DB schema | 只允许 `ALTER TABLE ADD COLUMN`，不改/删旧列 |
 | 重试行为 | 对客户端透明不变 |
 
-## DB 变更（可选）
+## DB 变更
 
-现有图像退款依赖 `log.content LIKE '%provider%' + 时间窗口` 反查 quota，脆弱。
+**前提**：`Image.Quota` 字段已存在（`model/image.go:25`），退款 quota 直接读 DB 即可，无需再 `LIKE '%provider%'` 时间窗口模糊查询。
 
-**建议**：在 `images` 表添加 `quota` 列（`BIGINT`，默认 0），创建任务时直接写入；退款时直接读。
+**必须新增**：为支持 multi-key 渠道的任务查询，两张表新增 `key_index` 列，记录创建任务时实际用的 key 在渠道 key 列表中的索引。
 
-若不允许改表，退款降级为"不退图像失败的费用"或保留现有模糊查询逻辑。此决策留到实施阶段，由用户确认。
+```sql
+ALTER TABLE videos ADD COLUMN key_index INT DEFAULT 0;
+ALTER TABLE images ADD COLUMN key_index INT DEFAULT 0;
+```
+
+对应的 Go 结构：`Video.KeyIndex int` 与 `Image.KeyIndex int`。旧行 key_index=0，single-key 渠道仍正常工作。
+
+## Multi-Key 渠道 Key 绑定
+
+Runway 任务 ID 与创建它的 API key 绑定。换 key 查询会失败。现有 `DirectRelayRunway` 在 multi-key 渠道下的两处 bug：
+
+1. **创建请求**：`req.Header.Set("Authorization", "Bearer "+channel.Key)` — `channel.Key` 在 multi-key 下是原始多行文本
+2. **查询请求**：同样用 `channel.Key`，且 DB 未记录创建时的 keyIndex，无从反查
+
+**修复策略**：
+
+| 场景 | 策略 |
+|---|---|
+| 创建 Proxy | `actualKey := c.GetString("actual_key"); if actualKey == "" { actualKey = channel.Key }`。`actual_key` 由 `middleware.Distribute` 设置，single-key 渠道下为 `channel.Key`，multi-key 下为 `GetNextAvailableKey()` 返回值 |
+| 创建后持久化 | 记录 `keyIndex := c.GetInt("key_index")` 到 `Video.KeyIndex` / `Image.KeyIndex` |
+| 查询请求 | `key, _ := channel.GetKeyByIndex(task.KeyIndex); if key == "" { key = channel.Key }`（兼容旧数据 keyIndex=0 的情况） |
+| 重试场景 | `middleware` 重试会重新选 key 并更新 `actual_key`，Proxy 无感 |
 
 ## 测试策略
 
@@ -307,15 +328,16 @@ func Handler(c *gin.Context, meta *util.RelayMeta) {
 
 ## 实施顺序（粗）
 
-1. 新建 `relay/channel/runway/` 包的 9 个文件（constant / taskid / mode / status 先行，纯函数易测）
-2. 实现 `billing.go` + 单元测试
-3. 实现 `proxy.go` + `handler.go` / `result.go`
-4. 在 `controller/relay.go` 中把 `RelayRunway` 的内部调用切换到新 handler
-5. 删 `relay/controller/directvideo.go` 中的 Runway 相关函数
-6. 删 `relay/channel/runway/video_adaptor.go` / 旧 `model.go`
-7. `router/relay-router.go` 新增 `text_to_video`
-8. `go build ./... && go vet ./...`
-9. 手动跑 6 条创建 + 1 条查询的冒烟路径
+1. DB 迁移：Video / Image 表各加 `key_index` 列，struct 加对应字段
+2. 新建 `relay/channel/runway/` 包的 9 个文件（constant / taskid / mode / status 先行，纯函数易测）
+3. 实现 `billing.go` + 单元测试
+4. 实现 `proxy.go`（用 `actual_key`）+ `handler.go`（落 key_index）/ `result.go`（用 GetKeyByIndex）
+5. 在 `controller/relay.go` 中把 `RelayRunway` 的内部调用切换到新 handler
+6. 删 `relay/controller/directvideo.go` 中的 Runway 相关函数
+7. 删 `relay/channel/runway/video_adaptor.go` / 旧 `model.go`
+8. `router/relay-router.go` 新增 `text_to_video`
+9. `go build ./... && go vet ./...`
+10. 手动跑 6 条创建 + 1 条查询的冒烟路径（含 multi-key 场景）
 
 ## 风险
 
