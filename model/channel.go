@@ -64,6 +64,8 @@ type Channel struct {
 	Priority           *int64  `json:"priority" gorm:"bigint;default:0"`
 	Config             string  `json:"config"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
+	// 是否允许被自动启用（响应时间超阈值/错误失败时跳过自动启用）
+	AutoEnabled bool `json:"auto_enabled" gorm:"default:true"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
 	// 新增自动禁用原因字段
@@ -74,6 +76,8 @@ type Channel struct {
 	HeaderOverride *string `json:"header_override" gorm:"type:text"`
 	// 渠道折扣倍率，如 0.7 表示七折（30% off），默认 1.0 无折扣
 	Discount *float64 `json:"discount" gorm:"type:decimal(4,2);default:1.0"`
+	// 渠道测试模型
+	TestModel string `json:"test_model" gorm:"type:varchar(255)"`
 }
 
 // 多Key聚合信息结构
@@ -290,6 +294,8 @@ func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, err
 		err = DB.Order("id desc").Find(&channels).Error
 	case "disabled":
 		err = DB.Order("id desc").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&channels).Error
+	case "auto_disabled":
+		err = DB.Order("id desc").Where("status = ?", common.ChannelStatusAutoDisabled).Find(&channels).Error
 	default:
 		// 对于测试，我们总是需要包含key字段
 		err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&channels).Error
@@ -546,6 +552,23 @@ func (channel *Channel) Update() error {
 	// 使用 map 可以强制更新，无论值是 true 还是false
 	err = DB.Model(channel).Select("auto_disabled").Updates(map[string]interface{}{
 		"auto_disabled": channel.AutoDisabled,
+	}).Error
+	if err != nil {
+		return err
+	}
+
+	// 单独处理 test_model 字段，允许用户把它清空为 ""
+	// Updates(struct) 会忽略零值（空字符串），所以需要用 map 强制写入
+	err = DB.Model(channel).Select("test_model").Updates(map[string]interface{}{
+		"test_model": channel.TestModel,
+	}).Error
+	if err != nil {
+		return err
+	}
+
+	// 单独处理 auto_enabled 字段，同 auto_disabled，避免 false 零值被忽略
+	err = DB.Model(channel).Select("auto_enabled").Updates(map[string]interface{}{
+		"auto_enabled": channel.AutoEnabled,
 	}).Error
 	if err != nil {
 		return err

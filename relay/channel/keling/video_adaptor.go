@@ -29,7 +29,7 @@ func (a *VideoAdaptor) GetSupportedModels() []string {
 	return []string{
 		"kling-v1", "kling-v1-5", "kling-v1-6",
 		"kling-v2", "kling-v2-master",
-		"kling-v3-omni", "kling-video-o1",
+		"kling-v3", "kling-v3-omni", "kling-video-o1",
 		"kling-lip",
 	}
 }
@@ -67,6 +67,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	var videoId string
 	var mode string
 	var duration string
+	var sound string
 
 	modelName := meta.OriginModelName
 
@@ -97,6 +98,9 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 				duration = v
 			}
 		}
+		if soundVal, ok := requestMap["sound"].(string); ok {
+			sound = soundVal
+		}
 		if modelVal, hasModel := requestMap["model"]; hasModel {
 			requestMap["model_name"] = modelVal
 			delete(requestMap, "model")
@@ -119,6 +123,9 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 			case string:
 				duration = v
 			}
+		}
+		if soundVal, ok := requestMap["sound"].(string); ok {
+			sound = soundVal
 		}
 		if modelVal, hasModel := requestMap["model"]; hasModel {
 			requestMap["model_name"] = modelVal
@@ -240,7 +247,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 			"api_error", kelingResp.StatusCode)
 	}
 
-	quota := common.CalculateVideoQuota(modelName, videoType, mode, duration, "*")
+	quota := common.CalculateVideoQuota(modelName, videoType, mode, duration, "*", sound)
 
 	return &relaychannel.VideoTaskResult{
 		TaskId:     kelingResp.Data.TaskID,
@@ -248,6 +255,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		Mode:       mode,
 		Duration:   duration,
 		VideoType:  videoType,
+		Sound:      sound,
 		Quota:      quota,
 	}, nil
 }

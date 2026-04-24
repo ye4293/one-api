@@ -135,7 +135,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	if strings.Contains(strings.ToLower(modelName), "t2v") {
 		videoType = "text-to-video"
 	}
-	quota := common.CalculateVideoQuota(modelName, videoType, "*", duration, resolution)
+	quota := common.CalculateVideoQuota(modelName, videoType, "*", duration, resolution, "")
 
 	// 基于实际请求参数做精确余额校验，与重构前行为一致
 	if balErr := checkBalance(c, meta, quota); balErr != nil {
