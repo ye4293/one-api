@@ -158,6 +158,7 @@ var ModelRatio = map[string]float64{
 	"deepseek-coder": 1.0 / 1000 * RMB,
 	// 图片模型的token计费 - 基于输入token价格设置基础比率
 	"gpt-image-1": 2.5, // 5/1M input tokens转换为配额比率
+	"gpt-image-2": 4.0, // 8/1M input tokens转换为配额比率
 	// Gemini 专用画图模型
 	"gemini-2.5-flash-image-preview": 0.15, // $0.3/1M ÷ $2/1M(基础价格) = 0.15
 }

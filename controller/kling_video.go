@@ -92,7 +92,7 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	}
 
 	// 计算预估费用
-	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "")
+	quota := common.CalculateVideoQuota(model, requestType, mode, duration, "", "")
 
 	// 检查用户余额
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
@@ -545,7 +545,7 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 						logger.Error(c, fmt.Sprintf("Parse final_unit_deduction failed: value=%s, error=%v, fallback to system billing",
 							notification.FinalUnitDeduction, parseErr))
 						// 解析失败，使用系统规则
-						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution, video.Sound)
 					} else if cnyAmount > 0 {
 						// 转换人民币为美元
 						usdAmount, convErr := common.ConvertCNYToUSD(cnyAmount)
@@ -559,13 +559,13 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
 						// 金额为 0，使用系统规则
-						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+						newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution, video.Sound)
 						logger.Info(c, fmt.Sprintf("Using system billing rules (zero amount): task_id=%s, duration=%s, quota=%d",
 							taskID, actualDuration, newQuota))
 					}
 				} else {
 					// 使用系统配置的计费规则重新计算
-					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution)
+					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution, video.Sound)
 					logger.Info(c, fmt.Sprintf("Using system billing rules: task_id=%s, duration=%s, quota=%d",
 						taskID, actualDuration, newQuota))
 				}

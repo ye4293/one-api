@@ -123,7 +123,7 @@ func DoIdentifyFace(c *gin.Context) {
 	model := kling.GetModelNameByRequestType(kling.RequestTypeIdentifyFace, userModel)
 
 	// 计算费用（identify-face 固定 mode=std，不记录 duration）
-	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "")
+	quota := common.CalculateVideoQuota(model, kling.RequestTypeIdentifyFace, "std", "0", "", "")
 
 	// 获取用户信息
 	user, err := dbmodel.GetUserById(meta.UserId, false)
@@ -212,7 +212,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	}
 
 	// 计算预估费用
-	quota := common.CalculateVideoQuota(model, requestType, "", "", "")
+	quota := common.CalculateVideoQuota(model, requestType, "", "", "", "")
 
 	// 检查用户余额（后扣费模式：仅验证余额）
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)

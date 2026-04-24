@@ -164,7 +164,7 @@ func DirectRelayRunway(c *gin.Context, meta *util.RelayMeta) {
 						// fmt.Printf("DEBUG: 视频扣费成功，quota=%d\n", quota)
 					}
 					// 创建视频日志
-					err = CreateVideoLog("runway", modifiedTaskId, meta, mode, duration, mode, modifiedTaskId, quota, 0)
+					err = CreateVideoLog("runway", modifiedTaskId, meta, mode, duration, mode, modifiedTaskId, quota, 0, "", "")
 					if err != nil {
 						fmt.Printf("创建视频日志失败: %v\n", err)
 					} else {
@@ -1123,7 +1123,7 @@ func DirectRelaySoraVideo(c *gin.Context, meta *util.RelayMeta) {
 				}
 
 				// 创建视频日志，将size作为mode参数传入
-				err = CreateVideoLog("sora", videoId, meta, size, seconds, "sora", videoId, quota, 0)
+				err = CreateVideoLog("sora", videoId, meta, size, seconds, "sora", videoId, quota, 0, "", "")
 				if err != nil {
 					logger.Errorf(ctx, "创建视频日志失败: %v", err)
 				}
@@ -2020,7 +2020,7 @@ func DirectRelaySoraVideoRemix(c *gin.Context, originalVideoId string) {
 				}
 
 				// 创建视频日志，mode使用size参数
-				err = CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-remix", originalVideoId, quota, 0)
+				err = CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-remix", originalVideoId, quota, 0, "", "")
 				if err != nil {
 					logger.Errorf(ctx, "创建Sora remix视频日志失败: %v", err)
 				}
@@ -2324,7 +2324,7 @@ func DirectRelaySoraVideoEdit(c *gin.Context) {
 					logger.Errorf(ctx, "处理Sora视频编辑扣费失败: %v", err)
 				}
 
-				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-edit", sourceVideoId, quota, 0); err != nil {
+				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-edit", sourceVideoId, quota, 0, "", ""); err != nil {
 					logger.Errorf(ctx, "创建Sora视频编辑日志失败: %v", err)
 				}
 			}
@@ -2472,7 +2472,7 @@ func DirectRelaySoraVideoExtension(c *gin.Context) {
 					logger.Errorf(ctx, "处理Sora视频续写扣费失败: %v", err)
 				}
 
-				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-extension", sourceVideoId, quota, 0); err != nil {
+				if err := CreateVideoLog("sora", newVideoId, meta, size, seconds, "sora-extension", sourceVideoId, quota, 0, "", ""); err != nil {
 					logger.Errorf(ctx, "创建Sora视频续写日志失败: %v", err)
 				}
 			}

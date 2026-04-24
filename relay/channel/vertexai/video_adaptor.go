@@ -162,7 +162,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		}
 
 		// 计算配额
-		quota := common.CalculateVideoQuota(meta.OriginModelName, "", videoMode, strconv.Itoa(durationSeconds), "")
+		quota := common.CalculateVideoQuota(meta.OriginModelName, "", videoMode, strconv.Itoa(durationSeconds), "", "")
 
 		return &relaychannel.VideoTaskResult{
 			TaskId:     taskId,
