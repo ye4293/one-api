@@ -21,9 +21,10 @@ const (
 type VideoPricingRule struct {
 	Model       string  `json:"model"`        // 模型名或通配符 (如 wan*, kling-v1)
 	Type        string  `json:"type"`         // 类型: image-to-video, text-to-video, *
-	Mode        string  `json:"mode"`         // 模式: standard, professional, *
+	Mode        string  `json:"mode"`         // 模式: std, pro, 4k, *
 	Duration    string  `json:"duration"`     // 时长: 5, 10, 15, *
 	Resolution  string  `json:"resolution"`   // 分辨率: 480P, 720P, 1080P, *
+	Sound       string  `json:"sound"`        // 是否有声: on, off, *
 	PricingType string  `json:"pricing_type"` // per_second 或 fixed
 	Price       float64 `json:"price"`        // 价格
 	Currency    string  `json:"currency"`     // 货币: USD, CNY
@@ -34,8 +35,29 @@ type VideoPricingRule struct {
 var VideoPricingRules = []VideoPricingRule{}
 var videoPricingMutex sync.RWMutex
 
-// 默认视频定价规则（空列表，通过后台配置）
-var DefaultVideoPricingRules = []VideoPricingRule{}
+// 默认视频定价规则（代码内置兜底，启动时合并进数据库）
+var DefaultVideoPricingRules = []VideoPricingRule{
+	// kling-v3 文生/图生视频，按秒计费
+	{Model: "kling-v3", Type: "*", Mode: "4k", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 3.0, Currency: "CNY", Priority: 15},
+	{Model: "kling-v3", Type: "*", Mode: "std", Sound: "on", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.9, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3", Type: "*", Mode: "std", Sound: "off", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3", Type: "*", Mode: "pro", Sound: "on", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.2, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3", Type: "*", Mode: "pro", Sound: "off", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 5},
+	// kling-v3-omni，按秒计费（4K 有声/无声同价）
+	{Model: "kling-v3-omni", Type: "*", Mode: "4k", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 3.0, Currency: "CNY", Priority: 15},
+	{Model: "kling-v3-omni", Type: "*", Mode: "std", Sound: "on", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3-omni", Type: "*", Mode: "std", Sound: "off", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3-omni", Type: "*", Mode: "pro", Sound: "on", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.0, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3-omni", Type: "*", Mode: "pro", Sound: "off", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-v3-omni", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 5},
+	// kling-video-o1，按秒计费（video-o1 无音频定价差异）
+	{Model: "kling-video-o1", Type: "*", Mode: "std", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 10},
+	{Model: "kling-video-o1", Type: "*", Mode: "pro", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-video-o1", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 5},
+	// kling-v2-master，按秒计费（2元/s）
+	{Model: "kling-v2-master", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 2.0, Currency: "CNY", Priority: 10},
+}
 
 func init() {
 	VideoPricingRules = make([]VideoPricingRule, len(DefaultVideoPricingRules))
@@ -76,11 +98,11 @@ func AddNewMissingVideoPricingRules(oldRules string) string {
 	// 检查默认规则是否存在，不存在则添加
 	existingKeys := make(map[string]bool)
 	for _, r := range rules {
-		key := fmt.Sprintf("%s:%s:%s:%s:%s", r.Model, r.Type, r.Mode, r.Duration, r.Resolution)
+		key := fmt.Sprintf("%s:%s:%s:%s:%s:%s", r.Model, r.Type, r.Mode, r.Duration, r.Resolution, r.Sound)
 		existingKeys[key] = true
 	}
 	for _, def := range DefaultVideoPricingRules {
-		key := fmt.Sprintf("%s:%s:%s:%s:%s", def.Model, def.Type, def.Mode, def.Duration, def.Resolution)
+		key := fmt.Sprintf("%s:%s:%s:%s:%s:%s", def.Model, def.Type, def.Mode, def.Duration, def.Resolution, def.Sound)
 		if !existingKeys[key] {
 			rules = append(rules, def)
 		}
@@ -115,9 +137,9 @@ func matchPattern(pattern, value string) bool {
 }
 
 // CalculateVideoQuota 计算视频费用
-// 参数: model, videoType, mode, duration(秒), resolution
+// 参数: model, videoType, mode, duration(秒), resolution, sound(on/off)
 // 返回: quota (内部积分单位)
-func CalculateVideoQuota(model, videoType, mode, duration, resolution string) int64 {
+func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound string) int64 {
 	videoPricingMutex.RLock()
 	defer videoPricingMutex.RUnlock()
 
@@ -138,7 +160,8 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 			!matchPattern(rule.Type, videoType) ||
 			!matchPattern(rule.Mode, mode) ||
 			!matchPattern(rule.Duration, duration) ||
-			!matchPattern(rule.Resolution, resolution) {
+			!matchPattern(rule.Resolution, resolution) ||
+			!matchPattern(rule.Sound, sound) {
 			continue
 		}
 
@@ -186,7 +209,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution string) in
 }
 
 // GetVideoPricingRuleInfo 获取匹配的规则信息（用于调试）
-func GetVideoPricingRuleInfo(model, videoType, mode, duration, resolution string) *VideoPricingRule {
+func GetVideoPricingRuleInfo(model, videoType, mode, duration, resolution, sound string) *VideoPricingRule {
 	videoPricingMutex.RLock()
 	defer videoPricingMutex.RUnlock()
 
@@ -209,6 +232,9 @@ func GetVideoPricingRuleInfo(model, videoType, mode, duration, resolution string
 			continue
 		}
 		if !matchPattern(rule.Resolution, resolution) {
+			continue
+		}
+		if !matchPattern(rule.Sound, sound) {
 			continue
 		}
 
