@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"testing"
 )
 
 var (
@@ -25,6 +26,14 @@ func printHelp() {
 }
 
 func init() {
+	// 跳过测试二进制：go test 生成的二进制会在 testing.Main 里自行注册 -test.* 标志，
+	// 那个时机晚于 init()。若在 init 里 flag.Parse() 会遇到未注册的 -test.* 而 os.Exit(2)，
+	// 导致本项目所有依赖 common 包的单元测试无法运行。
+	// testing.Testing() 是 Go 1.21+ 标准 API，只在 testing.Main 驱动的二进制里返回 true。
+	if testing.Testing() {
+		return
+	}
+
 	flag.Parse()
 
 	if *PrintVersion {
