@@ -281,6 +281,16 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
+	// Claude on Vertex：走 Anthropic messages 格式；后续 DoRequest 会再调用
+	// rewriteBodyForVertexClaude 删除 model 字段并注入 anthropic_version。
+	// 正常业务请求走 RelayClaudeNative 不经过这里，只有渠道测试等会命中。
+	if isClaudeModel(request.Model) {
+		claudeReq := anthropic.ConvertRequest(*request)
+		if claudeReq.MaxTokens <= 0 {
+			claudeReq.MaxTokens = 16
+		}
+		return claudeReq, nil
+	}
 	// 使用 Gemini 的转换函数将 OpenAI 格式转换为 Gemini 格式
 	// Vertex AI 使用与 Gemini 相同的请求格式
 	return gemini.ConvertRequest(*request)
@@ -343,6 +353,16 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 
 // DoResponse implements channel.Adaptor.
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
+	// Claude on Vertex：响应体是 Anthropic 原生格式，需要用 anthropic handler。
+	// 正常业务走 RelayClaudeNative 不经过这里，仅渠道测试 / 非 native 路径命中。
+	if isClaudeModel(meta.ActualModelName) || isClaudeModel(meta.OriginModelName) {
+		if meta.IsStream {
+			err, usage = anthropic.StreamHandler(c, resp, meta)
+		} else {
+			err, usage = anthropic.Handler(c, resp, meta.PromptTokens, meta.ActualModelName)
+		}
+		return
+	}
 	// 使用 Gemini 的响应处理函数
 	// Vertex AI 返回的响应格式与 Gemini 相同
 	if meta.IsStream {
