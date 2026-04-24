@@ -134,7 +134,7 @@ func parseAliWanRequest(c *gin.Context) (*aliWanRequest, error) {
 	}
 
 	billing := parseAliWanBillingInfo(body, meta.ActualModelName)
-	quota := common.CalculateVideoQuota(billing.Model, billing.VideoType, "", billing.Duration, billing.Resolution)
+	quota := common.CalculateVideoQuota(billing.Model, billing.VideoType, "", billing.Duration, billing.Resolution, "")
 
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
 	if err != nil {
