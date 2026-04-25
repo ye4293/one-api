@@ -470,7 +470,19 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	fullRequestURL = util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType)
 	if meta.ChannelType == common.ChannelTypeAzure {
 		apiVersion := util.GetAzureAPIVersion(c)
-		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
+		// Azure OpenAI 图片相关接口共用部署路径 /openai/deployments/{model}/{action}，
+		// action 由原始请求路径决定：generations / edits / variations。
+		// 例：/v1/images/edits → /openai/deployments/{model}/images/edits?api-version=...
+		action := "generations"
+		reqPath := c.Request.URL.Path
+		switch {
+		case strings.Contains(reqPath, "/images/edits"):
+			action = "edits"
+		case strings.Contains(reqPath, "/images/variations"):
+			action = "variations"
+		}
+		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/%s?api-version=%s",
+			meta.BaseURL, imageRequest.Model, action, apiVersion)
 	}
 	if meta.ChannelType == 27 { //minimax
 		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
