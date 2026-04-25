@@ -129,7 +129,7 @@ func GetUserChargeOrders(c *gin.Context) {
 	if status != 0 {
 		conditions["status"] = status
 	}
-	if myRole != common.RoleRootUser || myRole != common.RoleAdminUser {
+	if myRole != common.RoleRootUser && myRole != common.RoleAdminUser {
 		conditions["user_id"] = userId
 	}
 

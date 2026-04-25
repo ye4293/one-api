@@ -248,7 +248,7 @@ func GetCurrentUserLogsAndCount(userId int, logType int, startTimestamp int64, e
 	offset := (page - 1) * pageSize
 
 	// 然后获取满足条件的日志数据
-	err = tx.Select("id, request_id, user_id, created_at, type, username, token_name, model_name, quota, prompt_tokens, completion_tokens, channel_id, duration, is_stream, first_word_latency, content, x_request_id, x_response_id").Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
+	err = tx.Select("id, request_id, user_id, created_at, type, username, token_name, model_name, quota, prompt_tokens, completion_tokens, cached_tokens, channel_id, duration, is_stream, first_word_latency, content, x_request_id, x_response_id, other").Order("id desc").Limit(pageSize).Offset(offset).Find(&logs).Error
 	if err != nil {
 		return nil, total, err
 	}

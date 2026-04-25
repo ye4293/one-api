@@ -1,12 +1,64 @@
 package controller
 
 import (
+	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/model"
 )
+
+// adminInfoRegex 匹配 ezlinkai 分号格式的 adminInfo:[...] 段
+// 渠道历史是 []int，不会出现嵌套 ']'
+var adminInfoRegex = regexp.MustCompile(`adminInfo:\[[^\]]*\];?`)
+
+// stripAdminInfoFromLogs 从普通用户日志的 other 字段里剥离渠道链路信息（adminInfo）
+// 用于 /api/log/self 等用户接口，避免向终端用户暴露后端渠道 ID
+//
+// 兼容两种 other 格式：
+//   - 分号格式: "adminInfo:[1,2];usageDetails:{...};..."
+//   - JSON 格式: {"admin_info":[...],"usageDetails":{...},...}
+//
+// fast-path: 不含 "admin" 子串直接跳过，避免对 99% 普通日志做无效 regex
+func stripAdminInfoFromLogs(logs []*model.Log) {
+	for _, log := range logs {
+		if log == nil || log.Other == "" {
+			continue
+		}
+		// fast-path: 没有 admin 关键字 → 跳过
+		if !strings.Contains(log.Other, "admin") {
+			continue
+		}
+
+		other := log.Other
+		// JSON 格式：以 '{' 开头时尝试解析
+		if other[0] == '{' {
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(other), &obj); err == nil {
+				if _, ok1 := obj["admin_info"]; ok1 {
+					delete(obj, "admin_info")
+				}
+				if _, ok2 := obj["adminInfo"]; ok2 {
+					delete(obj, "adminInfo")
+				}
+				if b, err := json.Marshal(obj); err == nil {
+					log.Other = string(b)
+				}
+				continue
+			}
+			// JSON 解析失败，落回分号格式处理
+		}
+
+		// 分号格式
+		cleaned := adminInfoRegex.ReplaceAllString(other, "")
+		// 避免出现 ";;" 残留
+		cleaned = strings.ReplaceAll(cleaned, ";;", ";")
+		log.Other = strings.Trim(cleaned, ";")
+	}
+}
 
 func GetAllLogs(c *gin.Context) {
 	page, _ := strconv.Atoi(c.Query("page"))
@@ -76,6 +128,7 @@ func GetUserLogs(c *gin.Context) {
 		})
 		return
 	}
+	stripAdminInfoFromLogs(logs)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -118,6 +171,7 @@ func SearchUserLogs(c *gin.Context) {
 		})
 		return
 	}
+	stripAdminInfoFromLogs(logs)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

@@ -356,7 +356,7 @@ func GetAzureAPIVersion(c *gin.Context) string {
 	}
 	// 如果还是空，使用默认版本
 	if apiVersion == "" {
-		apiVersion = "2024-02-15-preview"
+		apiVersion = "2025-04-01-preview"
 	}
 	return apiVersion
 }

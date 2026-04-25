@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -150,7 +151,7 @@ func decodeChannelRatiosJSON(s string) (map[int]float64, error) {
 }
 
 func fetchUserChannelRatiosFromDB(id int) (map[int]float64, error) {
-	var raw string
+	var raw sql.NullString
 	err := DB.Model(&User{}).Where("id = ?", id).Limit(1).Pluck("channel_ratios", &raw).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -158,10 +159,10 @@ func fetchUserChannelRatiosFromDB(id int) (map[int]float64, error) {
 		}
 		return map[int]float64{}, err
 	}
-	if raw == "" {
+	if !raw.Valid || raw.String == "" {
 		return map[int]float64{}, nil
 	}
-	m, parseErr := decodeChannelRatiosJSON(raw)
+	m, parseErr := decodeChannelRatiosJSON(raw.String)
 	if parseErr != nil {
 		// DB 里的数据破了，返回空 map 不阻塞计费，同时上报
 		logger.SysError(fmt.Sprintf("user %d channel_ratios in DB is not valid JSON: %s", id, parseErr.Error()))
