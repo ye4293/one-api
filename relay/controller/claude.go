@@ -148,6 +148,10 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openaiErr
 	}
 
+	if usageMetadata == nil {
+		usageMetadata = &anthropic.Usage{}
+	}
+
 	actualQuota, _ := CalculateClaudeQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
 
 	// 记录消费日志
