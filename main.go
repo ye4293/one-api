@@ -169,7 +169,12 @@ func main() {
 	common.SafeGoroutine(func() {
 		controller.StartAliWanTaskPoller(context.Background())
 	})
-	
+
+	// 启动豆包视频任务轮询器
+	common.SafeGoroutine(func() {
+		controller.StartDoubaoVideoTaskPoller(context.Background())
+	})
+
 	// 启动 xAI 视频任务轮询器（带 Redis 分布式锁）
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())
