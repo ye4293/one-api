@@ -204,7 +204,7 @@ func SetRelayRouter(router *gin.Engine) {
 	// 豆包 v2 路由组 - 带 doubao/ 前缀，走独立 controller + 回调驱动
 	doubaoV2Router := router.Group("/doubao/api/v3/contents/generations")
 	doubaoV2Router.Use(middleware.TokenAuth(), middleware.Distribute()).POST("/tasks", controller.RelayDoubaoVideoCreate)
-	doubaoV2Router.Use(middleware.TokenAuth()).GET("/tasks/:taskId", controller.RelayDoubaoVideoResult)
+	doubaoV2Router.GET("/tasks/:taskId", controller.RelayDoubaoVideoResult)
 
 	// 豆包回调路由（无需鉴权，来自豆包上游）
 	doubaoCallbackRouter := router.Group("/doubao/internal")
