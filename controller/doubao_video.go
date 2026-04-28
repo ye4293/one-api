@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,7 +26,7 @@ func mapDoubaoStatus(status string) string {
 	switch status {
 	case "succeeded":
 		return "succeed"
-	case "failed":
+	case "failed", "cancelled", "expired":
 		return "failed"
 	default: // queued, running
 		return "processing"
@@ -359,4 +361,98 @@ func injectDoubaoCallbackURL(ctx context.Context, body []byte) []byte {
 	}
 	logger.Info(ctx, fmt.Sprintf("[doubao] callback_url injected: %s", callbackURL))
 	return injected
+}
+
+// ─── 定时轮询器 ───────────────────────────────────────────────────────────────
+
+const doubaoVideoPollingInterval = 10 * time.Minute
+
+func isDoubaoVideoPollerEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_VIDEO_TASK_POLLER")))
+	return v == "true" || v == "1"
+}
+
+// StartDoubaoVideoTaskPoller 启动轮询器，定期扫描 processing 状态的豆包视频任务
+func StartDoubaoVideoTaskPoller(ctx context.Context) {
+	if !isDoubaoVideoPollerEnabled() {
+		logger.SysLog("[doubao-poller] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
+		return
+	}
+
+	ticker := time.NewTicker(doubaoVideoPollingInterval)
+	defer ticker.Stop()
+
+	logger.SysLog(fmt.Sprintf("[doubao-poller] started, interval=%v", doubaoVideoPollingInterval))
+
+	pollDoubaoVideoTasks(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.SysLog("[doubao-poller] stopped")
+			return
+		case <-ticker.C:
+			pollDoubaoVideoTasks(ctx)
+		}
+	}
+}
+
+func pollDoubaoVideoTasks(ctx context.Context) {
+	var tasks []dbmodel.Video
+	if err := dbmodel.DB.Where("provider = ? AND status = ?", doubaoVideoProvider, "processing").
+		Order("id ASC").Limit(50).
+		Find(&tasks).Error; err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] query tasks failed: %v", err))
+		return
+	}
+
+	if len(tasks) == 0 {
+		return
+	}
+
+	logger.Info(ctx, fmt.Sprintf("[doubao-poller] found %d processing tasks", len(tasks)))
+
+	for _, task := range tasks {
+		go pollSingleDoubaoVideoTask(ctx, task)
+	}
+}
+
+func pollSingleDoubaoVideoTask(ctx context.Context, task dbmodel.Video) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.SysError(fmt.Sprintf("[doubao-poller] panic: task_id=%s, err=%v", task.TaskId, r))
+		}
+	}()
+
+	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
+			task.TaskId, task.ChannelId, err))
+		return
+	}
+
+	adaptor := &doubaomodel.VideoAdaptor{}
+	meta := buildDoubaoMeta(channel)
+
+	resp, err := adaptor.DoQuery(ctx, meta, task.TaskId)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] request failed: task_id=%s, err=%v", task.TaskId, err))
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] read response failed: task_id=%s, err=%v", task.TaskId, err))
+		return
+	}
+
+	queryResp, err := adaptor.ParseQueryResponse(respBody)
+	if err != nil {
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] parse response failed: task_id=%s, err=%v", task.TaskId, err))
+		return
+	}
+
+	logger.Info(ctx, fmt.Sprintf("[doubao-poller] polled: task_id=%s, status=%s", task.TaskId, queryResp.Status))
+	updateDoubaoTaskStatus(ctx, task.TaskId, &task, queryResp)
 }
