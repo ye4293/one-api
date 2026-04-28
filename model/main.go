@@ -83,7 +83,7 @@ func chooseDB(envName string) (*gorm.DB, error) {
 	// Use SQLite
 	logger.SysLog("SQL_DSN not set, using SQLite as database")
 	common.UsingSQLite = true
-	config := fmt.Sprintf("?_busy_timeout=%d", common.SQLiteBusyTimeout)
+	config := fmt.Sprintf("?_busy_timeout=%d&_journal_mode=WAL", common.SQLiteBusyTimeout)
 	return gorm.Open(sqlite.Open(common.SQLitePath+config), &gorm.Config{
 		PrepareStmt: true, // precompile SQL
 	})
@@ -100,7 +100,11 @@ func InitDB(envName string) (db *gorm.DB, err error) {
 			return nil, err
 		}
 		sqlDB.SetMaxIdleConns(env.Int("SQL_MAX_IDLE_CONNS", 100))
-		sqlDB.SetMaxOpenConns(env.Int("SQL_MAX_OPEN_CONNS", 1000))
+		maxOpenConns := env.Int("SQL_MAX_OPEN_CONNS", 1000)
+		if common.UsingSQLite && maxOpenConns > 1 {
+			maxOpenConns = 1
+		}
+		sqlDB.SetMaxOpenConns(maxOpenConns)
 		sqlDB.SetConnMaxLifetime(time.Second * time.Duration(env.Int("SQL_MAX_LIFETIME", 60)))
 
 		if !config.IsMasterNode {

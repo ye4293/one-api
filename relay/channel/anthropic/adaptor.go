@@ -70,8 +70,8 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 		}
 	}
 
-	// 为 thinking 模型添加 anthropic-beta header
-	if IsThinkingModel(meta.ActualModelName) {
+	// 为 thinking 模型添加 anthropic-beta header（4.7+ adaptive thinking 不需要此 header）
+	if IsThinkingModel(meta.ActualModelName) && !IsAdaptiveThinkingModel(meta.ActualModelName) {
 		// 如果已经有 anthropic-beta header，追加；否则设置新的
 		existingBeta := req.Header.Get("anthropic-beta")
 		if existingBeta != "" {

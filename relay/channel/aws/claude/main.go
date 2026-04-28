@@ -50,6 +50,7 @@ var AwsModelIDMap = map[string]string{
 	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
 	"claude-sonnet-4-6":          "anthropic.claude-sonnet-4-6",
+	"claude-opus-4-7":            "anthropic.claude-opus-4-7",
 
 	// Claude models with thinking (extended thinking) - 使用相同的模型ID，通过请求参数启用思考模式
 	"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -61,6 +62,7 @@ var AwsModelIDMap = map[string]string{
 	"claude-opus-4-5-20251101-thinking":   "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-6-thinking":            "anthropic.claude-opus-4-6-v1",
 	"claude-sonnet-4-6-thinking":          "anthropic.claude-sonnet-4-6",
+	"claude-opus-4-7-thinking":            "anthropic.claude-opus-4-7",
 }
 
 // GetAwsModelID 获取 AWS 模型ID，如果没有映射则返回原始模型名
@@ -197,8 +199,25 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 		awsClaudeReq["anthropic_beta"] = json.RawMessage(betaJSON)
 	}
 
-	// thinking 模式要求 temperature 必须为 1
-	if thinking, exists := awsClaudeReq["thinking"]; exists && thinking != nil {
+	// Opus 4.7+ 适配：
+	// 1) thinking.type=enabled 不被接受，需改写为 adaptive；无论 type 如何，4.7 都不接受 budget_tokens
+	// 2) temperature / top_p / top_k 均已废弃，API 会 400
+	// 4.6 adaptive 仍接受 temperature，所以这里只对 4.7+ 动手
+	// 其他模型维持原逻辑：thinking 存在时强制 temperature=1
+	requestModel := c.GetString(ctxkey.RequestModel)
+	if anthropic.IsNoSamplingModel(requestModel) {
+		if thinking, ok := awsClaudeReq["thinking"].(map[string]any); ok {
+			if t, _ := thinking["type"].(string); t == "enabled" {
+				thinking["type"] = "adaptive"
+			}
+			// caller 即使已经用 adaptive 也可能顺带传了 budget_tokens，统一清理
+			delete(thinking, "budget_tokens")
+		}
+		delete(awsClaudeReq, "temperature")
+		delete(awsClaudeReq, "top_p")
+		delete(awsClaudeReq, "top_k")
+	} else if thinking, exists := awsClaudeReq["thinking"]; exists && thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（4.6 adaptive 下设 1 也无害）
 		awsClaudeReq["temperature"] = 1.0
 	}
 
@@ -241,8 +260,8 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 
-		// thinking 模式要求 temperature 必须为 1
-		if awsClaudeReq.Thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（仅 4.6 adaptive 与更早 enabled，4.7+ 不接受 temperature）
+		if awsClaudeReq.Thinking != nil && !anthropic.IsNoSamplingModel(c.GetString(ctxkey.RequestModel)) {
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}
@@ -317,8 +336,8 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 
-		// thinking 模式要求 temperature 必须为 1
-		if awsClaudeReq.Thinking != nil {
+		// thinking 模式要求 temperature 必须为 1（仅 4.6 adaptive 与更早 enabled，4.7+ 不接受 temperature）
+		if awsClaudeReq.Thinking != nil && !anthropic.IsNoSamplingModel(c.GetString(ctxkey.RequestModel)) {
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}
@@ -483,6 +502,8 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		c.Set("x_response_id", claudeResponse.Id)
 	}
 	if claudeResponse.Usage != nil {
+		// 保留原始 anthropic.Usage 供上层计费/日志使用（包含 cache 字段）
+		c.Set("claude_usage_metadata", claudeResponse.Usage)
 		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
 			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
 		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
@@ -530,6 +551,8 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 
 	var usage relaymodel.Usage
+	// 保留完整的 anthropic.Usage（含 cache 字段），流结束时回填到 gin.Context
+	var claudeUsage *anthropic.Usage
 
 	for {
 		event, ok := <-stream.Events()
@@ -547,6 +570,7 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				// 安全地获取 usage 信息，避免 nil 指针
 				if claudeResp.Type == "message_start" && claudeResp.Message != nil && claudeResp.Message.Usage != nil {
 					usage.PromptTokens = claudeResp.Message.Usage.InputTokens
+					claudeUsage = claudeResp.Message.Usage
 					if claudeResp.Message.Id != "" {
 						c.Set("x_response_id", claudeResp.Message.Id)
 					}
@@ -558,6 +582,9 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				if claudeResp.Type == "message_delta" && claudeResp.Usage != nil {
 					usage.CompletionTokens = claudeResp.Usage.OutputTokens
 					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					if claudeUsage != nil {
+						claudeUsage.OutputTokens = claudeResp.Usage.OutputTokens
+					}
 				}
 			} else {
 				// JSON 解析失败时记录错误
@@ -575,6 +602,10 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 		default:
 			logger.SysError("union is nil or unknown type")
 		}
+	}
+
+	if claudeUsage != nil {
+		c.Set("claude_usage_metadata", claudeUsage)
 	}
 
 	return nil, &usage

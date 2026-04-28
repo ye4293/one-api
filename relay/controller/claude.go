@@ -23,6 +23,18 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
+// Claude 缓存倍率常量（相对于输入价格）
+//   - 5 分钟缓存创建：输入价格 × 1.25
+//   - 1 小时缓存创建：输入价格 × 2.0
+//   - 缓存读取：输入价格 × 0.1
+//
+// 单一来源：计费计算、billingDetails 展示都应引用这些常量，避免倍率漂移。
+const (
+	claudeCache5mRatio   = 1.25
+	claudeCache1hRatio   = 2.0
+	claudeCacheReadRatio = 0.1
+)
+
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
 // Vertex AI API 要求必须指定 role 字段(值为 "user" 或 "model"),而 Gemini 原生 API 可以省略
 // 此函数用于在发送请求到 Vertex AI 之前自动补全缺失的 role 字段
@@ -62,7 +74,7 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 	meta.IsStream = claudeReq.Stream
 	// 计算预消费配额
-	groupRatio := common.GetGroupRatio(group)
+	groupRatio := util.GetBillingGroupRatio(c, group)
 	modelRatio := common.GetModelRatio(modelName)
 	ratio := modelRatio * groupRatio
 
@@ -108,8 +120,14 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		if doRespErr != nil {
 			return doRespErr
 		}
-		// 从 usage 构建 anthropic.Usage
-		if usage != nil {
+		// 优先使用 AWS handler 写入的原始 anthropic.Usage（保留 cache 字段），
+		// 否则从 model.Usage 回退构建（仅含 input/output）。
+		if v, ok := c.Get("claude_usage_metadata"); ok {
+			if au, ok := v.(*anthropic.Usage); ok && au != nil {
+				usageMetadata = au
+			}
+		}
+		if usageMetadata == nil && usage != nil {
 			usageMetadata = &anthropic.Usage{
 				InputTokens:  usage.PromptTokens,
 				OutputTokens: usage.CompletionTokens,
@@ -128,6 +146,10 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	if openaiErr != nil {
 		return openaiErr
+	}
+
+	if usageMetadata == nil {
+		usageMetadata = &anthropic.Usage{}
 	}
 
 	actualQuota, _ := CalculateClaudeQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
@@ -197,6 +219,25 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 		"completion_ratio": common.GetCompletionRatio(modelName),
 		"group_ratio":      groupRatio,
 	}
+	// 追加 Claude 缓存倍率（按 token 实际是否出现条件写入，避免污染无缓存的日志）
+	// token 数仍以 usageDetails 为准，这里只暴露倍率常量供前端拼计费公式使用。
+	if usageMetadata != nil {
+		if usageMetadata.CacheCreation != nil {
+			if usageMetadata.CacheCreation.Ephemeral5mInputTokens > 0 {
+				billingDetails["claude_cache_5m_ratio"] = claudeCache5mRatio
+			}
+			if usageMetadata.CacheCreation.Ephemeral1hInputTokens > 0 {
+				billingDetails["claude_cache_1h_ratio"] = claudeCache1hRatio
+			}
+		} else if usageMetadata.CacheCreationInputTokens > 0 {
+			// 没有细粒度信息时，CalculateClaudeQuotaByRatio 会把全部创建计入 5m 档
+			billingDetails["claude_cache_5m_ratio"] = claudeCache5mRatio
+		}
+		if usageMetadata.CacheReadInputTokens > 0 {
+			billingDetails["claude_cache_read_ratio"] = claudeCacheReadRatio
+		}
+	}
+	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
 	other = appendBillingDetails(other, billingDetails)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
@@ -353,13 +394,13 @@ func CalculateClaudeQuotaByRatio(usageMetadata *anthropic.Usage, modelName strin
 	outputQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
 
 	// 缓存创建部分
-	// 5分钟缓存：tokens × modelRatio × 1.25
-	cache5mQuota := float64(cost.CacheCreation5mTokens) * modelRatio * 1.25
-	// 1小时缓存：tokens × modelRatio × 2.0
-	cache1hQuota := float64(cost.CacheCreation1hTokens) * modelRatio * 2.0
+	// 5分钟缓存：tokens × modelRatio × claudeCache5mRatio
+	cache5mQuota := float64(cost.CacheCreation5mTokens) * modelRatio * claudeCache5mRatio
+	// 1小时缓存：tokens × modelRatio × claudeCache1hRatio
+	cache1hQuota := float64(cost.CacheCreation1hTokens) * modelRatio * claudeCache1hRatio
 
-	// 缓存读取部分：tokens × modelRatio × 0.1
-	cacheReadQuota := float64(cost.CacheReadTokens) * modelRatio * 0.1
+	// 缓存读取部分：tokens × modelRatio × claudeCacheReadRatio
+	cacheReadQuota := float64(cost.CacheReadTokens) * modelRatio * claudeCacheReadRatio
 
 	// 打印各部分配额计算
 	logger.SysLog(fmt.Sprintf("[Claude计费] 各部分Ratio Tokens: 输入=%.2f (%d×%.4f), 输出=%.2f (%d×%.4f×%.4f)",
@@ -464,7 +505,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &claudeResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
-	if claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
+	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
 		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
 	}
 

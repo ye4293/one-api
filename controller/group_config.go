@@ -45,6 +45,16 @@ func CreateGroupConfigHandler(c *gin.Context) {
 		return
 	}
 
+	// discount 是计费乘数：1.0 = 无折扣，0.5 = 五折，0 = 免费。
+	// 任何 > 1 的值都会让当前分组的所有请求被放大 N 倍，必须挡住。
+	if config.Discount < 0 || config.Discount > 1 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "discount 必须在 0-1 之间（乘数，1=无折扣；前端按百分比展示，UI 保存时会自动除以 100）",
+		})
+		return
+	}
+
 	if err := model.CreateGroupConfig(&config); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -77,6 +87,15 @@ func UpdateGroupConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "缺少 id",
+		})
+		return
+	}
+
+	// 同 Create：discount 必须在 [0, 1] 区间内，防止 UI 以外的客户端误把百分比传进来
+	if config.Discount < 0 || config.Discount > 1 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "discount 必须在 0-1 之间（乘数，1=无折扣；前端按百分比展示，UI 保存时会自动除以 100）",
 		})
 		return
 	}

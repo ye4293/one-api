@@ -133,6 +133,7 @@ var QuotaForInvitee int64 = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
+var AutoTestChannelFrequency = 0 // 自动测试渠道的频率（分钟），0 表示禁用
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
@@ -172,7 +173,7 @@ var RetryTimes = 0
 
 var RootUserEmail = ""
 
-var IsMasterNode = os.Getenv("NODE_TYPE") != "slave"
+var IsMasterNode = os.Getenv("NODE_TYPE") == "master"
 
 var requestInterval, _ = strconv.Atoi(os.Getenv("POLLING_INTERVAL"))
 var RequestInterval = time.Duration(requestInterval) * time.Second

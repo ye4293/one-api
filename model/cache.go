@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +16,15 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	"gorm.io/gorm"
 )
 
 var (
-	TokenCacheSeconds         = config.SyncFrequency
-	UserId2GroupCacheSeconds  = config.SyncFrequency
-	UserId2QuotaCacheSeconds  = config.SyncFrequency
-	UserId2StatusCacheSeconds = config.SyncFrequency
+	TokenCacheSeconds                = config.SyncFrequency
+	UserId2GroupCacheSeconds         = config.SyncFrequency
+	UserId2QuotaCacheSeconds         = config.SyncFrequency
+	UserId2StatusCacheSeconds        = config.SyncFrequency
+	UserId2ChannelRatiosCacheSeconds = config.SyncFrequency
 )
 
 func CacheGetTokenByKey(key string) (*Token, error) {
@@ -70,6 +73,102 @@ func CacheGetUserGroup(id int) (group string, err error) {
 		}
 	}
 	return group, err
+}
+
+// CacheGetUserChannelRatios 读取用户针对每个渠道类型的折扣 map。
+// 未开 Redis 或缓存 miss 时回落 DB。查询失败返回空 map。
+func CacheGetUserChannelRatios(id int) (map[int]float64, error) {
+	if id <= 0 {
+		return map[int]float64{}, nil
+	}
+	if !common.RedisEnabled {
+		return fetchUserChannelRatiosFromDB(id)
+	}
+	redisKey := fmt.Sprintf("user_channel_ratios:%d", id)
+	cached, err := common.RedisGet(redisKey)
+	if err == nil {
+		// 缓存命中
+		if cached == "" {
+			return map[int]float64{}, nil
+		}
+		if m, parseErr := decodeChannelRatiosJSON(cached); parseErr == nil {
+			return m, nil
+		} else {
+			// 缓存内容损坏，主动清除，避免下次请求再读到同样的脏数据
+			logger.SysError("user channel ratios cache corrupted, dropping key: " + parseErr.Error())
+			_ = common.RedisDel(redisKey)
+		}
+	}
+	ratios, dbErr := fetchUserChannelRatiosFromDB(id)
+	if dbErr != nil {
+		return ratios, dbErr
+	}
+	// 写缓存（即使为空也写，避免反复穿透）
+	payload := ""
+	if len(ratios) > 0 {
+		raw := make(map[string]float64, len(ratios))
+		for k, v := range ratios {
+			raw[strconv.Itoa(k)] = v
+		}
+		if bs, mErr := json.Marshal(raw); mErr == nil {
+			payload = string(bs)
+		}
+	}
+	if setErr := common.RedisSet(redisKey, payload, time.Duration(UserId2ChannelRatiosCacheSeconds)*time.Second); setErr != nil {
+		logger.SysError("Redis set user channel ratios error: " + setErr.Error())
+	}
+	return ratios, nil
+}
+
+// InvalidateUserChannelRatiosCache 清除指定用户的渠道折扣缓存。
+func InvalidateUserChannelRatiosCache(id int) {
+	if id <= 0 || !common.RedisEnabled {
+		return
+	}
+	if err := common.RedisDel(fmt.Sprintf("user_channel_ratios:%d", id)); err != nil {
+		logger.SysError("Redis del user channel ratios error: " + err.Error())
+	}
+}
+
+// decodeChannelRatiosJSON 把 JSON 字符串解析为 map[channelType]ratio，过滤非法值。
+func decodeChannelRatiosJSON(s string) (map[int]float64, error) {
+	raw := map[string]float64{}
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil, err
+	}
+	result := make(map[int]float64, len(raw))
+	for k, v := range raw {
+		if v <= 0 {
+			continue
+		}
+		ct, convErr := strconv.Atoi(k)
+		if convErr != nil {
+			continue
+		}
+		result[ct] = v
+	}
+	return result, nil
+}
+
+func fetchUserChannelRatiosFromDB(id int) (map[int]float64, error) {
+	var raw sql.NullString
+	err := DB.Model(&User{}).Where("id = ?", id).Limit(1).Pluck("channel_ratios", &raw).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return map[int]float64{}, nil
+		}
+		return map[int]float64{}, err
+	}
+	if !raw.Valid || raw.String == "" {
+		return map[int]float64{}, nil
+	}
+	m, parseErr := decodeChannelRatiosJSON(raw.String)
+	if parseErr != nil {
+		// DB 里的数据破了，返回空 map 不阻塞计费，同时上报
+		logger.SysError(fmt.Sprintf("user %d channel_ratios in DB is not valid JSON: %s", id, parseErr.Error()))
+		return map[int]float64{}, nil
+	}
+	return m, nil
 }
 
 func fetchAndUpdateUserQuota(ctx context.Context, id int) (quota int64, err error) {
@@ -580,6 +679,56 @@ func CacheGetChannel(id int) (*Channel, error) {
 	return c, nil
 }
 
+// CacheGetChannelCopy 返回缓存渠道的深拷贝，调用方可安全修改返回对象而不影响缓存。
+// 缓存未启用或缓存未命中时，降级为从 DB 读取。
+// 适用于需要在持锁期间读取并修改渠道状态的场景（如 HandleKeyError）。
+func CacheGetChannelCopy(id int) (*Channel, error) {
+	if !config.MemoryCacheEnabled {
+		return GetChannelById(id, true)
+	}
+	channelSyncLock.RLock()
+	c, ok := channelsIDM[id]
+	if !ok {
+		channelSyncLock.RUnlock()
+		// 缓存未命中，降级读 DB（不常见：渠道刚创建或缓存尚未同步）
+		return GetChannelById(id, true)
+	}
+	// 在持 RLock 期间完成深拷贝，拷贝完成后立即释放锁
+	copied := *c
+	copied.MultiKeyInfo = copyMultiKeyInfo(c.MultiKeyInfo)
+	channelSyncLock.RUnlock()
+	return &copied, nil
+}
+
+// copyMultiKeyInfo 深拷贝 MultiKeyInfo。
+// KeyStatusList 和 KeyMetadata 是 map，需要显式深拷贝。
+// KeyMetadata 内的指针字段（*string 等）做浅拷贝即可：
+// HandleKeyError 只对这些字段赋新指针，不修改指针所指向的值。
+func copyMultiKeyInfo(src MultiKeyInfo) MultiKeyInfo {
+	dst := src // 拷贝所有非 map 字段
+	if src.KeyStatusList != nil {
+		dst.KeyStatusList = make(map[int]int, len(src.KeyStatusList))
+		for k, v := range src.KeyStatusList {
+			dst.KeyStatusList[k] = v
+		}
+	}
+	if src.KeyMetadata != nil {
+		dst.KeyMetadata = make(map[int]KeyMetadata, len(src.KeyMetadata))
+		for k, v := range src.KeyMetadata {
+			dst.KeyMetadata[k] = v
+		}
+	}
+	return dst
+}
+
+// SetChannelForTest 直接将渠道写入内存缓存，仅供测试使用。
+// 调用前需确保 config.MemoryCacheEnabled = true。
+func SetChannelForTest(ch *Channel) {
+	channelSyncLock.Lock()
+	defer channelSyncLock.Unlock()
+	channelsIDM[ch.Id] = ch
+}
+
 // SetClaudeCacheIdToRedis 将 Claude 缓存信息存储到 Redis
 // id: Claude 响应 ID
 // channel: 渠道 ID
@@ -676,5 +825,38 @@ func CacheResponseIdToChannel(responseId string, channelId int, keyIndex int, lo
 	} else {
 		logger.SysLog(fmt.Sprintf("[%s] Cached response_id=%s -> channel_id=%d keyIndex=%d (TTL: 24h)",
 			logPrefix, responseId, channelId, keyIndex))
+	}
+}
+
+// CacheUpdateChannelMultiKeyInfo 在 HandleKeyError 写 DB 成功后立即同步内存缓存中的
+// multi_key_info，避免 CacheGetChannel 在下次全量同步前返回过时的 key 状态。
+// 如果内存缓存未启用或该 channel 不在缓存中，静默忽略。
+func CacheUpdateChannelMultiKeyInfo(channelId int, info MultiKeyInfo, newStatus int) {
+	if !config.MemoryCacheEnabled {
+		return
+	}
+	channelSyncLock.Lock()
+	defer channelSyncLock.Unlock()
+
+	cached, ok := channelsIDM[channelId]
+	if !ok {
+		return
+	}
+
+	cached.MultiKeyInfo = info
+
+	if newStatus == common.ChannelStatusAutoDisabled && cached.Status != common.ChannelStatusAutoDisabled {
+		cached.Status = newStatus
+		// 将该渠道从可用渠道路由表中移除，使新请求不再分配到此渠道
+		for group, model2channels := range group2model2channels {
+			for model, channels := range model2channels {
+				for i, ch := range channels {
+					if ch.Id == channelId {
+						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
+						break
+					}
+				}
+			}
+		}
 	}
 }

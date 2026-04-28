@@ -168,7 +168,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	}
 
 	// 打印完整的JSON响应
-	logger.SysLog(fmt.Sprint("GitHub Response:%s", string(bodyBytes)))
+	logger.SysLog(fmt.Sprintf("GitHub Response:%s", string(bodyBytes)))
 
 	// 由于响应体已经被读取，需要将其内容复制回res2.Body，以便后续使用
 	res2.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))

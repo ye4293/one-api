@@ -19,15 +19,54 @@ func GetBaseModelName(modelName string) string {
 	return modelName
 }
 
+// adaptiveThinkingModels 需要使用 adaptive thinking 的模型集合（4.6+）
+// 官方文档：thinking.type="enabled" + budget_tokens 已在 Opus 4.6 / Sonnet 4.6 deprecated，
+// 推荐使用 thinking.type="adaptive"；Opus 4.7 起彻底只接受 adaptive。
+// 注意：新增此类模型时需同步更新此 map、ModelList 以及 claude-config.go 中的默认 MaxTokens
+var adaptiveThinkingModels = map[string]bool{
+	"claude-opus-4-7":   true,
+	"claude-opus-4-6":   true,
+	"claude-sonnet-4-6": true,
+}
+
+// IsAdaptiveThinkingModel 判断模型是否应使用 adaptive thinking（4.6+ 模型）
+// 传入的 modelName 可以包含或不包含 -thinking 后缀
+func IsAdaptiveThinkingModel(modelName string) bool {
+	baseName := GetBaseModelName(modelName)
+	return adaptiveThinkingModels[baseName]
+}
+
+// noSamplingModels 不接受 temperature/top_p/top_k 的模型集合（仅 4.7+）
+// 官方文档：Opus 4.7 起 sampling 参数全部移除，传任何一个都会 400。
+// 4.6 adaptive 仍然接受 temperature，不要把 4.6 加进来。
+var noSamplingModels = map[string]bool{
+	"claude-opus-4-7": true,
+}
+
+// IsNoSamplingModel 判断模型是否完全不接受 temperature/top_p/top_k
+// 传入的 modelName 可以包含或不包含 -thinking 后缀
+func IsNoSamplingModel(modelName string) bool {
+	baseName := GetBaseModelName(modelName)
+	return noSamplingModels[baseName]
+}
+
+// MapReasoningEffortToOutputEffort 将 OpenAI reasoning_effort 映射到 Claude output_config.effort
+func MapReasoningEffortToOutputEffort(reasoningEffort string) string {
+	switch reasoningEffort {
+	case "none", "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "max"
+	default:
+		return "high"
+	}
+}
+
 var ModelList = []string{
-	// Claude 3 models
-	"claude-3-haiku-20240307",
-	"claude-3-sonnet-20240229",
-	"claude-3-opus-20240229",
-	"claude-3-5-sonnet-20240620",
-	"claude-3-5-sonnet-20241022",
-	"claude-3-5-haiku-20241022",
-	"claude-3-7-sonnet-20250219",
 	// Claude 4 models
 	"claude-sonnet-4-20250514",
 	"claude-opus-4-20250514",
@@ -37,6 +76,7 @@ var ModelList = []string{
 	"claude-opus-4-5-20251101",
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
+	"claude-opus-4-7",
 	// Claude thinking models
 	"claude-3-7-sonnet-20250219-thinking",
 	"claude-sonnet-4-20250514-thinking",
@@ -47,6 +87,7 @@ var ModelList = []string{
 	"claude-opus-4-5-20251101-thinking",
 	"claude-opus-4-6-thinking",
 	"claude-sonnet-4-6-thinking",
+	"claude-opus-4-7-thinking",
 }
 
 var ModelDetails = []model.APIModel{

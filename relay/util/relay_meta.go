@@ -48,6 +48,10 @@ type RelayMeta struct {
 	HeadersOverride map[string]string
 	// 渠道创建时间（用于 Azure 部署名是否移除小数点）
 	ChannelCreateTime int64
+	// 渠道折扣倍率（来自 Channel.Discount），默认 1.0
+	ChannelDiscount float64
+	// 当前用户对当前渠道类型的额外折扣倍率，默认 1.0
+	UserChannelRatio float64
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）
@@ -60,6 +64,20 @@ func (m *RelayMeta) SetFirstResponseTime() {
 			m.FirstWordLatency = m.FirstResponseTime.Sub(m.StartTime).Seconds()
 		}
 	}
+}
+
+// CombinedGroupRatio 返回计费用的组合折扣 = 等级折扣 × 渠道折扣 × 用户渠道折扣。
+// 所有通过 meta 计费的 controller 都直接用它，避免 14 处重复表达式。
+func (m *RelayMeta) CombinedGroupRatio() float64 {
+	channelDiscount := m.ChannelDiscount
+	if channelDiscount <= 0 {
+		channelDiscount = 1.0
+	}
+	userChannelRatio := m.UserChannelRatio
+	if userChannelRatio <= 0 {
+		userChannelRatio = 1.0
+	}
+	return common.GetGroupRatio(m.Group) * channelDiscount * userChannelRatio
 }
 
 // GetFirstWordLatency 获取首字延迟（秒）
@@ -140,6 +158,17 @@ func GetRelayMeta(c *gin.Context) *RelayMeta {
 		}
 	}
 	meta.APIType = constant.ChannelType2APIType(meta.ChannelType)
+
+	// 计费所需：渠道折扣 + 用户针对当前渠道类型的额外折扣
+	// 这两项由 middleware/distributor 在选中渠道时写入 c，缺省 1.0。
+	meta.ChannelDiscount = 1.0
+	if v := c.GetFloat64("channel_discount"); v > 0 {
+		meta.ChannelDiscount = v
+	}
+	meta.UserChannelRatio = 1.0
+	if v := c.GetFloat64("user_channel_ratio"); v > 0 {
+		meta.UserChannelRatio = v
+	}
 	return &meta
 }
 

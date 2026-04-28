@@ -21,6 +21,7 @@ require (
 	github.com/samber/lo v1.53.0
 	github.com/stretchr/testify v1.9.0
 	github.com/stripe/stripe-go/v78 v78.5.0
+	github.com/tidwall/gjson v1.18.0
 	golang.org/x/crypto v0.22.0
 	golang.org/x/image v0.15.0
 	gorm.io/driver/mysql v1.5.4
@@ -50,6 +51,8 @@ require (
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/volcengine/volcengine-go-sdk v1.2.23 // indirect
 	golang.org/x/sync v0.11.0 // indirect
 )

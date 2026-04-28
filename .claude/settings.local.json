@@ -20,7 +20,9 @@
       "Bash(grep -r \"localStorage.*status\\\\|localStorage.*setItem.*status\" /c/Users/brows/Desktop/ezlinkai-web-next/app /c/Users/brows/Desktop/ezlinkai-web-next/sections --include=*.ts --include=*.tsx)",
       "Bash(git pull:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(go vet:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

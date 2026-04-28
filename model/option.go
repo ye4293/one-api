@@ -34,6 +34,7 @@ func InitOptionMap() {
 	config.OptionMap["RegisterEnabled"] = strconv.FormatBool(config.RegisterEnabled)
 	config.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(config.AutomaticDisableChannelEnabled)
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
+	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
 	config.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(config.LogConsumeEnabled)
@@ -132,6 +133,7 @@ func InitOptionMap() {
 
 	// 模型监控配置
 	config.OptionMap["ModelMetricsEnabled"] = strconv.FormatBool(config.ModelMetricsEnabled)
+	config.OptionMap["ChannelAffinityConfig"] = common.AffinityConfigToJSON(common.ChannelAffinityConfig)
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -441,6 +443,15 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateClaudeReasoningEffortMapByJSONString(value)
 	case "ClaudeRequestHeaders":
 		err = common.UpdateClaudeRequestHeadersByJSONString(value)
+	case "AutoTestChannelFrequency":
+		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
+	case "ChannelAffinityConfig":
+		cfg, parseErr := common.AffinityConfigFromJSON(value)
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			common.ChannelAffinityConfig = cfg
+		}
 	}
 	return err
 }

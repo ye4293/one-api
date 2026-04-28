@@ -264,6 +264,7 @@ type ToolChoice struct {
 type ThinkingConfig struct {
 	Type         string `json:"type"`                    // "enabled", "disabled", "adaptive"
 	BudgetTokens int    `json:"budget_tokens,omitempty"` // 思考 token 预算，最小 1024（仅 type="enabled" 时使用）
+	Display      string `json:"display,omitempty"`       // 思考内容展示方式: "summarized", "omitted"（仅 type="adaptive" 时使用，4.7+ 默认 omitted）
 }
 
 // Request Claude API 请求结构
