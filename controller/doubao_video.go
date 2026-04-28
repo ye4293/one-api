@@ -191,8 +191,7 @@ func RelayDoubaoVideoResult(c *gin.Context) {
 		return
 	}
 
-	relayMeta := util.GetRelayMeta(c)
-	channel, err := dbmodel.GetChannelById(relayMeta.ChannelId, true)
+	channel, err := dbmodel.GetChannelById(videoTask.ChannelId, true)
 	if err != nil {
 		respondError(c, err, "get_channel_failed", http.StatusInternalServerError)
 		return
