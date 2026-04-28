@@ -252,6 +252,9 @@ func updateDoubaoTaskStatus(ctx context.Context, taskID string, videoTask *dbmod
 	if dbStatus == "failed" {
 		updates["fail_reason"] = buildDoubaoFailMessage(queryResp)
 	}
+	if raw, err := json.Marshal(queryResp); err == nil {
+		updates["result"] = string(raw)
+	}
 
 	if err := dbmodel.DB.Model(&dbmodel.Video{}).
 		Where("task_id = ?", taskID).
