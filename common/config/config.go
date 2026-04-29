@@ -166,6 +166,19 @@ billing account
 imagen api
 generativelanguage.googleapis.com
 console.x.ai`
+// 跨渠道重试关键词配置（一行一个关键词，匹配到则触发跨渠道重试）
+var RetryKeywords = `api key not valid
+invalid_api_key
+authentication_error
+api key not found
+invalid api key
+billing_hard_limit_reached
+billing hard limit has been reached
+billing limit has been reached
+hard limit has been reached
+operation not allowed
+your resource has been blocked because we detected unusual behavior`
+
 var QuotaRemindThreshold int64 = 1000
 var PreConsumedQuota int64 = 500
 var ApproximateTokenEnabled = false

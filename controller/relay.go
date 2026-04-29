@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -518,16 +519,42 @@ func formatRetryLog(ctx context.Context, originalChannelId int, originalChannelN
 	return retryInfo + userInfo + channelSwitch + keyInfo
 }
 
-// retryableErrorPatterns 定义可重试的错误模式（全局常量，避免重复创建）
-var retryableErrorPatterns = []string{
-	// API key相关错误
-	"api key not valid", "invalid_api_key", "authentication_error",
-	"api key not found", "invalid api key",
-	// Billing限制错误
-	"billing_hard_limit_reached", "billing hard limit has been reached",
-	"billing limit has been reached", "hard limit has been reached",
-	// AWS封号错误
-	"operation not allowed",
+// getRetryKeywords 读取可配置的跨渠道重试关键词列表（小写、按行分割、去空）。
+// 解析结果按 raw 字符串缓存，仅在配置变更时重新解析，避免在每次出错时反复 split/ToLower。
+var (
+	retryKeywordsCacheMu     sync.RWMutex
+	retryKeywordsCacheRaw    string
+	retryKeywordsCacheParsed []string
+)
+
+func getRetryKeywords() []string {
+	config.OptionMapRWMutex.RLock()
+	raw := config.RetryKeywords
+	config.OptionMapRWMutex.RUnlock()
+
+	retryKeywordsCacheMu.RLock()
+	if raw == retryKeywordsCacheRaw && retryKeywordsCacheParsed != nil {
+		parsed := retryKeywordsCacheParsed
+		retryKeywordsCacheMu.RUnlock()
+		return parsed
+	}
+	retryKeywordsCacheMu.RUnlock()
+
+	lines := strings.Split(raw, "\n")
+	parsed := make([]string, 0, len(lines))
+	for _, line := range lines {
+		kw := strings.TrimSpace(strings.ToLower(line))
+		if kw != "" {
+			parsed = append(parsed, kw)
+		}
+	}
+
+	retryKeywordsCacheMu.Lock()
+	retryKeywordsCacheRaw = raw
+	retryKeywordsCacheParsed = parsed
+	retryKeywordsCacheMu.Unlock()
+
+	return parsed
 }
 
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
@@ -580,8 +607,8 @@ func shouldRetryBadRequest(c *gin.Context, message string) bool {
 		return true
 	}
 
-	// 检查通用的可重试错误模式
-	for _, errPattern := range retryableErrorPatterns {
+	// 检查通用的可重试错误模式（来自 config.RetryKeywords）
+	for _, errPattern := range getRetryKeywords() {
 		if strings.Contains(messageLower, errPattern) {
 			logger.Warnf(c.Request.Context(), "Retryable error detected (%s), will retry with other channels", errPattern)
 			return true
@@ -615,8 +642,8 @@ func shouldRetryForbidden(c *gin.Context, message string) bool {
 		}
 	}
 
-	// 检查通用的可重试错误模式
-	for _, errPattern := range retryableErrorPatterns {
+	// 检查通用的可重试错误模式（来自 config.RetryKeywords）
+	for _, errPattern := range getRetryKeywords() {
 		if strings.Contains(messageLower, errPattern) {
 			logger.Warnf(c.Request.Context(), "Retryable 403 error detected (%s), will retry with other channels", errPattern)
 			return true
