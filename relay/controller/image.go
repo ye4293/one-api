@@ -715,6 +715,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				}
 			}
 
+			// 处理 reasoning_effort 参数：映射到 Gemini 3 的 thinking_level
+			if reasoningEffortValue, exists := requestMap["reasoning_effort"]; exists {
+				if reasoningEffortStr, ok := reasoningEffortValue.(string); ok {
+					if level := mapReasoningEffortToGeminiThinkingLevel(reasoningEffortStr); level != "" {
+						if geminiImageRequest.GenerationConfig.ThinkingConfig == nil {
+							geminiImageRequest.GenerationConfig.ThinkingConfig = &gemini.ThinkingConfig{}
+						}
+						geminiImageRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = level
+						logger.Debugf(ctx, "[gemini image json] mapped reasoning_effort=%q to thinking_level=%q",
+							reasoningEffortStr, level)
+					}
+				}
+			}
+
 			// 处理图片数据，支持多种格式：
 			// 1. "image": "单个URL或base64"
 			// 2. "image": ["多个URL", "多个base64", ...]
@@ -3610,6 +3624,20 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		}
 	}
 
+	// 处理 reasoning_effort 参数：映射到 Gemini 3 的 thinking_level。
+	// 优先取 form 字段 reasoning_effort，没有则回落到 imageRequest 上同名字段
+	// （便于 JSON 形式提交 form-data 文件 + json 字段混用的客户端）。
+	if reasoningEffortValues, ok := c.Request.MultipartForm.Value["reasoning_effort"]; ok && len(reasoningEffortValues) > 0 {
+		if level := mapReasoningEffortToGeminiThinkingLevel(reasoningEffortValues[0]); level != "" {
+			if geminiRequest.GenerationConfig.ThinkingConfig == nil {
+				geminiRequest.GenerationConfig.ThinkingConfig = &gemini.ThinkingConfig{}
+			}
+			geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = level
+			logger.Debugf(ctx, "[/v1/images/edits gemini form] mapped reasoning_effort=%q to thinking_level=%q",
+				reasoningEffortValues[0], level)
+		}
+	}
+
 	// 转换为 JSON
 	jsonBytes, err := json.Marshal(geminiRequest)
 	if err != nil {
@@ -4964,6 +4992,31 @@ func compensateAliImageTask(taskId string) {
 
 	logger.Infof(context.Background(), "Successfully completed compensation for ali image task %s: user %d and channel %d restored quota %d",
 		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
+}
+
+// mapReasoningEffortToGeminiThinkingLevel 将 OpenAI 的 reasoning_effort 取值
+// 映射到 Gemini 3 的 thinking_level 取值。
+// 参考：https://ai.google.dev/gemini-api/docs/gemini-3?hl=zh_cn#thinking_level
+//
+// 与 relay/channel/gemini/main.go 中的映射保持一致：
+//   - none / minimal / low / high → 同名
+//   - medium → high（按 Google 官方文档：OpenAI medium 对应 Gemini high）
+//
+// 返回空字符串表示客户端未传或值无法识别，调用方应跳过设置。
+func mapReasoningEffortToGeminiThinkingLevel(reasoningEffort string) string {
+	switch strings.ToLower(strings.TrimSpace(reasoningEffort)) {
+	case "none":
+		return "none"
+	case "minimal":
+		return "minimal"
+	case "low":
+		return "low"
+	case "medium":
+		return "high"
+	case "high", "xhigh":
+		return "high"
+	}
+	return ""
 }
 
 // normalizeGeminiImageSize 统一 Gemini 图片尺寸别名。
