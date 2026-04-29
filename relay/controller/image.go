@@ -470,7 +470,19 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	fullRequestURL = util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType)
 	if meta.ChannelType == common.ChannelTypeAzure {
 		apiVersion := util.GetAzureAPIVersion(c)
-		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", meta.BaseURL, imageRequest.Model, apiVersion)
+		// Azure OpenAI 图片相关接口共用部署路径 /openai/deployments/{model}/{action}，
+		// action 由原始请求路径决定：generations / edits / variations。
+		// 例：/v1/images/edits → /openai/deployments/{model}/images/edits?api-version=...
+		action := "generations"
+		reqPath := c.Request.URL.Path
+		switch {
+		case strings.Contains(reqPath, "/images/edits"):
+			action = "edits"
+		case strings.Contains(reqPath, "/images/variations"):
+			action = "variations"
+		}
+		fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/images/%s?api-version=%s",
+			meta.BaseURL, imageRequest.Model, action, apiVersion)
 	}
 	if meta.ChannelType == 27 { //minimax
 		fullRequestURL = fmt.Sprintf("%s/v1/image_generation", meta.BaseURL)
@@ -700,6 +712,20 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				}
 				if imageSize != "" {
 					geminiImageRequest.GenerationConfig.ImageConfig.ImageSize = imageSize
+				}
+			}
+
+			// 处理 reasoning_effort 参数：映射到 Gemini 3 的 thinking_level
+			if reasoningEffortValue, exists := requestMap["reasoning_effort"]; exists {
+				if reasoningEffortStr, ok := reasoningEffortValue.(string); ok {
+					if level := mapReasoningEffortToGeminiThinkingLevel(reasoningEffortStr); level != "" {
+						if geminiImageRequest.GenerationConfig.ThinkingConfig == nil {
+							geminiImageRequest.GenerationConfig.ThinkingConfig = &gemini.ThinkingConfig{}
+						}
+						geminiImageRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = level
+						logger.Debugf(ctx, "[gemini image json] mapped reasoning_effort=%q to thinking_level=%q",
+							reasoningEffortStr, level)
+					}
 				}
 			}
 
@@ -3598,6 +3624,20 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		}
 	}
 
+	// 处理 reasoning_effort 参数：映射到 Gemini 3 的 thinking_level。
+	// 优先取 form 字段 reasoning_effort，没有则回落到 imageRequest 上同名字段
+	// （便于 JSON 形式提交 form-data 文件 + json 字段混用的客户端）。
+	if reasoningEffortValues, ok := c.Request.MultipartForm.Value["reasoning_effort"]; ok && len(reasoningEffortValues) > 0 {
+		if level := mapReasoningEffortToGeminiThinkingLevel(reasoningEffortValues[0]); level != "" {
+			if geminiRequest.GenerationConfig.ThinkingConfig == nil {
+				geminiRequest.GenerationConfig.ThinkingConfig = &gemini.ThinkingConfig{}
+			}
+			geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = level
+			logger.Debugf(ctx, "[/v1/images/edits gemini form] mapped reasoning_effort=%q to thinking_level=%q",
+				reasoningEffortValues[0], level)
+		}
+	}
+
 	// 转换为 JSON
 	jsonBytes, err := json.Marshal(geminiRequest)
 	if err != nil {
@@ -4952,6 +4992,31 @@ func compensateAliImageTask(taskId string) {
 
 	logger.Infof(context.Background(), "Successfully completed compensation for ali image task %s: user %d and channel %d restored quota %d",
 		taskId, imageTask.UserId, imageTask.ChannelId, imageTask.Quota)
+}
+
+// mapReasoningEffortToGeminiThinkingLevel 将 OpenAI 的 reasoning_effort 取值
+// 映射到 Gemini 3 的 thinking_level 取值。
+// 参考：https://ai.google.dev/gemini-api/docs/gemini-3?hl=zh_cn#thinking_level
+//
+// 与 relay/channel/gemini/main.go 中的映射保持一致：
+//   - none / minimal / low / high → 同名
+//   - medium → high（按 Google 官方文档：OpenAI medium 对应 Gemini high）
+//
+// 返回空字符串表示客户端未传或值无法识别，调用方应跳过设置。
+func mapReasoningEffortToGeminiThinkingLevel(reasoningEffort string) string {
+	switch strings.ToLower(strings.TrimSpace(reasoningEffort)) {
+	case "none":
+		return "none"
+	case "minimal":
+		return "minimal"
+	case "low":
+		return "low"
+	case "medium":
+		return "high"
+	case "high", "xhigh":
+		return "high"
+	}
+	return ""
 }
 
 // normalizeGeminiImageSize 统一 Gemini 图片尺寸别名。
