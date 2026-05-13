@@ -7,7 +7,7 @@ services:
     restart: always
     command: --log-dir /app/logs
     ports:
-      - "5001:3000"
+      - "5002:3000"
     volumes:
       - ./data:/data
       - ./logs:/app/logs
@@ -30,3 +30,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  promtail:
+    image: grafana/promtail:3.4
+    container_name: ezlinkai-promtail
+    restart: unless-stopped
+    volumes:
+      - ./logs:/var/log/app:ro
+      - ./promtail/config.yaml:/etc/promtail/config.yaml:ro
+      - promtail-positions:/var/lib/promtail
+    environment:
+      - LOKI_URL=${LOKI_URL}
+      - LOKI_BEARER_TOKEN=${LOKI_BEARER_TOKEN}
+      - APP_NAME=${APP_NAME:-ezlinkai}
+      - SITE_IP=${SITE_IP:-unknown}
+    command: -config.file=/etc/promtail/config.yaml -config.expand-env=true
+    depends_on:
+      - ezlinkai
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080; echo -e \"GET /ready HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3; timeout 2 cat <&3 | grep -qi ready'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  promtail-positions:
