@@ -111,6 +111,15 @@ func relayFluxHelper(c *gin.Context, requestBody []byte) *relaymodel.ErrorWithSt
 	adaptor := &flux.Adaptor{}
 	adaptor.Init(meta)
 
+	// P2-2: 前置校验（不支持的 Replicate 模型在创建 DB 记录前拒绝，不污染 image 历史）
+	if err := adaptor.ValidateRequest(meta); err != nil {
+		logger.Errorf(c, "Flux 请求前置校验失败: %v", err)
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Error:      relaymodel.Error{Message: err.Error()},
+		}
+	}
+
 	if err := adaptor.CreatePendingRecord(c, meta); err != nil {
 		logger.Errorf(c, "Flux 创建 pending 记录失败: %v", err)
 		return &relaymodel.ErrorWithStatusCode{
@@ -169,6 +178,43 @@ func HandleFluxCallback(c *gin.Context) {
 		notification.TaskId, notification.Status, notification.Progress, notification.Cost, notification.Error)
 
 	success, statusCode, message := flux.HandleCallback(c, notification)
+
+	if success {
+		c.JSON(statusCode, gin.H{"message": message})
+	} else {
+		c.JSON(statusCode, gin.H{"error": message})
+	}
+}
+
+// HandleReplicateCallback 处理 Replicate webhook 回调通知
+func HandleReplicateCallback(c *gin.Context) {
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		logger.Errorf(c, "Replicate callback read body error: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	// 验证签名（配置 REPLICATE_WEBHOOK_SIGNING_KEY 后启用，否则跳过）
+	webhookID := c.GetHeader("webhook-id")
+	webhookTimestamp := c.GetHeader("webhook-timestamp")
+	webhookSignature := c.GetHeader("webhook-signature")
+	if !flux.VerifyReplicateWebhook(webhookID, webhookTimestamp, webhookSignature, bodyBytes) {
+		logger.Errorf(c, "Replicate callback signature verification failed")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	var replicateResp flux.ReplicateResponse
+	if err := json.Unmarshal(bodyBytes, &replicateResp); err != nil {
+		logger.Errorf(c, "Replicate callback parse error: %v, raw body: %s", err, string(bodyBytes))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	logger.Infof(c, "Replicate callback: id=%s, status=%s", replicateResp.ID, replicateResp.Status)
+
+	success, statusCode, message := flux.HandleReplicateCallback(c, replicateResp)
 
 	if success {
 		c.JSON(statusCode, gin.H{"message": message})

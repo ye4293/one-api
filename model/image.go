@@ -43,6 +43,29 @@ func (image *Image) Update() error {
 	return DB.Save(image).Error
 }
 
+// UpdateIfNotTerminal atomically updates the image only when it is not yet in a terminal
+// state ("success" or "failed"). Returns (true, nil) when the row was updated (caller won
+// the race and must charge); returns (false, nil) when another path already transitioned
+// the record to a terminal state (caller must skip billing to prevent double-charge).
+func (image *Image) UpdateIfNotTerminal() (bool, error) {
+	result := DB.Model(image).
+		Where("status NOT IN (?, ?)", "success", "failed").
+		Updates(map[string]interface{}{
+			"task_id":        image.TaskId,
+			"status":         image.Status,
+			"store_url":      image.StoreUrl,
+			"result":         image.Result,
+			"detail":         image.Detail,
+			"quota":          image.Quota,
+			"total_duration": image.TotalDuration,
+			"fail_reason":    image.FailReason,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func GetImageByTaskId(taskId string) (*Image, error) {
 	var image Image
 	err := DB.Where("task_id = ?", taskId).First(&image).Error
