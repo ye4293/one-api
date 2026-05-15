@@ -168,12 +168,15 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 	return modifiedBody, nil
 }
 
-// CreatePendingRecord 在发起请求前创建 pending 状态的记录
+// CreatePendingRecord 在客户端请求一进来就创建 pending 记录（含 request_id）。
+// 重试链路每次进入 relayFluxHelper 都会创建一条新记录，便于按 request_id 聚合一次客户端调用的所有尝试。
+// task_id 留空，待上游成功响应后通过 Update 回填。
 func (a *Adaptor) CreatePendingRecord(c *gin.Context, meta *util.RelayMeta) error {
 	now := time.Now().Unix()
 
 	imageRecord := &model.Image{
 		TaskId:    "",
+		RequestId: c.GetString("X-Request-ID"),
 		Username:  meta.TokenName,
 		ChannelId: meta.ChannelId,
 		UserId:    meta.UserId,
@@ -192,8 +195,8 @@ func (a *Adaptor) CreatePendingRecord(c *gin.Context, meta *util.RelayMeta) erro
 
 	a.ImageRecord = imageRecord
 
-	logger.Infof(c, "创建 Flux pending 记录成功: id=%d, user_id=%d",
-		imageRecord.Id, meta.UserId)
+	logger.Infof(c, "创建 Flux pending 记录成功: id=%d, user_id=%d, request_id=%s",
+		imageRecord.Id, meta.UserId, imageRecord.RequestId)
 
 	return nil
 }
@@ -508,6 +511,12 @@ func extractFluxErrorMessage(body []byte, statusCode int) string {
 		}
 	}
 	return fmt.Sprintf("API 返回错误状态: %d", statusCode)
+}
+
+// MarkFailed 将当前 ImageRecord 更新为失败状态（含 fail_reason 与 total_duration）。
+// 供 controller 在前置校验 / 请求转换 / 发送阶段失败时调用。
+func (a *Adaptor) MarkFailed(c *gin.Context, reason string) {
+	a.updateRecordToFailed(c, reason)
 }
 
 // updateRecordToFailed 更新记录为失败状态

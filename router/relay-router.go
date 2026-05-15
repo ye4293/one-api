@@ -182,7 +182,7 @@ func SetRelayRouter(router *gin.Engine) {
 	relayFluxRouter := router.Group("/flux")
 	relayFluxRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		relayFluxRouter.POST("/v1/*model", controller.RelayFlux)
+		relayFluxRouter.POST("/v1/*model", controller.Relay)
 	}
 
 	// Flux 查询路由：渠道从 DB 按 task_id 解析，不需要 Distribute

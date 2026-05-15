@@ -18,6 +18,7 @@ type Image struct {
 	ImageId       string `json:"image_id"`
 	StoreUrl      string `json:"store_url"`
 	Provider      string `gorm:"index:idx_images_provider" json:"provider"`
+	RequestId     string `gorm:"type:varchar(64);index:idx_images_request_id" json:"request_id"`
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `gorm:"autoUpdateTime" json:"updated_at"`
 	Mode          string `json:"mode"`

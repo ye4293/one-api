@@ -2,124 +2,38 @@ package controller
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/monitor"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-// RelayFlux 处理 Flux API 的异步请求（支持失败重试）
-func RelayFlux(c *gin.Context) {
-	ctx := c.Request.Context()
-
+// relayFluxHelper 执行单次 Flux 请求（成功时写入客户端响应，失败时仅返回错误）。
+// 每次进入本函数都会创建一条 pending image 记录，重试链路下"切换 N 次渠道 = N 条记录"，
+// 通过 X-Request-ID 把同一客户端请求的多次尝试关联起来。
+func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	requestBody, err := common.GetRequestBody(c)
 	if err != nil {
-		logger.Errorf(ctx, "Flux: failed to get request body: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "failed to read request body", "type": "invalid_request_error"}})
-		return
-	}
-
-	channelId := c.GetInt("channel_id")
-	channelName := c.GetString("channel_name")
-	group := c.GetString("group")
-	originalModel := c.GetString("original_model")
-	keyIndex := c.GetInt("key_index")
-
-	logger.Infof(ctx, "Flux 请求开始: channel_id=%d, model=%s", channelId, originalModel)
-
-	// 首次尝试
-	bizErr := relayFluxHelper(c, requestBody)
-	if bizErr == nil {
-		monitor.Emit(channelId, true)
-		return
-	}
-
-	logger.Errorf(ctx, "Flux 首次请求失败: channel_id=%d, status=%d, error=%s",
-		channelId, bizErr.StatusCode, bizErr.Error.Message)
-
-	go processFluxChannelErrorAsync(ctx, channelId, channelName, keyIndex, bizErr, originalModel)
-
-	retryTimes := config.RetryTimes
-	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
-		logger.Errorf(ctx, "Flux: status code %d, won't retry", bizErr.StatusCode)
-		retryTimes = 0
-	}
-
-	failedChannelIds := []int{channelId}
-	lastChannel := getLastRetryFallbackChannel(channelId)
-
-	for i := retryTimes; i > 0; i-- {
-		attempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, originalModel, attempt, "", failedChannelIds)
-		if err != nil {
-			if lastChannel == nil {
-				logger.Errorf(ctx, "Flux retry: no available channel (excludedChannels: %v): %v", failedChannelIds, err)
-				break
-			}
-			logger.Infof(ctx, "Flux retry: no new channel found, fallback to last channel #%d (%d/%d)", lastChannel.Id, attempt, retryTimes)
-			channel = lastChannel
+		logger.Errorf(c, "Flux: failed to get request body: %v", err)
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Error:      relaymodel.Error{Message: "failed to read request body: " + err.Error()},
 		}
-		lastChannel = channel
-		logger.Infof(ctx, "Flux retry %d/%d: channel #%d (%s) -> #%d (%s), model=%s, reason=%s",
-			attempt, retryTimes, channelId, channelName, channel.Id, channel.Name, originalModel, bizErr.Error.Message)
-
-		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
-
-		bizErr = relayFluxHelper(c, requestBody)
-		if bizErr == nil {
-			monitor.Emit(channel.Id, true)
-			return
-		}
-
-		channelId = c.GetInt("channel_id")
-		channelName = c.GetString("channel_name")
-		keyIndex = c.GetInt("key_index")
-		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
-
-		logger.Errorf(ctx, "Flux retry %d/%d failed: channel #%d, status=%d, error=%s",
-			attempt, retryTimes, channelId, bizErr.StatusCode, bizErr.Error.Message)
-
-		go processFluxChannelErrorAsync(ctx, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
 
-	if bizErr != nil {
-		c.JSON(bizErr.StatusCode, gin.H{
-			"error": gin.H{
-				"message": bizErr.Error.Message,
-				"type":    "api_error",
-			},
-		})
-	}
-}
-
-// relayFluxHelper 执行单次 Flux 请求（成功时写入客户端响应，失败时仅返回错误）
-func relayFluxHelper(c *gin.Context, requestBody []byte) *relaymodel.ErrorWithStatusCode {
 	meta := util.GetRelayMeta(c)
 
 	adaptor := &flux.Adaptor{}
 	adaptor.Init(meta)
 
-	// P2-2: 前置校验（不支持的 Replicate 模型在创建 DB 记录前拒绝，不污染 image 历史）
-	if err := adaptor.ValidateRequest(meta); err != nil {
-		logger.Errorf(c, "Flux 请求前置校验失败: %v", err)
-		return &relaymodel.ErrorWithStatusCode{
-			StatusCode: http.StatusBadRequest,
-			Error:      relaymodel.Error{Message: err.Error()},
-		}
-	}
-
+	// 入口处即落库：失败重试场景下也能在 image 表里看到每一次尝试。
 	if err := adaptor.CreatePendingRecord(c, meta); err != nil {
 		logger.Errorf(c, "Flux 创建 pending 记录失败: %v", err)
 		return &relaymodel.ErrorWithStatusCode{
@@ -128,10 +42,20 @@ func relayFluxHelper(c *gin.Context, requestBody []byte) *relaymodel.ErrorWithSt
 		}
 	}
 
+	if err := adaptor.ValidateRequest(meta); err != nil {
+		logger.Errorf(c, "Flux 请求前置校验失败: %v", err)
+		adaptor.MarkFailed(c, err.Error())
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusBadRequest,
+			Error:      relaymodel.Error{Message: err.Error()},
+		}
+	}
+
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 	convertedBody, err := adaptor.ConvertFluxRequest(c, meta)
 	if err != nil {
 		logger.Errorf(c, "Flux 请求转换失败: %v", err)
+		adaptor.MarkFailed(c, "convert request failed: "+err.Error())
 		return &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
 			Error:      relaymodel.Error{Message: "convert request failed: " + err.Error()},
@@ -141,12 +65,14 @@ func relayFluxHelper(c *gin.Context, requestBody []byte) *relaymodel.ErrorWithSt
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
 	if err != nil {
 		logger.Errorf(c, "Flux 请求执行失败: channel_id=%d, error=%v", meta.ChannelId, err)
+		adaptor.MarkFailed(c, "request failed: "+err.Error())
 		return &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusInternalServerError,
 			Error:      relaymodel.Error{Message: "request failed: " + err.Error()},
 		}
 	}
 
+	// DoResponse 内部在各失败分支已经调用 updateRecordToFailed，无需在此重复。
 	_, errResp := adaptor.DoResponse(c, resp, meta)
 	if errResp != nil {
 		return errResp
@@ -282,34 +208,4 @@ func GetFlux(c *gin.Context) {
 
 	c.Data(statusCode, "application/json", responseBody)
 	logger.Infof(c, "Flux 查询完成（源站）: task_id=%s, status=%d", taskID, statusCode)
-}
-
-// processFluxChannelErrorAsync 异步处理 Flux 渠道错误（用于 goroutine 调用，参数安全）
-func processFluxChannelErrorAsync(ctx context.Context, channelId int, channelName string, keyIndex int, errResp *relaymodel.ErrorWithStatusCode, modelName string) {
-	if !util.ShouldDisableChannel(&errResp.Error, errResp.StatusCode) {
-		monitor.Emit(channelId, false)
-		return
-	}
-
-	channel, err := model.GetChannelById(channelId, true)
-	if err != nil {
-		logger.Errorf(ctx, "Flux auto-disable: failed to get channel %d: %v", channelId, err)
-		monitor.Emit(channelId, false)
-		return
-	}
-
-	if channel.MultiKeyInfo.IsMultiKey || channel.MultiKeyInfo.KeyCount > 1 {
-		keyErr := channel.HandleKeyError(keyIndex, errResp.Error.Message, errResp.StatusCode, modelName)
-		if keyErr != nil {
-			logger.Errorf(ctx, "Flux auto-disable: failed to handle key error for channel %d, key %d: %v",
-				channel.Id, keyIndex, keyErr)
-		}
-	} else {
-		if channel.AutoDisabled {
-			monitor.DisableChannelWithStatusCode(channelId, channelName, errResp.Error.Message, modelName, errResp.StatusCode)
-		} else {
-			logger.Infof(ctx, "Flux: channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
-		}
-	}
-	monitor.Emit(channelId, false)
 }
