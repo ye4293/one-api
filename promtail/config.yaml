@@ -17,11 +17,21 @@ clients:
     batchwait: 1s
     batchsize: 1048576
 
+# 读取端限速：per-tail（每个日志文件独立令牌桶）的兜底防护。
+# 触发场景：日志循环爆冲、调试模式误开、应用进入死循环狂打日志。
+# 注意：不是发送端限速，无法替代 Loki 端 ingestion_rate_mb 的总量保护。
+# readline_rate_drop=true：超限直接丢弃（默认行为），换取下游稳定，代价是日志缺口。
+#   监控 Promtail metrics: promtail_dropped_entries_total{reason="rate_limit"}
+limits_config:
+  readline_rate_enabled: true
+  readline_rate: 5000
+  readline_burst: 10000
+  readline_rate_drop: true
+
 scrape_configs:
-  # 普通日志（info/warn/debug）：oneapi-YYYYMMDD.log
-  # 包含两类 JSON 行：
-  #   应用日志: {"ts","level","request_id","msg","service","instance"}
-  #   访问日志: {"ts","level","request_id","msg","status","latency_ms","client_ip","method","path","service","instance"}
+  # 应用日志（info/warn/debug）：oneapi-YYYYMMDD.log
+  # 仅含应用日志: {"ts","level","request_id","msg","service","instance"}
+  # （access log 已切分到 oneapi-access-*.log，不再混入此文件）
   - job_name: one-api-general
     static_configs:
       - targets:
@@ -45,6 +55,14 @@ scrape_configs:
           format: RFC3339Nano
           fallback_formats:
             - RFC3339
+      # 禁止历史重放：本系统不需要回放旧日志，positions 丢失/卷被清/迁移机器时
+      # 静默丢弃旧内容，避免大量历史灌入 Loki。
+      # 必须放在 timestamp stage 之后，drop 比较的是 entry 已解析后的时间戳。
+      # 1h 阈值：覆盖时钟漂移、容器调度、Loki 短暂抖动；
+      # Loki 故障 >1h 恢复后积压会被丢弃——符合"不重放"的设计意图。
+      - drop:
+          older_than: 1h
+          drop_counter_reason: historical_replay
 
   # 错误日志（error/fatal）：oneapi-error-YYYYMMDD.log
   - job_name: one-api-error
@@ -68,3 +86,38 @@ scrape_configs:
           format: RFC3339Nano
           fallback_formats:
             - RFC3339
+      - drop:
+          older_than: 1h
+          drop_counter_reason: historical_replay
+
+  # HTTP 访问日志：oneapi-access-YYYYMMDD.log
+  # 字段: {"ts","level","request_id","msg","status","latency_ms","client_ip","method","path","service","instance"}
+  # 设计原则：path/status/method/request_id 留在 JSON body，不做 label（避免 cardinality 爆炸）
+  # Grafana 查询示例：
+  #   按路径筛: {stream="access"} | json | path="/flux/v1/flux-2-pro"
+  #   按状态码: {stream="access"} | json | status >= 400
+  #   慢请求  : {stream="access"} | json | latency_ms > 1000
+  - job_name: one-api-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: ${APP_NAME}
+          instance: ${SITE_IP}
+          stream: access
+          __path__: /var/log/app/oneapi-access-*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            ts: ts
+      - labels:
+          level:
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+      - drop:
+          older_than: 1h
+          drop_counter_reason: historical_replay

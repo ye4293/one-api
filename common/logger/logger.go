@@ -36,6 +36,8 @@ var setupLogLock sync.Mutex
 var setupLogWorking bool
 var generalLogFile *os.File
 var errorLogFile *os.File
+var accessLogFile *os.File
+var accessWriter io.Writer
 
 func SetupLogger() {
 	if LogDir != "" {
@@ -63,20 +65,50 @@ func SetupLogger() {
 			log.Fatal("failed to open error log file")
 		}
 
+		accessLogPath := filepath.Join(LogDir, fmt.Sprintf("oneapi-access-%s.log", dateStr))
+		accFd, err := os.OpenFile(accessLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal("failed to open access log file")
+		}
+
 		if generalLogFile != nil {
 			generalLogFile.Close()
 		}
 		if errorLogFile != nil {
 			errorLogFile.Close()
 		}
+		if accessLogFile != nil {
+			accessLogFile.Close()
+		}
 
 		generalLogFile = fd
 		errorLogFile = errFd
+		accessLogFile = accFd
 
 		// info/warn/debug → stdout + general log
 		gin.DefaultWriter = io.MultiWriter(os.Stdout, generalLogFile)
 		// error → stderr + error log
 		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, errorLogFile)
+		// http access log → stdout + access log（独立通道，便于 Promtail 用 stream label 切分）
+		accessWriter = io.MultiWriter(os.Stdout, accessLogFile)
+	}
+}
+
+// WriteAccessLog 由 middleware 调用，把 HTTP 请求日志写到 oneapi-access-*.log。
+// 与应用日志物理分离，Promtail 可用 stream=access 标签独立采集，不污染 general/error 流。
+func WriteAccessLog(line []byte) {
+	w := accessWriter
+	if w == nil {
+		// SetupLogger 未跑或 LogDir 未设置时回落到 stdout，保证不丢日志。
+		w = os.Stdout
+	}
+	_, _ = w.Write(line)
+
+	if !setupLogWorking {
+		setupLogWorking = true
+		go func() {
+			SetupLogger()
+		}()
 	}
 }
 

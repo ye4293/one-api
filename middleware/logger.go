@@ -68,10 +68,9 @@ func SetUpLogger(server *gin.Engine) {
 
 		logLine := string(b) + "\n"
 
-		// 写入 gin.DefaultWriter，确保 access log 进入日志文件
-		if gin.DefaultWriter != nil {
-			gin.DefaultWriter.Write([]byte(logLine))
-		}
+		// access log 写入独立文件 oneapi-access-*.log，不再污染 general 流。
+		// Promtail 用 stream=access 采集，Grafana 查询时 {stream="access"} | json 即可。
+		logger.WriteAccessLog([]byte(logLine))
 
 		// 返回空字符串避免 gin 重复写入
 		return ""
