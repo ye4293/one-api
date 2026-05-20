@@ -36,6 +36,7 @@ func InitOptionMap() {
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
 	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
+	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
 	config.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(config.LogConsumeEnabled)
 	config.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(config.DisplayInCurrencyEnabled)
@@ -268,6 +269,8 @@ func updateOptionMap(key string, value string) (err error) {
 	switch key {
 	case "AutoDisableKeywords":
 		config.AutoDisableKeywords = value
+	case "RetryKeywords":
+		config.RetryKeywords = value
 	case "EmailDomainWhitelist":
 		config.EmailDomainWhitelist = strings.Split(value, ",")
 	case "SMTPServer":

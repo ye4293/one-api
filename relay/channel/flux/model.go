@@ -69,3 +69,32 @@ type FluxCallbackNotification struct {
 	OutputMP   float64 `json:"output_mp,omitempty"`       // 输出兆像素
 	Error      string  `json:"error,omitempty"`           // 错误信息
 }
+
+// ReplicateResponse Replicate 预测响应（创建任务和查询结果格式相同）
+type ReplicateResponse struct {
+	ID          string          `json:"id"`
+	Model       string          `json:"model"`
+	Status      string          `json:"status"`           // starting / processing / succeeded / failed / canceled
+	Output      string          `json:"output"`           // 图片 URL（字符串，非数组）
+	Error       interface{}     `json:"error"`
+	Logs        string          `json:"logs"`
+	Metrics     ReplicateMetrics `json:"metrics"`
+	URLs        ReplicateURLs   `json:"urls"`
+	CreatedAt   string          `json:"created_at"`
+	StartedAt   string          `json:"started_at"`
+	CompletedAt string          `json:"completed_at"`
+}
+
+// ReplicateMetrics Replicate 预测性能指标
+type ReplicateMetrics struct {
+	PredictTime               float64 `json:"predict_time"`
+	TotalTime                 float64 `json:"total_time"`
+	ImageOutputCount          int     `json:"image_output_count"`
+	ImageOutputMegapixelCount float64 `json:"image_output_megapixel_count"`
+}
+
+// ReplicateURLs Replicate 预测操作 URL
+type ReplicateURLs struct {
+	Get    string `json:"get"`
+	Cancel string `json:"cancel"`
+}

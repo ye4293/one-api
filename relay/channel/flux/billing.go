@@ -37,3 +37,17 @@ func EstimateQuota(modelName string, groupRatio float64) int64 {
 	// 所以直接乘以倍率即可
 	return int64(ratio * groupRatio * 1000) // 乘以1000作为预估buffer
 }
+
+// CalculateReplicateQuota 按 Replicate 固定价格/张计算配额
+// modelName: one-api canonical 模型名
+// imageCount: 生成图片数量（通常为 1）
+// groupRatio: 用户组计费倍率
+func CalculateReplicateQuota(modelName string, imageCount int, groupRatio float64) int64 {
+	price, ok := ReplicatePriceMap[modelName]
+	if !ok {
+		price = 0.05 // 未知模型默认 $0.05/张
+	}
+	totalUSD := price * float64(imageCount)
+	// 与 CalculateQuota 保持相同公式: $1 USD = 500000 quota（$0.002 = 1 quota）
+	return int64(totalUSD * 500000 * groupRatio)
+}

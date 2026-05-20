@@ -1,0 +1,116 @@
+{
+  "verified_at": "2026-05-14",
+  "source": "replicate.com page scraping",
+  "models": [
+    {
+      "one_api_name": "flux-dev",
+      "replicate_id": "black-forest-labs/flux-dev",
+      "billing": "flat",
+      "price": 0.025,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-pro",
+      "replicate_id": "black-forest-labs/flux-pro",
+      "billing": "flat",
+      "price": 0.055,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-pro-1.1",
+      "replicate_id": "black-forest-labs/flux-1.1-pro",
+      "billing": "flat",
+      "price": 0.04,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-pro-1.1-ultra",
+      "replicate_id": "black-forest-labs/flux-1.1-pro-ultra",
+      "billing": "flat",
+      "price": 0.06,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-pro-1.0-fill",
+      "replicate_id": "black-forest-labs/flux-fill-pro",
+      "billing": "flat",
+      "price": 0.05,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-2-pro",
+      "replicate_id": "black-forest-labs/flux-2-pro",
+      "billing": "flat",
+      "price": 0.015,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-2-pro-preview",
+      "replicate_id": "black-forest-labs/flux-2-pro",
+      "billing": "flat",
+      "price": 0.015,
+      "p50": null,
+      "note": "downgrade"
+    },
+    {
+      "one_api_name": "flux-2-max",
+      "replicate_id": "black-forest-labs/flux-2-max",
+      "billing": "flat",
+      "price": 0.04,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-2-flex",
+      "replicate_id": "black-forest-labs/flux-2-flex",
+      "billing": "flat",
+      "price": 0.06,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-kontext-pro",
+      "replicate_id": "black-forest-labs/flux-kontext-pro",
+      "billing": "flat",
+      "price": 0.04,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-kontext-max",
+      "replicate_id": "black-forest-labs/flux-kontext-max",
+      "billing": "flat",
+      "price": 0.08,
+      "p50": null
+    },
+    {
+      "one_api_name": "flux-2-klein-4b",
+      "replicate_id": "black-forest-labs/flux-2-klein-4b",
+      "billing": "gpu_time",
+      "price": 0.02,
+      "p50": 0.02,
+      "gpu_rate": 0.001525
+    },
+    {
+      "one_api_name": "flux-2-klein-9b",
+      "replicate_id": "black-forest-labs/flux-2-klein-9b",
+      "billing": "gpu_time",
+      "price": 0.005,
+      "p50": 0.005,
+      "gpu_rate": 0.001525
+    },
+    {
+      "one_api_name": "flux-2-klein-9b-preview",
+      "replicate_id": "black-forest-labs/flux-2-klein-9b",
+      "billing": "gpu_time",
+      "price": 0.005,
+      "p50": 0.005,
+      "note": "downgrade"
+    },
+    {
+      "one_api_name": "flux-pro-1.0-expand",
+      "replicate_id": null,
+      "billing": null,
+      "price": null,
+      "p50": null,
+      "note": "unsupported"
+    }
+  ]
+}
