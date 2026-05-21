@@ -110,7 +110,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		GenerationConfig: ChatGenerationConfig{
 			Temperature:     textRequest.Temperature,
 			TopP:            textRequest.TopP,
-			MaxOutputTokens: textRequest.MaxTokens,
+			MaxOutputTokens: maxOutputTokens(textRequest),
 		},
 	}
 
@@ -137,8 +137,8 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		budget := -1 // Enable dynamic thinking by default
 		if textRequest.ThinkingTokens > 0 {
 			budget = textRequest.ThinkingTokens
-		} else if textRequest.MaxTokens > 0 {
-			budget = int(float64(textRequest.MaxTokens) * 0.6)
+		} else if n := maxOutputTokens(textRequest); n > 0 {
+			budget = int(float64(n) * 0.6)
 		}
 
 		// Clamp the budget based on the model's supported range
@@ -1152,4 +1152,11 @@ func removeAdditionalProperties(schema any, depth int) any {
 		}
 	}
 	return v
+}
+
+func maxOutputTokens(req model.GeneralOpenAIRequest) int {
+	if req.MaxCompletionTokens > 0 {
+		return req.MaxCompletionTokens
+	}
+	return req.MaxTokens
 }
