@@ -137,6 +137,17 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 			input[k] = v
 		}
 
+		// output_format 归一化：Replicate 仅接受 webp/jpg/png；
+		// 未传则不下发，传了但不在白名单则回落到 png。
+		if raw, ok := input["output_format"]; ok {
+			allowed := map[string]bool{"webp": true, "jpg": true, "png": true}
+			format, isStr := raw.(string)
+			if !isStr || !allowed[format] {
+				logger.Infof(c, "Replicate output_format %v 不在白名单，回落为 png", raw)
+				input["output_format"] = "png"
+			}
+		}
+
 		replicateReq := map[string]any{
 			"input": input,
 		}
