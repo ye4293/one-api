@@ -20,10 +20,8 @@ import (
 const (
 	fluxReconcileInterval = 2 * time.Minute
 	fluxReconcileBatch    = 50
-	// 5 分钟内的任务给 webhook 自然到达的时间，不参与对账
-	fluxReconcileMinAgeSecs = 5 * 60
-	// 超过 1 小时仍未终态，直接判定失败，不再查上游
-	fluxReconcileExpireSecs = 60 * 60
+	// 超过 30 分钟仍未终态，直接判定失败，不再查上游
+	fluxReconcileExpireSecs = 30 * 60
 )
 
 // reconcilerMu 防止两次 tick 并发执行（上次未完成时跳过）
@@ -69,8 +67,8 @@ func runFluxReconcile(ctx context.Context) {
 		logger.Infof(ctx, "[flux-reconciler] 批量过期 %d 条超时任务", expired)
 	}
 
-	// ② 5min ～ 1hr 之间的记录 → 查上游尝试对账
-	olderThan := now - fluxReconcileMinAgeSecs
+	// ② 30min 以内的记录 → 查上游尝试对账
+	olderThan := now
 	newerThan := now - fluxReconcileExpireSecs
 	images, err := model.GetStuckFluxImages(statuses, olderThan, newerThan, fluxReconcileBatch)
 	if err != nil {
@@ -144,10 +142,10 @@ func reconcileBFLImage(ctx context.Context, image *model.Image, baseURL, apiKey 
 			return
 		}
 		applyFluxBFLSuccess(ctx, image, poll)
-	case "error", "content moderated", "request moderated", "task not found":
-		applyFluxBFLFailed(ctx, image, poll)
 	default:
-		logger.Debugf(ctx, "[flux-reconciler] BFL 未终态，跳过: task_id=%s, status=%s", image.TaskId, poll.Status)
+		// BFL 服务不稳定（task not found / error 均可能是瞬时故障），
+		// 对账窗口内只处理成功，非 Ready 状态一律跳过，由 30 分钟超时过期兜底。
+		logger.Debugf(ctx, "[flux-reconciler] BFL 非 Ready 状态，跳过本轮: task_id=%s, status=%s", image.TaskId, poll.Status)
 	}
 }
 

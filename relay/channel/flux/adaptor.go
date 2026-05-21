@@ -739,7 +739,7 @@ func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, api
 		if jsonErr := json.Unmarshal(body, &bflPoll); jsonErr == nil {
 			lowerStatus := strings.ToLower(bflPoll.Status)
 			isTerminal := lowerStatus == "ready" || lowerStatus == "error" ||
-				strings.Contains(lowerStatus, "moderated") || lowerStatus == "task not found"
+				strings.Contains(lowerStatus, "moderated")
 			if isTerminal {
 				if image, dbErr := model.GetImageByTaskId(taskID); dbErr == nil && image != nil {
 					if image.Status != TaskStatusSucceed && image.Status != TaskStatusFailed {
