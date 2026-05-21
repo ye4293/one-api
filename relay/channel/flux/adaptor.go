@@ -485,10 +485,7 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 		logger.Warnf(c, "Replicate 同步路径竞争落败，跳过扣费: task_id=%s", replicateResp.ID)
 	}
 
-	bflResp := map[string]any{
-		"id":          replicateResp.ID,
-		"polling_url": fmt.Sprintf("%s/flux/v1/get_result/%s", config.ServerAddress, replicateResp.ID),
-	}
+	bflResp := buildBFLCreateResponse(replicateResp, meta.OriginModelName, "Ready", imageURL)
 	bflBytes, _ := json.Marshal(bflResp)
 	c.Data(http.StatusOK, "application/json", bflBytes)
 
@@ -511,14 +508,34 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 		}
 	}
 
-	bflResp := map[string]any{
-		"id":          replicateResp.ID,
-		"polling_url": fmt.Sprintf("%s/flux/v1/get_result/%s", config.ServerAddress, replicateResp.ID),
+	bflStatus := "Pending"
+	if replicateResp.Status == "processing" {
+		bflStatus = "Processing"
 	}
+	pollingURL := fmt.Sprintf("%s/flux/v1/get_result/%s", config.ServerAddress, replicateResp.ID)
+	bflResp := buildBFLCreateResponse(replicateResp, meta.OriginModelName, bflStatus, pollingURL)
 	bflBytes, _ := json.Marshal(bflResp)
 	c.Data(http.StatusOK, "application/json", bflBytes)
 
 	return nil, nil
+}
+
+// buildBFLCreateResponse 将 Replicate 响应组装为 BFL 创建响应格式
+// pollingURL: 成功时填实际图片 URL；其他状态填 get_result 轮询 URL
+// status: BFL 风格状态字符串（Ready/Processing/Pending）
+func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, status string, pollingURL string) map[string]any {
+	price, ok := ReplicatePriceMap[modelName]
+	if !ok {
+		price = 0.05
+	}
+	return map[string]any{
+		"id":          replicateResp.ID,
+		"cost":        price * 100, // USD → cents，与 BFL cost 单位对齐
+		"input_mp":    0.0,
+		"output_mp":   replicateResp.Metrics.ImageOutputMegapixelCount,
+		"polling_url": pollingURL,
+		"status":      status,
+	}
 }
 
 // extractFluxErrorMessage 从 Flux/Replicate 错误响应中提取错误消息
