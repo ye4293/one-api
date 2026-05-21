@@ -185,21 +185,23 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 	}
 
 	// Handle reasoning_effort -> thinking_level mapping for Gemini 3
-	// Reference: https://ai.google.dev/gemini-api/docs/gemini-3?hl=zh_cn#thinking_level
-	// Gemini 3 thinking_level values: "none", "minimal", "low", "medium", "high"
-	// Note: OpenAI "medium" maps to Gemini "high" per Google's documentation
+	// Reference: https://ai.google.dev/gemini-api/docs/gemini-3#thinking_level
+	// Gemini 3 thinking_level valid values: "minimal", "low", "medium", "high" (NO "none")
+	// "minimal" matches the "no thinking" setting; Pro models do NOT support "minimal" (lowest is "low")
 	if textRequest.ReasoningEffort != "" {
 		thinkingLevel := ""
+		isPro := strings.Contains(strings.ToLower(textRequest.Model), "-pro")
 		switch strings.ToLower(textRequest.ReasoningEffort) {
-		case "none":
-			thinkingLevel = "none"
-		case "minimal":
-			thinkingLevel = "minimal"
+		case "none", "minimal":
+			if isPro {
+				thinkingLevel = "low"
+			} else {
+				thinkingLevel = "minimal"
+			}
 		case "low":
 			thinkingLevel = "low"
 		case "medium":
-			// Per Gemini docs: reasoning_effort medium maps to thinking_level high
-			thinkingLevel = "high"
+			thinkingLevel = "medium"
 		case "high":
 			thinkingLevel = "high"
 		}
