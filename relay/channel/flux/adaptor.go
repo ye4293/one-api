@@ -272,6 +272,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		}
 	}
 
+	logger.Infof(c, "BFL DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
+
 	if resp.StatusCode != http.StatusOK {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
 		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
@@ -360,6 +362,8 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 			Error:      relaymodel.Error{Message: fmt.Sprintf("读取响应失败: %v", err)},
 		}
 	}
+
+	logger.Infof(c, "Replicate DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
 	// 200 = 同步完成，201 = 超时仍在处理，其他为错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -715,6 +719,8 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 	if err != nil {
 		return http.StatusInternalServerError, nil, fmt.Errorf("读取响应失败: %w", err)
 	}
+
+	logger.Infof(c, "Replicate QueryResult raw: task_id=%s, status=%d, body=%s", taskID, resp.StatusCode, string(body))
 
 	var replicateResp ReplicateResponse
 	if err := json.Unmarshal(body, &replicateResp); err != nil {
