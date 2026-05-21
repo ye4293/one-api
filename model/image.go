@@ -73,6 +73,30 @@ func GetImageByTaskId(taskId string) (*Image, error) {
 	return &image, err
 }
 
+// GetStuckFluxImages 查询卡死记录，时间窗口：[newerThanUnix, olderThanUnix)
+// 典型调用：5min < age < 1hr 的记录（给 webhook 留余量，同时排除超时应直接过期的）
+func GetStuckFluxImages(statuses []string, olderThanUnix int64, newerThanUnix int64, limit int) ([]*Image, error) {
+	var images []*Image
+	err := DB.Where("provider = ? AND status IN ? AND created_at < ? AND created_at >= ? AND task_id != ''",
+		"flux", statuses, olderThanUnix, newerThanUnix).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&images).Error
+	return images, err
+}
+
+// ExpireStuckFluxImages 将超过 expireBeforeUnix 仍处于非终态的记录批量标记为失败，返回受影响行数
+func ExpireStuckFluxImages(statuses []string, expireBeforeUnix int64, reason string) (int64, error) {
+	result := DB.Model(&Image{}).
+		Where("provider = ? AND status IN ? AND created_at < ? AND task_id != ''",
+			"flux", statuses, expireBeforeUnix).
+		Updates(map[string]any{
+			"status":      "failed",
+			"fail_reason": reason,
+		})
+	return result.RowsAffected, result.Error
+}
+
 func GetImageByTaskIdAndUserId(taskId string, userId int) (*Image, error) {
 	var image Image
 	err := DB.Where("task_id = ? AND user_id = ?", taskId, userId).First(&image).Error
