@@ -18,6 +18,7 @@ type Image struct {
 	ImageId       string `json:"image_id"`
 	StoreUrl      string `json:"store_url"`
 	Provider      string `gorm:"index:idx_images_provider" json:"provider"`
+	RequestId     string `gorm:"type:varchar(64);index:idx_images_request_id" json:"request_id"`
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `gorm:"autoUpdateTime" json:"updated_at"`
 	Mode          string `json:"mode"`
@@ -43,10 +44,57 @@ func (image *Image) Update() error {
 	return DB.Save(image).Error
 }
 
+// UpdateIfNotTerminal atomically updates the image only when it is not yet in a terminal
+// state ("success" or "failed"). Returns (true, nil) when the row was updated (caller won
+// the race and must charge); returns (false, nil) when another path already transitioned
+// the record to a terminal state (caller must skip billing to prevent double-charge).
+func (image *Image) UpdateIfNotTerminal() (bool, error) {
+	result := DB.Model(image).
+		Where("status NOT IN (?, ?)", "success", "failed").
+		Updates(map[string]interface{}{
+			"task_id":        image.TaskId,
+			"status":         image.Status,
+			"store_url":      image.StoreUrl,
+			"result":         image.Result,
+			"detail":         image.Detail,
+			"quota":          image.Quota,
+			"total_duration": image.TotalDuration,
+			"fail_reason":    image.FailReason,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func GetImageByTaskId(taskId string) (*Image, error) {
 	var image Image
 	err := DB.Where("task_id = ?", taskId).First(&image).Error
 	return &image, err
+}
+
+// GetStuckFluxImages 查询卡死记录，时间窗口：[newerThanUnix, olderThanUnix)
+// 典型调用：5min < age < 1hr 的记录（给 webhook 留余量，同时排除超时应直接过期的）
+func GetStuckFluxImages(statuses []string, olderThanUnix int64, newerThanUnix int64, limit int) ([]*Image, error) {
+	var images []*Image
+	err := DB.Where("provider = ? AND status IN ? AND created_at < ? AND created_at >= ? AND task_id != ''",
+		"flux", statuses, olderThanUnix, newerThanUnix).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&images).Error
+	return images, err
+}
+
+// ExpireStuckFluxImages 将超过 expireBeforeUnix 仍处于非终态的记录批量标记为失败，返回受影响行数
+func ExpireStuckFluxImages(statuses []string, expireBeforeUnix int64, reason string) (int64, error) {
+	result := DB.Model(&Image{}).
+		Where("provider = ? AND status IN ? AND created_at < ? AND task_id != ''",
+			"flux", statuses, expireBeforeUnix).
+		Updates(map[string]any{
+			"status":      "failed",
+			"fail_reason": reason,
+		})
+	return result.RowsAffected, result.Error
 }
 
 func GetImageByTaskIdAndUserId(taskId string, userId int) (*Image, error) {

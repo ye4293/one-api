@@ -67,6 +67,8 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 		fallthrough
 	case relayconstant.RelayModeAudioTranscription:
 		err = controller.RelayAudioHelper(c, relayMode)
+	case relayconstant.RelayModeFlux:
+		err = relayFluxHelper(c)
 	default:
 		err = controller.RelayTextHelper(c)
 	}

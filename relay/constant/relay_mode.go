@@ -30,6 +30,7 @@ const (
 	RelayModeGeminiStreamGenerateContent
 	RelayModeClaude
 	RelayModeOpenaiResponse
+	RelayModeFlux
 )
 
 func Path2RelayMode(path string) int {
@@ -40,7 +41,7 @@ func Path2RelayMode(path string) int {
 			relayMode = RelayModeGeminiGenerateContent
 		} else if strings.Contains(path, ":streamGenerateContent") {
 			relayMode = RelayModeGeminiStreamGenerateContent
-		} 
+		}
 	} else if strings.HasPrefix(path, "/v1/chat/completions") {
 		relayMode = RelayModeChatCompletions
 	} else if strings.HasPrefix(path, "/v1/completions") {
@@ -61,10 +62,12 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeAudioTranscription
 	} else if strings.HasPrefix(path, "/v1/audio/translations") {
 		relayMode = RelayModeAudioTranslation
-	}else if strings.HasPrefix(path, "/v1/messages") {
+	} else if strings.HasPrefix(path, "/v1/messages") {
 		relayMode = RelayModeClaude
 	} else if strings.HasPrefix(path, "/v1/responses") {
 		relayMode = RelayModeOpenaiResponse
+	} else if strings.HasPrefix(path, "/flux/v1/") {
+		relayMode = RelayModeFlux
 	}
 	return relayMode
 }
@@ -123,7 +126,7 @@ func Path2RelayModeGemini(path string) int {
 	// 或 /v1/models/{model}:{action}
 	if strings.Contains(path, ":generateContent") {
 		relayMode = RelayModeGeminiGenerateContent
-	}else if strings.Contains(path, ":streamGenerateContent") {
+	} else if strings.Contains(path, ":streamGenerateContent") {
 		relayMode = RelayModeGeminiStreamGenerateContent
 	}
 	return relayMode
