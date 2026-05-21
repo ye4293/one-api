@@ -214,9 +214,14 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 	}
 
 	fullRequestURL := meta.BaseURL + path
-	logger.Debugf(c, "Flux API request URL: %s", fullRequestURL)
 
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	bodyBytes, err := io.ReadAll(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("read request body failed: %w", err)
+	}
+	logger.Infof(c, "BFL DoRequest: method=%s, url=%s, body=%s", c.Request.Method, fullRequestURL, string(bodyBytes))
+
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -236,9 +241,14 @@ func (a *Adaptor) doReplicateRequest(c *gin.Context, meta *util.RelayMeta, reque
 	}
 
 	requestURL := fmt.Sprintf("%s/v1/models/%s/predictions", meta.BaseURL, replicateID)
-	logger.Debugf(c, "Replicate prediction URL: %s", requestURL)
 
-	req, err := http.NewRequest("POST", requestURL, requestBody)
+	bodyBytes, err := io.ReadAll(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("read request body failed: %w", err)
+	}
+	logger.Infof(c, "Replicate doRequest: url=%s, body=%s", requestURL, string(bodyBytes))
+
+	req, err := http.NewRequest("POST", requestURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -314,8 +324,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		a.ImageRecord.Status = TaskStatusSubmitted
 		a.ImageRecord.Quota = quota
 		a.ImageRecord.TotalDuration = duration
-		a.ImageRecord.Detail = fmt.Sprintf("cost=%.4f,input_mp=%.2f,output_mp=%.2f",
-			fluxResp.Cost, fluxResp.InputMP, fluxResp.OutputMP)
+		a.ImageRecord.Detail = string(body)
 		a.ImageRecord.Result = string(body)
 
 		if err := a.ImageRecord.Update(); err != nil {
@@ -397,13 +406,13 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 	}
 
 	if replicateResp.Status == "succeeded" {
-		return a.handleReplicateSuccess(c, replicateResp, meta)
+		return a.handleReplicateSuccess(c, replicateResp, meta, body)
 	}
-	return a.handleReplicatePending(c, replicateResp, meta)
+	return a.handleReplicatePending(c, replicateResp, meta, body)
 }
 
 // handleReplicateSuccess 同步成功：更新 DB、扣费、返回 BFL 格式响应给客户端
-func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
+func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta, rawBody []byte) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
 	imageURL := replicateResp.Output
 
 	// P2-3: 空 URL 不应计为成功
@@ -447,7 +456,7 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 	a.ImageRecord.TotalDuration = duration
 	a.ImageRecord.StoreUrl = imageURL
 	a.ImageRecord.Result = string(resultBytes)
-	a.ImageRecord.Detail = fmt.Sprintf("predict_time=%.3fs", replicateResp.Metrics.PredictTime)
+	a.ImageRecord.Detail = string(rawBody)
 
 	// P1: 原子性 CAS 更新——只有赢得竞争的路径才扣费，防止 webhook 并发导致双重扣费
 	applied, dbErr := a.ImageRecord.UpdateIfNotTerminal()
@@ -476,12 +485,13 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 }
 
 // handleReplicatePending 60s 超时仍未完成：更新 DB 为 submitted，等待 webhook 或客户端轮询
-func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
+func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta, rawBody []byte) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
 	if a.ImageRecord != nil {
 		now := time.Now().Unix()
 		a.ImageRecord.TaskId = replicateResp.ID
 		a.ImageRecord.Status = TaskStatusSubmitted
 		a.ImageRecord.TotalDuration = int(now - a.ImageRecord.CreatedAt)
+		a.ImageRecord.Detail = string(rawBody)
 
 		if err := a.ImageRecord.Update(); err != nil {
 			logger.Errorf(c, "Replicate 更新 pending 记录失败: %v", err)
@@ -540,7 +550,7 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 }
 
 // HandleCallback 处理 BFL 回调通知
-func HandleCallback(c *gin.Context, notification FluxCallbackNotification) (bool, int, string) {
+func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
 	taskID := notification.TaskId
 	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d", taskID, notification.Status, notification.Progress)
 	logger.Debugf(c, "Flux callback notification: %+v", notification)
@@ -563,6 +573,7 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification) (bool
 		return false, http.StatusInternalServerError, "internal error"
 	}
 	image.Result = string(callbackBytes)
+	image.Detail = string(rawBody)
 
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
@@ -596,8 +607,6 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 		quota = CalculateQuota(notification.Cost, groupRatio)
 		image.Quota = quota
 
-		image.Detail = fmt.Sprintf("cost=%.4f,input_mp=%.2f,output_mp=%.2f",
-			notification.Cost, notification.InputMP, notification.OutputMP)
 		logger.Infof(c, "Flux callback with cost: task_id=%s, cost=%.4f cents, quota=%d", taskID, notification.Cost, quota)
 	} else {
 		quota = image.Quota
@@ -731,7 +740,7 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 	if replicateResp.Status == "succeeded" || replicateResp.Status == "failed" || replicateResp.Status == "canceled" {
 		if image, dbErr := model.GetImageByTaskId(taskID); dbErr == nil && image != nil {
 			if image.Status != TaskStatusSucceed && image.Status != TaskStatusFailed {
-				HandleReplicateCallback(c, replicateResp)
+				HandleReplicateCallback(c, replicateResp, body)
 			}
 		}
 	}
@@ -768,7 +777,7 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 }
 
 // HandleReplicateCallback 处理 Replicate webhook 回调，更新 DB 并在成功时扣费
-func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse) (bool, int, string) {
+func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, rawBody []byte) (bool, int, string) {
 	taskID := replicateResp.ID
 	logger.Infof(c, "Replicate callback: task_id=%s, status=%s", taskID, replicateResp.Status)
 
@@ -786,6 +795,7 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse) (b
 
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
+	image.Detail = string(rawBody)
 
 	switch replicateResp.Status {
 	case "succeeded":
@@ -821,7 +831,6 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse) (b
 		image.Status = TaskStatusSucceed
 		image.StoreUrl = imageURL
 		image.Result = string(resultBytes)
-		image.Detail = fmt.Sprintf("predict_time=%.3fs", replicateResp.Metrics.PredictTime)
 		image.Quota = quota
 
 		// P1: 原子性 CAS 更新——只有赢得竞争的路径才扣费

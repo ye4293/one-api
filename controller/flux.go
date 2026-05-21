@@ -103,7 +103,7 @@ func HandleFluxCallback(c *gin.Context) {
 	logger.Debugf(c, "Flux callback parsed: TaskId=%s, Status=%s, Progress=%d, Cost=%.4f, Error=%s",
 		notification.TaskId, notification.Status, notification.Progress, notification.Cost, notification.Error)
 
-	success, statusCode, message := flux.HandleCallback(c, notification)
+	success, statusCode, message := flux.HandleCallback(c, notification, bodyBytes)
 
 	if success {
 		c.JSON(statusCode, gin.H{"message": message})
@@ -120,6 +120,8 @@ func HandleReplicateCallback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+
+	logger.Infof(c, "Replicate callback raw JSON: %s", string(bodyBytes))
 
 	// 验证签名（配置 REPLICATE_WEBHOOK_SIGNING_KEY 后启用，否则跳过）
 	webhookID := c.GetHeader("webhook-id")
@@ -140,7 +142,7 @@ func HandleReplicateCallback(c *gin.Context) {
 
 	logger.Infof(c, "Replicate callback: id=%s, status=%s", replicateResp.ID, replicateResp.Status)
 
-	success, statusCode, message := flux.HandleReplicateCallback(c, replicateResp)
+	success, statusCode, message := flux.HandleReplicateCallback(c, replicateResp, bodyBytes)
 
 	if success {
 		c.JSON(statusCode, gin.H{"message": message})
