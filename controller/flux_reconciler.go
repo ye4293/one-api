@@ -22,10 +22,15 @@ const (
 	fluxReconcileBatch    = 50
 	// 超过 30 分钟仍未终态，直接判定失败，不再查上游
 	fluxReconcileExpireSecs = 30 * 60
+	// 同时并发查询上游的 goroutine 上限，防止大批量任务打爆 BFL/CPU
+	fluxQueryConcurrency = 50
 )
 
 // reconcilerMu 防止两次 tick 并发执行（上次未完成时跳过）
 var reconcilerMu sync.Mutex
+
+// fluxQuerySem 全局信号量，限制同时执行上游查询的 goroutine 数
+var fluxQuerySem = make(chan struct{}, fluxQueryConcurrency)
 
 // StartFluxReconciler 启动后台 Flux/Replicate 任务对账 goroutine
 func StartFluxReconciler(ctx context.Context) {
@@ -79,9 +84,14 @@ func runFluxReconcile(ctx context.Context) {
 		return
 	}
 
-	logger.Infof(ctx, "[flux-reconciler] 发现 %d 条卡死任务，开始对账", len(images))
+	logger.Infof(ctx, "[flux-reconciler] 发现 %d 条卡死任务，开始对账（并发上限=%d）", len(images), fluxQueryConcurrency)
 	for _, img := range images {
-		go reconcileFluxImage(ctx, img)
+		img := img
+		go func() {
+			fluxQuerySem <- struct{}{}        // 占用一个并发槽，满额时阻塞等待
+			defer func() { <-fluxQuerySem }() // 完成后释放
+			reconcileFluxImage(ctx, img)
+		}()
 	}
 }
 
@@ -109,44 +119,71 @@ func reconcileFluxImage(ctx context.Context, image *model.Image) {
 
 // ─── BFL ────────────────────────────────────────────────────────────────────
 
+const (
+	bflMaxRetries = 5
+	bflRetryDelay = 3 * time.Second
+)
+
 func reconcileBFLImage(ctx context.Context, image *model.Image, baseURL, apiKey string) {
-	queryURL := fmt.Sprintf("%s/v1/get_result?id=%s", baseURL, image.TaskId)
+	var poll flux.FluxPollingResponse
+	var gotReady bool
+
+	for attempt := 1; attempt <= bflMaxRetries; attempt++ {
+		p, err := fetchBFLResult(ctx, image.TaskId, baseURL, apiKey)
+		if err != nil {
+			logger.Warnf(ctx, "[flux-reconciler] BFL 请求失败 attempt=%d/%d: task_id=%s, err=%v",
+				attempt, bflMaxRetries, image.TaskId, err)
+		} else if strings.ToLower(p.Status) == "ready" {
+			poll = *p
+			gotReady = true
+			break
+		} else {
+			logger.Debugf(ctx, "[flux-reconciler] BFL attempt=%d/%d status=%s: task_id=%s",
+				attempt, bflMaxRetries, p.Status, image.TaskId)
+		}
+
+		if attempt < bflMaxRetries {
+			time.Sleep(bflRetryDelay)
+		}
+	}
+
+	if !gotReady {
+		logger.Debugf(ctx, "[flux-reconciler] BFL %d 次重试均未返回 Ready，跳过本轮: task_id=%s",
+			bflMaxRetries, image.TaskId)
+		return
+	}
+
+	if poll.Result == nil || poll.Result.Sample == "" {
+		logger.Errorf(ctx, "[flux-reconciler] BFL Ready 但 sample 为空: task_id=%s", image.TaskId)
+		return
+	}
+	applyFluxBFLSuccess(ctx, image, poll)
+}
+
+// fetchBFLResult 向 BFL 发起单次 GET 查询，返回解析后的轮询响应
+func fetchBFLResult(ctx context.Context, taskID, baseURL, apiKey string) (*flux.FluxPollingResponse, error) {
+	queryURL := fmt.Sprintf("%s/v1/get_result?id=%s", baseURL, taskID)
 	req, err := http.NewRequestWithContext(ctx, "GET", queryURL, nil)
 	if err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] BFL 创建请求失败: task_id=%s, err=%v", image.TaskId, err)
-		return
+		return nil, err
 	}
 	req.Header.Set("x-key", apiKey)
 
 	resp, err := util.HTTPClient.Do(req)
 	if err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] BFL 请求失败: task_id=%s, err=%v", image.TaskId, err)
-		return
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	logger.Infof(ctx, "[flux-reconciler] BFL 查询结果: task_id=%s, status=%d, body=%s",
-		image.TaskId, resp.StatusCode, string(body))
+	logger.Infof(ctx, "[flux-reconciler] BFL 查询: task_id=%s, status=%d, body=%s",
+		taskID, resp.StatusCode, string(body))
 
 	var poll flux.FluxPollingResponse
 	if err := json.Unmarshal(body, &poll); err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] BFL 解析响应失败: task_id=%s, err=%v", image.TaskId, err)
-		return
+		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}
-
-	switch strings.ToLower(poll.Status) {
-	case "ready":
-		if poll.Result == nil || poll.Result.Sample == "" {
-			logger.Errorf(ctx, "[flux-reconciler] BFL Ready 但 sample 为空: task_id=%s", image.TaskId)
-			return
-		}
-		applyFluxBFLSuccess(ctx, image, poll)
-	default:
-		// BFL 服务不稳定（task not found / error 均可能是瞬时故障），
-		// 对账窗口内只处理成功，非 Ready 状态一律跳过，由 30 分钟超时过期兜底。
-		logger.Debugf(ctx, "[flux-reconciler] BFL 非 Ready 状态，跳过本轮: task_id=%s, status=%s", image.TaskId, poll.Status)
-	}
+	return &poll, nil
 }
 
 func applyFluxBFLSuccess(ctx context.Context, image *model.Image, poll flux.FluxPollingResponse) {
