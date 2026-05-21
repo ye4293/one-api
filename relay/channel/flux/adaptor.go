@@ -731,6 +731,38 @@ func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, api
 	}
 
 	logger.Debugf(c, "Flux 查询响应: status=%d, body=%s", resp.StatusCode, string(body))
+
+	// 检测到终态时兜底更新 DB（与 queryReplicateResult 对称）
+	// BFL 轮询状态：Ready=成功，Error/Content Moderated/Task not found=失败
+	if resp.StatusCode == http.StatusOK {
+		var bflPoll FluxPollingResponse
+		if jsonErr := json.Unmarshal(body, &bflPoll); jsonErr == nil {
+			lowerStatus := strings.ToLower(bflPoll.Status)
+			isTerminal := lowerStatus == "ready" || lowerStatus == "error" ||
+				strings.Contains(lowerStatus, "moderated") || lowerStatus == "task not found"
+			if isTerminal {
+				if image, dbErr := model.GetImageByTaskId(taskID); dbErr == nil && image != nil {
+					if image.Status != TaskStatusSucceed && image.Status != TaskStatusFailed {
+						// BFL 轮询用 Ready/Error，HandleCallback 期望 SUCCESS/FAILED（会做 ToLower）
+						cbStatus := "FAILED"
+						if lowerStatus == "ready" {
+							cbStatus = "SUCCESS"
+						}
+						notification := FluxCallbackNotification{
+							TaskId: taskID,
+							Status: cbStatus,
+							Cost:   bflPoll.Cost,
+							Result: bflPoll.Result,
+							Error:  bflPoll.Error,
+						}
+						HandleCallback(c, notification, body)
+						logger.Infof(c, "BFL QueryResult 兜底触发回调处理: task_id=%s, status=%s", taskID, cbStatus)
+					}
+				}
+			}
+		}
+	}
+
 	return resp.StatusCode, body, nil
 }
 

@@ -175,6 +175,11 @@ func main() {
 		controller.StartDoubaoVideoTaskPoller(context.Background())
 	})
 
+	// 启动 Flux/Replicate 任务对账 reconciler
+	common.SafeGoroutine(func() {
+		controller.StartFluxReconciler(context.Background())
+	})
+
 	// 启动 xAI 视频任务轮询器（带 Redis 分布式锁）
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())
