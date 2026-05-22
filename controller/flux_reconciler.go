@@ -78,7 +78,7 @@ func runFluxReconcile(ctx context.Context) {
 
 	// ① 超过 1 小时仍未终态 → 直接标失败，不再查上游
 	expireBefore := now - fluxReconcileExpireSecs
-	expired, err := model.ExpireStuckFluxImages(statuses, expireBefore, "任务超时（1小时未完成）")
+	expired, err := model.ExpireStuckFluxImages(statuses, expireBefore, "任务超时")
 	if err != nil {
 		logger.Errorf(ctx, "[flux-reconciler] 批量过期失败: %v", err)
 	} else if expired > 0 {
