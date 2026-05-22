@@ -5,17 +5,26 @@ import (
 	"fmt"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/util"
 )
 
-// ChargeOnCreation 在任务创建成功时检测余额并立即扣费。
+// ChargeOnCreation 在任务创建成功时统一执行扣费 + 记账：
+//  1. 余额校验
+//  2. PostConsumeTokenQuota：扣 user.quota + token.remain_quota / +token.used_quota
+//  3. UpdateUserUsedQuotaAndRequestCount：累加 user.used_quota + request_count
+//  4. UpdateChannelUsedQuota：累加 channel.used_quota
+//  5. RecordConsumeLogWithRequestID：写消费日志
+//
 // 设计取舍：扣费一次完成，不做失败退款（与音频/视频同步路径策略一致）。
-// 调用前需保证 image.UserId 已就绪；成功后 image.Quota 被写入 quota 值，
-// 调用方负责后续将该 quota 持久化到 DB（Update / UpdateIfNotTerminal）。
-func ChargeOnCreation(ctx context.Context, image *model.Image, quota int64) error {
+// 调用前需保证 image.UserId / ChannelId / Model / RequestId 已就绪。
+func ChargeOnCreation(ctx context.Context, image *model.Image, meta *util.RelayMeta, quota int64) error {
 	if quota <= 0 {
 		return fmt.Errorf("invalid quota: %d", quota)
 	}
+
+	// ① 余额预检（PostConsumeTokenQuota 内部直接 SQL 减法不做 enough 校验）
 	balance, err := model.CacheGetUserQuota(ctx, image.UserId)
 	if err != nil {
 		return fmt.Errorf("查询用户余额失败: %w", err)
@@ -23,10 +32,38 @@ func ChargeOnCreation(ctx context.Context, image *model.Image, quota int64) erro
 	if balance < quota {
 		return fmt.Errorf("用户余额不足: 需要=%d, 当前=%d", quota, balance)
 	}
-	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
+
+	// ② 一次性扣 user.quota + token.remain_quota / +token.used_quota
+	if err := model.PostConsumeTokenQuota(meta.TokenId, quota); err != nil {
 		return fmt.Errorf("扣费失败: %w", err)
 	}
+
+	// ③ user.used_quota + request_count（无返回错误）
+	model.UpdateUserUsedQuotaAndRequestCount(image.UserId, quota)
+	// ④ channel.used_quota（无返回错误）
+	model.UpdateChannelUsedQuota(image.ChannelId, quota)
+	// ⑤ 消费日志
+	logContent := fmt.Sprintf("Flux 任务创建成功，扣费 quota=%d", quota)
+	model.RecordConsumeLogWithRequestID(
+		ctx,
+		image.UserId,
+		image.ChannelId,
+		0, 0,
+		image.Model,
+		meta.TokenName,
+		quota,
+		logContent,
+		float64(image.TotalDuration),
+		"", // title
+		"", // referer
+		false,
+		0.0,
+		image.RequestId,
+	)
+
 	image.Quota = quota
+	logger.Infof(ctx, "[flux-billing] 扣费完成 user_id=%d token_id=%d channel_id=%d quota=%d model=%s",
+		image.UserId, meta.TokenId, image.ChannelId, quota, image.Model)
 	return nil
 }
 
