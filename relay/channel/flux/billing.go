@@ -1,8 +1,34 @@
 package flux
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/model"
 )
+
+// ChargeOnCreation 在任务创建成功时检测余额并立即扣费。
+// 设计取舍：扣费一次完成，不做失败退款（与音频/视频同步路径策略一致）。
+// 调用前需保证 image.UserId 已就绪；成功后 image.Quota 被写入 quota 值，
+// 调用方负责后续将该 quota 持久化到 DB（Update / UpdateIfNotTerminal）。
+func ChargeOnCreation(ctx context.Context, image *model.Image, quota int64) error {
+	if quota <= 0 {
+		return fmt.Errorf("invalid quota: %d", quota)
+	}
+	balance, err := model.CacheGetUserQuota(ctx, image.UserId)
+	if err != nil {
+		return fmt.Errorf("查询用户余额失败: %w", err)
+	}
+	if balance < quota {
+		return fmt.Errorf("用户余额不足: 需要=%d, 当前=%d", quota, balance)
+	}
+	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
+		return fmt.Errorf("扣费失败: %w", err)
+	}
+	image.Quota = quota
+	return nil
+}
 
 // CalculateQuota 根据 Flux API 返回的 cost 计算配额
 // cost: Flux API 返回的费用，单位为美分（cents）
