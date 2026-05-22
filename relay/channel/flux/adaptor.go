@@ -327,6 +327,26 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	groupRatio := 1.0
 	quota := CalculateQuota(fluxResp.Cost, groupRatio)
 
+	// 先构造客户端响应（删除 webhook_url、补 polling_url），同时作为 detail 落库
+	// detail 仅在此处写入一次，后续 webhook / reconciler 不再覆盖
+	modifiedBody := body
+	var respMap map[string]any
+	if err := json.Unmarshal(body, &respMap); err == nil {
+		delete(respMap, "webhook_url")
+		if taskID, ok := respMap["id"].(string); ok && taskID != "" {
+			pollingURL := fmt.Sprintf("https://api.bfl.ai/v1/get_result?id=%s", taskID)
+			respMap["polling_url"] = pollingURL
+			logger.Debugf(c, "添加 polling_url: %s", pollingURL)
+		}
+		if mb, mErr := json.Marshal(respMap); mErr == nil {
+			modifiedBody = mb
+		} else {
+			logger.Errorf(c, "序列化修改后的响应失败: %v", mErr)
+		}
+	} else {
+		logger.Errorf(c, "解析响应为 map 失败: %v", err)
+	}
+
 	if a.ImageRecord != nil {
 		now := time.Now().Unix()
 		duration := int(now - a.ImageRecord.CreatedAt)
@@ -335,8 +355,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		a.ImageRecord.Status = TaskStatusSubmitted
 		a.ImageRecord.Quota = quota
 		a.ImageRecord.TotalDuration = duration
-		a.ImageRecord.Detail = string(body)
-		a.ImageRecord.Result = string(body)
+		a.ImageRecord.Detail = string(modifiedBody)
+		a.ImageRecord.Result = string(modifiedBody)
 
 		if err := a.ImageRecord.Update(); err != nil {
 			logger.Errorf(c, "更新 Flux 记录失败: %v", err)
@@ -344,28 +364,6 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 			logger.Infof(c, "Flux 请求成功: task_id=%s, cost=%.4f cents, quota=%d, duration=%ds",
 				fluxResp.ID, fluxResp.Cost, quota, duration)
 		}
-	}
-
-	var respMap map[string]any
-	if err := json.Unmarshal(body, &respMap); err != nil {
-		logger.Errorf(c, "解析响应为 map 失败: %v", err)
-		c.Data(resp.StatusCode, "application/json", body)
-		return nil, nil
-	}
-
-	delete(respMap, "webhook_url")
-
-	if taskID, ok := respMap["id"].(string); ok && taskID != "" {
-		pollingURL := fmt.Sprintf("https://api.bfl.ai/v1/get_result?id=%s", taskID)
-		respMap["polling_url"] = pollingURL
-		logger.Debugf(c, "添加 polling_url: %s", pollingURL)
-	}
-
-	modifiedBody, err := json.Marshal(respMap)
-	if err != nil {
-		logger.Errorf(c, "序列化修改后的响应失败: %v", err)
-		c.Data(resp.StatusCode, "application/json", body)
-		return nil, nil
 	}
 
 	c.Data(resp.StatusCode, "application/json", modifiedBody)
@@ -601,7 +599,7 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 		return false, http.StatusInternalServerError, "internal error"
 	}
 	image.Result = string(callbackBytes)
-	image.Detail = string(rawBody)
+	// detail 在创建任务时已经写入"客户端首次响应"，回调阶段不再覆盖
 
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
@@ -855,7 +853,7 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
-	image.Detail = string(rawBody)
+	// detail 在创建任务时已经写入"客户端首次响应"，回调阶段不再覆盖
 
 	switch replicateResp.Status {
 	case "succeeded":
