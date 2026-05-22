@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	fluxReconcileInterval = 2 * time.Minute
+	fluxReconcileInterval = 30 * time.Second
 	fluxReconcileBatch    = 50
-	// 超过 30 分钟仍未终态，直接判定失败，不再查上游
-	fluxReconcileExpireSecs = 30 * 60
+	// 超过 15 分钟仍未终态，直接判定失败（BFL 结果 URL 有效期约 10 分钟，
+	// 15min 阈值给慢任务留余量，但避免在 URL 早已失效后继续无意义查询）
+	fluxReconcileExpireSecs = 15 * 60
 	// 同时并发查询上游的 goroutine 上限，防止大批量任务打爆 BFL/CPU
 	fluxQueryConcurrency = 50
 )
@@ -50,7 +51,7 @@ func StartFluxReconciler(ctx context.Context) {
 	ticker := time.NewTicker(fluxReconcileInterval)
 	defer ticker.Stop()
 
-	logger.SysLog("[flux-reconciler] started, interval=2m")
+	logger.SysLog("[flux-reconciler] started, interval=30s")
 
 	// 启动时立即跑一次
 	runFluxReconcile(ctx)
@@ -76,16 +77,16 @@ func runFluxReconcile(ctx context.Context) {
 	now := time.Now().Unix()
 	statuses := []string{flux.TaskStatusProcessing, flux.TaskStatusSubmitted}
 
-	// ① 超过 1 小时仍未终态 → 直接标失败，不再查上游
+	// ① 超过 15 分钟仍未终态 → 直接标失败，不再查上游
 	expireBefore := now - fluxReconcileExpireSecs
-	expired, err := model.ExpireStuckFluxImages(statuses, expireBefore, "任务超时（1小时未完成）")
+	expired, err := model.ExpireStuckFluxImages(statuses, expireBefore, "任务超时")
 	if err != nil {
 		logger.Errorf(ctx, "[flux-reconciler] 批量过期失败: %v", err)
 	} else if expired > 0 {
 		logger.Infof(ctx, "[flux-reconciler] 批量过期 %d 条超时任务", expired)
 	}
 
-	// ② 30min 以内的记录 → 查上游尝试对账
+	// ② 15min 以内的记录 → 查上游尝试对账
 	olderThan := now
 	newerThan := now - fluxReconcileExpireSecs
 	images, err := model.GetStuckFluxImages(statuses, olderThan, newerThan, fluxReconcileBatch)
@@ -132,45 +133,24 @@ func reconcileFluxImage(ctx context.Context, image *model.Image) {
 
 // ─── BFL ────────────────────────────────────────────────────────────────────
 
-const (
-	bflMaxRetries = 5
-	bflRetryDelay = 3 * time.Second
-)
-
 func reconcileBFLImage(ctx context.Context, image *model.Image, baseURL, apiKey string) {
-	var poll flux.FluxPollingResponse
-	var gotReady bool
-
-	for attempt := 1; attempt <= bflMaxRetries; attempt++ {
-		p, err := fetchBFLResult(ctx, image.TaskId, baseURL, apiKey)
-		if err != nil {
-			logger.Warnf(ctx, "[flux-reconciler] BFL 请求失败 attempt=%d/%d: task_id=%s, err=%v",
-				attempt, bflMaxRetries, image.TaskId, err)
-		} else if strings.ToLower(p.Status) == "ready" {
-			poll = *p
-			gotReady = true
-			break
-		} else {
-			logger.Debugf(ctx, "[flux-reconciler] BFL attempt=%d/%d status=%s: task_id=%s",
-				attempt, bflMaxRetries, p.Status, image.TaskId)
-		}
-
-		if attempt < bflMaxRetries {
-			time.Sleep(bflRetryDelay)
-		}
-	}
-
-	if !gotReady {
-		logger.Debugf(ctx, "[flux-reconciler] BFL %d 次重试均未返回 Ready，跳过本轮: task_id=%s",
-			bflMaxRetries, image.TaskId)
+	// 单次查询；失败/未就绪交给 30s 后的下一轮重试，避免在单轮内长时间阻塞
+	poll, err := fetchBFLResult(ctx, image.TaskId, baseURL, apiKey)
+	if err != nil {
+		logger.Warnf(ctx, "[flux-reconciler] BFL 查询失败（30s 后下一轮重试）: task_id=%s, err=%v",
+			image.TaskId, err)
 		return
 	}
-
+	if strings.ToLower(poll.Status) != "ready" {
+		logger.Debugf(ctx, "[flux-reconciler] BFL 未就绪，等待下一轮: task_id=%s, status=%s",
+			image.TaskId, poll.Status)
+		return
+	}
 	if poll.Result == nil || poll.Result.Sample == "" {
 		logger.Errorf(ctx, "[flux-reconciler] BFL Ready 但 sample 为空: task_id=%s", image.TaskId)
 		return
 	}
-	applyFluxBFLSuccess(ctx, image, poll)
+	applyFluxBFLSuccess(ctx, image, *poll)
 }
 
 // fetchBFLResult 向 BFL 发起单次 GET 查询，返回解析后的轮询响应
