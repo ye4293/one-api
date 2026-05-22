@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,20 @@ var reconcilerMu sync.Mutex
 // fluxQuerySem 全局信号量，限制同时执行上游查询的 goroutine 数
 var fluxQuerySem = make(chan struct{}, fluxQueryConcurrency)
 
+// isFluxReconcilerEnabled 复用 ENABLE_VIDEO_TASK_POLLER 开关（与 ali/xai/doubao 视频
+// poller 共用），保持运维侧只需管理一个变量。命名虽叫 "VIDEO"，但实际控制所有后台对账任务。
+func isFluxReconcilerEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_VIDEO_TASK_POLLER")))
+	return v == "true" || v == "1"
+}
+
 // StartFluxReconciler 启动后台 Flux/Replicate 任务对账 goroutine
 func StartFluxReconciler(ctx context.Context) {
+	if !isFluxReconcilerEnabled() {
+		logger.SysLog("[flux-reconciler] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
+		return
+	}
+
 	ticker := time.NewTicker(fluxReconcileInterval)
 	defer ticker.Stop()
 
