@@ -143,7 +143,7 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 			allowed := map[string]bool{"webp": true, "jpg": true, "png": true}
 			format, isStr := raw.(string)
 			if !isStr || !allowed[format] {
-				logger.Infof(c, "Replicate output_format %v 不在白名单，回落为 png", raw)
+				//logger.Infof(c, "Replicate output_format %v 不在白名单，回落为 png", raw)
 				input["output_format"] = "png"
 			}
 		}
@@ -616,9 +616,9 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 // HandleCallback 处理 BFL 回调通知
 func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
 	taskID := notification.TaskId
-	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
-		taskID, notification.Status, notification.Progress, string(rawBody))
-	logger.Debugf(c, "Flux callback notification: %+v", notification)
+	//logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
+	//	taskID, notification.Status, notification.Progress, string(rawBody))
+	//logger.Debugf(c, "Flux callback notification: %+v", notification)
 
 	// webhook 可能比创建路径的 ImageRecord.Update() 早到（task_id 还未回填到 DB），
 	// 200ms × 3 退避覆盖该窗口；仍然找不到才返回 404
@@ -739,8 +739,8 @@ func handleFailedCallback(c *gin.Context, image *model.Image, notification FluxC
 func handleProcessingCallback(c *gin.Context, image *model.Image, notification FluxCallbackNotification, taskID string) (bool, int, string) {
 	// 归一化为内部常量，防止上游字面值（如 "Pending"/"processing"）污染数据库
 	image.Status = TaskStatusProcessing
-	logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s",
-		taskID, notification.Status)
+	//logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s",
+	//	taskID, notification.Status)
 
 	// 列限定 CAS：仅更新 status，避免 GORM Save 全行覆盖把成功路径写入的
 	// result/store_url/quota 回退；同时守护终态行不被 processing 反转
@@ -842,7 +842,7 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 		return http.StatusInternalServerError, nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
-	logger.Infof(c, "Replicate QueryResult raw: task_id=%s, status=%d, body=%s", taskID, resp.StatusCode, string(body))
+	//logger.Infof(c, "Replicate QueryResult raw: task_id=%s, status=%d, body=%s", taskID, resp.StatusCode, string(body))
 
 	var replicateResp ReplicateResponse
 	if err := json.Unmarshal(body, &replicateResp); err != nil {
@@ -892,7 +892,7 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 // HandleReplicateCallback 处理 Replicate webhook 回调，更新 DB 并在成功时扣费
 func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, rawBody []byte) (bool, int, string) {
 	taskID := replicateResp.ID
-	logger.Infof(c, "Replicate callback: task_id=%s, status=%s, raw=%s", taskID, replicateResp.Status, string(rawBody))
+	//logger.Infof(c, "Replicate callback: task_id=%s, status=%s, raw=%s", taskID, replicateResp.Status, string(rawBody))
 
 	image, err := getImageByTaskIdWithRetry(taskID)
 	if err != nil || image == nil {
@@ -950,8 +950,8 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 			logger.Infof(c, "Replicate callback 竞争落败: task_id=%s", taskID)
 			return true, http.StatusOK, "already processed"
 		}
-		logger.Infof(c, "Replicate callback success: user_id=%d, quota=%d (创建时已扣费), task_id=%s",
-			image.UserId, image.Quota, taskID)
+		//logger.Infof(c, "Replicate callback success: user_id=%d, quota=%d (创建时已扣费), task_id=%s",
+		//	image.UserId, image.Quota, taskID)
 		return true, http.StatusOK, "success"
 
 	case "failed", "canceled":
