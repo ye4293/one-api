@@ -140,7 +140,7 @@ func reconcileBFLImage(ctx context.Context, image *model.Image, baseURL, apiKey 
 			image.TaskId, err)
 		return
 	}
-	if strings.ToLower(poll.Status) != "ready" {
+	if !flux.IsUpstreamReady(poll.Status) {
 		logger.Debugf(ctx, "[flux-reconciler] BFL 未就绪，等待下一轮: task_id=%s, status=%s",
 			image.TaskId, poll.Status)
 		return
@@ -203,11 +203,16 @@ func applyFluxBFLFailed(ctx context.Context, image *model.Image, poll flux.FluxP
 	if image.FailReason == "" {
 		image.FailReason = fmt.Sprintf("BFL status: %s", poll.Status)
 	}
-	if err := image.Update(); err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] BFL 更新失败记录失败: task_id=%s, err=%v", image.TaskId, err)
-	} else {
-		logger.Infof(ctx, "[flux-reconciler] BFL 任务标记失败: task_id=%s, reason=%s", image.TaskId, image.FailReason)
+	applied, dbErr := image.UpdateIfNotTerminal()
+	if dbErr != nil {
+		logger.Errorf(ctx, "[flux-reconciler] BFL 更新失败记录失败: task_id=%s, err=%v", image.TaskId, dbErr)
+		return
 	}
+	if !applied {
+		logger.Infof(ctx, "[flux-reconciler] BFL 失败标记跳过（已为终态）: task_id=%s", image.TaskId)
+		return
+	}
+	logger.Infof(ctx, "[flux-reconciler] BFL 任务标记失败: task_id=%s, reason=%s", image.TaskId, image.FailReason)
 }
 
 // ─── Replicate ───────────────────────────────────────────────────────────────
@@ -284,9 +289,14 @@ func applyFluxReplicateFailed(ctx context.Context, image *model.Image, repl flux
 	if image.FailReason == "<nil>" || image.FailReason == "" {
 		image.FailReason = fmt.Sprintf("Replicate 任务 %s", repl.Status)
 	}
-	if err := image.Update(); err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] Replicate 更新失败记录失败: task_id=%s, err=%v", image.TaskId, err)
-	} else {
-		logger.Infof(ctx, "[flux-reconciler] Replicate 任务标记失败: task_id=%s, reason=%s", image.TaskId, image.FailReason)
+	applied, dbErr := image.UpdateIfNotTerminal()
+	if dbErr != nil {
+		logger.Errorf(ctx, "[flux-reconciler] Replicate 更新失败记录失败: task_id=%s, err=%v", image.TaskId, dbErr)
+		return
 	}
+	if !applied {
+		logger.Infof(ctx, "[flux-reconciler] Replicate 失败标记跳过（已为终态）: task_id=%s", image.TaskId)
+		return
+	}
+	logger.Infof(ctx, "[flux-reconciler] Replicate 任务标记失败: task_id=%s, reason=%s", image.TaskId, image.FailReason)
 }

@@ -58,11 +58,12 @@ type ErrorResponse struct {
 }
 
 // FluxCallbackNotification 表示 Flux API 的回调通知
+// 注意：BFL 实际推送字段名是 "id" 与 "Ready"/"Error"——历史注释错的别信，以本结构体 tag 为准
 type FluxCallbackNotification struct {
-	TaskId     string  `json:"task_id"`                   // 任务ID（注意：Flux 使用 task_id 而不是 id）
-	Status     string  `json:"status"`                    // 任务状态：processing, SUCCESS, FAILED（注意大小写）
+	TaskId     string  `json:"id"`                        // 任务 ID（BFL 推送字段名为 id）
+	Status     string  `json:"status"`                    // 上游状态：Ready / Error / processing（参考 isUpstreamReady / isUpstreamFailed）
 	Progress   int     `json:"progress,omitempty"`        // 进度（0-100）
-	Result     *Result `json:"result,omitempty"`          // 生成结果（SUCCESS 时有值）
+	Result     *Result `json:"result,omitempty"`          // 生成结果（Ready 时有值）
 	PollingURL string  `json:"polling_url,omitempty"`     // 轮询URL
 	Cost       float64 `json:"cost,omitempty"`            // 费用（美分）
 	InputMP    float64 `json:"input_mp,omitempty"`        // 输入兆像素
