@@ -67,6 +67,22 @@ func (image *Image) UpdateIfNotTerminal() (bool, error) {
 	return result.RowsAffected > 0, nil
 }
 
+// UpdateProcessingIfNotTerminal 仅更新 processing 阶段允许变化的两列（status / total_duration），
+// 并通过 WHERE status NOT IN (success, failed) 守护终态。用于回调"处理中"事件，避免
+// 用 GORM Save 全行覆盖把成功路径写入的 result/store_url/quota 抹掉。
+func (image *Image) UpdateProcessingIfNotTerminal() (bool, error) {
+	result := DB.Model(image).
+		Where("status NOT IN (?, ?)", "success", "failed").
+		Updates(map[string]interface{}{
+			"status":         image.Status,
+			"total_duration": image.TotalDuration,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func GetImageByTaskId(taskId string) (*Image, error) {
 	var image Image
 	err := DB.Where("task_id = ?", taskId).First(&image).Error

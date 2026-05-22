@@ -697,9 +697,15 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 		logger.Errorf(c, "Flux callback marshal error: %v", err)
 	}
 
-	if err := image.Update(); err != nil {
-		logger.Errorf(c, "Flux callback update record failed: task_id=%s, error=%v", taskID, err)
+	// CAS 更新——若 reconciler / 其他路径已写入终态，跳过本次写入避免回退
+	applied, dbErr := image.UpdateIfNotTerminal()
+	if dbErr != nil {
+		logger.Errorf(c, "Flux callback update record failed: task_id=%s, error=%v", taskID, dbErr)
 		return false, http.StatusInternalServerError, "update failed"
+	}
+	if !applied {
+		logger.Infof(c, "Flux callback 已被其他路径处理: task_id=%s", taskID)
+		return true, http.StatusOK, "already processed"
 	}
 
 	logger.Infof(c, "Flux callback success: task_id=%s, quota=%d (创建时已扣费), duration=%ds",
@@ -718,9 +724,15 @@ func handleFailedCallback(c *gin.Context, image *model.Image, notification FluxC
 	logger.Infof(c, "Flux callback task failed: task_id=%s, reason=%s, duration=%ds",
 		taskID, image.FailReason, image.TotalDuration)
 
-	if err := image.Update(); err != nil {
-		logger.Errorf(c, "Flux callback update failed record failed: task_id=%s, error=%v", taskID, err)
+	// CAS 更新——已成功的记录不应被晚到的失败回调反转
+	applied, dbErr := image.UpdateIfNotTerminal()
+	if dbErr != nil {
+		logger.Errorf(c, "Flux callback update failed record failed: task_id=%s, error=%v", taskID, dbErr)
 		return false, http.StatusInternalServerError, "update failed"
+	}
+	if !applied {
+		logger.Infof(c, "Flux callback 已被其他路径处理: task_id=%s", taskID)
+		return true, http.StatusOK, "already processed"
 	}
 
 	return true, http.StatusOK, "success"
@@ -733,9 +745,16 @@ func handleProcessingCallback(c *gin.Context, image *model.Image, notification F
 	logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s, duration=%ds",
 		taskID, notification.Status, image.TotalDuration)
 
-	if err := image.Update(); err != nil {
-		logger.Errorf(c, "Flux callback update processing record failed: task_id=%s, error=%v", taskID, err)
+	// 列限定 CAS：只更新 status / total_duration，避免 GORM Save 全行覆盖
+	// 把成功路径写入的 result/store_url/quota 回退；同时守护终态行不被 processing 反转
+	applied, dbErr := image.UpdateProcessingIfNotTerminal()
+	if dbErr != nil {
+		logger.Errorf(c, "Flux callback update processing record failed: task_id=%s, error=%v", taskID, dbErr)
 		return false, http.StatusInternalServerError, "update failed"
+	}
+	if !applied {
+		logger.Infof(c, "Flux callback processing 已被终态路径覆盖，跳过: task_id=%s", taskID)
+		return true, http.StatusOK, "already processed"
 	}
 
 	return true, http.StatusOK, "success"
@@ -903,9 +922,13 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 			image.Status = TaskStatusFailed
 			image.FailReason = "Replicate 返回空图片 URL"
 			logger.Errorf(c, "Replicate callback empty output: task_id=%s", taskID)
-			if err := image.Update(); err != nil {
-				logger.Errorf(c, "Replicate callback update failed: task_id=%s, error=%v", taskID, err)
+			applied, dbErr := image.UpdateIfNotTerminal()
+			if dbErr != nil {
+				logger.Errorf(c, "Replicate callback update failed: task_id=%s, error=%v", taskID, dbErr)
 				return false, http.StatusInternalServerError, "update failed"
+			}
+			if !applied {
+				logger.Infof(c, "Replicate callback 已被其他路径处理: task_id=%s", taskID)
 			}
 			return true, http.StatusOK, "success"
 		}
@@ -945,17 +968,31 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 		image.FailReason = errMsg
 		logger.Infof(c, "Replicate callback task %s: task_id=%s, reason=%s", replicateResp.Status, taskID, errMsg)
 
+		applied, dbErr := image.UpdateIfNotTerminal()
+		if dbErr != nil {
+			return false, http.StatusInternalServerError, "update failed"
+		}
+		if !applied {
+			logger.Infof(c, "Replicate callback failed 已被其他路径处理: task_id=%s", taskID)
+			return true, http.StatusOK, "already processed"
+		}
+		return true, http.StatusOK, "success"
+
 	default:
-		image.Status = replicateResp.Status
-		logger.Infof(c, "Replicate callback status update: task_id=%s, status=%s", taskID, replicateResp.Status)
-	}
+		// processing / starting 等非终态：仅更新 status + total_duration，列限定守护
+		image.Status = TaskStatusProcessing
+		logger.Infof(c, "Replicate callback status update: task_id=%s, upstream=%s", taskID, replicateResp.Status)
 
-	// failed / canceled / processing 走常规更新（无扣费）
-	if err := image.Update(); err != nil {
-		return false, http.StatusInternalServerError, "update failed"
+		applied, dbErr := image.UpdateProcessingIfNotTerminal()
+		if dbErr != nil {
+			return false, http.StatusInternalServerError, "update failed"
+		}
+		if !applied {
+			logger.Infof(c, "Replicate callback processing 已被终态路径覆盖，跳过: task_id=%s", taskID)
+			return true, http.StatusOK, "already processed"
+		}
+		return true, http.StatusOK, "success"
 	}
-
-	return true, http.StatusOK, "success"
 }
 
 // VerifyReplicateWebhook 验证 Replicate webhook 签名（HMAC-SHA256）
