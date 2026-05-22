@@ -48,18 +48,19 @@ func (image *Image) Update() error {
 // state ("success" or "failed"). Returns (true, nil) when the row was updated (caller won
 // the race and must charge); returns (false, nil) when another path already transitioned
 // the record to a terminal state (caller must skip billing to prevent double-charge).
+//
+// 注意：total_duration 仅在创建任务时写入，作为客户端首次响应时长，回调路径不应再覆盖。
 func (image *Image) UpdateIfNotTerminal() (bool, error) {
 	result := DB.Model(image).
 		Where("status NOT IN (?, ?)", "success", "failed").
 		Updates(map[string]interface{}{
-			"task_id":        image.TaskId,
-			"status":         image.Status,
-			"store_url":      image.StoreUrl,
-			"result":         image.Result,
-			"detail":         image.Detail,
-			"quota":          image.Quota,
-			"total_duration": image.TotalDuration,
-			"fail_reason":    image.FailReason,
+			"task_id":     image.TaskId,
+			"status":      image.Status,
+			"store_url":   image.StoreUrl,
+			"result":      image.Result,
+			"detail":      image.Detail,
+			"quota":       image.Quota,
+			"fail_reason": image.FailReason,
 		})
 	if result.Error != nil {
 		return false, result.Error
@@ -67,15 +68,15 @@ func (image *Image) UpdateIfNotTerminal() (bool, error) {
 	return result.RowsAffected > 0, nil
 }
 
-// UpdateProcessingIfNotTerminal 仅更新 processing 阶段允许变化的两列（status / total_duration），
-// 并通过 WHERE status NOT IN (success, failed) 守护终态。用于回调"处理中"事件，避免
-// 用 GORM Save 全行覆盖把成功路径写入的 result/store_url/quota 抹掉。
+// UpdateProcessingIfNotTerminal 仅更新 processing 阶段允许变化的列（仅 status），
+// 并通过 WHERE status NOT IN (success, failed) 守护终态。用于回调"处理中"事件，
+// 避免用 GORM Save 全行覆盖把成功路径写入的 result/store_url/quota 抹掉。
+// total_duration 是创建任务时锁定的响应时长，回调阶段不更新。
 func (image *Image) UpdateProcessingIfNotTerminal() (bool, error) {
 	result := DB.Model(image).
 		Where("status NOT IN (?, ?)", "success", "failed").
 		Updates(map[string]interface{}{
-			"status":         image.Status,
-			"total_duration": image.TotalDuration,
+			"status": image.Status,
 		})
 	if result.Error != nil {
 		return false, result.Error

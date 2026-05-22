@@ -634,9 +634,6 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 		return true, http.StatusOK, "already processed"
 	}
 
-	now := time.Now().Unix()
-	image.TotalDuration = int(now - image.CreatedAt)
-
 	// 上游字面值 Ready/Error，统一通过 helper 判定，避免硬编码散落
 	if IsUpstreamReady(notification.Status) {
 		return handleSuccessCallback(c, image, notification, taskID)
@@ -708,8 +705,8 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 		return true, http.StatusOK, "already processed"
 	}
 
-	logger.Infof(c, "Flux callback success: task_id=%s, quota=%d (创建时已扣费), duration=%ds",
-		taskID, image.Quota, image.TotalDuration)
+	logger.Infof(c, "Flux callback success: task_id=%s, quota=%d (创建时已扣费)",
+		taskID, image.Quota)
 	return true, http.StatusOK, "success"
 }
 
@@ -721,8 +718,8 @@ func handleFailedCallback(c *gin.Context, image *model.Image, notification FluxC
 		image.FailReason = "Flux API 任务失败"
 	}
 
-	logger.Infof(c, "Flux callback task failed: task_id=%s, reason=%s, duration=%ds",
-		taskID, image.FailReason, image.TotalDuration)
+	logger.Infof(c, "Flux callback task failed: task_id=%s, reason=%s",
+		taskID, image.FailReason)
 
 	// CAS 更新——已成功的记录不应被晚到的失败回调反转
 	applied, dbErr := image.UpdateIfNotTerminal()
@@ -742,11 +739,11 @@ func handleFailedCallback(c *gin.Context, image *model.Image, notification FluxC
 func handleProcessingCallback(c *gin.Context, image *model.Image, notification FluxCallbackNotification, taskID string) (bool, int, string) {
 	// 归一化为内部常量，防止上游字面值（如 "Pending"/"processing"）污染数据库
 	image.Status = TaskStatusProcessing
-	logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s, duration=%ds",
-		taskID, notification.Status, image.TotalDuration)
+	logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s",
+		taskID, notification.Status)
 
-	// 列限定 CAS：只更新 status / total_duration，避免 GORM Save 全行覆盖
-	// 把成功路径写入的 result/store_url/quota 回退；同时守护终态行不被 processing 反转
+	// 列限定 CAS：仅更新 status，避免 GORM Save 全行覆盖把成功路径写入的
+	// result/store_url/quota 回退；同时守护终态行不被 processing 反转
 	applied, dbErr := image.UpdateProcessingIfNotTerminal()
 	if dbErr != nil {
 		logger.Errorf(c, "Flux callback update processing record failed: task_id=%s, error=%v", taskID, dbErr)
@@ -909,9 +906,7 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 		return true, http.StatusOK, "already processed"
 	}
 
-	now := time.Now().Unix()
-	image.TotalDuration = int(now - image.CreatedAt)
-	// detail 在创建任务时已经写入"客户端首次响应"，回调阶段不再覆盖
+	// detail / total_duration 在创建任务时已经写入，回调阶段不再覆盖
 
 	switch replicateResp.Status {
 	case "succeeded":
@@ -979,7 +974,7 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 		return true, http.StatusOK, "success"
 
 	default:
-		// processing / starting 等非终态：仅更新 status + total_duration，列限定守护
+		// processing / starting 等非终态：仅更新 status，列限定守护终态
 		image.Status = TaskStatusProcessing
 		logger.Infof(c, "Replicate callback status update: task_id=%s, upstream=%s", taskID, replicateResp.Status)
 
