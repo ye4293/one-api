@@ -339,7 +339,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	quota := CalculateQuota(fluxResp.Cost, groupRatio)
 
 	// 任务创建成功即扣费——统一扣费入口，不做失败退款
-	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
 		logger.Errorf(c, "BFL 创建成功后扣费失败: task_id=%s, err=%v", fluxResp.ID, chargeErr)
 		a.updateRecordToFailed(c, chargeErr.Error())
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -470,7 +470,7 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
 
 	// 任务创建成功即扣费——同步路径已拿到结果，仍按"创建成功"统一计费
-	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
 		logger.Errorf(c, "Replicate 创建成功后扣费失败: task_id=%s, err=%v", replicateResp.ID, chargeErr)
 		a.updateRecordToFailed(c, chargeErr.Error())
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -522,7 +522,7 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
 
 	// 任务创建成功即扣费（异步分支同样按创建成功计费）
-	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
 		logger.Errorf(c, "Replicate 创建成功后扣费失败: task_id=%s, err=%v", replicateResp.ID, chargeErr)
 		a.updateRecordToFailed(c, chargeErr.Error())
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -616,12 +616,15 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 // HandleCallback 处理 BFL 回调通知
 func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
 	taskID := notification.TaskId
-	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d", taskID, notification.Status, notification.Progress)
+	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
+		taskID, notification.Status, notification.Progress, string(rawBody))
 	logger.Debugf(c, "Flux callback notification: %+v", notification)
 
-	image, err := model.GetImageByTaskId(taskID)
+	// webhook 可能比创建路径的 ImageRecord.Update() 早到（task_id 还未回填到 DB），
+	// 200ms × 3 退避覆盖该窗口；仍然找不到才返回 404
+	image, err := getImageByTaskIdWithRetry(taskID)
 	if err != nil || image == nil {
-		logger.Errorf(c, "Flux callback task not found: task_id=%s, error=%v", taskID, err)
+		logger.Errorf(c, "Flux callback task not found after retries: task_id=%s, error=%v", taskID, err)
 		return false, http.StatusNotFound, "task not found"
 	}
 
@@ -630,14 +633,6 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 		logger.Infof(c, "Flux callback already processed: task_id=%s, status=%s", taskID, currentStatus)
 		return true, http.StatusOK, "already processed"
 	}
-
-	callbackBytes, err := json.Marshal(notification)
-	if err != nil {
-		logger.Errorf(c, "Flux callback marshal error: %v", err)
-		return false, http.StatusInternalServerError, "internal error"
-	}
-	image.Result = string(callbackBytes)
-	// detail 在创建任务时已经写入"客户端首次响应"，回调阶段不再覆盖
 
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
@@ -652,12 +647,38 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 	}
 }
 
-// handleSuccessCallback 处理 BFL 成功回调（扣费已在创建时完成，此处仅更新状态）
+// getImageByTaskIdWithRetry 解决 webhook 比创建路径 Update 早到的竞态：
+// 200ms × 3 次退避，总最多 600ms。task_id 命中后立即返回。
+func getImageByTaskIdWithRetry(taskID string) (*model.Image, error) {
+	const maxAttempts = 3
+	const interval = 200 * time.Millisecond
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		image, err := model.GetImageByTaskId(taskID)
+		if err == nil && image != nil && image.TaskId != "" {
+			return image, nil
+		}
+		lastErr = err
+		if i < maxAttempts-1 {
+			time.Sleep(interval)
+		}
+	}
+	return nil, lastErr
+}
+
+// handleSuccessCallback 处理 BFL 成功回调（扣费已在创建时完成，此处仅更新状态 + 写入 result）
 func handleSuccessCallback(c *gin.Context, image *model.Image, notification FluxCallbackNotification, taskID string) (bool, int, string) {
 	image.Status = TaskStatusSucceed
 
 	if notification.Result != nil && notification.Result.Sample != "" {
 		image.StoreUrl = notification.Result.Sample
+	}
+
+	// result 仅在成功时落库，避免 processing/failed 回调覆盖最终成功结果
+	if callbackBytes, err := json.Marshal(notification); err == nil {
+		image.Result = string(callbackBytes)
+	} else {
+		logger.Errorf(c, "Flux callback marshal error: %v", err)
 	}
 
 	if err := image.Update(); err != nil {
@@ -840,11 +861,11 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 // HandleReplicateCallback 处理 Replicate webhook 回调，更新 DB 并在成功时扣费
 func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, rawBody []byte) (bool, int, string) {
 	taskID := replicateResp.ID
-	logger.Infof(c, "Replicate callback: task_id=%s, status=%s", taskID, replicateResp.Status)
+	logger.Infof(c, "Replicate callback: task_id=%s, status=%s, raw=%s", taskID, replicateResp.Status, string(rawBody))
 
-	image, err := model.GetImageByTaskId(taskID)
+	image, err := getImageByTaskIdWithRetry(taskID)
 	if err != nil || image == nil {
-		logger.Errorf(c, "Replicate callback task not found: task_id=%s", taskID)
+		logger.Errorf(c, "Replicate callback task not found after retries: task_id=%s, error=%v", taskID, err)
 		return false, http.StatusNotFound, "task not found"
 	}
 
