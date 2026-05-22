@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
@@ -180,20 +179,9 @@ func fetchBFLResult(ctx context.Context, taskID, baseURL, apiKey string) (*flux.
 }
 
 func applyFluxBFLSuccess(ctx context.Context, image *model.Image, poll flux.FluxPollingResponse) {
-	group, err := model.CacheGetUserGroup(image.UserId)
-	if err != nil || group == "" {
-		group = "Lv1"
-	}
-	groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
-	quota := flux.CalculateQuota(poll.Cost, groupRatio)
-	if quota == 0 {
-		quota = flux.EstimateQuota(image.Model, groupRatio)
-	}
-
 	resultBytes, _ := json.Marshal(poll)
 	image.Status = flux.TaskStatusSucceed
 	image.StoreUrl = poll.Result.Sample
-	image.Quota = quota
 	image.Result = string(resultBytes)
 
 	applied, dbErr := image.UpdateIfNotTerminal()
@@ -202,16 +190,11 @@ func applyFluxBFLSuccess(ctx context.Context, image *model.Image, poll flux.Flux
 		return
 	}
 	if !applied {
-		logger.Infof(ctx, "[flux-reconciler] BFL 已被其他路径处理，跳过扣费: task_id=%s", image.TaskId)
+		logger.Infof(ctx, "[flux-reconciler] BFL 已被其他路径处理: task_id=%s", image.TaskId)
 		return
 	}
-	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] BFL 扣费失败: user_id=%d, quota=%d, err=%v",
-			image.UserId, quota, err)
-	} else {
-		logger.Infof(ctx, "[flux-reconciler] BFL 对账成功: task_id=%s, user_id=%d, quota=%d",
-			image.TaskId, image.UserId, quota)
-	}
+	logger.Infof(ctx, "[flux-reconciler] BFL 对账成功: task_id=%s, user_id=%d, quota=%d (创建时已扣费)",
+		image.TaskId, image.UserId, image.Quota)
 }
 
 func applyFluxBFLFailed(ctx context.Context, image *model.Image, poll flux.FluxPollingResponse) {
@@ -271,13 +254,6 @@ func reconcileReplicateImage(ctx context.Context, image *model.Image, baseURL, a
 }
 
 func applyFluxReplicateSuccess(ctx context.Context, image *model.Image, repl flux.ReplicateResponse, imageURL string) {
-	group, err := model.CacheGetUserGroup(image.UserId)
-	if err != nil || group == "" {
-		group = "Lv1"
-	}
-	groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
-	quota := flux.CalculateReplicateQuota(image.Model, 1, groupRatio)
-
 	queryResult := map[string]any{
 		"id":     repl.ID,
 		"status": "Ready",
@@ -287,7 +263,6 @@ func applyFluxReplicateSuccess(ctx context.Context, image *model.Image, repl flu
 
 	image.Status = flux.TaskStatusSucceed
 	image.StoreUrl = imageURL
-	image.Quota = quota
 	image.Result = string(resultBytes)
 
 	applied, dbErr := image.UpdateIfNotTerminal()
@@ -296,16 +271,11 @@ func applyFluxReplicateSuccess(ctx context.Context, image *model.Image, repl flu
 		return
 	}
 	if !applied {
-		logger.Infof(ctx, "[flux-reconciler] Replicate 已被其他路径处理，跳过扣费: task_id=%s", image.TaskId)
+		logger.Infof(ctx, "[flux-reconciler] Replicate 已被其他路径处理: task_id=%s", image.TaskId)
 		return
 	}
-	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
-		logger.Errorf(ctx, "[flux-reconciler] Replicate 扣费失败: user_id=%d, quota=%d, err=%v",
-			image.UserId, quota, err)
-	} else {
-		logger.Infof(ctx, "[flux-reconciler] Replicate 对账成功: task_id=%s, user_id=%d, quota=%d",
-			image.TaskId, image.UserId, quota)
-	}
+	logger.Infof(ctx, "[flux-reconciler] Replicate 对账成功: task_id=%s, user_id=%d, quota=%d (创建时已扣费)",
+		image.TaskId, image.UserId, image.Quota)
 }
 
 func applyFluxReplicateFailed(ctx context.Context, image *model.Image, repl flux.ReplicateResponse) {
