@@ -637,14 +637,30 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 	now := time.Now().Unix()
 	image.TotalDuration = int(now - image.CreatedAt)
 
-	normalizedStatus := strings.ToLower(notification.Status)
-	if normalizedStatus == TaskStatusSucceed {
+	// 上游字面值 Ready/Error，统一通过 helper 判定，避免硬编码散落
+	if IsUpstreamReady(notification.Status) {
 		return handleSuccessCallback(c, image, notification, taskID)
-	} else if normalizedStatus == TaskStatusFailed {
+	} else if IsUpstreamFailed(notification.Status) {
 		return handleFailedCallback(c, image, notification, taskID)
 	} else {
 		return handleProcessingCallback(c, image, notification, taskID)
 	}
+}
+
+// IsUpstreamReady 判断 BFL 上游响应/回调是否为成功终态。
+// BFL polling 与 webhook 都用 "Ready"，旧路径偶尔会传 SUCCESS/success 进来，统一容错。
+func IsUpstreamReady(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	return s == "ready" || s == "success" || s == "succeed"
+}
+
+// IsUpstreamFailed 判断 BFL 上游响应/回调是否为失败终态。
+// 涵盖：Error、failed、Content Moderated、Task not found 等 BFL 失败语义。
+func IsUpstreamFailed(status string) bool {
+	s := strings.ToLower(strings.TrimSpace(status))
+	return s == "error" || s == "failed" ||
+		strings.Contains(s, "moderated") ||
+		strings.Contains(s, "not found")
 }
 
 // getImageByTaskIdWithRetry 解决 webhook 比创建路径 Update 早到的竞态：
@@ -712,8 +728,9 @@ func handleFailedCallback(c *gin.Context, image *model.Image, notification FluxC
 
 // handleProcessingCallback 处理 BFL 处理中状态回调
 func handleProcessingCallback(c *gin.Context, image *model.Image, notification FluxCallbackNotification, taskID string) (bool, int, string) {
-	image.Status = notification.Status
-	logger.Infof(c, "Flux callback task status updated: task_id=%s, status=%s, duration=%ds",
+	// 归一化为内部常量，防止上游字面值（如 "Pending"/"processing"）污染数据库
+	image.Status = TaskStatusProcessing
+	logger.Infof(c, "Flux callback task status updated: task_id=%s, upstream=%s, duration=%ds",
 		taskID, notification.Status, image.TotalDuration)
 
 	if err := image.Update(); err != nil {
@@ -755,30 +772,28 @@ func (a *Adaptor) QueryResult(c *gin.Context, taskID string, baseURL string, api
 	logger.Debugf(c, "Flux 查询响应: status=%d, body=%s", resp.StatusCode, string(body))
 
 	// 检测到终态时兜底更新 DB（与 queryReplicateResult 对称）
-	// BFL 轮询状态：Ready=成功，Error/Content Moderated/Task not found=失败
+	// 通过 isUpstreamReady / isUpstreamFailed 收口判定，避免硬编码字面值
 	if resp.StatusCode == http.StatusOK {
 		var bflPoll FluxPollingResponse
 		if jsonErr := json.Unmarshal(body, &bflPoll); jsonErr == nil {
-			lowerStatus := strings.ToLower(bflPoll.Status)
-			isTerminal := lowerStatus == "ready" || lowerStatus == "error" ||
-				strings.Contains(lowerStatus, "moderated")
-			if isTerminal {
+			ready := IsUpstreamReady(bflPoll.Status)
+			failed := IsUpstreamFailed(bflPoll.Status)
+			if ready || failed {
 				if image, dbErr := model.GetImageByTaskId(taskID); dbErr == nil && image != nil {
 					if image.Status != TaskStatusSucceed && image.Status != TaskStatusFailed {
-						// BFL 轮询用 Ready/Error，HandleCallback 期望 SUCCESS/FAILED（会做 ToLower）
-						cbStatus := "FAILED"
-						if lowerStatus == "ready" {
-							cbStatus = "SUCCESS"
+						upstreamStatus := UpstreamStatusError
+						if ready {
+							upstreamStatus = UpstreamStatusReady
 						}
 						notification := FluxCallbackNotification{
 							TaskId: taskID,
-							Status: cbStatus,
+							Status: upstreamStatus,
 							Cost:   bflPoll.Cost,
 							Result: bflPoll.Result,
 							Error:  bflPoll.Error,
 						}
 						HandleCallback(c, notification, body)
-						logger.Infof(c, "BFL QueryResult 兜底触发回调处理: task_id=%s, status=%s", taskID, cbStatus)
+						logger.Infof(c, "BFL QueryResult 兜底触发回调处理: task_id=%s, status=%s", taskID, upstreamStatus)
 					}
 				}
 			}
