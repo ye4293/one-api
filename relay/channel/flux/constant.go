@@ -80,10 +80,15 @@ var ReplicatePriceMap = map[string]float64{
 }
 
 const (
-	// 任务状态
+	// 内部数据库存储状态（修改将破坏历史数据，禁止动）
 	TaskStatusPending    = "pending"
 	TaskStatusSubmitted  = "submitted"
 	TaskStatusProcessing = "processing"
 	TaskStatusSucceed    = "success"
 	TaskStatusFailed     = "failed"
+
+	// BFL 上游响应/回调状态字面值
+	// BFL polling 与 webhook 推送的字段值统一为 "Ready" / "Error"
+	UpstreamStatusReady = "Ready"
+	UpstreamStatusError = "Error"
 )
