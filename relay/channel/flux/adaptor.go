@@ -324,10 +324,31 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		}
 	}
 
-	groupRatio := 1.0
+	if a.ImageRecord == nil {
+		// 防御性兜底：理论上 CreatePendingRecord 必然先于此处执行
+		c.Data(resp.StatusCode, "application/json", body)
+		return nil, nil
+	}
+
+	// 计算配额：使用真实分组倍率（旧实现写死 1.0 是 BUG）
+	group, gErr := model.CacheGetUserGroup(a.ImageRecord.UserId)
+	if gErr != nil || group == "" {
+		group = "Lv1"
+	}
+	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
 	quota := CalculateQuota(fluxResp.Cost, groupRatio)
 
-	// 先构造客户端响应（删除 webhook_url、补 polling_url），同时作为 detail 落库
+	// 任务创建成功即扣费——统一扣费入口，不做失败退款
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+		logger.Errorf(c, "BFL 创建成功后扣费失败: task_id=%s, err=%v", fluxResp.ID, chargeErr)
+		a.updateRecordToFailed(c, chargeErr.Error())
+		return nil, &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusPaymentRequired,
+			Error:      relaymodel.Error{Message: chargeErr.Error()},
+		}
+	}
+
+	// 构造客户端响应（删除 webhook_url、补 polling_url），同时作为 detail 落库
 	// detail 仅在此处写入一次，后续 webhook / reconciler 不再覆盖
 	modifiedBody := body
 	var respMap map[string]any
@@ -347,23 +368,20 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 		logger.Errorf(c, "解析响应为 map 失败: %v", err)
 	}
 
-	if a.ImageRecord != nil {
-		now := time.Now().Unix()
-		duration := int(now - a.ImageRecord.CreatedAt)
+	now := time.Now().Unix()
+	duration := int(now - a.ImageRecord.CreatedAt)
 
-		a.ImageRecord.TaskId = fluxResp.ID
-		a.ImageRecord.Status = TaskStatusSubmitted
-		a.ImageRecord.Quota = quota
-		a.ImageRecord.TotalDuration = duration
-		a.ImageRecord.Detail = string(modifiedBody)
-		a.ImageRecord.Result = string(modifiedBody)
+	a.ImageRecord.TaskId = fluxResp.ID
+	a.ImageRecord.Status = TaskStatusSubmitted
+	a.ImageRecord.TotalDuration = duration
+	a.ImageRecord.Detail = string(modifiedBody)
+	a.ImageRecord.Result = string(modifiedBody)
 
-		if err := a.ImageRecord.Update(); err != nil {
-			logger.Errorf(c, "更新 Flux 记录失败: %v", err)
-		} else {
-			logger.Infof(c, "Flux 请求成功: task_id=%s, cost=%.4f cents, quota=%d, duration=%ds",
-				fluxResp.ID, fluxResp.Cost, quota, duration)
-		}
+	if err := a.ImageRecord.Update(); err != nil {
+		logger.Errorf(c, "更新 Flux 记录失败: %v", err)
+	} else {
+		logger.Infof(c, "Flux 创建成功并扣费: task_id=%s, cost=%.4f cents, quota=%d, duration=%ds",
+			fluxResp.ID, fluxResp.Cost, quota, duration)
 	}
 
 	c.Data(resp.StatusCode, "application/json", modifiedBody)
@@ -420,7 +438,7 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 	return a.handleReplicatePending(c, replicateResp, meta, body)
 }
 
-// handleReplicateSuccess 同步成功：更新 DB、扣费、返回 BFL 格式响应给客户端
+// handleReplicateSuccess 同步成功：扣费 → 更新 DB → 返回 BFL 格式响应给客户端
 func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta, rawBody []byte) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
 	imageURL := replicateResp.Output
 
@@ -451,6 +469,16 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
 	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
 
+	// 任务创建成功即扣费——同步路径已拿到结果，仍按"创建成功"统一计费
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+		logger.Errorf(c, "Replicate 创建成功后扣费失败: task_id=%s, err=%v", replicateResp.ID, chargeErr)
+		a.updateRecordToFailed(c, chargeErr.Error())
+		return nil, &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusPaymentRequired,
+			Error:      relaymodel.Error{Message: chargeErr.Error()},
+		}
+	}
+
 	// P2-1: 存储 BFL query 格式（{id,status:"Ready",result:{sample}}），GetFlux 可直接返回给客户端
 	queryResult := map[string]any{
 		"id":     replicateResp.ID,
@@ -461,27 +489,17 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 
 	a.ImageRecord.TaskId = replicateResp.ID
 	a.ImageRecord.Status = TaskStatusSucceed
-	a.ImageRecord.Quota = quota
 	a.ImageRecord.TotalDuration = duration
 	a.ImageRecord.StoreUrl = imageURL
 	a.ImageRecord.Result = string(resultBytes)
 	a.ImageRecord.Detail = string(rawBody)
 
-	// P1: 原子性 CAS 更新——只有赢得竞争的路径才扣费，防止 webhook 并发导致双重扣费
-	applied, dbErr := a.ImageRecord.UpdateIfNotTerminal()
-	if dbErr != nil {
+	// 扣费已先行完成；CAS 仅用于状态写入，避免覆盖 webhook 已先行写入的终态
+	if _, dbErr := a.ImageRecord.UpdateIfNotTerminal(); dbErr != nil {
 		logger.Errorf(c, "Replicate 更新记录失败: %v", dbErr)
-	} else if applied {
-		if err := model.DecreaseUserQuota(a.ImageRecord.UserId, quota); err != nil {
-			logger.Errorf(c, "Replicate 扣费失败: user_id=%d, quota=%d, error=%v", a.ImageRecord.UserId, quota, err)
-		} else {
-			logger.Infof(c, "Replicate 扣费成功: user_id=%d, quota=%d, task_id=%s, duration=%ds",
-				a.ImageRecord.UserId, quota, replicateResp.ID, duration)
-		}
-	} else {
-		// webhook 路径已先行处理，此路径跳过扣费
-		logger.Warnf(c, "Replicate 同步路径竞争落败，跳过扣费: task_id=%s", replicateResp.ID)
 	}
+	logger.Infof(c, "Replicate 同步成功并扣费: user_id=%d, quota=%d, task_id=%s, duration=%ds",
+		a.ImageRecord.UserId, quota, replicateResp.ID, duration)
 
 	bflResp := buildBFLCreateResponse(replicateResp, meta.OriginModelName, "Ready", imageURL)
 	bflBytes, _ := json.Marshal(bflResp)
@@ -490,20 +508,40 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 	return nil, nil
 }
 
-// handleReplicatePending 60s 超时仍未完成：更新 DB 为 submitted，等待 webhook 或客户端轮询
+// handleReplicatePending 60s 超时仍未完成：扣费 → 更新 DB 为 submitted → 等待 webhook / 客户端轮询
 func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta, rawBody []byte) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
-	if a.ImageRecord != nil {
-		now := time.Now().Unix()
-		a.ImageRecord.TaskId = replicateResp.ID
-		a.ImageRecord.Status = TaskStatusSubmitted
-		a.ImageRecord.TotalDuration = int(now - a.ImageRecord.CreatedAt)
-		a.ImageRecord.Detail = string(rawBody)
+	if a.ImageRecord == nil {
+		return nil, nil
+	}
 
-		if err := a.ImageRecord.Update(); err != nil {
-			logger.Errorf(c, "Replicate 更新 pending 记录失败: %v", err)
-		} else {
-			logger.Infof(c, "Replicate 任务排队中: task_id=%s, status=%s", replicateResp.ID, replicateResp.Status)
+	group, err := model.CacheGetUserGroup(a.ImageRecord.UserId)
+	if err != nil {
+		group = "Lv1"
+	}
+	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
+	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
+
+	// 任务创建成功即扣费（异步分支同样按创建成功计费）
+	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, quota); chargeErr != nil {
+		logger.Errorf(c, "Replicate 创建成功后扣费失败: task_id=%s, err=%v", replicateResp.ID, chargeErr)
+		a.updateRecordToFailed(c, chargeErr.Error())
+		return nil, &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusPaymentRequired,
+			Error:      relaymodel.Error{Message: chargeErr.Error()},
 		}
+	}
+
+	now := time.Now().Unix()
+	a.ImageRecord.TaskId = replicateResp.ID
+	a.ImageRecord.Status = TaskStatusSubmitted
+	a.ImageRecord.TotalDuration = int(now - a.ImageRecord.CreatedAt)
+	a.ImageRecord.Detail = string(rawBody)
+
+	if err := a.ImageRecord.Update(); err != nil {
+		logger.Errorf(c, "Replicate 更新 pending 记录失败: %v", err)
+	} else {
+		logger.Infof(c, "Replicate 任务排队中并已扣费: task_id=%s, status=%s, quota=%d",
+			replicateResp.ID, replicateResp.Status, quota)
 	}
 
 	bflStatus := "Pending"
@@ -614,7 +652,7 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 	}
 }
 
-// handleSuccessCallback 处理 BFL 成功回调
+// handleSuccessCallback 处理 BFL 成功回调（扣费已在创建时完成，此处仅更新状态）
 func handleSuccessCallback(c *gin.Context, image *model.Image, notification FluxCallbackNotification, taskID string) (bool, int, string) {
 	image.Status = TaskStatusSucceed
 
@@ -622,48 +660,13 @@ func handleSuccessCallback(c *gin.Context, image *model.Image, notification Flux
 		image.StoreUrl = notification.Result.Sample
 	}
 
-	var quota int64
-	if notification.Cost > 0 {
-		group, err := model.CacheGetUserGroup(image.UserId)
-		if err != nil {
-			logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
-			group = "Lv1"
-		}
-		groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
-		quota = CalculateQuota(notification.Cost, groupRatio)
-		image.Quota = quota
-
-		logger.Infof(c, "Flux callback with cost: task_id=%s, cost=%.4f cents, quota=%d", taskID, notification.Cost, quota)
-	} else {
-		quota = image.Quota
-		if quota == 0 {
-			logger.Warnf(c, "Flux callback has no cost and no saved quota: task_id=%s, using estimated quota", taskID)
-			group, err := model.CacheGetUserGroup(image.UserId)
-			if err != nil {
-				logger.Errorf(c, "Flux callback get user group failed: user_id=%d, error=%v", image.UserId, err)
-				group = "Lv1"
-			}
-			groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
-			quota = EstimateQuota(image.Model, groupRatio)
-			image.Quota = quota
-		}
-		logger.Infof(c, "Flux callback without cost: task_id=%s, using saved quota=%d", taskID, quota)
-	}
-
-	err := model.DecreaseUserQuota(image.UserId, quota)
-	if err != nil {
-		logger.Errorf(c, "Flux callback billing failed: user_id=%d, quota=%d, error=%v",
-			image.UserId, quota, err)
-	} else {
-		logger.Infof(c, "Flux callback billing success: user_id=%d, quota=%d, task_id=%s, duration=%ds",
-			image.UserId, quota, taskID, image.TotalDuration)
-	}
-
-	if err = image.Update(); err != nil {
+	if err := image.Update(); err != nil {
 		logger.Errorf(c, "Flux callback update record failed: task_id=%s, error=%v", taskID, err)
 		return false, http.StatusInternalServerError, "update failed"
 	}
 
+	logger.Infof(c, "Flux callback success: task_id=%s, quota=%d (创建时已扣费), duration=%ds",
+		taskID, image.Quota, image.TotalDuration)
 	return true, http.StatusOK, "success"
 }
 
@@ -879,34 +882,22 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 		}
 		resultBytes, _ := json.Marshal(queryResult)
 
-		group, _ := model.CacheGetUserGroup(image.UserId)
-		if group == "" {
-			group = "Lv1"
-		}
-		groupRatio := util.GetAsyncBillingGroupRatio(group, image.UserId, image.ChannelId, common.ChannelTypeFlux)
-		quota := CalculateReplicateQuota(image.Model, 1, groupRatio)
-
 		image.Status = TaskStatusSucceed
 		image.StoreUrl = imageURL
 		image.Result = string(resultBytes)
-		image.Quota = quota
 
-		// P1: 原子性 CAS 更新——只有赢得竞争的路径才扣费
+		// CAS 更新——扣费已在创建时完成，此处仅写入终态状态
 		applied, dbErr := image.UpdateIfNotTerminal()
 		if dbErr != nil {
 			logger.Errorf(c, "Replicate callback update failed: task_id=%s, error=%v", taskID, dbErr)
 			return false, http.StatusInternalServerError, "update failed"
 		}
 		if !applied {
-			// 同步路径已先行处理
-			logger.Infof(c, "Replicate callback 竞争落败，跳过扣费: task_id=%s", taskID)
+			logger.Infof(c, "Replicate callback 竞争落败: task_id=%s", taskID)
 			return true, http.StatusOK, "already processed"
 		}
-		if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
-			logger.Errorf(c, "Replicate callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, quota, err)
-		} else {
-			logger.Infof(c, "Replicate callback billing success: user_id=%d, quota=%d, task_id=%s", image.UserId, quota, taskID)
-		}
+		logger.Infof(c, "Replicate callback success: user_id=%d, quota=%d (创建时已扣费), task_id=%s",
+			image.UserId, image.Quota, taskID)
 		return true, http.StatusOK, "success"
 
 	case "failed", "canceled":
