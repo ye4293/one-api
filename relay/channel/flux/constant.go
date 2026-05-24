@@ -45,19 +45,19 @@ var ModelEndpoints = map[string]string{
 // ReplicateModelMap one-api 模型名 → Replicate 模型 ID
 // preview 版本降级到对应正式版（Replicate 无 preview 变体）
 var ReplicateModelMap = map[string]string{
-	"flux-2-max":         "black-forest-labs/flux-2-max",
-	"flux-2-pro-preview": "black-forest-labs/flux-2-pro", // 降级
-	"flux-2-pro":         "black-forest-labs/flux-2-pro",
-	"flux-2-flex":        "black-forest-labs/flux-2-flex",
-	// "flux-2-klein-4b":         "black-forest-labs/flux-2-klein-4b",
-	// "flux-2-klein-9b-preview": "black-forest-labs/flux-2-klein-9b", // 降级
-	// "flux-2-klein-9b":    "black-forest-labs/flux-2-klein-9b",
-	"flux-kontext-pro":   "black-forest-labs/flux-kontext-pro",
-	"flux-kontext-max":   "black-forest-labs/flux-kontext-max",
-	"flux-pro-1.1-ultra": "black-forest-labs/flux-1.1-pro-ultra",
-	"flux-pro-1.1":       "black-forest-labs/flux-1.1-pro",
-	"flux-pro":           "black-forest-labs/flux-pro",
-	"flux-dev":           "black-forest-labs/flux-dev",
+	"flux-2-max":              "black-forest-labs/flux-2-max",
+	"flux-2-pro-preview":      "black-forest-labs/flux-2-pro", // 降级
+	"flux-2-pro":              "black-forest-labs/flux-2-pro",
+	"flux-2-flex":             "black-forest-labs/flux-2-flex",
+	"flux-2-klein-4b":         "black-forest-labs/flux-2-klein-4b",
+	"flux-2-klein-9b-preview": "black-forest-labs/flux-2-klein-9b", // 降级
+	"flux-2-klein-9b":         "black-forest-labs/flux-2-klein-9b",
+	"flux-kontext-pro":        "black-forest-labs/flux-kontext-pro",
+	"flux-kontext-max":        "black-forest-labs/flux-kontext-max",
+	"flux-pro-1.1-ultra":      "black-forest-labs/flux-1.1-pro-ultra",
+	"flux-pro-1.1":            "black-forest-labs/flux-1.1-pro",
+	"flux-pro":                "black-forest-labs/flux-pro",
+	"flux-dev":                "black-forest-labs/flux-dev",
 }
 
 // ReplicatePriceMap 各模型固定价格（USD/张）
