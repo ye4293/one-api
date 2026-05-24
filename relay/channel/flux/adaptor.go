@@ -440,7 +440,7 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 
 // handleReplicateSuccess 同步成功：扣费 → 更新 DB → 返回 BFL 格式响应给客户端
 func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp ReplicateResponse, meta *util.RelayMeta, rawBody []byte) (*relaymodel.Usage, *relaymodel.ErrorWithStatusCode) {
-	imageURL := replicateResp.Output
+	imageURL := string(replicateResp.Output)
 
 	// P2-3: 空 URL 不应计为成功
 	if imageURL == "" {
@@ -874,7 +874,7 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 		"status": bflStatus,
 	}
 	if replicateResp.Status == "succeeded" {
-		bflPolling["result"] = map[string]any{"sample": replicateResp.Output}
+		bflPolling["result"] = map[string]any{"sample": string(replicateResp.Output)}
 	}
 	if replicateResp.Error != nil {
 		bflPolling["error"] = fmt.Sprintf("%v", replicateResp.Error)
@@ -910,7 +910,7 @@ func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, ra
 
 	switch replicateResp.Status {
 	case "succeeded":
-		imageURL := replicateResp.Output
+		imageURL := string(replicateResp.Output)
 
 		// P2-3: 空 URL 按失败处理，不扣费
 		if imageURL == "" {

@@ -1,5 +1,43 @@
 package flux
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// ReplicateOutput 兼容 Replicate 返回的 string / []string / null 三种 output 形态
+// （Klein 系列等会返回数组：output: ["url"]；旧模型返回字符串：output: "url"）
+type ReplicateOutput string
+
+func (o *ReplicateOutput) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*o = ""
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*o = ReplicateOutput(s)
+		return nil
+	}
+	if data[0] == '[' {
+		var arr []string
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return err
+		}
+		if len(arr) > 0 {
+			*o = ReplicateOutput(arr[0])
+		} else {
+			*o = ""
+		}
+		return nil
+	}
+	return fmt.Errorf("unsupported replicate output: %s", string(data))
+}
+
 // FluxRequest 表示 Flux API 的请求结构（透传模式，保留原始字段）
 type FluxRequest struct {
 	Prompt        string         `json:"prompt"`
@@ -76,7 +114,7 @@ type ReplicateResponse struct {
 	ID          string          `json:"id"`
 	Model       string          `json:"model"`
 	Status      string          `json:"status"`           // starting / processing / succeeded / failed / canceled
-	Output      string          `json:"output"`           // 图片 URL（字符串，非数组）
+	Output      ReplicateOutput `json:"output"`           // 兼容 string / []string / null
 	Error       interface{}     `json:"error"`
 	Logs        string          `json:"logs"`
 	Metrics     ReplicateMetrics `json:"metrics"`
