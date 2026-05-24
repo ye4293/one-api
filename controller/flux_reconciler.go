@@ -245,7 +245,7 @@ func reconcileReplicateImage(ctx context.Context, image *model.Image, baseURL, a
 
 	switch repl.Status {
 	case "succeeded":
-		imageURL := repl.Output
+		imageURL := string(repl.Output)
 		if imageURL == "" {
 			logger.Errorf(ctx, "[flux-reconciler] Replicate succeeded 但 output 为空: task_id=%s", image.TaskId)
 			return
