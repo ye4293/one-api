@@ -2,9 +2,11 @@ package controller
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -84,6 +86,17 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 
 // HandleFluxCallback 处理 Flux API 回调通知
 func HandleFluxCallback(c *gin.Context) {
+	// BFL 协议本身不签名，我们在注入的 webhook URL 上挂 ?key=<secret>，由本端校验。
+	// 未配置 FLUX_WEBHOOK_SECRET 时跳过校验，保持向后兼容（与 Replicate 校验逻辑一致）。
+	if expected := os.Getenv("FLUX_WEBHOOK_SECRET"); expected != "" {
+		got := c.Query("key")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+			logger.Errorf(c, "Flux callback secret mismatch, ip=%s", c.ClientIP())
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
+	}
+
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
 		logger.Errorf(c, "Flux callback read body error: %v", err)
