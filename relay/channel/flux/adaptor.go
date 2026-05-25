@@ -553,7 +553,7 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 	if replicateResp.Status == "processing" {
 		bflStatus = "Processing"
 	}
-	pollingURL := fmt.Sprintf("%s/flux/v1/get_result/%s", config.ServerAddress, replicateResp.ID)
+	pollingURL := fmt.Sprintf("%s/flux/v1/get_result?id=%s", config.ServerAddress, replicateResp.ID)
 	bflResp := buildBFLCreateResponse(replicateResp, meta.OriginModelName, bflStatus, pollingURL)
 	bflBytes, _ := json.Marshal(bflResp)
 	c.Data(http.StatusOK, "application/json", bflBytes)
