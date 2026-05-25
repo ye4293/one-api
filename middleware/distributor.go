@@ -231,6 +231,16 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 				modelRequest.Model = "wan2.6-i2v"
 			}
 		}
+	} else if strings.HasPrefix(path, "/flux/v1/") {
+		// Flux API：以 URL 路径中的 model 为准（POST /flux/v1/{model}），允许 body 不传 model
+		// c.Param("model") 由 *model 通配符捕获，包含前导 "/"
+		modelName := strings.TrimPrefix(c.Param("model"), "/")
+		if modelName != "" {
+			modelRequest.Model = modelName
+		} else {
+			// 兜底：URL 缺 model（理论上 *model 会拦住）时退回 body
+			_ = common.UnmarshalBodyReusable(c, &modelRequest)
+		}
 	} else {
 		// OpenAI 格式请求
 		_ = common.UnmarshalBodyReusable(c, &modelRequest)

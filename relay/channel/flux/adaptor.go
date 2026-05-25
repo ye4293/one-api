@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -167,6 +168,9 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 
 	if config.ServerAddress != "" {
 		webhookURL := fmt.Sprintf("%s/flux/internal/callback", config.ServerAddress)
+		if secret := os.Getenv("FLUX_WEBHOOK_SECRET"); secret != "" {
+			webhookURL = fmt.Sprintf("%s?key=%s", webhookURL, url.QueryEscape(secret))
+		}
 		requestMap["webhook_url"] = webhookURL
 		logger.Debugf(c, "添加 Flux webhook_url: %s", webhookURL)
 	}
@@ -617,6 +621,11 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 // HandleCallback 处理 BFL 回调通知
 func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
 	taskID := notification.TaskId
+	if taskID == "" {
+		// 空 task_id 多为外部扫描器探测；立即拒绝避免触发 3 次 DB 重试
+		logger.Errorf(c, "Flux callback empty task_id, ip=%s, raw=%s", c.ClientIP(), string(rawBody))
+		return false, http.StatusBadRequest, "missing task_id"
+	}
 	//logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
 	//	taskID, notification.Status, notification.Progress, string(rawBody))
 	//logger.Debugf(c, "Flux callback notification: %+v", notification)
