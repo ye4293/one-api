@@ -217,6 +217,7 @@ type OpeanaiResaponseRequest struct {
 	Model             string         `json:"model,omitempty"`               // 模型名称
 	ParallelToolCalls bool           `json:"parallel_tool_calls,omitempty"` // 是否并行调用工具
 	PresencePenalty   float64        `json:"presence_penalty,omitempty"`    // 存在惩罚
+	PreviousResponseID string        `json:"previous_response_id,omitempty"` // 上一次响应 ID（用于续写 / compact）
 	Reasoning         interface{}    `json:"reasoning,omitempty"`           // 推理配置
 	ResponseFormat    interface{}    `json:"response_format,omitempty"`     // 响应格式
 	Seed              int            `json:"seed,omitempty"`                // 随机种子
