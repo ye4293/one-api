@@ -404,7 +404,7 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 		}
 	}
 
-	logger.Infof(c, "Replicate DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
+	//logger.Infof(c, "Replicate DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
 	// 200 = 同步完成，201 = 超时仍在处理，其他为错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -620,10 +620,14 @@ func (a *Adaptor) updateRecordToFailed(c *gin.Context, reason string) {
 
 // HandleCallback 处理 BFL 回调通知
 func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
+	// BFL 不同事件用不同字段名（Ready/Error→id, processing→task_id），任取非空值
 	taskID := notification.TaskId
 	if taskID == "" {
-		// 空 task_id 多为外部扫描器探测；立即拒绝避免触发 3 次 DB 重试
-		logger.Errorf(c, "Flux callback empty task_id, ip=%s, raw=%s", c.ClientIP(), string(rawBody))
+		taskID = notification.TaskIdAlt
+	}
+	if taskID == "" {
+		// 真空 task_id 多为外部扫描器探测；立即拒绝避免触发 3 次 DB 重试
+		logger.Warnf(c, "Flux callback empty task_id, ip=%s", c.ClientIP())
 		return false, http.StatusBadRequest, "missing task_id"
 	}
 	//logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",

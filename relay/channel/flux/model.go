@@ -96,9 +96,11 @@ type ErrorResponse struct {
 }
 
 // FluxCallbackNotification 表示 Flux API 的回调通知
-// 注意：BFL 实际推送字段名是 "id" 与 "Ready"/"Error"——历史注释错的别信，以本结构体 tag 为准
+// BFL 不同事件类型的字段名不一致：Ready/Error 事件用 "id"，processing 事件用 "task_id"。
+// 两个 tag 都接，HandleCallback 取第一个非空值。
 type FluxCallbackNotification struct {
-	TaskId     string  `json:"id"`                        // 任务 ID（BFL 推送字段名为 id）
+	TaskId     string  `json:"id"`                        // Ready / Error 事件
+	TaskIdAlt  string  `json:"task_id,omitempty"`         // processing 事件
 	Status     string  `json:"status"`                    // 上游状态：Ready / Error / processing（参考 isUpstreamReady / isUpstreamFailed）
 	Progress   int     `json:"progress,omitempty"`        // 进度（0-100）
 	Result     *Result `json:"result,omitempty"`          // 生成结果（Ready 时有值）
