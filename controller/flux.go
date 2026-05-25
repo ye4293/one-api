@@ -161,9 +161,9 @@ func HandleReplicateCallback(c *gin.Context) {
 
 // GetFlux 查询 Flux 任务结果
 func GetFlux(c *gin.Context) {
-	taskID := c.Param("id")
+	taskID := c.Query("id")
 	if taskID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "task_id is required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
 		return
 	}
 
