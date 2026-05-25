@@ -189,7 +189,7 @@ func SetRelayRouter(router *gin.Engine) {
 	fluxResultRouter := router.Group("/flux")
 	fluxResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
 	{
-		fluxResultRouter.GET("/v1/get_result/:id", controller.GetFlux)
+		fluxResultRouter.GET("/v1/get_result", controller.GetFlux)
 	}
 
 	// Flux 回调路由组 - 接收 Flux API 回调通知
