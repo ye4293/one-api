@@ -11,6 +11,7 @@ type Image struct {
 	TaskId        string `gorm:"type:varchar(255);index:idx_images_task_id,length:40" json:"task_id"`
 	Username      string `gorm:"index:idx_images_username" json:"username"`
 	ChannelId     int    `gorm:"index:idx_images_channel_id" json:"channel_id"`
+	KeyIndex      int    `gorm:"default:0" json:"key_index"` // 多 key 渠道：创建任务用的 key 索引；单 key 渠道恒为 0
 	UserId        int    `gorm:"index:idx_images_user_id" json:"user_id"`
 	Model         string `gorm:"index:idx_images_model" json:"model"`
 	Status        string `gorm:"index:idx_images_status" json:"status"`

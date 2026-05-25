@@ -121,7 +121,7 @@ func reconcileFluxImage(ctx context.Context, image *model.Image) {
 	}
 
 	baseURL := *channel.BaseURL
-	apiKey := channel.Key
+	apiKey := channel.ResolveKeyByIndex(image.KeyIndex)
 
 	if strings.Contains(baseURL, "replicate.com") {
 		reconcileReplicateImage(ctx, image, baseURL, apiKey)
