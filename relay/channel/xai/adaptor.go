@@ -123,17 +123,36 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 
 	responseBodyStr := string(responseBody)
 
-	// 尝试解析XAI错误格式
 	var xaiError map[string]interface{}
 	if unmarshalErr := json.Unmarshal(responseBody, &xaiError); unmarshalErr == nil {
-		// 检查是否是XAI错误格式（包含code和error字段）
+		// 优先解析 OpenAI 兼容格式: {"error": {"message": ..., "type": ..., "code": ...}}
+		if errObj, hasError := xaiError["error"]; hasError {
+			if errMap, ok := errObj.(map[string]interface{}); ok {
+				errMsg, _ := errMap["message"].(string)
+				errType, _ := errMap["type"].(string)
+				errCode, _ := errMap["code"].(string)
+				// 对 429 限流响应，不上报会触发渠道永久禁用的 type
+				if resp.StatusCode == http.StatusTooManyRequests && (errType == "insufficient_quota" || errType == "rate_limit_error") {
+					errType = "rate_limit_error"
+				}
+				return &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: errMsg,
+						Type:    errType,
+						Code:    errCode,
+					},
+					StatusCode: resp.StatusCode,
+				}
+			}
+		}
+
+		// 解析 XAI 特有格式: {"code": ..., "error": "..."}
 		if code, hasCode := xaiError["code"]; hasCode {
 			if errorMsg, hasError := xaiError["error"]; hasError {
 				return &model.ErrorWithStatusCode{
 					Error: model.Error{
 						Message: fmt.Sprintf("%v", errorMsg),
 						Type:    "api_error",
-						Param:   "",
 						Code:    fmt.Sprintf("%v", code),
 					},
 					StatusCode: resp.StatusCode,
@@ -141,13 +160,11 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 			}
 		}
 
-		// 检查其他可能的错误字段格式
 		if message, hasMessage := xaiError["message"]; hasMessage {
 			return &model.ErrorWithStatusCode{
 				Error: model.Error{
 					Message: fmt.Sprintf("%v", message),
 					Type:    "api_error",
-					Param:   "",
 					Code:    "unknown_error",
 				},
 				StatusCode: resp.StatusCode,
@@ -155,12 +172,10 @@ func (a *Adaptor) HandleErrorResponse(resp *http.Response) *model.ErrorWithStatu
 		}
 	}
 
-	// 如果没有匹配到特定格式，直接使用原始响应体作为错误消息
 	return &model.ErrorWithStatusCode{
 		Error: model.Error{
-			Message: fmt.Sprintf("%s", responseBodyStr),
+			Message: responseBodyStr,
 			Type:    "api_error",
-			Param:   "",
 			Code:    "unknown_error",
 		},
 		StatusCode: resp.StatusCode,
