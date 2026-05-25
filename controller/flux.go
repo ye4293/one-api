@@ -196,7 +196,7 @@ func GetFlux(c *gin.Context) {
 	}
 
 	adaptor := &flux.Adaptor{}
-	statusCode, responseBody, err := adaptor.QueryResult(c, taskID, *channel.BaseURL, channel.Key)
+	statusCode, responseBody, err := adaptor.QueryResult(c, taskID, *channel.BaseURL, channel.ResolveKeyByIndex(image.KeyIndex))
 	if err != nil {
 		logger.Errorf(c, "查询 Flux 结果失败: task_id=%s, error=%v", taskID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -995,6 +995,19 @@ func (channel *Channel) GetKeyByIndex(index int) (string, error) {
 	return keys[index], nil
 }
 
+// ResolveKeyByIndex 按 keyIndex 解析 key，失败时降级到 GetNextAvailableKey，
+// 再失败兜底到 channel.Key。专门用于异步任务（webhook/对账/穿透查询）回访上游：
+// 创建任务时已落库的 keyIndex 是首选；多 key 配置变更或 key 被禁用时仍要尽量返回可用 key。
+func (channel *Channel) ResolveKeyByIndex(keyIndex int) string {
+	if key, err := channel.GetKeyByIndex(keyIndex); err == nil && key != "" {
+		return key
+	}
+	if key, _, err := channel.GetNextAvailableKey(); err == nil && key != "" {
+		return key
+	}
+	return channel.Key
+}
+
 // 获取下一个可用的Key
 func (channel *Channel) GetNextAvailableKey() (string, int, error) {
 	// 如果不是多Key模式，直接返回原始Key

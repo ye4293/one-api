@@ -190,6 +190,7 @@ func (a *Adaptor) CreatePendingRecord(c *gin.Context, meta *util.RelayMeta) erro
 		RequestId: c.GetString("X-Request-ID"),
 		Username:  meta.TokenName,
 		ChannelId: meta.ChannelId,
+		KeyIndex:  c.GetInt("key_index"),
 		UserId:    meta.UserId,
 		Model:     meta.OriginModelName,
 		Status:    TaskStatusPending,
