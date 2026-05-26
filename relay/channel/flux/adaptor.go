@@ -342,6 +342,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
 	quota := CalculateQuota(fluxResp.Cost, groupRatio)
+	if quota <= 0 {
+		// BFL 部分模型上游不再返回 cost 字段，回退到固定价表
+		if price, ok := FluxPriceMap[meta.OriginModelName]; ok {
+			quota = int64(price * 500000 * groupRatio)
+		} else {
+			quota = int64(0.05 * 500000 * groupRatio) // 未知模型默认 $0.05
+		}
+	}
 
 	// 任务创建成功即扣费——统一扣费入口，不做失败退款
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -359,6 +367,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	var respMap map[string]any
 	if err := json.Unmarshal(body, &respMap); err == nil {
 		delete(respMap, "webhook_url")
+		// 部分模型（如 flux-kontext-max）上游返回 cost:null，用固定价表补全
+		if costVal, ok := respMap["cost"]; !ok || costVal == nil || costVal == 0.0 {
+			if price, ok := FluxPriceMap[meta.OriginModelName]; ok {
+				respMap["cost"] = price * 100 // USD → cents
+			}
+		}
 		if taskID, ok := respMap["id"].(string); ok && taskID != "" {
 			pollingURL := fmt.Sprintf("https://api.bfl.ai/v1/get_result?id=%s", taskID)
 			respMap["polling_url"] = pollingURL
