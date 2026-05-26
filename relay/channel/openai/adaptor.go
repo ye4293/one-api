@@ -40,6 +40,11 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 		if meta.ChannelCreateTime < constant.AzureNoRemoveDotTime {
 			model_ = strings.Replace(model_, ".", "", -1)
 		}
+		// /v1/responses 使用扁平端点（不带 deployment 前缀），model 由请求体指定
+		if strings.HasPrefix(strings.Split(meta.RequestURLPath, "?")[0], "/v1/responses") {
+			requestURL = fmt.Sprintf("/openai/responses?api-version=%s", meta.Config.APIVersion)
+			return util.GetFullRequestURL(meta.BaseURL, requestURL, meta.ChannelType), nil
+		}
 		//https://github.com/songquanpeng/one-api/issues/1191
 		// {your endpoint}/openai/deployments/{your azure_model}/chat/completions?api-version={api_version}
 		requestURL = fmt.Sprintf("/openai/deployments/%s/%s", model_, task)
