@@ -79,6 +79,26 @@ var ReplicatePriceMap = map[string]float64{
 	"flux-2-klein-9b-preview": 0.005,
 }
 
+// FluxPriceMap BFL 模型固定价格（USD/张），用于 cost=null 时的兜底计费
+// 数据来源: BFL 官方价目表，2026-05-14
+var FluxPriceMap = map[string]float64{
+	"flux-dev":            0.025,
+	"flux-pro":            0.055,
+	"flux-pro-1.0-fill":   0.055,
+	"flux-pro-1.0-expand": 0.055,
+	"flux-pro-1.1":        0.040,
+	"flux-pro-1.1-ultra":  0.060,
+	"flux-2-pro":          0.015,
+	"flux-2-pro-preview":  0.015,
+	"flux-2-max":          0.040,
+	"flux-2-flex":         0.060,
+	"flux-kontext-pro":    0.040,
+	"flux-kontext-max":    0.080,
+	"flux-2-klein-4b":     0.020,
+	"flux-2-klein-9b":     0.005,
+	"flux-2-klein-9b-preview": 0.005,
+}
+
 const (
 	// 内部数据库存储状态（修改将破坏历史数据，禁止动）
 	TaskStatusPending    = "pending"
