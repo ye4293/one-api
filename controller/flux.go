@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -74,7 +75,7 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		}
 	}
 
-	// 读取响应 body，用于 4xx 错误时透传原始错误内容给客户端
+	// 读取响应 body，用于错误处理和 4xx 场景下的脱敏日志记录
 	bodyBytes, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if readErr != nil {
@@ -91,8 +92,17 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 	if errResp != nil {
 		// 非 429 的 4xx 错误是客户端问题，换渠道不会变好，直接返回错误内容给客户端
 		if errResp.StatusCode >= 400 && errResp.StatusCode != http.StatusTooManyRequests && errResp.StatusCode < 500 {
-			logger.Errorf(c, "Flux 客户端错误(4xx)，不重试，直接返回: status=%d, body=%s", errResp.StatusCode, string(bodyBytes))
-			c.Data(errResp.StatusCode, "application/json", bodyBytes)
+			sanitizedDetails := extractFluxValidationDetails(bodyBytes)
+			if len(sanitizedDetails) > 0 {
+				if detailBytes, err := json.Marshal(sanitizedDetails); err == nil {
+					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d, details=%s", errResp.StatusCode, string(detailBytes))
+				} else {
+					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
+				}
+			} else {
+				logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
+			}
+			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode))
 			return nil
 		}
 		return errResp
@@ -100,6 +110,47 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 
 	logger.Infof(c, "Flux 请求成功: channel_id=%d", meta.ChannelId)
 	return nil
+}
+
+type fluxValidationDetail struct {
+	Type string   `json:"type,omitempty"`
+	Loc  []string `json:"loc,omitempty"`
+	Msg  string   `json:"msg,omitempty"`
+}
+
+func extractFluxValidationDetails(body []byte) []fluxValidationDetail {
+	var fluxError struct {
+		Detail []struct {
+			Loc  []string `json:"loc"`
+			Msg  string   `json:"msg"`
+			Type string   `json:"type"`
+		} `json:"detail"`
+	}
+
+	if err := json.Unmarshal(body, &fluxError); err != nil || len(fluxError.Detail) == 0 {
+		return nil
+	}
+
+	details := make([]fluxValidationDetail, 0, len(fluxError.Detail))
+	for _, item := range fluxError.Detail {
+		details = append(details, fluxValidationDetail{
+			Type: item.Type,
+			Loc:  item.Loc,
+			Msg:  item.Msg,
+		})
+	}
+	return details
+}
+
+func buildFluxUnifiedErrorResponse(statusCode int) gin.H {
+	return gin.H{
+		"error": gin.H{
+			"code":    nil,
+			"message": fmt.Sprintf("API 返回错误状态: %d", statusCode),
+			"param":   "",
+			"type":    "api_error",
+		},
+	}
 }
 
 // HandleFluxCallback 处理 Flux API 回调通知
