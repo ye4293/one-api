@@ -302,6 +302,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	if resp.StatusCode != http.StatusOK {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
 		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errorMessage))
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -322,6 +324,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	if fluxResp.Error != "" {
 		logger.Errorf(c, "Flux API 返回错误: %s", fluxResp.Error)
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		a.updateRecordToFailed(c, fluxResp.Error)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -423,6 +427,8 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 	// 200 = 同步完成，201 = 超时仍在处理，其他为错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		logger.Errorf(c, "Replicate API error: status %d, body: %s", resp.StatusCode, string(body))
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		errMsg := extractFluxErrorMessage(body, resp.StatusCode)
 		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errMsg))
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -444,6 +450,8 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 	if replicateResp.Error != nil {
 		errStr := fmt.Sprintf("%v", replicateResp.Error)
 		logger.Errorf(c, "Replicate API 返回错误: %s", errStr)
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		a.updateRecordToFailed(c, errStr)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -597,6 +605,28 @@ func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, s
 func extractFluxErrorMessage(body []byte, statusCode int) string {
 	var errMap map[string]any
 	if err := json.Unmarshal(body, &errMap); err == nil {
+		// BFL Pydantic 校验错误: detail 是数组 [{type, loc, msg}, ...]
+		if detailArr, ok := errMap["detail"].([]any); ok && len(detailArr) > 0 {
+			if item, ok := detailArr[0].(map[string]any); ok {
+				msg, _ := item["msg"].(string)
+				locStr := ""
+				if loc, ok := item["loc"].([]any); ok {
+					parts := make([]string, 0, len(loc))
+					for _, l := range loc {
+						if s, ok := l.(string); ok {
+							parts = append(parts, s)
+						}
+					}
+					locStr = strings.Join(parts, ".")
+				}
+				if msg != "" && locStr != "" {
+					return fmt.Sprintf("%s (loc: %s)", msg, locStr)
+				}
+				if msg != "" {
+					return msg
+				}
+			}
+		}
 		if detail, ok := errMap["detail"].(string); ok && detail != "" {
 			return detail
 		}
@@ -607,7 +637,12 @@ func extractFluxErrorMessage(body []byte, statusCode int) string {
 			return msg
 		}
 	}
-	return fmt.Sprintf("API 返回错误状态: %d", statusCode)
+	// fallback: 返回原始 body（裁剪长度）
+	raw := string(body)
+	if len(raw) > 500 {
+		raw = raw[:500]
+	}
+	return fmt.Sprintf("HTTP %d: %s", statusCode, raw)
 }
 
 // MarkFailed 将当前 ImageRecord 更新为失败状态（含 fail_reason 与 total_duration）。

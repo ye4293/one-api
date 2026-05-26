@@ -74,9 +74,27 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		}
 	}
 
-	// DoResponse 内部在各失败分支已经调用 updateRecordToFailed，无需在此重复。
+	// 读取响应 body，用于 4xx 错误时透传原始错误内容给客户端
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		logger.Errorf(c, "Flux 读取响应 body 失败: %v", readErr)
+		adaptor.MarkFailed(c, "read response body failed: "+readErr.Error())
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      relaymodel.Error{Message: "read response failed: " + readErr.Error()},
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	_, errResp := adaptor.DoResponse(c, resp, meta)
 	if errResp != nil {
+		// 非 429 的 4xx 错误是客户端问题，换渠道不会变好，直接返回错误内容给客户端
+		if errResp.StatusCode >= 400 && errResp.StatusCode != http.StatusTooManyRequests && errResp.StatusCode < 500 {
+			logger.Errorf(c, "Flux 客户端错误(4xx)，不重试，直接返回: status=%d, body=%s", errResp.StatusCode, string(bodyBytes))
+			c.Data(errResp.StatusCode, "application/json", bodyBytes)
+			return nil
+		}
 		return errResp
 	}
 
