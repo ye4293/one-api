@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -102,7 +103,7 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 			} else {
 				logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
 			}
-			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode))
+			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode, sanitizedDetails))
 			return nil
 		}
 		return errResp
@@ -142,15 +143,45 @@ func extractFluxValidationDetails(body []byte) []fluxValidationDetail {
 	return details
 }
 
-func buildFluxUnifiedErrorResponse(statusCode int) gin.H {
+func buildFluxUnifiedErrorResponse(statusCode int, details []fluxValidationDetail) gin.H {
+	message := fmt.Sprintf("API 返回错误状态: %d", statusCode)
+	if detailMessage := buildFluxValidationMessage(details); detailMessage != "" {
+		message = detailMessage
+	}
+
 	return gin.H{
 		"error": gin.H{
 			"code":    nil,
-			"message": fmt.Sprintf("API 返回错误状态: %d", statusCode),
+			"message": message,
 			"param":   "",
 			"type":    "api_error",
 		},
 	}
+}
+
+func buildFluxValidationMessage(details []fluxValidationDetail) string {
+	if len(details) == 0 {
+		return ""
+	}
+
+	first := details[0]
+	msg := strings.TrimSpace(first.Msg)
+	if len(first.Loc) == 0 {
+		return msg
+	}
+
+	locParts := first.Loc
+	if len(locParts) > 0 && strings.EqualFold(locParts[0], "body") {
+		locParts = locParts[1:]
+	}
+	loc := strings.TrimSpace(strings.Join(locParts, " "))
+	if msg == "" {
+		return loc
+	}
+	if loc == "" {
+		return msg
+	}
+	return msg + " missing " + loc
 }
 
 // HandleFluxCallback 处理 Flux API 回调通知
