@@ -44,7 +44,13 @@ func TestExtractFluxValidationDetails(t *testing.T) {
 }
 
 func TestBuildFluxUnifiedErrorResponse(t *testing.T) {
-	resp := buildFluxUnifiedErrorResponse(422)
+	resp := buildFluxUnifiedErrorResponse(422, []fluxValidationDetail{
+		{
+			Type: "missing",
+			Loc:  []string{"body", "image"},
+			Msg:  "Field required",
+		},
+	})
 
 	var errorMap gin.H
 	switch v := resp["error"].(type) {
@@ -56,7 +62,7 @@ func TestBuildFluxUnifiedErrorResponse(t *testing.T) {
 		t.Fatalf("expected error map, got %#v", resp["error"])
 	}
 
-	if errorMap["message"] != "API 返回错误状态: 422" {
+	if errorMap["message"] != "Field required missing image" {
 		t.Fatalf("unexpected message: %#v", errorMap["message"])
 	}
 	if errorMap["type"] != "api_error" {
@@ -67,5 +73,14 @@ func TestBuildFluxUnifiedErrorResponse(t *testing.T) {
 	}
 	if code, exists := errorMap["code"]; !exists || code != nil {
 		t.Fatalf("expected nil code, got %#v", errorMap["code"])
+	}
+}
+
+func TestBuildFluxUnifiedErrorResponseFallback(t *testing.T) {
+	resp := buildFluxUnifiedErrorResponse(422, nil)
+
+	errorMap := resp["error"].(gin.H)
+	if errorMap["message"] != "API 返回错误状态: 422" {
+		t.Fatalf("unexpected fallback message: %#v", errorMap["message"])
 	}
 }
