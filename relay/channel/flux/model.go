@@ -128,10 +128,11 @@ type ReplicateResponse struct {
 
 // ReplicateMetrics Replicate 预测性能指标
 type ReplicateMetrics struct {
-	PredictTime               float64 `json:"predict_time"`
-	TotalTime                 float64 `json:"total_time"`
-	ImageOutputCount          int     `json:"image_output_count"`
-	ImageOutputMegapixelCount float64 `json:"image_output_megapixel_count"`
+	PredictTime                float64 `json:"predict_time"`
+	TotalTime                  float64 `json:"total_time"`
+	ImageOutputCount           int     `json:"image_output_count"`
+	ImageOutputMegapixelCount  float64 `json:"image_output_megapixel_count"`
+	ImageInputMegapixelCount   float64 `json:"image_input_megapixel_count"`
 }
 
 // ReplicateURLs Replicate 预测操作 URL
