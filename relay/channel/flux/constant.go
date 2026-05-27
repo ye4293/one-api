@@ -75,7 +75,7 @@ type FluxMPPricingTier struct {
 // FluxMPPricingMap flux-2-* 系列按 MP 分级计费
 // 数据来源: bfl.ai/pricing，2026-05-27
 var FluxMPPricingMap = map[string]FluxMPPricingTier{
-	"flux-2-max":              {FirstMPPrice: 0.07, SubsequentMPPrice: 0.03, RefMPPrice: 0.03},
+	"flux-2-max":              {FirstMPPrice: 0.07, SubsequentMPPrice: 0.03, RefMPPrice: 0.015},
 	"flux-2-pro":              {FirstMPPrice: 0.03, SubsequentMPPrice: 0.015, RefMPPrice: 0.015},
 	"flux-2-pro-preview":      {FirstMPPrice: 0.03, SubsequentMPPrice: 0.015, RefMPPrice: 0.015},
 	"flux-2-flex":             {FirstMPPrice: 0.05, SubsequentMPPrice: 0.05, RefMPPrice: 0.05},
