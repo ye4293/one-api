@@ -1254,8 +1254,6 @@ var aspectRatios = map[string]float64{
 	"4:3":  4.0 / 3.0,
 	"3:2":  3.0 / 2.0,
 	"16:9": 16.0 / 9.0,
-	"21:9": 21.0 / 9.0,
-	"2:1":  2.0,
 }
 
 func dimensionsToAspectRatio(w, h int) string {
