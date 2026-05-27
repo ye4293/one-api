@@ -466,6 +466,10 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 		logger.Errorf(c, "Replicate API 返回错误: %s", errStr)
 		c.Set("flux_error_response_body", append([]byte(nil), body...))
 		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
+		// 任务已创建但处理失败，保存 task_id 使 webhook 回调能找到记录
+		if a.ImageRecord != nil && replicateResp.ID != "" {
+			a.ImageRecord.TaskId = replicateResp.ID
+		}
 		a.updateRecordToFailed(c, errStr)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
