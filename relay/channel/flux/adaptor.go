@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -137,6 +138,11 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 		for k, v := range requestMap {
 			input[k] = v
 		}
+
+		// Replicate 参数兼容：BFL 的 input_image / input_image_2 → input_images 数组
+		convertInputImagesForReplicate(input)
+		// Replicate 参数兼容：flux-2 系列 width/height → resolution + aspect_ratio
+		convertResolutionForReplicate(input, meta.OriginModelName)
 
 		// output_format 归一化：Replicate 仅接受 webp/jpg/png；
 		// 未传则不下发，传了但不在白名单则回落到 png。
@@ -1083,4 +1089,127 @@ func VerifyReplicateWebhook(webhookID, webhookTimestamp, webhookSignature string
 		}
 	}
 	return false
+}
+
+// convertInputImagesForReplicate 将 BFL 的 input_image / input_image_2 / ... 转为 Replicate 的 input_images 数组
+func convertInputImagesForReplicate(input map[string]any) {
+	var images []string
+
+	if img, ok := input["input_image"].(string); ok && img != "" {
+		images = append(images, img)
+	}
+	delete(input, "input_image")
+
+	for i := 2; ; i++ {
+		key := fmt.Sprintf("input_image_%d", i)
+		img, ok := input[key].(string)
+		if !ok || img == "" {
+			delete(input, key) // 清理空字段
+			break
+		}
+		images = append(images, img)
+		delete(input, key)
+	}
+
+	if len(images) > 0 {
+		input["input_images"] = images
+	}
+}
+
+// resolutionPresets Replicate 支持的 resolution 预设（label → 兆像素）
+var resolutionPresets = map[string]float64{
+	"0.25 MP": 0.25,
+	"0.5 MP":  0.50,
+	"1 MP":    1.00,
+	"2 MP":    2.00,
+	"4 MP":    4.00,
+}
+
+// needsResolutionConversion flux-2 系列使用 resolution + aspect_ratio，Kontext/flux-1.x 保持 width/height
+func needsResolutionConversion(modelName string) bool {
+	return strings.HasPrefix(modelName, "flux-2-")
+}
+
+// convertResolutionForReplicate 将 width/height 转为 Replicate flux-2 的 resolution + aspect_ratio
+func convertResolutionForReplicate(input map[string]any, modelName string) {
+	if !needsResolutionConversion(modelName) {
+		return
+	}
+
+	w, hasW := toFloat(input["width"])
+	h, hasH := toFloat(input["height"])
+	if !hasW || !hasH || w <= 0 || h <= 0 {
+		return
+	}
+
+	delete(input, "width")
+	delete(input, "height")
+
+	megapixels := (w * h) / 1_000_000
+	input["resolution"] = megapixelsToResolutionPreset(megapixels)
+	input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+}
+
+func toFloat(v any) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case json.Number:
+		f, err := val.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func megapixelsToResolutionPreset(mp float64) string {
+	best := "4 MP"
+	bestMP := resolutionPresets["4 MP"]
+	for label, mpVal := range resolutionPresets {
+		if mp <= mpVal*1.1 && mpVal <= bestMP {
+			bestMP = mpVal
+			best = label
+		}
+	}
+	return best
+}
+
+// aspectRatios 标准宽高比定义（label → 比值）
+var aspectRatios = map[string]float64{
+	"1:1":  1.0,
+	"4:3":  4.0 / 3.0,
+	"3:2":  3.0 / 2.0,
+	"16:9": 16.0 / 9.0,
+	"21:9": 21.0 / 9.0,
+}
+
+func dimensionsToAspectRatio(w, h int) string {
+	targetRatio := float64(w) / float64(h)
+
+	best := "1:1"
+	bestDiff := math.Abs(targetRatio - 1.0)
+	for name, ratio := range aspectRatios {
+		if diff := math.Abs(targetRatio - ratio); diff < bestDiff {
+			bestDiff = diff
+			best = name
+		}
+	}
+
+	if h > w {
+		parts := strings.SplitN(best, ":", 2)
+		if len(parts) == 2 {
+			return fmt.Sprintf("%s:%s", parts[1], parts[0])
+		}
+	}
+	return best
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
