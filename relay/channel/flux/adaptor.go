@@ -1155,13 +1155,19 @@ func isFluxKontextPro(modelName string) bool {
 }
 
 // convertForFluxKontextMax 处理 flux-kontext-max 参数：
-// 若传入 width+height → 注入 aspect_ratio:custom，保留 width/height，删除 resolution
+// 不支持 width/height，将其转换为 aspect_ratio 预设后删除；逻辑同 flux-kontext-pro
 func convertForFluxKontextMax(input map[string]any) {
-	w, hasW := toFloat(input["width"])
-	h, hasH := toFloat(input["height"])
-	if hasW && hasH && w > 0 && h > 0 {
-		input["aspect_ratio"] = "custom"
+	if inputImage, ok := input["input_image"].(string); ok && inputImage != "" {
+		input["aspect_ratio"] = "match_input_image"
+	} else if _, hasAR := input["aspect_ratio"]; !hasAR {
+		w, hasW := toFloat(input["width"])
+		h, hasH := toFloat(input["height"])
+		if hasW && hasH && w > 0 && h > 0 {
+			input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+		}
 	}
+	delete(input, "width")
+	delete(input, "height")
 	delete(input, "resolution")
 }
 
@@ -1204,7 +1210,8 @@ func convertForFluxKontextPro(input map[string]any) {
 	}
 }
 
-// convertResolutionForReplicate 将 width/height 转为 Replicate flux-2 的 resolution + aspect_ratio
+// convertResolutionForReplicate 处理 flux-2-* 的尺寸参数：
+// 有 width+height 时使用 aspect_ratio:custom，保留原始尺寸，删除 resolution
 func convertResolutionForReplicate(input map[string]any, modelName string) {
 	if !needsResolutionConversion(modelName) {
 		return
@@ -1216,12 +1223,8 @@ func convertResolutionForReplicate(input map[string]any, modelName string) {
 		return
 	}
 
-	delete(input, "width")
-	delete(input, "height")
-
-	megapixels := (w * h) / 1_000_000
-	input["resolution"] = megapixelsToResolutionPreset(megapixels)
-	input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+	input["aspect_ratio"] = "custom"
+	delete(input, "resolution")
 }
 
 func toFloat(v any) (float64, bool) {
