@@ -139,10 +139,18 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 			input[k] = v
 		}
 
-		// Replicate 参数兼容：BFL 的 input_image / input_image_2 → input_images 数组
-		convertInputImagesForReplicate(input)
-		// Replicate 参数兼容：flux-2 系列 width/height → resolution + aspect_ratio
-		convertResolutionForReplicate(input, meta.OriginModelName)
+		// 按模型系列做参数规范化
+		if isFluxKontextPro(meta.OriginModelName) {
+			// flux-kontext-pro 系列：仅保留白名单参数，不支持 input_images 数组
+			convertForFluxKontextPro(input)
+		} else if isFluxKontextMax(meta.OriginModelName) {
+			// flux-kontext-max：保留 input_image 单字段（不支持 input_images 数组），width+height → aspect_ratio:custom
+			convertForFluxKontextMax(input)
+		} else {
+			// flux-2-* 及其他：input_image/* → input_images[]，width/height → resolution+aspect_ratio
+			convertInputImagesForReplicate(input)
+			convertResolutionForReplicate(input, meta.OriginModelName)
+		}
 
 		// output_format 归一化：Replicate 仅接受 webp/jpg/png；
 		// 未传则不下发，传了但不在白名单则回落到 png。
@@ -1099,6 +1107,7 @@ func convertInputImagesForReplicate(input map[string]any) {
 		images = append(images, img)
 	}
 	delete(input, "input_image")
+	delete(input, "input_image_1")
 
 	for i := 2; ; i++ {
 		key := fmt.Sprintf("input_image_%d", i)
@@ -1128,6 +1137,67 @@ var resolutionPresets = map[string]float64{
 // needsResolutionConversion flux-2 系列使用 resolution + aspect_ratio，Kontext/flux-1.x 保持 width/height
 func needsResolutionConversion(modelName string) bool {
 	return strings.HasPrefix(modelName, "flux-2-")
+}
+
+// isFluxKontextMax returns true only for flux-kontext-max（支持 custom aspect_ratio + width/height）
+func isFluxKontextMax(modelName string) bool {
+	return modelName == "flux-kontext-max"
+}
+
+// isFluxKontextPro returns true for flux-kontext-* 除 flux-kontext-max 外的模型
+// 这类模型仅接受白名单参数，不支持 custom/width/height/resolution
+func isFluxKontextPro(modelName string) bool {
+	return strings.HasPrefix(modelName, "flux-kontext-") && modelName != "flux-kontext-max"
+}
+
+// convertForFluxKontextMax 处理 flux-kontext-max 参数：
+// 若传入 width+height → 注入 aspect_ratio:custom，保留 width/height，删除 resolution
+func convertForFluxKontextMax(input map[string]any) {
+	w, hasW := toFloat(input["width"])
+	h, hasH := toFloat(input["height"])
+	if hasW && hasH && w > 0 && h > 0 {
+		input["aspect_ratio"] = "custom"
+	}
+	delete(input, "resolution")
+}
+
+// fluxKontextProAllowedParams flux-kontext-pro 系列白名单
+var fluxKontextProAllowedParams = map[string]bool{
+	"aspect_ratio":     true,
+	"output_format":    true,
+	"seed":             true,
+	"prompt":           true,
+	"input_image":      true,
+	"safety_tolerance": true,
+}
+
+// convertForFluxKontextPro 处理 flux-kontext-pro 系列参数：
+// - input_image 存在 → aspect_ratio=match_input_image，否则按宽高比计算
+// - output_format 限制为 jpg/png
+// - 移除全部白名单外的参数
+func convertForFluxKontextPro(input map[string]any) {
+	if inputImage, ok := input["input_image"].(string); ok && inputImage != "" {
+		input["aspect_ratio"] = "match_input_image"
+	} else if _, hasAR := input["aspect_ratio"]; !hasAR {
+		w, hasW := toFloat(input["width"])
+		h, hasH := toFloat(input["height"])
+		if hasW && hasH && w > 0 && h > 0 {
+			input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+		}
+	}
+
+	if raw, ok := input["output_format"]; ok {
+		format, isStr := raw.(string)
+		if !isStr || (format != "jpg" && format != "png") {
+			input["output_format"] = "png"
+		}
+	}
+
+	for k := range input {
+		if !fluxKontextProAllowedParams[k] {
+			delete(input, k)
+		}
+	}
 }
 
 // convertResolutionForReplicate 将 width/height 转为 Replicate flux-2 的 resolution + aspect_ratio
@@ -1177,17 +1247,24 @@ func megapixelsToResolutionPreset(mp float64) string {
 	return best
 }
 
-// aspectRatios 标准宽高比定义（label → 比值）
+// aspectRatios 标准宽高比定义（label → 比值，横向统一）
 var aspectRatios = map[string]float64{
 	"1:1":  1.0,
+	"5:4":  5.0 / 4.0,
 	"4:3":  4.0 / 3.0,
 	"3:2":  3.0 / 2.0,
 	"16:9": 16.0 / 9.0,
 	"21:9": 21.0 / 9.0,
+	"2:1":  2.0,
 }
 
 func dimensionsToAspectRatio(w, h int) string {
-	targetRatio := float64(w) / float64(h)
+	// 归一化到横向比较，最后再翻转竖图
+	a, b := w, h
+	if h > w {
+		a, b = h, w
+	}
+	targetRatio := float64(a) / float64(b)
 
 	best := "1:1"
 	bestDiff := math.Abs(targetRatio - 1.0)
