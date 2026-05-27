@@ -63,40 +63,49 @@ var ReplicateModelMap = map[string]string{
 // ReplicatePriceMap 各模型固定价格（USD/张）
 // 数据来源: replicate.com 页面定价，2026-05-14
 // Klein 系列为 GPU 时间计费，此处为 p50 中位数估算值
-var ReplicatePriceMap = map[string]float64{
-	"flux-dev":                0.025,
-	"flux-pro":                0.055,
-	"flux-pro-1.1":            0.040,
-	"flux-pro-1.1-ultra":      0.060,
-	"flux-2-pro":              0.015,
-	"flux-2-pro-preview":      0.015,
-	"flux-2-max":              0.040,
-	"flux-2-flex":             0.060,
-	"flux-kontext-pro":        0.040,
-	"flux-kontext-max":        0.080,
-	"flux-2-klein-4b":         0.020,
-	"flux-2-klein-9b":         0.005,
-	"flux-2-klein-9b-preview": 0.005,
+// Deprecated: 使用 FluxPriceMap，两张表价格一致，统一维护
+
+// FluxMPPricingTier flux-2-* 系列分级 MP 计费定义
+type FluxMPPricingTier struct {
+	FirstMPPrice      float64 // 首个 1MP（USD）
+	SubsequentMPPrice float64 // 后续每 MP（USD）
+	RefMPPrice        float64 // 参考图每 MP（USD）
+}
+
+// FluxMPPricingMap flux-2-* 系列按 MP 分级计费
+// 数据来源: bfl.ai/pricing，2026-05-27
+var FluxMPPricingMap = map[string]FluxMPPricingTier{
+	"flux-2-max":              {FirstMPPrice: 0.07, SubsequentMPPrice: 0.03, RefMPPrice: 0.03},
+	"flux-2-pro":              {FirstMPPrice: 0.03, SubsequentMPPrice: 0.015, RefMPPrice: 0.015},
+	"flux-2-pro-preview":      {FirstMPPrice: 0.03, SubsequentMPPrice: 0.015, RefMPPrice: 0.015},
+	"flux-2-flex":             {FirstMPPrice: 0.05, SubsequentMPPrice: 0.05, RefMPPrice: 0.05},
+	"flux-2-klein-9b":         {FirstMPPrice: 0.015, SubsequentMPPrice: 0.002, RefMPPrice: 0.002},
+	"flux-2-klein-9b-preview": {FirstMPPrice: 0.015, SubsequentMPPrice: 0.002, RefMPPrice: 0.002},
+	"flux-2-klein-4b":         {FirstMPPrice: 0.014, SubsequentMPPrice: 0.001, RefMPPrice: 0.001},
 }
 
 // FluxPriceMap BFL 模型固定价格（USD/张），用于 cost=null 时的兜底计费
-// 数据来源: BFL 官方价目表，2026-05-14
+// 数据来源: bfl.ai/pricing，2026-05-27
+// flux-2-* 系列按 MP 计费，此处取首个 1MP 的价格作为兜底估算值
 var FluxPriceMap = map[string]float64{
+	// FLUX 1.x 系列（固定价/张）
 	"flux-dev":            0.025,
-	"flux-pro":            0.055,
-	"flux-pro-1.0-fill":   0.055,
-	"flux-pro-1.0-expand": 0.055,
+	"flux-pro":            0.050,
+	"flux-pro-1.0-fill":   0.050,
+	"flux-pro-1.0-expand": 0.050,
 	"flux-pro-1.1":        0.040,
 	"flux-pro-1.1-ultra":  0.060,
-	"flux-2-pro":          0.015,
-	"flux-2-pro-preview":  0.015,
-	"flux-2-max":          0.040,
-	"flux-2-flex":         0.060,
-	"flux-kontext-pro":    0.040,
-	"flux-kontext-max":    0.080,
-	"flux-2-klein-4b":     0.020,
-	"flux-2-klein-9b":     0.005,
-	"flux-2-klein-9b-preview": 0.005,
+	// FLUX Kontext 系列（固定价/张）
+	"flux-kontext-pro": 0.040,
+	"flux-kontext-max": 0.080,
+	// FLUX.2 系列（按 MP 计费，首 MP 价作为 1MP 兜底估算）
+	"flux-2-pro":              0.030,
+	"flux-2-pro-preview":      0.030,
+	"flux-2-max":              0.070,
+	"flux-2-flex":             0.050,
+	"flux-2-klein-4b":         0.014,
+	"flux-2-klein-9b":         0.015,
+	"flux-2-klein-9b-preview": 0.015,
 }
 
 const (

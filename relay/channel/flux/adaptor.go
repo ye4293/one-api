@@ -512,7 +512,7 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 		group = "Lv1"
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
-	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
+	quota := CalculateReplicateQuota(meta.OriginModelName, replicateResp.Metrics, groupRatio)
 
 	// 任务创建成功即扣费——同步路径已拿到结果，仍按"创建成功"统一计费
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -564,7 +564,7 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 		group = "Lv1"
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
-	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
+	quota := CalculateReplicateQuota(meta.OriginModelName, replicateResp.Metrics, groupRatio)
 
 	// 任务创建成功即扣费（异步分支同样按创建成功计费）
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -605,7 +605,7 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 // pollingURL: 成功时填实际图片 URL；其他状态填 get_result 轮询 URL
 // status: BFL 风格状态字符串（Ready/Processing/Pending）
 func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, status string, pollingURL string) map[string]any {
-	price, ok := ReplicatePriceMap[modelName]
+	price, ok := FluxPriceMap[modelName]
 	if !ok {
 		price = 0.05
 	}

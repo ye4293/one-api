@@ -101,16 +101,41 @@ func EstimateQuota(modelName string, groupRatio float64) int64 {
 	return int64(ratio * groupRatio * 1000) // 乘以1000作为预估buffer
 }
 
-// CalculateReplicateQuota 按 Replicate 固定价格/张计算配额
-// modelName: one-api canonical 模型名
-// imageCount: 生成图片数量（通常为 1）
-// groupRatio: 用户组计费倍率
-func CalculateReplicateQuota(modelName string, imageCount int, groupRatio float64) int64 {
-	price, ok := ReplicatePriceMap[modelName]
-	if !ok {
-		price = 0.05 // 未知模型默认 $0.05/张
+// CalculateReplicateQuota 计算 Replicate 配额：
+// - flux-2-* 系列：用 metrics 中的实际 MP 数按分级价格计算；
+//   outputMP==0（未知）时降级到 FluxPriceMap 固定价兜底，保证不异常。
+// - 其他模型：始终用 FluxPriceMap 固定价。
+func CalculateReplicateQuota(modelName string, metrics ReplicateMetrics, groupRatio float64) int64 {
+	if tier, ok := FluxMPPricingMap[modelName]; ok && metrics.ImageOutputMegapixelCount > 0 {
+		outputMP := metrics.ImageOutputMegapixelCount
+		inputMP := metrics.ImageInputMegapixelCount // 0 表示无参考图或字段缺失，不扣参考图费
+
+		var costUSD float64
+		// 输出分级：首 1MP 用 FirstMPPrice，超出部分用 SubsequentMPPrice
+		if outputMP <= 1.0 {
+			costUSD += tier.FirstMPPrice
+		} else {
+			costUSD += tier.FirstMPPrice + (outputMP-1.0)*tier.SubsequentMPPrice
+		}
+		// 参考图：inputMP==0 时跳过，不会产生负数或 panic
+		if inputMP > 0 {
+			costUSD += inputMP * tier.RefMPPrice
+		}
+		return usdToQuota(costUSD, groupRatio)
 	}
-	totalUSD := price * float64(imageCount)
-	// 与 CalculateQuota 保持相同公式: $1 USD = 500000 quota（$0.002 = 1 quota）
-	return int64(totalUSD * 500000 * groupRatio)
+
+	// 固定价兜底：MP 数据缺失 / 非 flux-2-* 模型
+	price, ok := FluxPriceMap[modelName]
+	if !ok {
+		price = 0.05
+	}
+	return usdToQuota(price, groupRatio)
+}
+
+// usdToQuota 将 USD 金额转为内部 quota（$1 = 500000 quota）
+func usdToQuota(usd float64, groupRatio float64) int64 {
+	if usd <= 0 {
+		return 0
+	}
+	return int64(usd * 500000 * groupRatio)
 }
