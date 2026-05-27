@@ -101,35 +101,36 @@ func EstimateQuota(modelName string, groupRatio float64) int64 {
 	return int64(ratio * groupRatio * 1000) // 乘以1000作为预估buffer
 }
 
-// CalculateReplicateQuota 计算 Replicate 配额：
-// - flux-2-* 系列：用 metrics 中的实际 MP 数按分级价格计算；
-//   outputMP==0（未知）时降级到 FluxPriceMap 固定价兜底，保证不异常。
-// - 其他模型：始终用 FluxPriceMap 固定价。
-func CalculateReplicateQuota(modelName string, metrics ReplicateMetrics, groupRatio float64) int64 {
+// ComputeCostUSD 按模型和实际 MP 数计算 USD 费用（无 groupRatio）。
+// outputMP==0 时降级到 FluxPriceMap 固定价兜底。
+func ComputeCostUSD(modelName string, metrics ReplicateMetrics) float64 {
 	if tier, ok := FluxMPPricingMap[modelName]; ok && metrics.ImageOutputMegapixelCount > 0 {
 		outputMP := metrics.ImageOutputMegapixelCount
-		inputMP := metrics.ImageInputMegapixelCount // 0 表示无参考图或字段缺失，不扣参考图费
-
+		inputMP := metrics.ImageInputMegapixelCount // 0 表示无参考图或字段缺失
 		var costUSD float64
-		// 输出分级：首 1MP 用 FirstMPPrice，超出部分用 SubsequentMPPrice
 		if outputMP <= 1.0 {
 			costUSD += tier.FirstMPPrice
 		} else {
 			costUSD += tier.FirstMPPrice + (outputMP-1.0)*tier.SubsequentMPPrice
 		}
-		// 参考图：inputMP==0 时跳过，不会产生负数或 panic
 		if inputMP > 0 {
 			costUSD += inputMP * tier.RefMPPrice
 		}
-		return usdToQuota(costUSD, groupRatio)
+		return costUSD
 	}
-
-	// 固定价兜底：MP 数据缺失 / 非 flux-2-* 模型
 	price, ok := FluxPriceMap[modelName]
 	if !ok {
 		price = 0.05
 	}
-	return usdToQuota(price, groupRatio)
+	return price
+}
+
+// CalculateReplicateQuota 计算 Replicate 配额：
+// - flux-2-* 系列：用 metrics 中的实际 MP 数按分级价格计算；
+//   outputMP==0（未知）时降级到 FluxPriceMap 固定价兜底，保证不异常。
+// - 其他模型：始终用 FluxPriceMap 固定价。
+func CalculateReplicateQuota(modelName string, metrics ReplicateMetrics, groupRatio float64) int64 {
+	return usdToQuota(ComputeCostUSD(modelName, metrics), groupRatio)
 }
 
 // usdToQuota 将 USD 金额转为内部 quota（$1 = 500000 quota）
