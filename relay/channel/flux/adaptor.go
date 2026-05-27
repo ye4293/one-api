@@ -605,14 +605,12 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 // pollingURL: 成功时填实际图片 URL；其他状态填 get_result 轮询 URL
 // status: BFL 风格状态字符串（Ready/Processing/Pending）
 func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, status string, pollingURL string) map[string]any {
-	price, ok := FluxPriceMap[modelName]
-	if !ok {
-		price = 0.05
-	}
+	costUSD := ComputeCostUSD(modelName, replicateResp.Metrics)
+	costCents := int64(math.Round(costUSD * 100))
 	return map[string]any{
 		"id":          replicateResp.ID,
-		"cost":        price * 100, // USD → cents，与 BFL cost 单位对齐
-		"input_mp":    0.0,
+		"cost":        costCents,
+		"input_mp":    replicateResp.Metrics.ImageInputMegapixelCount,
 		"output_mp":   replicateResp.Metrics.ImageOutputMegapixelCount,
 		"polling_url": pollingURL,
 		"status":      status,
