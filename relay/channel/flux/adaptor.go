@@ -300,7 +300,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	logger.Infof(c, "BFL DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
 		c.Set("flux_error_response_body", append([]byte(nil), body...))
 		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
@@ -424,8 +424,8 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 
 	//logger.Infof(c, "Replicate DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
-	// 200 = 同步完成，201 = 超时仍在处理，其他为错误
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	// 200 = 同步完成，201/202 = 任务排队/处理中，其他为错误
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		logger.Errorf(c, "Replicate API error: status %d, body: %s", resp.StatusCode, string(body))
 		c.Set("flux_error_response_body", append([]byte(nil), body...))
 		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
