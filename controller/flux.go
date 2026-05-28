@@ -66,6 +66,27 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		}
 	}
 
+	// 余额预检：低于 $0.10（50000 quota）直接拒绝，避免请求发出后上游已执行但扣费失败
+	const minBalanceQuota = int64(50000) // $0.10 × 500000 quota/USD
+	balance, balErr := model.CacheGetUserQuota(c.Request.Context(), meta.UserId)
+	if balErr != nil {
+		logger.Errorf(c, "Flux 余额查询失败: %v", balErr)
+		adaptor.MarkFailed(c, "余额查询失败")
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      relaymodel.Error{Message: "余额查询失败: " + balErr.Error()},
+		}
+	}
+	if balance < minBalanceQuota {
+		msg := fmt.Sprintf("余额不足，当前余额 $%.4f，请充值后重试（最低需 $0.10）", float64(balance)/500000)
+		logger.Warnf(c, "Flux 余额预检拒绝: user_id=%d, balance=%d", meta.UserId, balance)
+		adaptor.MarkFailed(c, msg)
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusPaymentRequired,
+			Error:      relaymodel.Error{Message: msg},
+		}
+	}
+
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
 	if err != nil {
 		logger.Errorf(c, "Flux 请求执行失败: channel_id=%d, error=%v", meta.ChannelId, err)
