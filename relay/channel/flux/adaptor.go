@@ -695,9 +695,9 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 		logger.Warnf(c, "Flux callback empty task_id, ip=%s", c.ClientIP())
 		return false, http.StatusBadRequest, "missing task_id"
 	}
-	//logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
-	//	taskID, notification.Status, notification.Progress, string(rawBody))
-	//logger.Debugf(c, "Flux callback notification: %+v", notification)
+	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
+		taskID, notification.Status, notification.Progress, string(rawBody))
+	logger.Debugf(c, "Flux callback notification: %+v", notification)
 
 	// webhook 可能比创建路径的 ImageRecord.Update() 早到（task_id 还未回填到 DB），
 	// 200ms × 3 退避覆盖该窗口；仍然找不到才返回 404
