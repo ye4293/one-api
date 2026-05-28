@@ -50,7 +50,7 @@ func TestBuildFluxUnifiedErrorResponse(t *testing.T) {
 			Loc:  []string{"body", "image"},
 			Msg:  "Field required",
 		},
-	})
+	}, "")
 
 	var errorMap gin.H
 	switch v := resp["error"].(type) {
@@ -77,7 +77,7 @@ func TestBuildFluxUnifiedErrorResponse(t *testing.T) {
 }
 
 func TestBuildFluxUnifiedErrorResponseFallback(t *testing.T) {
-	resp := buildFluxUnifiedErrorResponse(422, nil)
+	resp := buildFluxUnifiedErrorResponse(422, nil, "")
 
 	errorMap := resp["error"].(gin.H)
 	if errorMap["message"] != "API 返回错误状态: 422" {
