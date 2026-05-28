@@ -115,16 +115,8 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		// 非 429 的 4xx 错误是客户端问题，换渠道不会变好，直接返回错误内容给客户端
 		if errResp.StatusCode >= 400 && errResp.StatusCode != http.StatusTooManyRequests && errResp.StatusCode < 500 {
 			sanitizedDetails := extractFluxValidationDetails(bodyBytes)
-			if len(sanitizedDetails) > 0 {
-				if detailBytes, err := json.Marshal(sanitizedDetails); err == nil {
-					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d, details=%s", errResp.StatusCode, string(detailBytes))
-				} else {
-					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
-				}
-			} else {
-				logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
-			}
-			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode, sanitizedDetails))
+			logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d, message=%s", errResp.StatusCode, errResp.Error.Message)
+			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode, sanitizedDetails, errResp.Error.Message))
 			return nil
 		}
 		return errResp
@@ -164,8 +156,11 @@ func extractFluxValidationDetails(body []byte) []fluxValidationDetail {
 	return details
 }
 
-func buildFluxUnifiedErrorResponse(statusCode int, details []fluxValidationDetail) gin.H {
-	message := fmt.Sprintf("API 返回错误状态: %d", statusCode)
+func buildFluxUnifiedErrorResponse(statusCode int, details []fluxValidationDetail, fallbackMessage string) gin.H {
+	message := fallbackMessage
+	if message == "" {
+		message = fmt.Sprintf("API 返回错误状态: %d", statusCode)
+	}
 	if detailMessage := buildFluxValidationMessage(details); detailMessage != "" {
 		message = detailMessage
 	}
