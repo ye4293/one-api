@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -136,6 +137,19 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 		input := make(map[string]any, len(requestMap))
 		for k, v := range requestMap {
 			input[k] = v
+		}
+
+		// 按模型系列做参数规范化
+		if isFluxKontextPro(meta.OriginModelName) {
+			// flux-kontext-pro 系列：仅保留白名单参数，不支持 input_images 数组
+			convertForFluxKontextPro(input)
+		} else if isFluxKontextMax(meta.OriginModelName) {
+			// flux-kontext-max：保留 input_image 单字段（不支持 input_images 数组），width+height → aspect_ratio:custom
+			convertForFluxKontextMax(input)
+		} else {
+			// flux-2-* 及其他：input_image/* → input_images[]，width/height → resolution+aspect_ratio
+			convertInputImagesForReplicate(input)
+			convertResolutionForReplicate(input, meta.OriginModelName)
 		}
 
 		// output_format 归一化：Replicate 仅接受 webp/jpg/png；
@@ -300,8 +314,10 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	logger.Infof(c, "BFL DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		logger.Errorf(c, "Flux API error: status %d, body: %s", resp.StatusCode, string(body))
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		errorMessage := extractFluxErrorMessage(body, resp.StatusCode)
 		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errorMessage))
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -322,6 +338,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 
 	if fluxResp.Error != "" {
 		logger.Errorf(c, "Flux API 返回错误: %s", fluxResp.Error)
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		a.updateRecordToFailed(c, fluxResp.Error)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -342,6 +360,14 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
 	quota := CalculateQuota(fluxResp.Cost, groupRatio)
+	if quota <= 0 {
+		// BFL 部分模型上游不再返回 cost 字段，回退到固定价表
+		if price, ok := FluxPriceMap[meta.OriginModelName]; ok {
+			quota = int64(price * 500000 * groupRatio)
+		} else {
+			quota = int64(0.05 * 500000 * groupRatio) // 未知模型默认 $0.05
+		}
+	}
 
 	// 任务创建成功即扣费——统一扣费入口，不做失败退款
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -359,6 +385,12 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	var respMap map[string]any
 	if err := json.Unmarshal(body, &respMap); err == nil {
 		delete(respMap, "webhook_url")
+		// 部分模型（如 flux-kontext-max）上游返回 cost:null，用固定价表补全
+		if costVal, ok := respMap["cost"]; !ok || costVal == nil || costVal == 0.0 {
+			if price, ok := FluxPriceMap[meta.OriginModelName]; ok {
+				respMap["cost"] = price * 100 // USD → cents
+			}
+		}
 		if taskID, ok := respMap["id"].(string); ok && taskID != "" {
 			pollingURL := fmt.Sprintf("https://api.bfl.ai/v1/get_result?id=%s", taskID)
 			respMap["polling_url"] = pollingURL
@@ -406,9 +438,11 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 
 	//logger.Infof(c, "Replicate DoResponse raw: status=%d, body=%s", resp.StatusCode, string(body))
 
-	// 200 = 同步完成，201 = 超时仍在处理，其他为错误
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	// 200 = 同步完成，201/202 = 任务排队/处理中，其他为错误
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		logger.Errorf(c, "Replicate API error: status %d, body: %s", resp.StatusCode, string(body))
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
 		errMsg := extractFluxErrorMessage(body, resp.StatusCode)
 		a.updateRecordToFailed(c, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, errMsg))
 		return nil, &relaymodel.ErrorWithStatusCode{
@@ -430,6 +464,12 @@ func (a *Adaptor) doReplicateResponse(c *gin.Context, resp *http.Response, meta 
 	if replicateResp.Error != nil {
 		errStr := fmt.Sprintf("%v", replicateResp.Error)
 		logger.Errorf(c, "Replicate API 返回错误: %s", errStr)
+		c.Set("flux_error_response_body", append([]byte(nil), body...))
+		c.Set("flux_error_response_content_type", resp.Header.Get("Content-Type"))
+		// 任务已创建但处理失败，保存 task_id 使 webhook 回调能找到记录
+		if a.ImageRecord != nil && replicateResp.ID != "" {
+			a.ImageRecord.TaskId = replicateResp.ID
+		}
 		a.updateRecordToFailed(c, errStr)
 		return nil, &relaymodel.ErrorWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -472,7 +512,7 @@ func (a *Adaptor) handleReplicateSuccess(c *gin.Context, replicateResp Replicate
 		group = "Lv1"
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
-	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
+	quota := CalculateReplicateQuota(meta.OriginModelName, replicateResp.Metrics, groupRatio)
 
 	// 任务创建成功即扣费——同步路径已拿到结果，仍按"创建成功"统一计费
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -524,7 +564,7 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 		group = "Lv1"
 	}
 	groupRatio := util.GetAsyncBillingGroupRatio(group, a.ImageRecord.UserId, a.ImageRecord.ChannelId, common.ChannelTypeFlux)
-	quota := CalculateReplicateQuota(meta.OriginModelName, 1, groupRatio)
+	quota := CalculateReplicateQuota(meta.OriginModelName, replicateResp.Metrics, groupRatio)
 
 	// 任务创建成功即扣费（异步分支同样按创建成功计费）
 	if chargeErr := ChargeOnCreation(c.Request.Context(), a.ImageRecord, meta, quota); chargeErr != nil {
@@ -565,14 +605,12 @@ func (a *Adaptor) handleReplicatePending(c *gin.Context, replicateResp Replicate
 // pollingURL: 成功时填实际图片 URL；其他状态填 get_result 轮询 URL
 // status: BFL 风格状态字符串（Ready/Processing/Pending）
 func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, status string, pollingURL string) map[string]any {
-	price, ok := ReplicatePriceMap[modelName]
-	if !ok {
-		price = 0.05
-	}
+	costUSD := ComputeCostUSD(modelName, replicateResp.Metrics)
+	costCents := int64(math.Round(costUSD * 100))
 	return map[string]any{
 		"id":          replicateResp.ID,
-		"cost":        price * 100, // USD → cents，与 BFL cost 单位对齐
-		"input_mp":    0.0,
+		"cost":        costCents,
+		"input_mp":    replicateResp.Metrics.ImageInputMegapixelCount,
 		"output_mp":   replicateResp.Metrics.ImageOutputMegapixelCount,
 		"polling_url": pollingURL,
 		"status":      status,
@@ -583,6 +621,28 @@ func buildBFLCreateResponse(replicateResp ReplicateResponse, modelName string, s
 func extractFluxErrorMessage(body []byte, statusCode int) string {
 	var errMap map[string]any
 	if err := json.Unmarshal(body, &errMap); err == nil {
+		// BFL Pydantic 校验错误: detail 是数组 [{type, loc, msg}, ...]
+		if detailArr, ok := errMap["detail"].([]any); ok && len(detailArr) > 0 {
+			if item, ok := detailArr[0].(map[string]any); ok {
+				msg, _ := item["msg"].(string)
+				locStr := ""
+				if loc, ok := item["loc"].([]any); ok {
+					parts := make([]string, 0, len(loc))
+					for _, l := range loc {
+						if s, ok := l.(string); ok {
+							parts = append(parts, s)
+						}
+					}
+					locStr = strings.Join(parts, ".")
+				}
+				if msg != "" && locStr != "" {
+					return fmt.Sprintf("%s (loc: %s)", msg, locStr)
+				}
+				if msg != "" {
+					return msg
+				}
+			}
+		}
 		if detail, ok := errMap["detail"].(string); ok && detail != "" {
 			return detail
 		}
@@ -593,7 +653,12 @@ func extractFluxErrorMessage(body []byte, statusCode int) string {
 			return msg
 		}
 	}
-	return fmt.Sprintf("API 返回错误状态: %d", statusCode)
+	// fallback: 返回原始 body（裁剪长度）
+	raw := string(body)
+	if len(raw) > 500 {
+		raw = raw[:500]
+	}
+	return fmt.Sprintf("HTTP %d: %s", statusCode, raw)
 }
 
 // MarkFailed 将当前 ImageRecord 更新为失败状态（含 fail_reason 与 total_duration）。
@@ -1034,4 +1099,197 @@ func VerifyReplicateWebhook(webhookID, webhookTimestamp, webhookSignature string
 		}
 	}
 	return false
+}
+
+// convertInputImagesForReplicate 将 BFL 的 input_image / input_image_2 / ... 转为 Replicate 的 input_images 数组
+func convertInputImagesForReplicate(input map[string]any) {
+	var images []string
+
+	if img, ok := input["input_image"].(string); ok && img != "" {
+		images = append(images, img)
+	}
+	delete(input, "input_image")
+	delete(input, "input_image_1")
+
+	for i := 2; ; i++ {
+		key := fmt.Sprintf("input_image_%d", i)
+		img, ok := input[key].(string)
+		if !ok || img == "" {
+			delete(input, key) // 清理空字段
+			break
+		}
+		images = append(images, img)
+		delete(input, key)
+	}
+
+	if len(images) > 0 {
+		input["input_images"] = images
+	}
+}
+
+// resolutionPresets Replicate 支持的 resolution 预设（label → 兆像素）
+var resolutionPresets = map[string]float64{
+	"0.25 MP": 0.25,
+	"0.5 MP":  0.50,
+	"1 MP":    1.00,
+	"2 MP":    2.00,
+	"4 MP":    4.00,
+}
+
+// needsResolutionConversion flux-2 系列使用 resolution + aspect_ratio，Kontext/flux-1.x 保持 width/height
+func needsResolutionConversion(modelName string) bool {
+	return strings.HasPrefix(modelName, "flux-2-")
+}
+
+// isFluxKontextMax returns true only for flux-kontext-max（支持 custom aspect_ratio + width/height）
+func isFluxKontextMax(modelName string) bool {
+	return modelName == "flux-kontext-max"
+}
+
+// isFluxKontextPro returns true for flux-kontext-* 除 flux-kontext-max 外的模型
+// 这类模型仅接受白名单参数，不支持 custom/width/height/resolution
+func isFluxKontextPro(modelName string) bool {
+	return strings.HasPrefix(modelName, "flux-kontext-") && modelName != "flux-kontext-max"
+}
+
+// convertForFluxKontextMax 处理 flux-kontext-max 参数：
+// 不支持 width/height，将其转换为 aspect_ratio 预设后删除；逻辑同 flux-kontext-pro
+func convertForFluxKontextMax(input map[string]any) {
+	if inputImage, ok := input["input_image"].(string); ok && inputImage != "" {
+		input["aspect_ratio"] = "match_input_image"
+	} else if _, hasAR := input["aspect_ratio"]; !hasAR {
+		w, hasW := toFloat(input["width"])
+		h, hasH := toFloat(input["height"])
+		if hasW && hasH && w > 0 && h > 0 {
+			input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+		}
+	}
+	delete(input, "width")
+	delete(input, "height")
+	delete(input, "resolution")
+}
+
+// fluxKontextProAllowedParams flux-kontext-pro 系列白名单
+var fluxKontextProAllowedParams = map[string]bool{
+	"aspect_ratio":     true,
+	"output_format":    true,
+	"seed":             true,
+	"prompt":           true,
+	"input_image":      true,
+	"safety_tolerance": true,
+}
+
+// convertForFluxKontextPro 处理 flux-kontext-pro 系列参数：
+// - input_image 存在 → aspect_ratio=match_input_image，否则按宽高比计算
+// - output_format 限制为 jpg/png
+// - 移除全部白名单外的参数
+func convertForFluxKontextPro(input map[string]any) {
+	if inputImage, ok := input["input_image"].(string); ok && inputImage != "" {
+		input["aspect_ratio"] = "match_input_image"
+	} else if _, hasAR := input["aspect_ratio"]; !hasAR {
+		w, hasW := toFloat(input["width"])
+		h, hasH := toFloat(input["height"])
+		if hasW && hasH && w > 0 && h > 0 {
+			input["aspect_ratio"] = dimensionsToAspectRatio(int(w), int(h))
+		}
+	}
+
+	if raw, ok := input["output_format"]; ok {
+		format, isStr := raw.(string)
+		if !isStr || (format != "jpg" && format != "png") {
+			input["output_format"] = "png"
+		}
+	}
+
+	for k := range input {
+		if !fluxKontextProAllowedParams[k] {
+			delete(input, k)
+		}
+	}
+}
+
+// convertResolutionForReplicate 处理 flux-2-* 的尺寸参数：
+// 有 width+height 时使用 aspect_ratio:custom，保留原始尺寸，删除 resolution
+func convertResolutionForReplicate(input map[string]any, modelName string) {
+	if !needsResolutionConversion(modelName) {
+		return
+	}
+
+	w, hasW := toFloat(input["width"])
+	h, hasH := toFloat(input["height"])
+	if !hasW || !hasH || w <= 0 || h <= 0 {
+		return
+	}
+
+	input["aspect_ratio"] = "custom"
+	delete(input, "resolution")
+}
+
+func toFloat(v any) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case json.Number:
+		f, err := val.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func megapixelsToResolutionPreset(mp float64) string {
+	best := "4 MP"
+	bestMP := resolutionPresets["4 MP"]
+	for label, mpVal := range resolutionPresets {
+		if mp <= mpVal*1.1 && mpVal <= bestMP {
+			bestMP = mpVal
+			best = label
+		}
+	}
+	return best
+}
+
+// aspectRatios 标准宽高比定义（label → 比值，横向统一）
+var aspectRatios = map[string]float64{
+	"1:1":  1.0,
+	"5:4":  5.0 / 4.0,
+	"4:3":  4.0 / 3.0,
+	"3:2":  3.0 / 2.0,
+	"16:9": 16.0 / 9.0,
+}
+
+func dimensionsToAspectRatio(w, h int) string {
+	// 归一化到横向比较，最后再翻转竖图
+	a, b := w, h
+	if h > w {
+		a, b = h, w
+	}
+	targetRatio := float64(a) / float64(b)
+
+	best := "1:1"
+	bestDiff := math.Abs(targetRatio - 1.0)
+	for name, ratio := range aspectRatios {
+		if diff := math.Abs(targetRatio - ratio); diff < bestDiff {
+			bestDiff = diff
+			best = name
+		}
+	}
+
+	if h > w {
+		parts := strings.SplitN(best, ":", 2)
+		if len(parts) == 2 {
+			return fmt.Sprintf("%s:%s", parts[1], parts[0])
+		}
+	}
+	return best
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }

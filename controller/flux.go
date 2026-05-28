@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -74,14 +76,112 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 		}
 	}
 
-	// DoResponse 内部在各失败分支已经调用 updateRecordToFailed，无需在此重复。
+	// 读取响应 body，用于错误处理和 4xx 场景下的脱敏日志记录
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		logger.Errorf(c, "Flux 读取响应 body 失败: %v", readErr)
+		adaptor.MarkFailed(c, "read response body failed: "+readErr.Error())
+		return &relaymodel.ErrorWithStatusCode{
+			StatusCode: http.StatusInternalServerError,
+			Error:      relaymodel.Error{Message: "read response failed: " + readErr.Error()},
+		}
+	}
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	_, errResp := adaptor.DoResponse(c, resp, meta)
 	if errResp != nil {
+		// 非 429 的 4xx 错误是客户端问题，换渠道不会变好，直接返回错误内容给客户端
+		if errResp.StatusCode >= 400 && errResp.StatusCode != http.StatusTooManyRequests && errResp.StatusCode < 500 {
+			sanitizedDetails := extractFluxValidationDetails(bodyBytes)
+			if len(sanitizedDetails) > 0 {
+				if detailBytes, err := json.Marshal(sanitizedDetails); err == nil {
+					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d, details=%s", errResp.StatusCode, string(detailBytes))
+				} else {
+					logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
+				}
+			} else {
+				logger.Errorf(c, "Flux 客户端错误(4xx)，不重试: status=%d", errResp.StatusCode)
+			}
+			c.JSON(errResp.StatusCode, buildFluxUnifiedErrorResponse(errResp.StatusCode, sanitizedDetails))
+			return nil
+		}
 		return errResp
 	}
 
 	logger.Infof(c, "Flux 请求成功: channel_id=%d", meta.ChannelId)
 	return nil
+}
+
+type fluxValidationDetail struct {
+	Type string   `json:"type,omitempty"`
+	Loc  []string `json:"loc,omitempty"`
+	Msg  string   `json:"msg,omitempty"`
+}
+
+func extractFluxValidationDetails(body []byte) []fluxValidationDetail {
+	var fluxError struct {
+		Detail []struct {
+			Loc  []string `json:"loc"`
+			Msg  string   `json:"msg"`
+			Type string   `json:"type"`
+		} `json:"detail"`
+	}
+
+	if err := json.Unmarshal(body, &fluxError); err != nil || len(fluxError.Detail) == 0 {
+		return nil
+	}
+
+	details := make([]fluxValidationDetail, 0, len(fluxError.Detail))
+	for _, item := range fluxError.Detail {
+		details = append(details, fluxValidationDetail{
+			Type: item.Type,
+			Loc:  item.Loc,
+			Msg:  item.Msg,
+		})
+	}
+	return details
+}
+
+func buildFluxUnifiedErrorResponse(statusCode int, details []fluxValidationDetail) gin.H {
+	message := fmt.Sprintf("API 返回错误状态: %d", statusCode)
+	if detailMessage := buildFluxValidationMessage(details); detailMessage != "" {
+		message = detailMessage
+	}
+
+	return gin.H{
+		"error": gin.H{
+			"code":    nil,
+			"message": message,
+			"param":   "",
+			"type":    "api_error",
+		},
+	}
+}
+
+func buildFluxValidationMessage(details []fluxValidationDetail) string {
+	if len(details) == 0 {
+		return ""
+	}
+
+	first := details[0]
+	msg := strings.TrimSpace(first.Msg)
+	if len(first.Loc) == 0 {
+		return msg
+	}
+
+	locParts := first.Loc
+	if len(locParts) > 0 && strings.EqualFold(locParts[0], "body") {
+		locParts = locParts[1:]
+	}
+	loc := strings.TrimSpace(strings.Join(locParts, " "))
+	if msg == "" {
+		return loc
+	}
+	if loc == "" {
+		return msg
+	}
+	return msg + " missing " + loc
 }
 
 // HandleFluxCallback 处理 Flux API 回调通知
