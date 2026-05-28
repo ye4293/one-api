@@ -15,7 +15,9 @@ type ImageRequest struct {
 	NumOutputs      int           `json:"num_outputs,omitempty"`
 	Seed            int           `json:"seed,omitempty"`
 	OutputFormat    string        `json:"output_format,omitempty"`
-	OutputQuality   int           `json:"output_quality,omitempty"`
+	// gpt-image-*：输出压缩级别（0–100），OpenAI API 为整数；客户端 JSON 可能传 number
+	OutputCompression *int `json:"output_compression,omitempty"`
+	OutputQuality     int  `json:"output_quality,omitempty"`
 	Controls        *Controls     `json:"controls,omitempty"`
 	PromptOptimizer bool          `json:"prompt_optimizer,omitempty"`
 	TextLayout      []interface{} `json:"text_layout,omitempty"`

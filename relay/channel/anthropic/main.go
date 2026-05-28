@@ -233,20 +233,21 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) *Request {
 		if message.Role == "tool" {
 			claudeMessage.Role = "user"
 		}
-		if message.IsStringContent() {
+		// content 为 nil（无 content 字段）时也走此分支，确保 tool_calls 能被转换
+		if message.IsStringContent() || message.Content == nil {
 			var contentBlocks []ContentBlockParam
-			content := ContentBlockParam{
-				Type: "text",
-				Text: message.StringContent(),
-			}
 			if message.Role == "tool" {
-				content = ContentBlockParam{
+				contentBlocks = append(contentBlocks, ContentBlockParam{
 					Type:      "tool_result",
 					ToolUseID: message.ToolCallId,
 					Content:   message.StringContent(),
-				}
+				})
+			} else if text := message.StringContent(); text != "" {
+				contentBlocks = append(contentBlocks, ContentBlockParam{
+					Type: "text",
+					Text: text,
+				})
 			}
-			contentBlocks = append(contentBlocks, content)
 			for i := range message.ToolCalls {
 				inputParam := make(map[string]any)
 				if args, ok := message.ToolCalls[i].Function.Arguments.(string); ok {
