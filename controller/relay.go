@@ -585,7 +585,12 @@ func shouldRetry(c *gin.Context, statusCode int, message string) bool {
 		return shouldRetryForbidden(c, message)
 	}
 
-	// 其他4xx错误（除400、403外）默认重试
+	// 422 是参数校验失败（客户端问题），换渠道不会变好
+	if statusCode == http.StatusUnprocessableEntity {
+		return false
+	}
+
+	// 其他4xx错误（除400、403、422外）默认重试
 	if statusCode/100 == 4 {
 		return true
 	}
