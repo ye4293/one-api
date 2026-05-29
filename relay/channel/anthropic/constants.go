@@ -24,6 +24,7 @@ func GetBaseModelName(modelName string) string {
 // 推荐使用 thinking.type="adaptive"；Opus 4.7 起彻底只接受 adaptive。
 // 注意：新增此类模型时需同步更新此 map、ModelList 以及 claude-config.go 中的默认 MaxTokens
 var adaptiveThinkingModels = map[string]bool{
+	"claude-opus-4-8":   true,
 	"claude-opus-4-7":   true,
 	"claude-opus-4-6":   true,
 	"claude-sonnet-4-6": true,
@@ -40,6 +41,7 @@ func IsAdaptiveThinkingModel(modelName string) bool {
 // 官方文档：Opus 4.7 起 sampling 参数全部移除，传任何一个都会 400。
 // 4.6 adaptive 仍然接受 temperature，不要把 4.6 加进来。
 var noSamplingModels = map[string]bool{
+	"claude-opus-4-8": true,
 	"claude-opus-4-7": true,
 }
 
@@ -77,6 +79,7 @@ var ModelList = []string{
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
 	"claude-opus-4-7",
+	"claude-opus-4-8",
 	// Claude thinking models
 	"claude-3-7-sonnet-20250219-thinking",
 	"claude-sonnet-4-20250514-thinking",
@@ -88,6 +91,7 @@ var ModelList = []string{
 	"claude-opus-4-6-thinking",
 	"claude-sonnet-4-6-thinking",
 	"claude-opus-4-7-thinking",
+	"claude-opus-4-8-thinking",
 }
 
 var ModelDetails = []model.APIModel{

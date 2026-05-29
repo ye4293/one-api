@@ -39,6 +39,8 @@ var defaultClaudeDefaultMaxTokens = map[string]int{
 	"claude-sonnet-4-6-thinking":          128000,
 	"claude-opus-4-7":                     8192,
 	"claude-opus-4-7-thinking":            64000,
+	"claude-opus-4-8":                     8192,
+	"claude-opus-4-8-thinking":            64000,
 }
 
 // 默认的 ReasoningEffort 到百分比的映射
