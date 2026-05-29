@@ -1,39 +1,87 @@
 package flux
 
 import (
-	"github.com/songquanpeng/one-api/common"
+	"context"
+	"fmt"
+
+	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/model"
 )
 
-// CalculateQuota 根据 Flux API 返回的 cost 计算配额
-// cost: Flux API 返回的费用，单位为美分（cents）
-// groupRatio: 用户组的计费倍率
-// 返回: 配额（quota）
-func CalculateQuota(cost float64, groupRatio float64) int64 {
-	// cost 单位是美分，需要转换为美元
-	// 实际费用（美元）= cost / 100
-	actualCostUSD := cost / 100.0
-
-	// 配额计算公式: 实际费用 * 500000 * 分组倍率
-	// 但这里我们需要用 500000，因为 $1 = 500 quota，所以 $0.002 = 1 quota
-	// 因此 $1 = 500 quota，所以计算时要用 500
-	quota := actualCostUSD * 500000 * groupRatio
-
-	return int64(quota)
-}
-
-// EstimateQuota 预估配额（在请求前用于余额检查）
-// modelName: 模型名称
-// groupRatio: 用户组的计费倍率
-// 返回: 预估的配额
-func EstimateQuota(modelName string, groupRatio float64) int64 {
-	// 从 ModelRatio 获取模型的预估价格（单位已经是 quota）
-	ratio, exists := common.ModelRatio[modelName]
-	if !exists {
-		// 如果模型不存在，使用默认价格（flux-pro 的价格）
-		ratio = 0.04
+// ChargeOnSuccess 在任务成功时扣费，仅操作用户维度额度，不依赖 TokenId。
+// 应在 UpdateIfNotTerminal CAS 成功（applied=true）后调用。
+func ChargeOnSuccess(ctx context.Context, image *model.Image, quota int64) error {
+	if quota <= 0 {
+		return fmt.Errorf("invalid quota: %d", quota)
 	}
 
-	// ratio 已经是按照 $0.002 = 1 quota 计算的
-	// 所以直接乘以倍率即可
-	return int64(ratio * groupRatio * 1000) // 乘以1000作为预估buffer
+	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
+		return fmt.Errorf("扣费失败: %w", err)
+	}
+
+	model.UpdateUserUsedQuotaAndRequestCount(image.UserId, quota)
+	model.UpdateChannelUsedQuota(image.ChannelId, quota)
+
+	logContent := fmt.Sprintf("Flux 任务成功，扣费 quota=%d", quota)
+	model.RecordConsumeLogWithRequestID(
+		ctx,
+		image.UserId,
+		image.ChannelId,
+		0, 0,
+		image.Model,
+		"",
+		quota,
+		logContent,
+		float64(image.TotalDuration),
+		"", "",
+		false,
+		0.0,
+		image.RequestId,
+	)
+
+	logger.Infof(ctx, "[flux-billing] 成功扣费 user_id=%d channel_id=%d quota=%d model=%s task_id=%s",
+		image.UserId, image.ChannelId, quota, image.Model, image.TaskId)
+	return nil
+}
+
+// CalculateQuota 根据 BFL API 返回的 cost（美分）计算配额。
+func CalculateQuota(cost float64, groupRatio float64) int64 {
+	return int64(cost / 100.0 * 500000 * groupRatio)
+}
+
+// ComputeCostUSD 按模型和实际 MP 数计算 USD 费用（无 groupRatio）。
+// outputMP==0 时降级到 FluxPriceMap 固定价兜底。
+func ComputeCostUSD(modelName string, metrics ReplicateMetrics) float64 {
+	if tier, ok := FluxMPPricingMap[modelName]; ok && metrics.ImageOutputMegapixelCount > 0 {
+		outputMP := metrics.ImageOutputMegapixelCount
+		inputMP := metrics.ImageInputMegapixelCount
+		var costUSD float64
+		if outputMP <= 1.0 {
+			costUSD += tier.FirstMPPrice
+		} else {
+			costUSD += tier.FirstMPPrice + (outputMP-1.0)*tier.SubsequentMPPrice
+		}
+		if inputMP > 0 {
+			costUSD += inputMP * tier.RefMPPrice
+		}
+		return costUSD
+	}
+	price, ok := FluxPriceMap[modelName]
+	if !ok {
+		price = 0.05
+	}
+	return price
+}
+
+// CalculateReplicateQuota 计算 Replicate 配额。
+func CalculateReplicateQuota(modelName string, metrics ReplicateMetrics, groupRatio float64) int64 {
+	return usdToQuota(ComputeCostUSD(modelName, metrics), groupRatio)
+}
+
+// usdToQuota 将 USD 金额转为内部 quota（$1 = 500000 quota）
+func usdToQuota(usd float64, groupRatio float64) int64 {
+	if usd <= 0 {
+		return 0
+	}
+	return int64(usd * 500000 * groupRatio)
 }

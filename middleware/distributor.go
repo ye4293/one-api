@@ -17,8 +17,9 @@ import (
 )
 
 type ModelRequest struct {
-	Model     string `json:"model,omitempty" form:"model"`
-	ModelName string `json:"model_name,omitempty" form:"model_name"`
+	Model              string `json:"model,omitempty" form:"model"`
+	ModelName          string `json:"model_name,omitempty" form:"model_name"`
+	PreviousResponseID string `json:"previous_response_id,omitempty"`
 }
 
 // extractModelNameFromGeminiPath 从 Gemini API 路径中提取模型名称
@@ -91,6 +92,10 @@ func Distribute() func(c *gin.Context) {
 				}
 				// 路径 A：X-Response-ID 存在 → 内部走 GetClaudeCacheIdFromRedis（原有逻辑）
 				responseID := c.GetHeader("X-Response-ID")
+				// /v1/responses 路径支持通过 body 中的 previous_response_id 路由到正确渠道
+				if responseID == "" && strings.HasSuffix(c.FullPath(), "/responses") {
+					responseID = modelRequest.PreviousResponseID
+				}
 
 				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
 				if responseID == "" {
@@ -230,6 +235,16 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			if modelRequest.Model == "" {
 				modelRequest.Model = "wan2.6-i2v"
 			}
+		}
+	} else if strings.HasPrefix(path, "/flux/v1/") {
+		// Flux API：以 URL 路径中的 model 为准（POST /flux/v1/{model}），允许 body 不传 model
+		// c.Param("model") 由 *model 通配符捕获，包含前导 "/"
+		modelName := strings.TrimPrefix(c.Param("model"), "/")
+		if modelName != "" {
+			modelRequest.Model = modelName
+		} else {
+			// 兜底：URL 缺 model（理论上 *model 会拦住）时退回 body
+			_ = common.UnmarshalBodyReusable(c, &modelRequest)
 		}
 	} else {
 		// OpenAI 格式请求

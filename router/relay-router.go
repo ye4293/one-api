@@ -123,6 +123,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/images/generations", controller.Relay)
 		relayV1Router.POST("/messages", controller.RelayClaude)
 		relayV1Router.POST("/messages/count_tokens", controller.RelayClaudeCountTokens) // Claude count_tokens 接口
+		relayV1Router.POST("/responses/compact", controller.RelayResponse)
 		relayV1Router.POST("/responses", controller.RelayResponse)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
@@ -178,23 +179,25 @@ func SetRelayRouter(router *gin.Engine) {
 	modeMjRouter := router.Group("/mj-:mode/mj", mjModeMiddleware())
 	setupMJRoutes(modeMjRouter)
 
-	// Flux 图像生成路由组 - 回调模式
-	// 使用通配符支持所有 Flux 模型的透传
+	// Flux 生成路由：POST 需要 Distribute 选渠道
 	relayFluxRouter := router.Group("/flux")
 	relayFluxRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		// 查询结果接口（需要在通配符之前注册，优先匹配）
-		relayFluxRouter.GET("/v1/get_result/:id", controller.GetFlux)
+		relayFluxRouter.POST("/v1/*model", controller.Relay)
+	}
 
-		// 通配符路由：匹配所有 /flux/v1/* 的 POST 请求
-		// 支持所有 Flux 模型（flux-2-pro, flux-dev, flux-kontext-max 等）
-		relayFluxRouter.POST("/v1/*model", controller.RelayFlux)
+	// Flux 查询路由：渠道从 DB 按 task_id 解析，不需要 Distribute
+	fluxResultRouter := router.Group("/flux")
+	fluxResultRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth())
+	{
+		fluxResultRouter.GET("/v1/get_result", controller.GetFlux)
 	}
 
 	// Flux 回调路由组 - 接收 Flux API 回调通知
 	fluxCallbackRouter := router.Group("/flux/internal")
 	{
 		fluxCallbackRouter.POST("/callback", controller.HandleFluxCallback)
+		fluxCallbackRouter.POST("/replicate/callback", controller.HandleReplicateCallback)
 	}
 	// 豆包API兼容路由组 - 支持原始豆包API路径格式
 	doubaoApiRouter := router.Group("/api/v3/contents/generations")
