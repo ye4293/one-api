@@ -57,7 +57,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	if adaptor == nil {
 		return openai.ErrorWrapper(fmt.Errorf("invalid api type: %d", meta.APIType), "invalid_api_type", http.StatusBadRequest)
 	}
-	logger.SysLog(fmt.Sprintf("openai response request: %s", string(originRequestBody)))
+	//logger.SysLog(fmt.Sprintf("openai response request: %s", string(originRequestBody)))
 	var openaiResponseRequest openai.OpeanaiResaponseRequest
 	if err := json.Unmarshal(originRequestBody, &openaiResponseRequest); err != nil {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse claude request: %w", err), "failed_to_parse_request", http.StatusInternalServerError)
