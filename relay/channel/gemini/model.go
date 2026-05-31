@@ -17,6 +17,11 @@ type InlineData struct {
 	Data     string `json:"data"`
 }
 
+type FileData struct {
+	MimeType string `json:"mimeType"`
+	FileUri  string `json:"fileUri"`
+}
+
 // FunctionCall represents a function call in Gemini response
 type FunctionCall struct {
 	Name string         `json:"name"`
@@ -32,6 +37,7 @@ type FunctionResponse struct {
 type Part struct {
 	Text             string            `json:"text,omitempty"`
 	InlineData       *InlineData       `json:"inlineData,omitempty"`
+	FileData         *FileData         `json:"fileData,omitempty"`
 	Thought          bool              `json:"thought,omitempty"`          // 标识是否为思考内容
 	ThoughtSignature string            `json:"thoughtSignature,omitempty"` // 思考签名（用于多轮对话）
 	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
