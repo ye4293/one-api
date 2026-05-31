@@ -769,8 +769,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				if fileDatasValueArr, ok := fileDatasValue.([]interface{}); ok {
 					for _, v := range fileDatasValueArr {
 						if vMap, ok := v.(map[string]interface{}); ok {
-							mimeType, _ := vMap["mimeType"].(string)
-							fileUri, _ := vMap["fileUri"].(string)
+							mimeType, _ := vMap["mime_type"].(string)
+							fileUri, _ := vMap["file_uri"].(string)
 							if mimeType != "" && fileUri != "" {
 								geminiImageRequest.Contents[0].Parts = append(
 									geminiImageRequest.Contents[0].Parts,
@@ -3507,8 +3507,8 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 	var fileDatasParts []gemini.Part
 	if fileDatasValues, ok := c.Request.MultipartForm.Value["file_datas"]; ok && len(fileDatasValues) > 0 {
 		var fileDatasInputs []struct {
-			MimeType string `json:"mimeType"`
-			FileUri  string `json:"fileUri"`
+			MimeType string `json:"mime_type"`
+			FileUri  string `json:"file_uri"`
 		}
 		if jsonErr := json.Unmarshal([]byte(fileDatasValues[0]), &fileDatasInputs); jsonErr == nil {
 			for _, v := range fileDatasInputs {
@@ -3519,7 +3519,7 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 				}
 			}
 		} else {
-			logger.Warnf(ctx, "解析 videos 字段失败: %v", jsonErr)
+			logger.Warnf(ctx, "解析 file_datas 字段失败: %v", jsonErr)
 		}
 	}
 
