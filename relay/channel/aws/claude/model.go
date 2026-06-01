@@ -98,6 +98,11 @@ var AwsModelCanCrossRegionMap = map[string]map[string]bool{
 		"ap": true,
 		"eu": true,
 	},
+	"anthropic.claude-opus-4-8": {
+		"us": true,
+		"ap": true,
+		"eu": true,
+	},
 	"anthropic.claude-haiku-4-5-20251001-v1:0": {
 		"us": true,
 		"ap": true,
