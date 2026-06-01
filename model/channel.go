@@ -150,6 +150,14 @@ const (
 	VertexKeyTypeAPIKey VertexKeyType = "api_key" // API Key 认证
 )
 
+// AwsKeyType 定义 AWS Bedrock 密钥类型
+type AwsKeyType string
+
+const (
+	AwsKeyTypeAKSK   AwsKeyType = "ak_sk"   // AK|SK|Region 格式（SigV4）
+	AwsKeyTypeAPIKey AwsKeyType = "api_key" // BedrockAPIKey|Region 格式（Bearer）
+)
+
 type ChannelConfig struct {
 	Region            string `json:"region,omitempty"`
 	SK                string `json:"sk,omitempty"`
@@ -164,6 +172,8 @@ type ChannelConfig struct {
 	// Vertex AI 新增配置
 	VertexKeyType     VertexKeyType     `json:"vertex_key_type,omitempty"`     // 密钥类型: json 或 api_key
 	VertexModelRegion map[string]string `json:"vertex_model_region,omitempty"` // 模型专用区域映射，如 {"gemini-2.5-pro": "us-central1"}
+	// AWS Bedrock 密钥类型
+	AwsKeyType AwsKeyType `json:"aws_key_type,omitempty"` // 密钥格式: ak_sk 或 api_key
 	// Claude count_tokens 功能支持
 	SupportCountTokens bool `json:"support_count_tokens,omitempty"` // 是否支持 count_tokens 接口（默认 false）
 }
