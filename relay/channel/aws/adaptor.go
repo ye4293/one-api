@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"github.com/aws/smithy-go/auth/bearer"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
@@ -31,30 +33,44 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 	key := meta.ActualAPIKey
 	parts := strings.Split(key, "|")
 
-	var accessKey, secretKey, region string
-
-	if len(parts) == 3 {
-		accessKey = parts[0]
-		secretKey = parts[1]
-		region = parts[2]
-	} else {
-		// Fallback to legacy config for backward compatibility
-		accessKey = meta.Config.AK
-		secretKey = meta.Config.SK
-		region = meta.Config.Region
+	switch len(parts) {
+	case 2:
+		// Bedrock API Key (Bearer Token) 模式: <bedrockApiKey>|<region>
+		token, region := parts[0], parts[1]
+		if token == "" || region == "" {
+			return
+		}
+		a.Region = region
+		a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
+			Region: region,
+			BearerAuthTokenProvider: bearer.TokenProviderFunc(func(ctx context.Context) (bearer.Token, error) {
+				return bearer.Token{Value: token}, nil
+			}),
+			AuthSchemePreference: []string{"httpBearerAuth"},
+		})
+	case 3:
+		// SigV4 模式: <accessKey>|<secretKey>|<region>
+		accessKey, secretKey, region := parts[0], parts[1], parts[2]
+		if accessKey == "" || secretKey == "" || region == "" {
+			return
+		}
+		a.Region = region
+		a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
+			Region:      region,
+			Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+		})
+	default:
+		// 回退到 legacy config（SigV4），保持向后兼容
+		accessKey, secretKey, region := meta.Config.AK, meta.Config.SK, meta.Config.Region
+		if accessKey == "" || secretKey == "" || region == "" {
+			return
+		}
+		a.Region = region
+		a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
+			Region:      region,
+			Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+		})
 	}
-
-	if accessKey == "" || secretKey == "" || region == "" {
-		// Store the error for later handling
-		meta.Config.Region = "" // Use this as an error indicator
-		return
-	}
-
-	a.Region = region
-	a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
-		Region:      region,
-		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-	})
 }
 
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
