@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/smithy-go/auth/bearer"
 	"github.com/gin-gonic/gin"
+	channelmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/aws/utils"
 	"github.com/songquanpeng/one-api/relay/model"
@@ -33,9 +34,22 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 	key := meta.ActualAPIKey
 	parts := strings.Split(key, "|")
 
-	switch len(parts) {
-	case 2:
+	// 优先按渠道配置的 AwsKeyType 字段路由，字段为空时按分段数自动识别（向后兼容）
+	keyType := meta.Config.AwsKeyType
+	if keyType == "" {
+		if len(parts) == 2 {
+			keyType = channelmodel.AwsKeyTypeAPIKey
+		} else {
+			keyType = channelmodel.AwsKeyTypeAKSK
+		}
+	}
+
+	switch keyType {
+	case channelmodel.AwsKeyTypeAPIKey:
 		// Bedrock API Key (Bearer Token) 模式: <bedrockApiKey>|<region>
+		if len(parts) != 2 {
+			return
+		}
 		token, region := parts[0], parts[1]
 		if token == "" || region == "" {
 			return
@@ -48,20 +62,14 @@ func (a *Adaptor) Init(meta *util.RelayMeta) {
 			}),
 			AuthSchemePreference: []string{"httpBearerAuth"},
 		})
-	case 3:
-		// SigV4 模式: <accessKey>|<secretKey>|<region>
-		accessKey, secretKey, region := parts[0], parts[1], parts[2]
-		if accessKey == "" || secretKey == "" || region == "" {
-			return
-		}
-		a.Region = region
-		a.AwsClient = bedrockruntime.New(bedrockruntime.Options{
-			Region:      region,
-			Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-		})
 	default:
-		// 回退到 legacy config（SigV4），保持向后兼容
-		accessKey, secretKey, region := meta.Config.AK, meta.Config.SK, meta.Config.Region
+		// SigV4 模式: <accessKey>|<secretKey>|<region>，或回退到 legacy config
+		var accessKey, secretKey, region string
+		if len(parts) == 3 {
+			accessKey, secretKey, region = parts[0], parts[1], parts[2]
+		} else {
+			accessKey, secretKey, region = meta.Config.AK, meta.Config.SK, meta.Config.Region
+		}
 		if accessKey == "" || secretKey == "" || region == "" {
 			return
 		}
