@@ -274,6 +274,11 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 	c.Set("channel", channel.Type)
 	c.Set("base_url", channel.GetBaseURL())
 	c.Set("test_key_index", keyIndex) // 用于日志记录
+	// 复用已选中的 key，避免 SetupContextForSelectedChannel 二次轮询导致
+	// actual_key 与报告的 used_key_index 错位（AWS 等渠道实际读的是 actual_key）
+	if channel.MultiKeyInfo.IsMultiKey && keyIndex >= 0 {
+		c.Set("cached_key_index", keyIndex)
+	}
 	middleware.SetupContextForSelectedChannel(c, channel, "")
 	meta := util.GetRelayMeta(c)
 	apiType := constant.ChannelType2APIType(channel.Type)
