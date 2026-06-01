@@ -410,7 +410,7 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	go recordGeminiConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 	return nil
 }
 
@@ -457,6 +457,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
 	}
 	other = appendBillingDetails(other, billingDetails)
+	other = util.AppendRetryHistoryOther(c, other, duration)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), cachedTokens, c.GetString("x_response_id"))

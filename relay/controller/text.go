@@ -168,7 +168,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	title := c.Request.Header.Get("X-Title")
 	handResultStartTime := time.Now()
 	// post-consume quota
-	go postConsumeQuota(ctx, c, usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
+	go postConsumeQuota(ctx, c.Copy(), usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
 	
 	logger.Infof(ctx, "model_name: %s, hand_consume_quota_time: %.3f seconds", textRequest.Model, math.Round(time.Since(handResultStartTime).Seconds()*1000) / 1000)
 	return nil

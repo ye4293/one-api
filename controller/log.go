@@ -15,21 +15,21 @@ import (
 // 渠道历史是 []int，不会出现嵌套 ']'
 var adminInfoRegex = regexp.MustCompile(`adminInfo:\[[^\]]*\];?`)
 
-// stripAdminInfoFromLogs 从普通用户日志的 other 字段里剥离渠道链路信息（adminInfo）
-// 用于 /api/log/self 等用户接口，避免向终端用户暴露后端渠道 ID
+// stripAdminInfoFromLogs 从普通用户日志的 other 字段里剥离渠道链路信息（adminInfo / retryHistory）
+// 用于 /api/log/self 等用户接口，避免向终端用户暴露后端渠道 ID、渠道名和重试明细
 //
 // 兼容两种 other 格式：
-//   - 分号格式: "adminInfo:[1,2];usageDetails:{...};..."
-//   - JSON 格式: {"admin_info":[...],"usageDetails":{...},...}
+//   - 分号格式: "adminInfo:[1,2];retryHistory:[{...}];usageDetails:{...};..."
+//   - JSON 格式: {"admin_info":[...],"retry_history":[...],"usageDetails":{...},...}
 //
-// fast-path: 不含 "admin" 子串直接跳过，避免对 99% 普通日志做无效 regex
+// fast-path: 不含 "admin" 也不含 "retryHistory" 子串直接跳过
 func stripAdminInfoFromLogs(logs []*model.Log) {
 	for _, log := range logs {
 		if log == nil || log.Other == "" {
 			continue
 		}
-		// fast-path: 没有 admin 关键字 → 跳过
-		if !strings.Contains(log.Other, "admin") {
+		// fast-path: 既没有 admin 也没有 retryHistory → 跳过
+		if !strings.Contains(log.Other, "admin") && !strings.Contains(log.Other, "retryHistory") && !strings.Contains(log.Other, "retry_history") {
 			continue
 		}
 
@@ -38,12 +38,10 @@ func stripAdminInfoFromLogs(logs []*model.Log) {
 		if other[0] == '{' {
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(other), &obj); err == nil {
-				if _, ok1 := obj["admin_info"]; ok1 {
-					delete(obj, "admin_info")
-				}
-				if _, ok2 := obj["adminInfo"]; ok2 {
-					delete(obj, "adminInfo")
-				}
+				delete(obj, "admin_info")
+				delete(obj, "adminInfo")
+				delete(obj, "retry_history")
+				delete(obj, "retryHistory")
 				if b, err := json.Marshal(obj); err == nil {
 					log.Other = string(b)
 				}
@@ -54,10 +52,68 @@ func stripAdminInfoFromLogs(logs []*model.Log) {
 
 		// 分号格式
 		cleaned := adminInfoRegex.ReplaceAllString(other, "")
+		cleaned = stripRetryHistorySegment(cleaned)
 		// 避免出现 ";;" 残留
 		cleaned = strings.ReplaceAll(cleaned, ";;", ";")
 		log.Other = strings.Trim(cleaned, ";")
 	}
+}
+
+// stripRetryHistorySegment 从分号格式 other 中剥掉 retryHistory:[...] 段。
+// retryHistory 是 JSON 对象数组（含嵌套 {} 和 ""），不能用简单 regex，需要手动方括号配对。
+// 配对时尊重字符串字面量内的 [ ] 以及反斜杠转义。
+func stripRetryHistorySegment(s string) string {
+	const key = "retryHistory:["
+	idx := strings.Index(s, key)
+	if idx == -1 {
+		return s
+	}
+	start := idx + len(key) - 1 // 指向开头的 '['
+	depth := 0
+	inStr := false
+	escape := false
+	end := -1
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if inStr {
+			if escape {
+				escape = false
+				continue
+			}
+			if ch == '\\' {
+				escape = true
+				continue
+			}
+			if ch == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inStr = true
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end != -1 {
+			break
+		}
+	}
+	if end == -1 {
+		// 解析失败（不该发生），保留原 string 避免破坏数据
+		return s
+	}
+	// 把整个 "retryHistory:[...]" 段（含可能紧跟的 ';'）切掉
+	stop := end + 1
+	if stop < len(s) && s[stop] == ';' {
+		stop++
+	}
+	return s[:idx] + s[stop:]
 }
 
 func GetAllLogs(c *gin.Context) {

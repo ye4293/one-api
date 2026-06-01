@@ -754,16 +754,20 @@ func handleAudioStreamResponse(c *gin.Context, resp *http.Response, audioModel s
 		logger.Info(ctx, fmt.Sprintf("  QuotaCalculation: (%.3f + %.3f) * %.3f = %.3f → %d", inputTokensEquivalent, outputTokens*completionRatio, ratio, quotaFloat, quota))
 
 		// 记录详细的token信息到other字段
-		otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+		otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
 			textInputTokens, textOutputTokens, audioInputTokens, audioOutputTokens)
 
 		// 异步记录配额消费
 		xRequestID := c.GetString("X-Request-ID")
+		// gin.Context 不允许 handler 返回后被 goroutine 并发读取（c.Keys 是无锁 map + sync.Pool 回收），
+		// 这里必须先 c.Copy() 再传入 goroutine
+		cCopy := c.Copy()
 		go func() {
 			duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
+			referer := cCopy.Request.Header.Get("HTTP-Referer")
+			title := cCopy.Request.Header.Get("X-Title")
 
+			otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens+audioInputTokens), int(textOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
 				duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
@@ -987,16 +991,18 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 		logger.Info(ctx, fmt.Sprintf("  Input Quota: %d, Output Quota: %d, Total Quota: %d", inputQuota, outputQuota, quota))
 
 		// 记录详细的token信息到other字段
-		otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+		otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
 			textInputTokens, int64(0), int64(0), audioOutputTokens)
 
 		// 异步记录配额消费
 		xRequestID := c.GetString("X-Request-ID")
+		cCopy := c.Copy()
 		go func() {
 			duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-			referer := c.Request.Header.Get("HTTP-Referer")
-			title := c.Request.Header.Get("X-Title")
+			referer := cCopy.Request.Header.Get("HTTP-Referer")
+			title := cCopy.Request.Header.Get("X-Title")
 
+			otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 				audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
 				duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
@@ -1018,16 +1024,18 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 					audioOutputTokens := outputTokens.(int64)
 
 				// 记录详细的token信息到other字段
-				otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+				otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
 					textInputTokens, int64(0), int64(0), audioOutputTokens)
 
 				// 异步记录配额消费
 				xRequestID := c.GetString("X-Request-ID")
+				cCopy := c.Copy()
 				go func() {
 					duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-					referer := c.Request.Header.Get("HTTP-Referer")
-					title := c.Request.Header.Get("X-Title")
+					referer := cCopy.Request.Header.Get("HTTP-Referer")
+					title := cCopy.Request.Header.Get("X-Title")
 
+					otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
 					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
 						duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
@@ -1114,16 +1122,18 @@ func handleAzureTTSStream(c *gin.Context, resp *http.Response, audioModel string
 				audioOutputTokens := outputTokens.(int64)
 
 				// 记录详细的token信息到other字段
-				otherInfo := fmt.Sprintf(`{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+				otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
 					textInputTokens, int64(0), int64(0), audioOutputTokens)
 
 				// 异步记录配额消费
 				xRequestID := c.GetString("X-Request-ID")
+				cCopy := c.Copy()
 				go func() {
 					duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-					referer := c.Request.Header.Get("HTTP-Referer")
-					title := c.Request.Header.Get("X-Title")
+					referer := cCopy.Request.Header.Get("HTTP-Referer")
+					title := cCopy.Request.Header.Get("X-Title")
 
+					otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
 					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
 						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
 						duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
