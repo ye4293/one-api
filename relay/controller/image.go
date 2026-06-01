@@ -764,6 +764,24 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 将成功处理的图片添加到Gemini请求中
 			geminiImageRequest.Contents[0].Parts = append(geminiImageRequest.Contents[0].Parts, imageParts...)
 
+			// 处理 videos 字段，组装为 fileData parts
+			if fileDatasValue, exists := requestMap["file_datas"]; exists {
+				if fileDatasValueArr, ok := fileDatasValue.([]interface{}); ok {
+					for _, v := range fileDatasValueArr {
+						if vMap, ok := v.(map[string]interface{}); ok {
+							mimeType, _ := vMap["mime_type"].(string)
+							fileUri, _ := vMap["file_uri"].(string)
+							if mimeType != "" && fileUri != "" {
+								geminiImageRequest.Contents[0].Parts = append(
+									geminiImageRequest.Contents[0].Parts,
+									gemini.Part{FileData: &gemini.FileData{MimeType: mimeType, FileUri: fileUri}},
+								)
+							}
+						}
+					}
+				}
+			}
+
 			// Convert to JSON
 			jsonStr, err := json.Marshal(geminiImageRequest)
 			if err != nil {
@@ -3485,6 +3503,26 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 		return openai.ErrorWrapper(fmt.Errorf("prompt 字段不能为空"), "missing_prompt", http.StatusBadRequest)
 	}
 
+	// 从 form 中获取视频列表（JSON 字符串，例如 '[{"mimeType":"video/mp4","fileUri":"https://..."}]'）
+	var fileDatasParts []gemini.Part
+	if fileDatasValues, ok := c.Request.MultipartForm.Value["file_datas"]; ok && len(fileDatasValues) > 0 {
+		var fileDatasInputs []struct {
+			MimeType string `json:"mime_type"`
+			FileUri  string `json:"file_uri"`
+		}
+		if jsonErr := json.Unmarshal([]byte(fileDatasValues[0]), &fileDatasInputs); jsonErr == nil {
+			for _, v := range fileDatasInputs {
+				if v.MimeType != "" && v.FileUri != "" {
+					fileDatasParts = append(fileDatasParts, gemini.Part{
+						FileData: &gemini.FileData{MimeType: v.MimeType, FileUri: v.FileUri},
+					})
+				}
+			}
+		} else {
+			logger.Warnf(ctx, "解析 file_datas 字段失败: %v", jsonErr)
+		}
+	}
+
 	// 从 form 中获取图片文件（支持多个图片）
 	var imageParts []gemini.Part
 
@@ -3559,23 +3597,17 @@ func handleGeminiFormRequest(c *gin.Context, ctx context.Context, imageRequest *
 				return openai.ErrorWrapper(fileErr, "read_image_file_failed", http.StatusBadRequest)
 			}
 		}
-	} else {
+	} else if len(fileDatasParts) == 0 {
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
-		return openai.ErrorWrapper(fmt.Errorf("image 或 image[] 文件不能为空"), "missing_image_file", http.StatusBadRequest)
+		return openai.ErrorWrapper(fmt.Errorf("image/image[] 文件或 videos 字段至少提供一个"), "missing_input_media", http.StatusBadRequest)
 	}
 
 	// 构建 Gemini API 请求格式
-	// 按照顺序：先添加所有图片，最后添加文本提示
+	// 顺序：图片(InlineData) → 视频(FileData) → 文本提示
 	var parts []gemini.Part
-
-	// 添加所有图片部分
 	parts = append(parts, imageParts...)
-
-	// 最后添加文本提示
-	textPart := gemini.Part{
-		Text: prompt,
-	}
-	parts = append(parts, textPart)
+	parts = append(parts, fileDatasParts...)
+	parts = append(parts, gemini.Part{Text: prompt})
 
 	geminiRequest := gemini.ChatRequest{
 		Contents: []gemini.ChatContent{
@@ -4408,7 +4440,7 @@ func extractImageInputs(value interface{}) []string {
 			if str != "" {
 				inputs = append(inputs, str)
 			}
-		}
+		}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
 	}
 
 	return inputs
