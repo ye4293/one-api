@@ -296,8 +296,16 @@ func saveChannelUpstreamSettings(channel *model.Channel, settings config.Channel
 	return model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
 }
 
-// getUpstreamMinCheckInterval 读取最小检测间隔（进程级缓存，避免每渠道重复 os.Getenv）
+// getUpstreamMinCheckInterval 读取最小检测间隔（分钟转秒）。
+// 优先级：全局系统设置 > 环境变量 > 默认值（300 秒）。
+// 注意：全局系统设置可在运行时动态调整，每次读取最新值；环境变量仅在启动时读取一次（进程级缓存）。
 func getUpstreamMinCheckInterval() int64 {
+	config.OptionMapRWMutex.RLock()
+	globalMinutes := config.UpstreamModelUpdateIntervalMinutes
+	config.OptionMapRWMutex.RUnlock()
+	if globalMinutes > 0 {
+		return int64(globalMinutes) * 60
+	}
 	upstreamMinCheckIntervalOnce.Do(func() {
 		v := os.Getenv("CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS")
 		if v == "" {
@@ -319,11 +327,7 @@ func getUpstreamMinCheckInterval() int64 {
 func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.ChannelOtherSettings, force, allowAutoApply bool) (modelsChanged bool, autoAdded int, ran bool, err error) {
 	now := helper.GetTimestamp()
 	if !force {
-		// 优先使用渠道级配置，否则回退到全局默认
 		minInterval := getUpstreamMinCheckInterval()
-		if settings.UpstreamModelUpdateIntervalMinutes > 0 {
-			minInterval = int64(settings.UpstreamModelUpdateIntervalMinutes) * 60
-		}
 		if settings.UpstreamModelUpdateLastCheckTime > 0 &&
 			now-settings.UpstreamModelUpdateLastCheckTime < minInterval {
 			return false, 0, false, nil // 冷却中：跳过，ran=false
@@ -367,7 +371,7 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	}
 
 	if err = saveChannelUpstreamSettings(channel, *settings, modelsChanged); err != nil {
-		return false, autoAdded, true, err
+		return false, 0, true, err // DB 写入失败：内存变更未持久化，autoAdded 不计入指标
 	}
 	if modelsChanged {
 		if err = channel.UpdateAbilities(); err != nil {
@@ -444,7 +448,6 @@ func runUpstreamUpdateTaskOnce() {
 			if !settings.UpstreamModelUpdateCheckEnabled {
 				continue
 			}
-			checked++
 			modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
 			if err != nil {
 				failed++
@@ -454,6 +457,7 @@ func runUpstreamUpdateTaskOnce() {
 			}
 			// 只在本次真正执行了检测时才计入指标，冷却跳过的不算
 			if ran {
+				checked++
 				add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
 				remove := len(settings.UpstreamModelUpdateLastRemovedModels)
 				addedTotal += add
@@ -506,7 +510,13 @@ func StartChannelUpstreamModelUpdateTask() {
 		interval := time.Duration(intervalMinutes) * time.Minute
 
 		common.SafeGoroutine(func() {
-			logger.SysLog(fmt.Sprintf("upstream model update task started: interval=%s", interval))
+			cooldownSec := getUpstreamMinCheckInterval()
+			logger.SysLog(fmt.Sprintf(
+				"upstream model update task started: scheduler_interval=%s, per_channel_cooldown=%s (global_option=%dm / env / default)",
+				interval,
+				time.Duration(cooldownSec)*time.Second,
+				config.UpstreamModelUpdateIntervalMinutes,
+			))
 			runUpstreamUpdateTaskOnce()
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
