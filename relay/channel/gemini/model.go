@@ -6,6 +6,7 @@ type ChatRequest struct {
 	SafetySettings    []ChatSafetySettings `json:"safetySettings,omitempty"`
 	GenerationConfig  ChatGenerationConfig `json:"generationConfig,omitempty"`
 	Tools             []ChatTools          `json:"tools,omitempty"`
+	ToolConfig        *ToolConfig          `json:"toolConfig,omitempty"`
 }
 
 type SystemInstruction struct {
@@ -56,6 +57,15 @@ type ChatSafetySettings struct {
 
 type ChatTools struct {
 	FunctionDeclarations any `json:"functionDeclarations,omitempty"`
+}
+
+type FunctionCallingConfig struct {
+	Mode                 string   `json:"mode,omitempty"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
+}
+
+type ToolConfig struct {
+	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
 }
 
 type ChatGenerationConfig struct {
