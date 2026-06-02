@@ -272,6 +272,10 @@ func upstreamCollectPendingChanges(channel *model.Channel, settings config.Chann
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(upstream) == 0 {
+		// 上游返回空列表视为异常（限流、维护、解析失败等），拒绝处理避免误删全部模型
+		return nil, nil, fmt.Errorf("上游返回模型列表为空，跳过本次同步")
+	}
 	add, remove := upstreamCollectPendingChangesFromModels(
 		channel.GetModels(),
 		upstream,
