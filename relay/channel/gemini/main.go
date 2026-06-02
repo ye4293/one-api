@@ -45,6 +45,7 @@ func createPrintableRequest(original ChatRequest) ChatRequest {
 		GenerationConfig:  original.GenerationConfig,
 		SystemInstruction: original.SystemInstruction,
 		Tools:             original.Tools,
+		ToolConfig:        original.ToolConfig,
 	}
 
 	// 深拷贝Contents并截断base64数据
@@ -276,6 +277,47 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 				{
 					FunctionDeclarations: functionDeclarations,
 				},
+			}
+		}
+	}
+
+	// Handle tool_choice -> toolConfig.functionCallingConfig
+	if textRequest.ToolChoice != nil {
+		switch v := textRequest.ToolChoice.(type) {
+		case string:
+			switch v {
+			case "none":
+				// NONE mode: clear tools entirely — Gemini returns 400 if tools is non-empty with mode NONE
+				geminiRequest.Tools = nil
+				geminiRequest.ToolConfig = &ToolConfig{
+					FunctionCallingConfig: &FunctionCallingConfig{Mode: "NONE"},
+				}
+			case "required":
+				if len(geminiRequest.Tools) > 0 {
+					geminiRequest.ToolConfig = &ToolConfig{
+						FunctionCallingConfig: &FunctionCallingConfig{Mode: "ANY"},
+					}
+				}
+			case "auto":
+				if len(geminiRequest.Tools) > 0 {
+					geminiRequest.ToolConfig = &ToolConfig{
+						FunctionCallingConfig: &FunctionCallingConfig{Mode: "AUTO"},
+					}
+				}
+			}
+		case map[string]any:
+			// {"type": "function", "function": {"name": "..."}}
+			if len(geminiRequest.Tools) > 0 {
+				if funcMap, ok := v["function"].(map[string]any); ok {
+					if name, ok := funcMap["name"].(string); ok && name != "" {
+						geminiRequest.ToolConfig = &ToolConfig{
+							FunctionCallingConfig: &FunctionCallingConfig{
+								Mode:                 "ANY",
+								AllowedFunctionNames: []string{name},
+							},
+						}
+					}
+				}
 			}
 		}
 	}
