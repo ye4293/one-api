@@ -454,6 +454,11 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 			target.TestModel = testModelStr
 		}
 	}
+
+	// 渠道扩展设置（上游模型巡检等配置）
+	if _, exists := rawBody["other_settings"]; exists {
+		target.OtherSettings = source.OtherSettings
+	}
 }
 
 // 工具函数：处理多密钥渠道更新
@@ -1683,24 +1688,20 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	// 获取可用的密钥
+	// 获取可用的密钥：始终解析 Key，兼容单 Key、多 Key 及旧式换行分隔格式
 	key := channel.Key
-	if channel.MultiKeyInfo.IsMultiKey {
-		keys := channel.ParseKeys()
-		if len(keys) > 0 {
-			// 优先使用启用状态的密钥
-			for i, k := range keys {
-				status := channel.GetKeyStatus(i)
-				if status == common.ChannelStatusEnabled {
-					key = k
-					break
-				}
-			}
-			// 如果没有启用的密钥，使用第一个
-			if key == channel.Key {
-				key = keys[0]
+	if keys := channel.ParseKeys(); len(keys) > 0 {
+		selected := ""
+		for i, k := range keys {
+			if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
+				selected = k
+				break
 			}
 		}
+		if selected == "" {
+			selected = keys[0] // 所有 Key 均被禁用时回退到第一个
+		}
+		key = selected
 	}
 
 	key = strings.TrimSpace(key)
