@@ -514,17 +514,21 @@ func StartChannelUpstreamModelUpdateTask() {
 		interval := time.Duration(intervalMinutes) * time.Minute
 
 		common.SafeGoroutine(func() {
-			cooldownSec := getUpstreamMinCheckInterval()
 			logger.SysLog(fmt.Sprintf(
-				"upstream model update task started: scheduler_interval=%s, per_channel_cooldown=%s (global_option=%dm / env / default)",
+				"upstream model update task started: default_interval=%s, per_channel_cooldown dynamically follows global option",
 				interval,
-				time.Duration(cooldownSec)*time.Second,
-				config.UpstreamModelUpdateIntervalMinutes,
 			))
 			runUpstreamUpdateTaskOnce()
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			for range ticker.C {
+			for {
+				// 每次睡眠前读取最新全局配置，使调度器间隔与系统设置保持一致
+				config.OptionMapRWMutex.RLock()
+				globalMinutes := config.UpstreamModelUpdateIntervalMinutes
+				config.OptionMapRWMutex.RUnlock()
+				sleep := interval // 默认使用启动时从环境变量读取的值
+				if globalMinutes > 0 {
+					sleep = time.Duration(globalMinutes) * time.Minute
+				}
+				time.Sleep(sleep)
 				runUpstreamUpdateTaskOnce()
 			}
 		})
