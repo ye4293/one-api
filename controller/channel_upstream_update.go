@@ -35,6 +35,9 @@ const (
 var (
 	upstreamUpdateTaskOnce    sync.Once
 	upstreamUpdateTaskRunning atomic.Bool
+	// 最小检测间隔缓存：进程生命周期内不变，用 sync.Once 避免每渠道重复读 env
+	upstreamMinCheckIntervalOnce  sync.Once
+	upstreamMinCheckIntervalCache int64
 )
 
 // ──────────────────────────────────────────
@@ -155,12 +158,17 @@ func fetchChannelUpstreamModelList(channel *model.Channel) ([]string, error) {
 	// 选取第一个可用 Key（兼容单 Key、多 Key 及旧式 \n 分隔格式）
 	key := channel.Key
 	if keys := channel.ParseKeys(); len(keys) > 0 {
+		selected := ""
 		for i, k := range keys {
 			if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
-				key = k
+				selected = k
 				break
 			}
 		}
+		if selected == "" {
+			selected = keys[0] // 所有 Key 均被禁用时回退到第一个
+		}
+		key = selected
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -212,17 +220,40 @@ func upstreamCollectPendingChangesFromModels(
 
 	normalizedIgnored := upstreamNormalizeModelNames(ignoredModels)
 
+	// 预编译所有 regex: 前缀规则，避免在 per-model 循环中重复编译
+	type ignoreRule struct {
+		literal string
+		re      *regexp.Regexp
+	}
+	rules := make([]ignoreRule, 0, len(normalizedIgnored))
+	for _, ign := range normalizedIgnored {
+		if body, ok := strings.CutPrefix(ign, "regex:"); ok {
+			if re, err := regexp.Compile(strings.TrimSpace(body)); err == nil {
+				rules = append(rules, ignoreRule{re: re})
+			}
+		} else {
+			rules = append(rules, ignoreRule{literal: ign})
+		}
+	}
+
+	isIgnored := func(m string) bool {
+		for _, r := range rules {
+			if r.re != nil {
+				if r.re.MatchString(m) {
+					return true
+				}
+			} else if r.literal == m {
+				return true
+			}
+		}
+		return false
+	}
+
 	pendingAdd = lo.Filter(upstreamModels, func(m string, _ int) bool {
 		if _, ok := covered[m]; ok {
 			return false
 		}
-		return !lo.ContainsBy(normalizedIgnored, func(ignored string) bool {
-			if body, ok := strings.CutPrefix(ignored, "regex:"); ok {
-				matched, err := regexp.MatchString(strings.TrimSpace(body), m)
-				return err == nil && matched
-			}
-			return ignored == m
-		})
+		return !isIgnored(m)
 	})
 
 	pendingRemove = lo.Filter(localModels, func(m string, _ int) bool {
@@ -265,37 +296,43 @@ func saveChannelUpstreamSettings(channel *model.Channel, settings config.Channel
 	return model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Updates(updates).Error
 }
 
-// getUpstreamMinCheckInterval 从环境变量读取最小检测间隔秒数
+// getUpstreamMinCheckInterval 读取最小检测间隔（进程级缓存，避免每渠道重复 os.Getenv）
 func getUpstreamMinCheckInterval() int64 {
-	v := os.Getenv("CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS")
-	if v == "" {
-		return upstreamUpdateMinCheckIntervalSeconds
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n < 0 {
-		return upstreamUpdateMinCheckIntervalSeconds
-	}
-	return n
+	upstreamMinCheckIntervalOnce.Do(func() {
+		v := os.Getenv("CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS")
+		if v == "" {
+			upstreamMinCheckIntervalCache = upstreamUpdateMinCheckIntervalSeconds
+			return
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			n = upstreamUpdateMinCheckIntervalSeconds
+		}
+		upstreamMinCheckIntervalCache = n
+	})
+	return upstreamMinCheckIntervalCache
 }
 
 // checkAndPersistUpstreamChanges 检测上游模型变更并持久化
 // force=true 跳过冷却时间检查；allowAutoApply=true 允许自动同步新增模型
-func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.ChannelOtherSettings, force, allowAutoApply bool) (modelsChanged bool, autoAdded int, err error) {
+// ran=false 表示因冷却未到期而跳过，调用方不应将 settings 中的旧数据计入本次指标
+func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.ChannelOtherSettings, force, allowAutoApply bool) (modelsChanged bool, autoAdded int, ran bool, err error) {
 	now := helper.GetTimestamp()
 	if !force {
 		minInterval := getUpstreamMinCheckInterval()
 		if settings.UpstreamModelUpdateLastCheckTime > 0 &&
 			now-settings.UpstreamModelUpdateLastCheckTime < minInterval {
-			return false, 0, nil
+			return false, 0, false, nil // 冷却中：跳过，ran=false
 		}
 	}
 
+	ran = true
 	pendingAdd, pendingRemove, fetchErr := upstreamCollectPendingChanges(channel, *settings)
 	settings.UpstreamModelUpdateLastCheckTime = now
 
 	if fetchErr != nil {
 		_ = saveChannelUpstreamSettings(channel, *settings, false)
-		return false, 0, fetchErr
+		return false, 0, true, fetchErr
 	}
 
 	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
@@ -313,14 +350,14 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	settings.UpstreamModelUpdateLastRemovedModels = pendingRemove
 
 	if err = saveChannelUpstreamSettings(channel, *settings, modelsChanged); err != nil {
-		return false, autoAdded, err
+		return false, autoAdded, true, err
 	}
 	if modelsChanged {
 		if err = channel.UpdateAbilities(); err != nil {
-			return true, autoAdded, err
+			return true, autoAdded, true, err
 		}
 	}
-	return modelsChanged, autoAdded, nil
+	return modelsChanged, autoAdded, true, nil
 }
 
 // upstreamRefreshCache 刷新内存中的渠道缓存
@@ -335,6 +372,25 @@ func upstreamRefreshCache() {
 			model.InitChannelCache()
 		}()
 	}
+}
+
+// ──────────────────────────────────────────
+// 分页查询公共函数
+// ──────────────────────────────────────────
+
+// queryUpstreamChannelBatch 查询一批启用状态的渠道（按 id asc 游标分页）
+func queryUpstreamChannelBatch(lastID int) ([]*model.Channel, error) {
+	var channels []*model.Channel
+	q := model.DB.
+		Select("id", "name", "type", "key", "status", "base_url", "models",
+			"settings", "model_mapping", "multi_key_info", "header_override").
+		Where("status = ?", common.ChannelStatusEnabled).
+		Order("id asc").
+		Limit(upstreamUpdateBatchSize)
+	if lastID > 0 {
+		q = q.Where("id > ?", lastID)
+	}
+	return channels, q.Find(&channels).Error
 }
 
 // ──────────────────────────────────────────
@@ -353,17 +409,8 @@ func runUpstreamUpdateTaskOnce() {
 
 	lastID := 0
 	for {
-		var channels []*model.Channel
-		q := model.DB.
-			Select("id", "name", "type", "key", "status", "base_url", "models",
-				"settings", "model_mapping", "multi_key_info", "header_override").
-			Where("status = ?", common.ChannelStatusEnabled).
-			Order("id asc").
-			Limit(upstreamUpdateBatchSize)
-		if lastID > 0 {
-			q = q.Where("id > ?", lastID)
-		}
-		if err := q.Find(&channels).Error; err != nil {
+		channels, err := queryUpstreamChannelBatch(lastID)
+		if err != nil {
 			logger.SysLog(fmt.Sprintf("upstream update task query failed: %v", err))
 			break
 		}
@@ -381,20 +428,23 @@ func runUpstreamUpdateTaskOnce() {
 				continue
 			}
 			checked++
-			modelsChanged, autoAdded, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
+			modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
 			if err != nil {
 				failed++
 				logger.SysLog(fmt.Sprintf("upstream update check failed: channel_id=%d channel_name=%s err=%v",
 					ch.Id, ch.Name, err))
 				continue
 			}
-			add := len(upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)) + autoAdded
-			remove := len(upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels))
-			addedTotal += add
-			removedTotal += remove
-			autoTotal += autoAdded
-			if add > 0 || remove > 0 {
-				changed++
+			// 只在本次真正执行了检测时才计入指标，冷却跳过的不算
+			if ran {
+				add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
+				remove := len(settings.UpstreamModelUpdateLastRemovedModels)
+				addedTotal += add
+				removedTotal += remove
+				autoTotal += autoAdded
+				if add > 0 || remove > 0 {
+					changed++
+				}
 			}
 			if modelsChanged {
 				refreshNeeded = true
@@ -472,7 +522,7 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 	}
 
 	settings := channel.GetOtherSettings()
-	modelsChanged, autoAdded, err := checkAndPersistUpstreamChanges(channel, &settings, true, false)
+	modelsChanged, autoAdded, _, err := checkAndPersistUpstreamChanges(channel, &settings, true, false)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
@@ -501,9 +551,9 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 
 func doApplyChannelUpstreamModelUpdates(
 	channel *model.Channel,
+	settings config.ChannelOtherSettings,
 	addInput, ignoreInput, removeInput []string,
 ) (added, removed, remaining, remainingRemove []string, modelsChanged bool, err error) {
-	settings := channel.GetOtherSettings()
 	pendingAdd := upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
 	pendingRemove := upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
 
@@ -560,7 +610,7 @@ func ApplyChannelUpstreamModelUpdates(c *gin.Context) {
 	ignoredModels := upstreamIntersectModelNames(req.IgnoreModels, beforeSettings.UpstreamModelUpdateLastDetectedModels)
 
 	added, removed, remaining, remainingRemove, modelsChanged, err := doApplyChannelUpstreamModelUpdates(
-		channel, req.AddModels, req.IgnoreModels, req.RemoveModels,
+		channel, beforeSettings, req.AddModels, req.IgnoreModels, req.RemoveModels,
 	)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
@@ -599,17 +649,8 @@ func DetectAllChannelUpstreamModelUpdates(c *gin.Context) {
 
 	lastID := 0
 	for {
-		var channels []*model.Channel
-		q := model.DB.
-			Select("id", "name", "type", "key", "status", "base_url", "models",
-				"settings", "model_mapping", "multi_key_info", "header_override").
-			Where("status = ?", common.ChannelStatusEnabled).
-			Order("id asc").
-			Limit(upstreamUpdateBatchSize)
-		if lastID > 0 {
-			q = q.Where("id > ?", lastID)
-		}
-		if err := q.Find(&channels).Error; err != nil {
+		channels, err := queryUpstreamChannelBatch(lastID)
+		if err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}
@@ -626,7 +667,7 @@ func DetectAllChannelUpstreamModelUpdates(c *gin.Context) {
 			if !settings.UpstreamModelUpdateCheckEnabled {
 				continue
 			}
-			modelsChanged, autoAdded, err := checkAndPersistUpstreamChanges(ch, &settings, true, false)
+			modelsChanged, autoAdded, _, err := checkAndPersistUpstreamChanges(ch, &settings, true, false)
 			if err != nil {
 				failedIDs = append(failedIDs, ch.Id)
 				continue
@@ -634,8 +675,8 @@ func DetectAllChannelUpstreamModelUpdates(c *gin.Context) {
 			if modelsChanged {
 				refreshNeeded = true
 			}
-			add := upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
-			remove := upstreamNormalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
+			add := settings.UpstreamModelUpdateLastDetectedModels
+			remove := settings.UpstreamModelUpdateLastRemovedModels
 			detectedAdd += len(add)
 			detectedRemove += len(remove)
 			results = append(results, detectChannelUpstreamModelUpdatesResult{
@@ -681,17 +722,8 @@ func ApplyAllChannelUpstreamModelUpdates(c *gin.Context) {
 
 	lastID := 0
 	for {
-		var channels []*model.Channel
-		q := model.DB.
-			Select("id", "name", "type", "key", "status", "base_url", "models",
-				"settings", "model_mapping", "multi_key_info", "header_override").
-			Where("status = ?", common.ChannelStatusEnabled).
-			Order("id asc").
-			Limit(upstreamUpdateBatchSize)
-		if lastID > 0 {
-			q = q.Where("id > ?", lastID)
-		}
-		if err := q.Find(&channels).Error; err != nil {
+		channels, err := queryUpstreamChannelBatch(lastID)
+		if err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}
@@ -715,7 +747,7 @@ func ApplyAllChannelUpstreamModelUpdates(c *gin.Context) {
 			}
 
 			added, removed, remaining, remainingRemove, modelsChanged, err := doApplyChannelUpstreamModelUpdates(
-				ch, pendingAdd, nil, pendingRemove,
+				ch, settings, pendingAdd, nil, pendingRemove,
 			)
 			if err != nil {
 				failedIDs = append(failedIDs, ch.Id)
