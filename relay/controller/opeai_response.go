@@ -176,7 +176,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
 	return nil
 }
@@ -226,6 +226,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
 	}
 	other = appendBillingDetails(other, billingDetails)
+	other = util.AppendRetryHistoryOther(c, other, duration)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))

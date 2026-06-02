@@ -406,6 +406,7 @@ func consumeImageQuota(params *imageConsumeParams) {
 	// 构建 otherInfo
 	adminInfo := extractAdminInfoFromContext(params.c)
 	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, params.usageDetails)
+	otherInfo = util.AppendRetryHistoryOther(params.c, otherInfo, duration)
 
 	if otherInfo != "" {
 		model.RecordConsumeLogWithOtherAndRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
@@ -1260,6 +1261,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					}
 				}
 
+				otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 				if otherInfo != "" {
 					model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, generatedImages, modelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfo, xRequestID, 0, "")
 				} else {
@@ -1318,6 +1320,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logModelName = meta.ActualModelName
 		}
 		otherInfoImg := appendModelMappingInfo("", meta.OriginModelName, meta.ActualModelName)
+		otherInfoImg = util.AppendRetryHistoryOther(c, otherInfoImg, duration)
 		if otherInfoImg != "" {
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfoImg, xRequestID, 0, "")
 		} else {
@@ -3030,6 +3033,7 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 			}
 		}
 
+		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, 0)
 		if otherInfo != "" {
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, otherInfo, xRequestID, 0, "")
 		} else {

@@ -338,6 +338,8 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
 		}
 		otherInfo = appendBillingDetails(otherInfo, billingDetails)
+		// 把重试历史（如有）也拼进 other，供管理员展开查看
+		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 获取 X-Request-ID
 		xRequestID := c.GetString("X-Request-ID")
 		xResponseID := c.GetString("x_response_id")
