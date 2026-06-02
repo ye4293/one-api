@@ -362,15 +362,20 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	}
 
 	// 自动删除上游已移除的模型
-	var allModelsRemoved bool
 	if allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
 		current := upstreamNormalizeModelNames(channel.GetModels())
 		updated := upstreamSubtractModelNames(current, pendingRemove)
 		if len(updated) < len(current) {
 			channel.Models = strings.Join(updated, ",")
 			modelsChanged = true
-			allModelsRemoved = len(updated) == 0
 			settings.UpstreamModelUpdateLastRemovedModels = []string{} // 已删除，清空待删列表
+			// 注意：即使模型全部删完也不自动禁用渠道。
+			// 保持 enabled + 空模型列表（不会被路由选中），下次巡检若上游恢复则 auto-add 自动补回。
+			// 自动禁用会使渠道永久脱离巡检扫描（只扫 enabled），导致无法自我恢复。
+			if len(updated) == 0 {
+				logger.SysLog(fmt.Sprintf("upstream sync: channel_id=%d channel_name=%s all models removed, channel remains enabled pending upstream recovery",
+					channel.Id, channel.Name))
+			}
 		} else {
 			settings.UpstreamModelUpdateLastRemovedModels = pendingRemove // 未能删除，保留供手动审核
 		}
@@ -384,14 +389,6 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	if modelsChanged {
 		if err = channel.UpdateAbilities(); err != nil {
 			return true, autoAdded, true, err
-		}
-		// 自动删除后模型列表为空：自动禁用渠道，避免其成为无法服务任何请求的僵尸渠道
-		if allModelsRemoved {
-			if disabled, disableErr := model.AutoDisableChannelById(channel.Id, "上游模型同步后模型列表为空", ""); disableErr != nil {
-				logger.SysLog(fmt.Sprintf("upstream sync: failed to auto-disable empty channel_id=%d err=%v", channel.Id, disableErr))
-			} else if disabled {
-				logger.SysLog(fmt.Sprintf("upstream sync: auto-disabled channel_id=%d channel_name=%s: no models remain after upstream sync", channel.Id, channel.Name))
-			}
 		}
 	}
 	return modelsChanged, autoAdded, true, nil
