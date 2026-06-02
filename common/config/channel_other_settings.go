@@ -6,6 +6,10 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateCheckEnabled bool `json:"upstream_model_update_check_enabled,omitempty"`
 	// 是否自动将检测到的新增模型同步到渠道
 	UpstreamModelUpdateAutoSyncEnabled bool `json:"upstream_model_update_auto_sync_enabled,omitempty"`
+	// 是否自动删除上游已移除的模型
+	UpstreamModelUpdateAutoDeleteEnabled bool `json:"upstream_model_update_auto_delete_enabled,omitempty"`
+	// 每渠道检测间隔（分钟），0 表示使用全局默认（环境变量 CHANNEL_UPSTREAM_MODEL_UPDATE_MIN_CHECK_INTERVAL_SECONDS 或 300 秒）
+	UpstreamModelUpdateIntervalMinutes int `json:"upstream_model_update_interval_minutes,omitempty"`
 	// 上次巡检时间（Unix 秒）
 	UpstreamModelUpdateLastCheckTime int64 `json:"upstream_model_update_last_check_time,omitempty"`
 	// 上次检测到的待加入模型列表

@@ -314,12 +314,16 @@ func getUpstreamMinCheckInterval() int64 {
 }
 
 // checkAndPersistUpstreamChanges 检测上游模型变更并持久化
-// force=true 跳过冷却时间检查；allowAutoApply=true 允许自动同步新增模型
+// force=true 跳过冷却时间检查；allowAutoApply=true 允许自动同步（新增/删除）
 // ran=false 表示因冷却未到期而跳过，调用方不应将 settings 中的旧数据计入本次指标
 func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.ChannelOtherSettings, force, allowAutoApply bool) (modelsChanged bool, autoAdded int, ran bool, err error) {
 	now := helper.GetTimestamp()
 	if !force {
+		// 优先使用渠道级配置，否则回退到全局默认
 		minInterval := getUpstreamMinCheckInterval()
+		if settings.UpstreamModelUpdateIntervalMinutes > 0 {
+			minInterval = int64(settings.UpstreamModelUpdateIntervalMinutes) * 60
+		}
 		if settings.UpstreamModelUpdateLastCheckTime > 0 &&
 			now-settings.UpstreamModelUpdateLastCheckTime < minInterval {
 			return false, 0, false, nil // 冷却中：跳过，ran=false
@@ -335,6 +339,7 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 		return false, 0, true, fetchErr
 	}
 
+	// 自动同步新增模型
 	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
 		origin := upstreamNormalizeModelNames(channel.GetModels())
 		merged := upstreamMergeModelNames(origin, pendingAdd)
@@ -347,7 +352,19 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	} else {
 		settings.UpstreamModelUpdateLastDetectedModels = pendingAdd
 	}
-	settings.UpstreamModelUpdateLastRemovedModels = pendingRemove
+
+	// 自动删除上游已移除的模型
+	if allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+		current := upstreamNormalizeModelNames(channel.GetModels())
+		updated := upstreamSubtractModelNames(current, pendingRemove)
+		if len(updated) < len(current) {
+			channel.Models = strings.Join(updated, ",")
+			modelsChanged = true
+		}
+		settings.UpstreamModelUpdateLastRemovedModels = []string{}
+	} else {
+		settings.UpstreamModelUpdateLastRemovedModels = pendingRemove
+	}
 
 	if err = saveChannelUpstreamSettings(channel, *settings, modelsChanged); err != nil {
 		return false, autoAdded, true, err
