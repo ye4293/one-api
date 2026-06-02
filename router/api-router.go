@@ -151,6 +151,10 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/keys/delete-disabled", controller.DeleteDisabledKeys)
 			channelRoute.POST("/keys/fix-status", controller.FixMultiKeyChannelStatus)
 			channelRoute.PUT("/multi-key/settings", controller.UpdateChannelMultiKeySettings)
+			channelRoute.POST("/upstream_updates/detect", controller.DetectChannelUpstreamModelUpdates)
+			channelRoute.POST("/upstream_updates/apply", controller.ApplyChannelUpstreamModelUpdates)
+			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
+			channelRoute.POST("/upstream_updates/apply_all", controller.ApplyAllChannelUpstreamModelUpdates)
 		}
 		affinityRoute := apiRouter.Group("/affinity")
 		affinityRoute.Use(middleware.AdminAuth())
