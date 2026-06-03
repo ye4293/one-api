@@ -35,6 +35,7 @@ func InitOptionMap() {
 	config.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(config.AutomaticDisableChannelEnabled)
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
 	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
+	config.OptionMap["UpstreamModelUpdateIntervalMinutes"] = strconv.Itoa(config.UpstreamModelUpdateIntervalMinutes)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -448,6 +449,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	case "AutoTestChannelFrequency":
 		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
+	case "UpstreamModelUpdateIntervalMinutes":
+		config.UpstreamModelUpdateIntervalMinutes, _ = strconv.Atoi(value)
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

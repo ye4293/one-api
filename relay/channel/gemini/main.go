@@ -185,34 +185,65 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 		}
 	}
 
-	// Handle reasoning_effort -> thinking_level mapping for Gemini 3
-	// Reference: https://ai.google.dev/gemini-api/docs/gemini-3#thinking_level
-	// Gemini 3 thinking_level valid values: "minimal", "low", "medium", "high" (NO "none")
-	// "minimal" matches the "no thinking" setting; Pro models do NOT support "minimal" (lowest is "low")
+	// Handle reasoning_effort for Gemini models.
+	// Gemini 2.5 uses thinkingBudget; Gemini 3+ uses thinking_level.
 	if textRequest.ReasoningEffort != "" {
-		thinkingLevel := ""
-		isPro := strings.Contains(strings.ToLower(textRequest.Model), "-pro")
-		switch strings.ToLower(textRequest.ReasoningEffort) {
-		case "none", "minimal":
-			if isPro {
-				thinkingLevel = "low"
-			} else {
-				thinkingLevel = "minimal"
+		modelLower := strings.ToLower(textRequest.Model)
+		isGemini25 := strings.Contains(modelLower, "2.5") || strings.Contains(modelLower, "gemini-25")
+		if isGemini25 {
+			// Gemini 2.5: map reasoning_effort -> thinkingBudget
+			// -1 = dynamic (API decides); Pro min is 128, Flash min is 0
+			isPro := strings.Contains(modelLower, "-pro")
+			budget := -1 // default: dynamic
+			switch strings.ToLower(textRequest.ReasoningEffort) {
+			case "none":
+				if isPro {
+					budget = 128 // Pro minimum; cannot fully disable thinking
+				} else {
+					budget = 0 // Flash/Lite can disable thinking
+				}
+			case "minimal":
+				budget = 1024
+			case "low":
+				budget = 1024
+			case "medium":
+				budget = 8192 // dynamic
+			case "high":
+				budget = 24576
 			}
-		case "low":
-			thinkingLevel = "low"
-		case "medium":
-			thinkingLevel = "medium"
-		case "high":
-			thinkingLevel = "high"
-		}
-
-		if thinkingLevel != "" {
 			if geminiRequest.GenerationConfig.ThinkingConfig == nil {
 				geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{}
 			}
-			geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = thinkingLevel
-			logger.SysLog(fmt.Sprintf("Mapped reasoning_effort '%s' to thinking_level '%s'", textRequest.ReasoningEffort, thinkingLevel))
+			geminiRequest.GenerationConfig.ThinkingConfig.ThinkingBudget = &budget
+			geminiRequest.GenerationConfig.ThinkingConfig.IncludeThoughts = true
+			logger.SysLog(fmt.Sprintf("Mapped reasoning_effort '%s' to thinkingBudget %d for Gemini 2.5 model '%s'", textRequest.ReasoningEffort, budget, textRequest.Model))
+		} else {
+			// Gemini 3+: map reasoning_effort -> thinking_level
+			// Reference: https://ai.google.dev/gemini-api/docs/gemini-3#thinking_level
+			// Valid values: "minimal", "low", "medium", "high" (NO "none"); Pro does not support "minimal"
+			thinkingLevel := ""
+			isPro := strings.Contains(modelLower, "-pro")
+			switch strings.ToLower(textRequest.ReasoningEffort) {
+			case "none", "minimal":
+				if isPro {
+					thinkingLevel = "low"
+				} else {
+					thinkingLevel = "minimal"
+				}
+			case "low":
+				thinkingLevel = "low"
+			case "medium":
+				thinkingLevel = "medium"
+			case "high":
+				thinkingLevel = "high"
+			}
+			if thinkingLevel != "" {
+				if geminiRequest.GenerationConfig.ThinkingConfig == nil {
+					geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{}
+				}
+				geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = thinkingLevel
+				logger.SysLog(fmt.Sprintf("Mapped reasoning_effort '%s' to thinking_level '%s' for Gemini 3+ model '%s'", textRequest.ReasoningEffort, thinkingLevel, textRequest.Model))
+			}
 		}
 	}
 

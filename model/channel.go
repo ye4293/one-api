@@ -78,6 +78,8 @@ type Channel struct {
 	Discount *float64 `json:"discount" gorm:"type:decimal(4,2);default:1.0"`
 	// 渠道测试模型
 	TestModel string `json:"test_model" gorm:"type:varchar(255)"`
+	// 渠道扩展设置（JSON），含上游模型巡检相关配置，存储在 settings 列
+	OtherSettings string `json:"other_settings" gorm:"column:settings;type:text"`
 }
 
 // 多Key聚合信息结构
@@ -1618,4 +1620,40 @@ func (channel *Channel) ClearUsedQuota() error {
 
 		return nil
 	})
+}
+
+// GetOtherSettings 反序列化渠道扩展设置（settings 列）
+func (channel *Channel) GetOtherSettings() config.ChannelOtherSettings {
+	setting := config.ChannelOtherSettings{}
+	if channel.OtherSettings == "" || channel.OtherSettings == "{}" {
+		return setting
+	}
+	if err := json.Unmarshal([]byte(channel.OtherSettings), &setting); err != nil {
+		logger.SysError(fmt.Sprintf("failed to unmarshal channel other settings: channel_id=%d err=%v", channel.Id, err))
+	}
+	return setting
+}
+
+// SetOtherSettings 序列化并写入渠道扩展设置
+func (channel *Channel) SetOtherSettings(s config.ChannelOtherSettings) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("failed to marshal channel other settings: channel_id=%d err=%v", channel.Id, err))
+		return
+	}
+	channel.OtherSettings = string(b)
+}
+
+// GetModels 将逗号分隔的 Models 字段解析为去重后的字符串切片
+func (channel *Channel) GetModels() []string {
+	if channel.Models == "" {
+		return []string{}
+	}
+	var result []string
+	for _, m := range strings.Split(channel.Models, ",") {
+		if t := strings.TrimSpace(m); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }

@@ -528,12 +528,18 @@ func testChannels(notify bool, scope string) error {
 			// 仅自动禁用的渠道才自动恢复，仅主节点执行
 			// 若响应时间超过阈值，也跳过自动启用（避免把响应过慢的渠道误恢复）
 			// 若渠道关闭了自动启用（auto_enabled=false），同样跳过
+			// 若渠道模型列表为空，跳过自动启用（防止 zombie 状态：enabled 但无可服务模型）
 			if !isChannelEnabled && util.ShouldEnableChannel(err, openaiErr) {
-				 if milliseconds > disableThreshold {
+				if milliseconds > disableThreshold {
 					logger.SysLog(fmt.Sprintf(
 						"skip auto-enable channel #%d (%s): response time %.2fs exceeds threshold %.2fs",
 						channel.Id, channel.Name,
 						float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0,
+					))
+				} else if channel.Models == "" {
+					logger.SysLog(fmt.Sprintf(
+						"skip auto-enable channel #%d (%s): model list is empty, waiting for upstream sync to restore models",
+						channel.Id, channel.Name,
 					))
 				} else {
 					monitor.EnableChannel(channel.Id, channel.Name)
@@ -582,22 +588,30 @@ func AutomaticallyTestChannels() {
 	if !config.IsMasterNode {
 		return
 	}
+	// 启动时立即执行一次，与 upstream sync 行为对齐，避免重启后等待完整周期
+	if config.AutoTestChannelFrequency > 0 {
+		logger.SysLog("automatically testing all channels (startup run)")
+		if err := testChannels(false, "auto_disabled"); err != nil {
+			logger.SysLog(fmt.Sprintf("startup auto-test skipped: %s", err.Error()))
+		}
+	}
 	for {
 		frequency := config.AutoTestChannelFrequency
-		logger.SysLog(fmt.Sprintf("automatically testing all channels every %d minutes", frequency))
 		if frequency <= 0 {
 			// 未启用，每分钟轮询一次等待开启
 			time.Sleep(time.Minute)
 			continue
 		}
-	
+
 		time.Sleep(time.Duration(frequency) * time.Minute)
 		// 再次读取，防止睡眠期间被关闭
 		if config.AutoTestChannelFrequency <= 0 {
 			continue
 		}
 		logger.SysLog("automatically testing all channels")
-		_ = testChannels(false, "auto_disabled")
+		if err := testChannels(false, "auto_disabled"); err != nil {
+			logger.SysLog(fmt.Sprintf("auto-test skipped (previous run still in progress): %s", err.Error()))
+		}
 		logger.SysLog("automatically channel test finished")
 	}
 }
