@@ -261,6 +261,16 @@ type OpenaiResaponseResponse struct {
 	Model             string                 `json:"model,omitempty"`              // 使用的模型
 	Instructions      string                 `json:"instructions,omitempty"`       // 系统指令
 	Usage             *ResponseUsage         `json:"usage,omitempty"`              // Token 使用情况
+	Error             *ResponsesErrorDetail  `json:"error,omitempty"`              // 失败时的错误详情（status=failed）
+}
+
+// ResponsesErrorDetail OpenAI Responses 流式错误详情
+// 出现在顶层 error 事件的 error 字段，以及 response.failed 事件的 response.error 字段
+type ResponsesErrorDetail struct {
+	Type    string      `json:"type,omitempty"`    // 错误类型，如 insufficient_quota（response.error 中可能缺省）
+	Code    string      `json:"code,omitempty"`    // 错误代码，如 insufficient_quota
+	Message string      `json:"message,omitempty"` // 错误消息
+	Param   interface{} `json:"param,omitempty"`   // 相关参数
 }
 
 // IncompleteDetails 未完成响应的详细信息
@@ -305,6 +315,7 @@ type OpenaiResponseStreamResponse struct {
 	Response *OpenaiResaponseResponse `json:"response"` // 响应对象
 	Delta    string                   `json:"delta,omitempty"`
 	Item     *ResponsesOutput         `json:"item,omitempty"`
+	Error    *ResponsesErrorDetail    `json:"error,omitempty"` // 顶层 error 事件携带的错误详情
 }
 type ResponsesOutput struct {
 	Type    string                   `json:"type"`
