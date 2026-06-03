@@ -401,44 +401,6 @@ func CalculateResponseQuotaFromUsageMetadata(usageMetadata *openai.ResponseUsage
 // parseUpstreamErrorMessage 解析上游错误响应，提取具体的错误消息
 // 支持多种格式：{"error":{"message":"..."}} 或 {"message":"..."} 或纯文本
 
-// buildResponsesStreamError 将 OpenAI Responses 流式 error/response.failed 事件
-// 转换为带状态码的错误，使上层能正确跳过计费并触发渠道自动禁用
-func buildResponsesStreamError(e *openai.ResponsesErrorDetail) *model.ErrorWithStatusCode {
-	if e == nil {
-		return openai.ErrorWrapper(fmt.Errorf("upstream stream failed"), "upstream_stream_error", http.StatusInternalServerError)
-	}
-
-	errType := e.Type
-	if errType == "" {
-		// response.failed 中的 error 通常只有 code/message，用 code 兜底成类型
-		errType = e.Code
-	}
-	if errType == "" {
-		errType = "upstream_error"
-	}
-
-	// 状态码映射：欠费/配额耗尽映射成 429，使 ShouldDisableChannel 与重试逻辑正确分类
-	statusCode := http.StatusInternalServerError
-	switch errType {
-	case "insufficient_quota", "rate_limit_exceeded":
-		statusCode = http.StatusTooManyRequests
-	}
-
-	message := e.Message
-	if message == "" {
-		message = fmt.Sprintf("upstream responses stream error: %s", errType)
-	}
-
-	return &model.ErrorWithStatusCode{
-		Error: model.Error{
-			Message: message,
-			Type:    errType,
-			Code:    e.Code,
-		},
-		StatusCode: statusCode,
-	}
-}
-
 func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *openai.ResponseUsage, err *model.ErrorWithStatusCode) {
 	defer util.CloseResponseBodyGracefully(resp)
 
@@ -520,23 +482,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 			return false
 		}
 		helper.OpenaiResponseChunkData(c, streamResponse, data)
-		// 标记流式响应已经开始向客户端写出（200 + SSE 头已 flush）
-		// 一旦置位，上层不应再跨渠道重试，否则会污染客户端的 SSE 流
-		c.Set("response_stream_started", true)
 		switch streamResponse.Type {
-		case "error":
-			// 上游流式错误事件（如欠费 insufficient_quota），HTTP 状态码仍为 200
-			// 错误藏在 SSE 的 error 事件里，需要识别并抛出以触发计费跳过与渠道自动禁用
-			if streamResponse.Error != nil {
-				openaiErr = buildResponsesStreamError(streamResponse.Error)
-				return false
-			}
-		case "response.failed":
-			// 兜底：部分上游可能只发 response.failed 而不发独立的 error 事件
-			if streamResponse.Response != nil && streamResponse.Response.Error != nil {
-				openaiErr = buildResponsesStreamError(streamResponse.Response.Error)
-				return false
-			}
 		case "response.completed":
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
