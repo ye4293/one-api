@@ -3264,7 +3264,12 @@ func RelayResponse(c *gin.Context) {
 	group := c.GetString("group")
 	lastResponseChannel := getLastRetryFallbackChannel(originalChannelId)
 	retryTimes := config.RetryTimes
-	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
+	if c.GetBool("response_stream_started") {
+		// 流式响应已向客户端写出（200 + SSE 头已发），再换渠道重试会污染客户端的 SSE 流，
+		// 此时仅依赖前面的 processChannelRelayError 完成渠道自动禁用，不再重试
+		logger.Errorf(ctx, "openai responses stream already started, won't retry to avoid corrupting client stream (status code %d)", relayError.StatusCode)
+		retryTimes = 0
+	} else if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
 		retryTimes = 0
 	}
@@ -3346,6 +3351,13 @@ func RelayResponse(c *gin.Context) {
 		util.PublishFailedRetryHistory(c, retryAttempts)
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+
+		// 本次重试已开始向客户端写出 SSE 流后才失败，继续换渠道会污染已提交的流。
+		// 渠道自动禁用已由上面的 processChannelRelayError 处理，这里直接终止重试。
+		if c.GetBool("response_stream_started") {
+			logger.Errorf(ctx, "openai responses stream started during retry, stop retrying to avoid corrupting client stream (status code %d)", relayError.StatusCode)
+			break
+		}
 	}
 
 	if relayError != nil {
