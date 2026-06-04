@@ -26,7 +26,7 @@ import (
 func RelayMidjourneyNotify(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 
-	logger.SysLog(fmt.Sprintf("notify:%s", string(bodyBytes)))
+	logger.Info(c.Request.Context(), fmt.Sprintf("notify:%s", string(bodyBytes)))
 
 	// 将读取的内容再次放回c.Request.Body中，以便后续的处理
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -193,11 +193,11 @@ func RelaySwapFace(c *gin.Context) *midjourney.MidjourneyResponseWithStatusCode 
 
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
+				logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 			}
 			err = model.CacheUpdateUserQuota(ctx, userId)
 			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
+				logger.Error(ctx, "error update user quota cache: "+err.Error())
 			}
 			if quota != 0 {
 				tokenName := c.GetString("token_name")
@@ -518,7 +518,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 		requestURL = strings.Replace(requestURL, "/mj/", "/mj-"+mode+"/mj/", 1)
 
 	}
-	logger.SysLog(fmt.Sprintf("requestURL:%s", requestURL))
+	logger.Info(c.Request.Context(), fmt.Sprintf("requestURL:%s", requestURL))
 	baseURL := c.GetString("base_url")
 
 	//midjRequest.NotifyHook = "http://127.0.0.1:3000/mj/notify"
@@ -561,7 +561,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 	groupRatio := util.GetBillingGroupRatio(c, group)
 	ratio := modelPrice * groupRatio
 	userQuota, err := model.CacheGetUserQuota(ctx, userId)
-	logger.SysLog(fmt.Sprintf("erruserQuota1:%+v\n", err))
+	logger.Info(c.Request.Context(), fmt.Sprintf("erruserQuota1:%+v\n", err))
 	if err != nil {
 		return &midjourney.MidjourneyResponseWithStatusCode{
 			StatusCode: http.StatusBadRequest,
@@ -600,11 +600,11 @@ func RelayMidjourneySubmit(c *gin.Context, relayMode int) *midjourney.Midjourney
 			title := c.Request.Header.Get("X-Title")
 			err := model.PostConsumeTokenQuota(tokenId, quota)
 			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
+				logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 			}
 			err = model.CacheUpdateUserQuota(ctx, userId)
 			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
+				logger.Error(ctx, "error update user quota cache: "+err.Error())
 			}
 			if quota != 0 {
 				tokenName := c.GetString("token_name")

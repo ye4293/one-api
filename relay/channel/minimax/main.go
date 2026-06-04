@@ -21,12 +21,14 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logger.SysError("error reading response body: " + err.Error())
+		logger.Error(c.Request.Context(),
+			"error reading response body: "+err.Error())
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError), nil
 	}
 
 	// 记录原始响应
-	logger.SysLog("Raw response: " + string(bodyBytes))
+	logger.Info(c.Request.Context(),
+		"Raw response: "+string(bodyBytes))
 
 	// 首先尝试解析第一个响应，检查是否为错误响应
 	chunks := strings.Split(string(bodyBytes), "\n\n")
@@ -38,9 +40,10 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 		var firstResponse MinimaxResponse
 		err = json.Unmarshal([]byte(firstChunk), &firstResponse)
 		if err == nil && firstResponse.BaseResp.StatusCode != 0 {
-			logger.SysError(fmt.Sprintf("MiniMax error: code=%d, message=%s",
-				firstResponse.BaseResp.StatusCode,
-				firstResponse.BaseResp.StatusMsg))
+			logger.Error(c.Request.Context(),
+				fmt.Sprintf("MiniMax error: code=%d, message=%s",
+					firstResponse.BaseResp.StatusCode,
+					firstResponse.BaseResp.StatusMsg))
 			return &model.ErrorWithStatusCode{
 				Error: model.Error{
 					Message: firstResponse.BaseResp.StatusMsg,
@@ -70,12 +73,14 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			continue
 		}
 
-		logger.SysLog("Processing chunk: " + chunk)
+		logger.Info(c.Request.Context(),
+			"Processing chunk: "+chunk)
 
 		var streamResponse MinimaxResponse
 		err := json.Unmarshal([]byte(chunk), &streamResponse)
 		if err != nil {
-			logger.SysError("Error unmarshalling chunk: " + err.Error() + ", chunk: " + chunk)
+			logger.Error(c.Request.Context(),
+				"Error unmarshalling chunk: "+err.Error()+", chunk: "+chunk)
 			continue
 		}
 

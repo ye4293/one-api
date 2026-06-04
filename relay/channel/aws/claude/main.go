@@ -395,7 +395,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 				}
 				jsonStr, marshalErr := json.Marshal(finalResponse)
 				if marshalErr != nil {
-					logger.SysError("error marshalling final usage chunk: " + marshalErr.Error())
+					logger.Error(c.Request.Context(), "error marshalling final usage chunk: "+marshalErr.Error())
 				} else {
 					c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
 				}
@@ -409,7 +409,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 			claudeResp := new(anthropic.StreamResponse)
 			err := json.NewDecoder(bytes.NewReader(v.Value.Bytes)).Decode(claudeResp)
 			if err != nil {
-				logger.SysError("error unmarshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
 				return false
 			}
 
@@ -447,16 +447,16 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 			}
 			jsonStr, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(), "error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonStr)})
 			return true
 		case *types.UnknownUnionMember:
-			logger.SysError("AWS stream unknown union member tag: " + v.Tag)
+			logger.Error(c.Request.Context(), "AWS stream unknown union member tag: "+v.Tag)
 			return false
 		default:
-			logger.SysError("AWS stream union is nil or unknown type")
+			logger.Error(c.Request.Context(), "AWS stream union is nil or unknown type")
 			return false
 		}
 	})
@@ -506,17 +506,16 @@ func NativeHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 	if claudeResponse.Usage != nil {
 		// 保留原始 anthropic.Usage 供上层计费/日志使用（包含 cache 字段）
 		c.Set("claude_usage_metadata", claudeResponse.Usage)
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
-			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
+		logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] aws NativeHandler 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d", claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
 		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeHandler Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
+		logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] aws NativeHandler Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
 
 	// 直接返回 Claude 原生格式响应
 	c.Header("Content-Type", "application/json")
 	if _, writeErr := c.Writer.Write(awsResp.Body); writeErr != nil {
-		logger.SysError("error writing response: " + writeErr.Error())
+		logger.Error(c.Request.Context(), "error writing response: "+writeErr.Error())
 	}
 	return nil, &usage
 }
@@ -577,8 +576,7 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 						c.Set("x_response_id", claudeResp.Message.Id)
 					}
 					// 判断是否创建或读取了缓存，并记录到 redis 中
-					logger.SysLog(fmt.Sprintf("[Claude Cache Debug] aws NativeStreamHandler 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d",
-						claudeResp.Message.Id, usage.TotalTokens))
+					logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] aws NativeStreamHandler 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d", claudeResp.Message.Id, usage.TotalTokens))
 					cache.HandleClaudeCache(c, claudeResp.Message.Id, claudeResp.Message.Usage)
 				}
 				if claudeResp.Type == "message_delta" && claudeResp.Usage != nil {
@@ -590,19 +588,19 @@ func NativeStreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *ut
 				}
 			} else {
 				// JSON 解析失败时记录错误
-				logger.SysError("error parsing claude stream response: " + jsonErr.Error())
+				logger.Error(c.Request.Context(), "error parsing claude stream response: "+jsonErr.Error())
 			}
 
 			// 直接透传 Claude 原生格式的 SSE 事件
 			// 格式: event: <type>\ndata: <json>\n\n
 			if _, writeErr := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, string(v.Value.Bytes)); writeErr != nil {
-				logger.SysError("error writing stream response: " + writeErr.Error())
+				logger.Error(c.Request.Context(), "error writing stream response: "+writeErr.Error())
 			}
 			c.Writer.Flush()
 		case *types.UnknownUnionMember:
-			logger.SysError("unknown tag: " + v.Tag)
+			logger.Error(c.Request.Context(), "unknown tag: "+v.Tag)
 		default:
-			logger.SysError("union is nil or unknown type")
+			logger.Error(c.Request.Context(), "union is nil or unknown type")
 		}
 	}
 

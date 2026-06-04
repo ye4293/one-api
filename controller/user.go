@@ -468,7 +468,7 @@ func UpdateUser(c *gin.Context) {
 	// 所以若前后值不同则直接按列更新一次。
 	if updatedUser.ChannelRatios != originUser.ChannelRatios {
 		if err := model.DB.Model(&model.User{}).Where("id = ?", updatedUser.Id).Update("channel_ratios", updatedUser.ChannelRatios).Error; err != nil {
-			logger.SysError("failed to update channel_ratios: " + err.Error())
+			logger.Error(c.Request.Context(), "failed to update channel_ratios: "+err.Error())
 		}
 		model.InvalidateUserChannelRatiosCache(updatedUser.Id)
 	}
@@ -488,7 +488,7 @@ func UpdateSelf(c *gin.Context) {
 	var user model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
 	if err != nil {
-		logger.SysLog(fmt.Sprintf("err:%s", err))
+		logger.Info(c.Request.Context(), fmt.Sprintf("err:%s", err))
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "Invalid parameter",

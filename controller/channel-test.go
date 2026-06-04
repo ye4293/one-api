@@ -303,11 +303,11 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 		} else {
 			if channel.Models == "" {
 				return fmt.Errorf("channel %s has no models", channel.Name), nil, "", keyIndex
-			}else{
+			} else {
 				modelNames := strings.Split(channel.Models, ",")
 				if len(modelNames) > 0 {
 					modelName = strings.TrimSpace(modelNames[0])
-			    }
+				}
 			}
 		}
 	}
@@ -447,8 +447,9 @@ func TestChannel(c *gin.Context) {
 			}
 		}
 
-		logger.SysLog(fmt.Sprintf("Channel #%d (%s) test failed with model %s: %s",
-			channel.Id, channel.Name, actualModel, err.Error()))
+		logger.Info(c.Request.Context(),
+			fmt.Sprintf("Channel #%d (%s) test failed with model %s: %s",
+				channel.Id, channel.Name, actualModel, err.Error()))
 	} else {
 		testResult["success"] = true
 
@@ -471,8 +472,9 @@ func TestChannel(c *gin.Context) {
 			}
 		}
 
-		logger.SysLog(fmt.Sprintf("Channel #%d (%s) test succeeded with model %s, took %.2fs",
-			channel.Id, channel.Name, actualModel, consumedTime))
+		logger.Info(c.Request.Context(),
+			fmt.Sprintf("Channel #%d (%s) test succeeded with model %s, took %.2fs",
+				channel.Id, channel.Name, actualModel, consumedTime))
 	}
 
 	c.JSON(http.StatusOK, testResult)
@@ -511,7 +513,7 @@ func testChannels(notify bool, scope string) error {
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			tik := time.Now()
-			err, openaiErr, _, _ := testChannel(channel, "",true)
+			err, openaiErr, _, _ := testChannel(channel, "", true)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 			if isChannelEnabled && milliseconds > disableThreshold {
@@ -615,4 +617,3 @@ func AutomaticallyTestChannels() {
 		logger.SysLog("automatically channel test finished")
 	}
 }
-

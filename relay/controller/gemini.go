@@ -418,12 +418,14 @@ func RelayGeminiNative(c *gin.Context) *model.ErrorWithStatusCode {
 func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *gemini.UsageMetadata, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx,
+			"error consuming token remain quota: "+err.Error())
 	}
 
 	err = dbmodel.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx,
+			"error update user quota cache: "+err.Error())
 	}
 
 	dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
@@ -456,7 +458,7 @@ func recordGeminiConsumption(ctx context.Context, userId, channelId, tokenId int
 		billingDetails["cached_tokens"] = cachedTokens
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
 	}
-	other = appendBillingDetails(other, billingDetails)
+	other = appendBillingDetails(ctx, other, billingDetails)
 	other = util.AppendRetryHistoryOther(c, other, duration)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,

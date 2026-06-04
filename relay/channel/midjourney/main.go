@@ -192,7 +192,8 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	defer cancel()
 	resp, err := util.GetHttpClient().Do(req)
 	if err != nil {
-		logger.SysError("do request failed: " + util.ProcessString(err.Error()))
+		logger.Error(c.Request.Context(),
+			"do request failed: "+util.ProcessString(err.Error()))
 		return MidjourneyErrorWithStatusCodeWrapper(common.MjErrorUnknown, "do_request_failed", http.StatusInternalServerError), nullBytes, err
 	}
 	statusCode := resp.StatusCode

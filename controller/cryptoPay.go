@@ -47,7 +47,7 @@ func GetPayChannel(c *gin.Context) {
 func CryptCallback(c *gin.Context) {
 	var response model.CryptCallbackResponse
 	if err := c.ShouldBindQuery(&response); err != nil {
-		logger.SysLog("failed to binf query")
+		logger.Error(c.Request.Context(), "failed to bind crypt callback query: "+err.Error())
 		c.String(http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -55,7 +55,7 @@ func CryptCallback(c *gin.Context) {
 	username := model.GetUsernameById(userId)
 	err := model.HandleCryptCallback(response, username)
 	if err != nil {
-		logger.SysLog("failed to handle callback")
+		logger.Error(c.Request.Context(), "failed to handle crypt callback: "+err.Error())
 		c.String(http.StatusUnauthorized, err.Error())
 		return
 	}

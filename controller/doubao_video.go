@@ -143,8 +143,7 @@ func RelayDoubaoVideoCreate(c *gin.Context) {
 		logger.Error(ctx, fmt.Sprintf("[doubao] insert video record failed: task_id=%s, %v", taskID, err))
 	}
 
-	logger.Info(ctx, fmt.Sprintf("[doubao] task created: task_id=%s, model=%s, user_id=%d, channel_id=%d, quota=%d",
-		taskID, model, meta.UserId, meta.ChannelId, quota))
+	logger.Info(ctx, fmt.Sprintf("[doubao] task created: task_id=%s, model=%s, user_id=%d, channel_id=%d, quota=%d", taskID, model, meta.UserId, meta.ChannelId, quota))
 
 	c.Data(resp.StatusCode, "application/json", respBody)
 }
@@ -287,8 +286,7 @@ func compensateDoubaoTask(taskID string, v *dbmodel.Video) {
 		return
 	}
 	if err := dbmodel.IncreaseUserQuota(v.UserId, v.Quota); err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v",
-			taskID, v.UserId, v.Quota, err))
+		logger.Error(ctx, fmt.Sprintf("[doubao] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v", taskID, v.UserId, v.Quota, err))
 		return
 	}
 	logger.Info(ctx, fmt.Sprintf("[doubao] compensated: task_id=%s, user_id=%d, quota=%d", taskID, v.UserId, v.Quota))
@@ -378,21 +376,21 @@ func isDoubaoVideoPollerEnabled() bool {
 // StartDoubaoVideoTaskPoller 启动轮询器，定期扫描 processing 状态的豆包视频任务
 func StartDoubaoVideoTaskPoller(ctx context.Context) {
 	if !isDoubaoVideoPollerEnabled() {
-		logger.SysLog("[doubao-poller] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
+		logger.Info(ctx, "[doubao-poller] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
 		return
 	}
 
 	ticker := time.NewTicker(doubaoVideoPollingInterval)
 	defer ticker.Stop()
 
-	logger.SysLog(fmt.Sprintf("[doubao-poller] started, interval=%v", doubaoVideoPollingInterval))
+	logger.Info(ctx, fmt.Sprintf("[doubao-poller] started, interval=%v", doubaoVideoPollingInterval))
 
 	pollDoubaoVideoTasks(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.SysLog("[doubao-poller] stopped")
+			logger.Info(ctx, "[doubao-poller] stopped")
 			return
 		case <-ticker.C:
 			pollDoubaoVideoTasks(ctx)
@@ -429,8 +427,7 @@ func pollSingleDoubaoVideoTask(ctx context.Context, task dbmodel.Video) {
 
 	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
 	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[doubao-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
-			task.TaskId, task.ChannelId, err))
+		logger.Error(ctx, fmt.Sprintf("[doubao-poller] get channel failed: task_id=%s, channel_id=%d, err=%v", task.TaskId, task.ChannelId, err))
 		return
 	}
 

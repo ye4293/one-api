@@ -185,7 +185,8 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			response := streamResponseZhipu2OpenAI(data)
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
@@ -194,13 +195,15 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			var zhipuResponse StreamMetaResponse
 			err := json.Unmarshal([]byte(data), &zhipuResponse)
 			if err != nil {
-				logger.SysError("error unmarshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error unmarshalling stream response: "+err.Error())
 				return true
 			}
 			response, zhipuUsage := streamMetaResponseZhipu2OpenAI(&zhipuResponse)
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error marshalling stream response: "+err.Error())
 				return true
 			}
 			usage = zhipuUsage

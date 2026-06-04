@@ -43,14 +43,14 @@ func isFluxReconcilerEnabled() bool {
 // StartFluxReconciler 启动后台 Flux/Replicate 任务对账 goroutine
 func StartFluxReconciler(ctx context.Context) {
 	if !isFluxReconcilerEnabled() {
-		logger.SysLog("[flux-reconciler] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
+		logger.Info(ctx, "[flux-reconciler] disabled by ENABLE_VIDEO_TASK_POLLER env, not starting")
 		return
 	}
 
 	ticker := time.NewTicker(fluxReconcileInterval)
 	defer ticker.Stop()
 
-	logger.SysLog("[flux-reconciler] started, interval=30s")
+	logger.Info(ctx, "[flux-reconciler] started, interval=30s")
 
 	// 启动时立即跑一次
 	runFluxReconcile(ctx)
@@ -58,7 +58,7 @@ func StartFluxReconciler(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.SysLog("[flux-reconciler] stopped")
+			logger.Info(ctx, "[flux-reconciler] stopped")
 			return
 		case <-ticker.C:
 			runFluxReconcile(ctx)

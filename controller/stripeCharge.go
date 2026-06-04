@@ -98,7 +98,7 @@ func CreateChargeOrder(c *gin.Context) {
 func StripeCallback(c *gin.Context) {
 	err := model.HandleStripeCallback(c.Request)
 	if err != nil {
-		logger.SysLog(fmt.Sprintf("err1:%+v\n", err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("stripe callback failed: %v", err))
 		c.String(http.StatusBadRequest, "fail")
 		return
 	}

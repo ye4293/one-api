@@ -500,7 +500,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 		var claudeResponse StreamResponse
 		err := json.Unmarshal([]byte(data), &claudeResponse)
 		if err != nil {
-			logger.SysError("error unmarshalling stream response: " + err.Error())
+			logger.Error(c.Request.Context(),
+				"error unmarshalling stream response: "+err.Error())
 			continue
 		}
 
@@ -556,12 +557,14 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 		}
 		err = render.ObjectData(c, response)
 		if err != nil {
-			logger.SysError(err.Error())
+			logger.Error(c.Request.Context(),
+				err.Error())
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		logger.SysError("error reading stream: " + err.Error())
+		logger.Error(c.Request.Context(),
+			"error reading stream: "+err.Error())
 	}
 
 	// 如果需要包含 usage 信息，在流结束时发送一个包含 usage 的最终 chunk
@@ -585,7 +588,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMeta *util.RelayMet
 			Usage:   &usage,
 		}
 		if err := render.ObjectData(c, finalResponse); err != nil {
-			logger.SysError("error sending final usage chunk: " + err.Error())
+			logger.Error(c.Request.Context(),
+				"error sending final usage chunk: "+err.Error())
 		}
 	}
 

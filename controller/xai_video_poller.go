@@ -19,21 +19,21 @@ const (
 
 func StartXaiVideoTaskPoller(ctx context.Context) {
 	if !isXaiVideoPollerEnabled() {
-		logger.SysLog("[xai-video-poller] disabled by ENABLE_XAI_VIDEO_POLLER env, not starting")
+		logger.Info(ctx, "[xai-video-poller] disabled by ENABLE_XAI_VIDEO_POLLER env, not starting")
 		return
 	}
 
 	ticker := time.NewTicker(xaiVideoPollingInterval)
 	defer ticker.Stop()
 
-	logger.SysLog(fmt.Sprintf("[xai-video-poller] started, interval=%v", xaiVideoPollingInterval))
+	logger.Info(ctx, fmt.Sprintf("[xai-video-poller] started, interval=%v", xaiVideoPollingInterval))
 
 	pollXaiVideoTasks(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.SysLog("[xai-video-poller] stopped")
+			logger.Info(ctx, "[xai-video-poller] stopped")
 			return
 		case <-ticker.C:
 			pollXaiVideoTasks(ctx)
@@ -79,8 +79,7 @@ func pollSingleXaiVideoTask(ctx context.Context, task *dbmodel.Video) {
 
 	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
 	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
-			task.TaskId, task.ChannelId, err))
+		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] get channel failed: task_id=%s, channel_id=%d, err=%v", task.TaskId, task.ChannelId, err))
 		return
 	}
 

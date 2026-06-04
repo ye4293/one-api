@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	aliWanProvider      = "ali-wan"
+	aliWanProvider        = "ali-wan"
 	aliWanPollingInterval = 10 * time.Minute
 )
 
@@ -259,8 +259,7 @@ func RelayAliVideoCreate(c *gin.Context) {
 		logger.Error(ctx, fmt.Sprintf("[ali-wan] insert video record failed: task_id=%s, %v", taskID, err))
 	}
 
-	logger.Info(ctx, fmt.Sprintf("[ali-wan] task created: task_id=%s, model=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
-		taskID, req.Billing.Model, req.Billing.VideoType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
+	logger.Info(ctx, fmt.Sprintf("[ali-wan] task created: task_id=%s, model=%s, type=%s, user_id=%d, channel_id=%d, quota=%d", taskID, req.Billing.Model, req.Billing.VideoType, req.Meta.UserId, req.Meta.ChannelId, req.Quota))
 
 	c.Data(resp.StatusCode, "application/json", respBody)
 }
@@ -293,8 +292,7 @@ func RelayAliVideoResult(c *gin.Context) {
 	}
 	if boundChannel := resolveChannelForTaskQuery(c.Request.URL.Path, relayMeta.UserId); boundChannel != nil {
 		if boundChannel.Id != channel.Id {
-			logger.Info(c, fmt.Sprintf("[ali-wan] channel override: path=%s, original_channel=%d, bound_channel=%d",
-				c.Request.URL.Path, channel.Id, boundChannel.Id))
+			logger.Info(c, fmt.Sprintf("[ali-wan] channel override: path=%s, original_channel=%d, bound_channel=%d", c.Request.URL.Path, channel.Id, boundChannel.Id))
 			channel = boundChannel
 		}
 	}
@@ -393,8 +391,7 @@ func compensateAliWanTask(taskID string, v *dbmodel.Video) {
 		return
 	}
 	if err := dbmodel.IncreaseUserQuota(v.UserId, v.Quota); err != nil {
-		logger.Error(ctx, fmt.Sprintf("[ali-wan] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v",
-			taskID, v.UserId, v.Quota, err))
+		logger.Error(ctx, fmt.Sprintf("[ali-wan] compensate quota failed: task_id=%s, user_id=%d, quota=%d, err=%v", taskID, v.UserId, v.Quota, err))
 		return
 	}
 	logger.Info(ctx, fmt.Sprintf("[ali-wan] compensated: task_id=%s, user_id=%d, quota=%d", taskID, v.UserId, v.Quota))
@@ -410,7 +407,7 @@ func isAliWanTaskPollerEnabled() bool {
 // StartAliWanTaskPoller 启动轮询器，定期扫描 processing 状态的任务
 func StartAliWanTaskPoller(ctx context.Context) {
 	if !isAliWanTaskPollerEnabled() {
-		logger.SysLog("[ali-wan-poller] disabled by ENABLE_ALI_WAN_POLLER env, not starting")
+		logger.Info(ctx, "[ali-wan-poller] disabled by ENABLE_ALI_WAN_POLLER env, not starting")
 		return
 	}
 	ticker := time.NewTicker(aliWanPollingInterval)
@@ -454,8 +451,7 @@ func pollAliWanTasks(ctx context.Context) {
 func pollSingleAliWanTask(ctx context.Context, task *dbmodel.Video) {
 	channel, err := dbmodel.GetChannelById(task.ChannelId, true)
 	if err != nil {
-		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] get channel failed: task_id=%s, channel_id=%d, err=%v",
-			task.TaskId, task.ChannelId, err))
+		logger.Error(ctx, fmt.Sprintf("[ali-wan-poller] get channel failed: task_id=%s, channel_id=%d, err=%v", task.TaskId, task.ChannelId, err))
 		return
 	}
 

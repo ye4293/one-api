@@ -168,7 +168,7 @@ func AddToken(c *gin.Context) {
 	}
 	err = cleanToken.Insert()
 	if err != nil {
-		logger.SysLog("2")
+		logger.Error(c.Request.Context(), "failed to create token: "+err.Error())
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": err.Error(),
@@ -339,7 +339,8 @@ func UpdateToken(c *gin.Context) {
 			// 执行自动启用并记录日志
 			if shouldAutoEnable {
 				cleanToken.Status = common.TokenStatusEnabled
-				logger.SysLog("Auto-enabling token " + strconv.Itoa(cleanToken.Id) + " (user " + strconv.Itoa(userId) + ") - " + autoEnableReason)
+				logger.Info(c.Request.Context(),
+					"Auto-enabling token "+strconv.Itoa(cleanToken.Id)+" (user "+strconv.Itoa(userId)+") - "+autoEnableReason)
 			}
 		}
 	}

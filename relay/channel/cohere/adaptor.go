@@ -32,7 +32,6 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) error {
 	channel.SetupCommonRequestHeader(c, req, meta)
-	logger.SysLog(meta.APIKey)
 	req.Header.Set("Authorization", "bearer "+meta.APIKey)
 	if meta.ChannelType == common.ChannelTypeOpenRouter {
 		req.Header.Set("HTTP-Referer", "https://www.ezlinkai.com")

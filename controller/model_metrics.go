@@ -143,7 +143,7 @@ func GetModelMetricsTimeSeries(c *gin.Context) {
 	}
 
 	if err != nil {
-		logger.SysError("model metrics timeseries query failed: " + err.Error())
+		logger.Error(c.Request.Context(), "model metrics timeseries query failed: "+err.Error())
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "query failed, please try again later",

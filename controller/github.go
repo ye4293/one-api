@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,12 +116,12 @@ func GithubOAuth(c *gin.Context) {
 
 	// 构建OAuth URL，不包含client_secret
 	oAuthUrl := fmt.Sprintf("%s?client_id=%s&scope=%s&state=%s", GithubOAuthUrl, config.GitHubClientId, "user:email", state)
-	logger.SysLog(fmt.Sprintf("oAuthUrl: %s\n", string(oAuthUrl)))
+	logger.Info(c.Request.Context(), "redirecting to GitHub OAuth")
 	// 重定向用户到OAuth URL
 	c.Redirect(http.StatusFound, oAuthUrl)
 }
 
-func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
+func getGitHubUserInfoByCode(ctx context.Context, code string) (*GitHubUser, error) {
 	if code == "" {
 		return nil, errors.New("无效的参数")
 	}
@@ -140,7 +141,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		logger.SysLog(err.Error())
+		logger.Error(ctx, err.Error())
 		return nil, errors.New("无法连接至 GitHub 服务器，请稍后重试！")
 	}
 	defer res.Body.Close()
@@ -156,7 +157,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", oAuthResponse.AccessToken))
 	res2, err := client.Do(req)
 	if err != nil {
-		logger.SysLog(err.Error())
+		logger.Error(ctx, err.Error())
 		return nil, errors.New("无法连接至 GitHub 服务器，请稍后重试！")
 	}
 	defer res2.Body.Close()
@@ -167,8 +168,7 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 		return nil, err
 	}
 
-	// 打印完整的JSON响应
-	logger.SysLog(fmt.Sprintf("GitHub Response:%s", string(bodyBytes)))
+	logger.Info(ctx, "GitHub OAuth user info fetched")
 
 	// 由于响应体已经被读取，需要将其内容复制回res2.Body，以便后续使用
 	res2.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -176,10 +176,10 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 	// 解码JSON到GitHubUser对象
 	var githubUser GitHubUser
 	err = json.NewDecoder(res2.Body).Decode(&githubUser)
-	logger.SysLog(fmt.Sprintf("code:%s\nGitHub User: %+v", code, githubUser))
 	if err != nil {
 		return nil, err
 	}
+	logger.Info(ctx, "GitHub OAuth user info decoded successfully")
 	if githubUser.Login == "" {
 		return nil, errors.New("返回值非法，用户字段为空，请稍后重试！")
 	}
@@ -210,7 +210,7 @@ func GithubOAuthCallback(c *gin.Context) {
 		return
 	}
 	code := c.Query("code")
-	githubUser, err := getGitHubUserInfoByCode(code)
+	githubUser, err := getGitHubUserInfoByCode(c.Request.Context(), code)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -281,7 +281,7 @@ func GitHubBind(c *gin.Context) {
 		return
 	}
 	code := c.Query("code")
-	githubUser, err := getGitHubUserInfoByCode(code)
+	githubUser, err := getGitHubUserInfoByCode(c.Request.Context(), code)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

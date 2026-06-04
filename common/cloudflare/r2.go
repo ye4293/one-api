@@ -115,7 +115,7 @@ func UploadImageToR2(ctx context.Context, base64Data string, mimeType string) (s
 	} else {
 		resultUrl = fmt.Sprintf("%s/%s/%s", commonConfig.CfFileEndpoint, bucketName, objectKey)
 	}
-	logger.SysLog(fmt.Sprintf("Image uploaded to R2: %s (size: %d bytes)", resultUrl, len(imageData)))
+	logger.Info(ctx, fmt.Sprintf("Image uploaded to R2: %s (size: %d bytes)", resultUrl, len(imageData)))
 
 	return resultUrl, nil
 }

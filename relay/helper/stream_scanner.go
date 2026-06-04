@@ -91,7 +91,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			logger.SysError("timeout waiting for goroutines to exit")
+			logger.Error(c.Request.Context(), "timeout waiting for goroutines to exit")
 		}
 
 		close(stopChan)
