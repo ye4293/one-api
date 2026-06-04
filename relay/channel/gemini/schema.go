@@ -80,12 +80,41 @@ func cleanFunctionParametersWithDepth(params any, depth int) any {
 		if itemsArr, ok := cleaned["items"].([]any); ok && len(itemsArr) > 0 {
 			cleaned["items"] = cleanFunctionParametersWithDepth(itemsArr[0], depth+1)
 		}
-		if nested, ok := cleaned["anyOf"].([]any); ok && nested != nil {
-			cleanedNested := make([]any, len(nested))
-			for i, item := range nested {
-				cleanedNested[i] = cleanFunctionParametersWithDepth(item, depth+1)
+		// anyOf 特殊处理：OpenAI 常用 anyOf:[实际类型, {type:null}] 表达可空字段，
+		// 但 Gemini 要求每个 schema 节点都有 type，纯 anyOf 节点会被拒。
+		// 因此剥离 null 分支、转为 nullable，并在仅剩单个分支时上提合并。
+		if rawAnyOf, ok := cleaned["anyOf"].([]any); ok && len(rawAnyOf) > 0 {
+			nullable := false
+			branches := make([]any, 0, len(rawAnyOf))
+			for _, b := range rawAnyOf {
+				if bm, ok := b.(map[string]any); ok && isNullSchemaBranch(bm) {
+					nullable = true
+					continue
+				}
+				branches = append(branches, cleanFunctionParametersWithDepth(b, depth+1))
 			}
-			cleaned["anyOf"] = cleanedNested
+			if nullable {
+				cleaned["nullable"] = true
+			}
+			switch len(branches) {
+			case 0:
+				// 只有 null 分支，anyOf 已无意义
+				delete(cleaned, "anyOf")
+			case 1:
+				// 唯一实际分支上提到当前节点，使其携带 type
+				delete(cleaned, "anyOf")
+				if only, ok := branches[0].(map[string]any); ok {
+					for k, v := range only {
+						if _, exists := cleaned[k]; !exists {
+							cleaned[k] = v
+						}
+					}
+				} else {
+					cleaned["anyOf"] = branches
+				}
+			default:
+				cleaned["anyOf"] = branches
+			}
 		}
 		return cleaned
 
@@ -158,6 +187,32 @@ func applyGeminiSchemaDowngrades(src, dst map[string]any) {
 func isNumber(v any) bool {
 	switch v.(type) {
 	case float64, float32, int, int64, int32:
+		return true
+	default:
+		return false
+	}
+}
+
+// isNullSchemaBranch 判断一个 anyOf 分支是否为纯 null 类型（{type:"null"} 或 {type:["null"]}），
+// 这类分支用于表达可空，应折叠为父节点的 nullable:true。
+func isNullSchemaBranch(m map[string]any) bool {
+	t, ok := m["type"]
+	if !ok {
+		return false
+	}
+	switch tv := t.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(tv), "null")
+	case []any:
+		if len(tv) == 0 {
+			return false
+		}
+		for _, x := range tv {
+			s, ok := x.(string)
+			if !ok || !strings.EqualFold(strings.TrimSpace(s), "null") {
+				return false
+			}
+		}
 		return true
 	default:
 		return false
