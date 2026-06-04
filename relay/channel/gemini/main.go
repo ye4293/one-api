@@ -298,7 +298,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 					"description": tool.Function.Description,
 				}
 				if tool.Function.Parameters != nil {
-					funcDecl["parameters"] = tool.Function.Parameters
+					funcDecl["parameters"] = cleanFunctionParameters(tool.Function.Parameters)
 				}
 				functionDeclarations = append(functionDeclarations, funcDecl)
 			}
