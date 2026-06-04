@@ -203,6 +203,96 @@ func TestCleanFunctionParameters_DepthGuard(t *testing.T) {
 	asMap(t, out) // 不 panic 即通过
 }
 
+func TestCleanFunctionParameters_AnyOfNullableCollapse(t *testing.T) {
+	// OpenAI 可空惯用法：anyOf:[实际类型, {type:null}] → 折叠为单节点 + nullable
+	in := map[string]any{
+		"anyOf": []any{
+			map[string]any{
+				"type":        "string",
+				"enum":        []any{"text", "markdown", "html"},
+				"description": "fmt",
+				"default":     "markdown",
+			},
+			map[string]any{"type": "null"},
+		},
+	}
+	out := asMap(t, cleanFunctionParameters(in))
+	if _, ok := out["anyOf"]; ok {
+		t.Error("anyOf with single real branch + null should be collapsed")
+	}
+	if out["type"] != "STRING" {
+		t.Errorf("collapsed node should carry type STRING, got %v", out["type"])
+	}
+	if out["nullable"] != true {
+		t.Errorf("null branch should become nullable:true, got %v", out["nullable"])
+	}
+	if enum, ok := out["enum"].([]any); !ok || len(enum) != 3 {
+		t.Errorf("enum should be lifted, got %v", out["enum"])
+	}
+	if out["default"] != "markdown" {
+		t.Errorf("default should be lifted, got %v", out["default"])
+	}
+}
+
+func TestCleanFunctionParameters_AnyOfMultiBranchKeepsNullable(t *testing.T) {
+	// 多个非 null 分支：去掉 null 分支、标 nullable、保留 anyOf
+	in := map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "integer"},
+			map[string]any{"type": "null"},
+		},
+	}
+	out := asMap(t, cleanFunctionParameters(in))
+	if out["nullable"] != true {
+		t.Error("should set nullable:true when a null branch exists")
+	}
+	anyOf, ok := out["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("should keep 2 non-null branches, got %v", out["anyOf"])
+	}
+}
+
+func TestCleanFunctionParameters_RealWebfetchSchema(t *testing.T) {
+	// 客户真实请求体（opencode webfetch 工具），曾触发
+	// "parameters.format schema didn't specify the schema type field"
+	in := map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object",
+		"properties": map[string]any{
+			"url": map[string]any{"type": "string", "description": "u"},
+			"format": map[string]any{
+				"anyOf": []any{
+					map[string]any{
+						"type":        "string",
+						"enum":        []any{"text", "markdown", "html"},
+						"description": "d",
+						"default":     "markdown",
+					},
+					map[string]any{"type": "null"},
+				},
+			},
+			"timeout": map[string]any{"type": "number", "description": "t"},
+		},
+		"required": []any{"url"},
+	}
+	out := asMap(t, cleanFunctionParameters(in))
+	if _, ok := out["$schema"]; ok {
+		t.Error("$schema should be removed")
+	}
+	props := asMap(t, out["properties"])
+	fmtNode := asMap(t, props["format"])
+	if _, ok := fmtNode["anyOf"]; ok {
+		t.Error("format.anyOf should be collapsed (root cause of the 400)")
+	}
+	if fmtNode["type"] != "STRING" {
+		t.Errorf("format node must carry type STRING after collapse, got %v", fmtNode["type"])
+	}
+	if fmtNode["nullable"] != true {
+		t.Errorf("format should be nullable, got %v", fmtNode["nullable"])
+	}
+}
+
 func TestCleanFunctionParameters_Nil(t *testing.T) {
 	if got := cleanFunctionParameters(nil); got != nil {
 		t.Errorf("nil input want nil, got %v", got)
