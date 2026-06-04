@@ -62,7 +62,6 @@ func DoVideoRequest(c *gin.Context, modelName string) *model.ErrorWithStatusCode
 	}
 }
 
-
 func handleMinimaxVideoRequest(c *gin.Context, ctx context.Context, videoRequest model.VideoRequest, meta *util.RelayMeta) *model.ErrorWithStatusCode {
 
 	baseUrl := meta.BaseURL
@@ -699,12 +698,14 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 
 	err := dbmodel.PostConsumeTokenQuota(meta.TokenId, quota)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx,
+			"error consuming token remain quota: "+err.Error())
 	}
 
 	err = dbmodel.CacheUpdateUserQuota(ctx, meta.UserId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx,
+			"error update user quota cache: "+err.Error())
 	}
 
 	if quota != 0 {
@@ -843,7 +844,7 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 		if credentialsJSON == "" {
 			log.Printf("[VEO任务创建] ⚠️  未能保存凭证，查询时将使用当前渠道配置 - 任务:%s", taskId)
 		}
-	}else if provider == "xai" {
+	} else if provider == "xai" {
 		credentialsJSON = meta.APIKey
 	}
 
@@ -858,24 +859,24 @@ func CreateVideoLog(provider string, taskId string, meta *util.RelayMeta, mode s
 
 	// 创建新的 Video 实例
 	video := &dbmodel.Video{
-		Prompt:      "prompt",
-		CreatedAt:   time.Now().Unix(), // 使用当前时间戳
-		TaskId:      taskId,
-		Provider:    provider,
-		Username:    dbmodel.GetUsernameById(meta.UserId),
-		ChannelId:   meta.ChannelId,
-		UserId:      meta.UserId,
-		Mode:        mode, //keling
-		Type:        finalVideoType,
-		Model:       meta.OriginModelName,
-		Duration:    duration,
-		Resolution:  resolutionStr, // 保存分辨率
-		VideoId:     videoId,
-		Quota:       quota,
-		Credentials: credentialsJSON, // 保存完整的JSON凭证
-		Status:      "processing",    // 初始状态设置为处理中
-		VideoDuration: videoDuration, // 输入视频时长
-		Sound:       sound,           // 是否有声
+		Prompt:        "prompt",
+		CreatedAt:     time.Now().Unix(), // 使用当前时间戳
+		TaskId:        taskId,
+		Provider:      provider,
+		Username:      dbmodel.GetUsernameById(meta.UserId),
+		ChannelId:     meta.ChannelId,
+		UserId:        meta.UserId,
+		Mode:          mode, //keling
+		Type:          finalVideoType,
+		Model:         meta.OriginModelName,
+		Duration:      duration,
+		Resolution:    resolutionStr, // 保存分辨率
+		VideoId:       videoId,
+		Quota:         quota,
+		Credentials:   credentialsJSON, // 保存完整的JSON凭证
+		Status:        "processing",    // 初始状态设置为处理中
+		VideoDuration: videoDuration,   // 输入视频时长
+		Sound:         sound,           // 是否有声
 	}
 
 	// 调用 Insert 方法插入记录
@@ -1589,4 +1590,3 @@ func CompensateVideoTask(taskid string) {
 
 	log.Printf("Successfully completed compensation for task %s: user %d and channel %d restored quota %d", taskid, videoTask.UserId, videoTask.ChannelId, quota)
 }
-

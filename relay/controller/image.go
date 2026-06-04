@@ -372,12 +372,12 @@ func consumeImageQuota(params *imageConsumeParams) {
 	quotaDelta := params.actualQuota - params.preConsumedQuota
 	err := model.PostConsumeTokenQuota(params.meta.TokenId, quotaDelta)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(params.ctx, "error consuming token remain quota: "+err.Error())
 	}
 
 	err = model.CacheUpdateUserQuota(params.ctx, params.meta.UserId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(params.ctx, "error update user quota cache: "+err.Error())
 	}
 
 	if params.actualQuota == 0 {
@@ -1835,31 +1835,31 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 					ImageTokens     int `json:"image_tokens"`
 					ReasoningTokens int `json:"reasoning_tokens"`
 				} `json:"output_tokens_details"`
-		}{
-			TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
-			InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
-			OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
-			InputTokensDetails: struct {
-				TextTokens  int `json:"text_tokens"`
-				ImageTokens int `json:"image_tokens"`
 			}{
-				TextTokens:  usageDetails.InputTextTokens,
-				ImageTokens: usageDetails.InputImageTokens,
+				TotalTokens:  geminiResponse.UsageMetadata.TotalTokenCount,
+				InputTokens:  geminiResponse.UsageMetadata.PromptTokenCount,
+				OutputTokens: geminiResponse.UsageMetadata.CandidatesTokenCount + geminiResponse.UsageMetadata.ThoughtsTokenCount,
+				InputTokensDetails: struct {
+					TextTokens  int `json:"text_tokens"`
+					ImageTokens int `json:"image_tokens"`
+				}{
+					TextTokens:  usageDetails.InputTextTokens,
+					ImageTokens: usageDetails.InputImageTokens,
+				},
+				OutputTokensDetails: struct {
+					TextTokens      int `json:"text_tokens"`
+					ImageTokens     int `json:"image_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				}{
+					TextTokens:      0,
+					ImageTokens:     usageDetails.OutputImageTokens,
+					ReasoningTokens: usageDetails.ReasoningTokens,
+				},
 			},
-			OutputTokensDetails: struct {
-				TextTokens      int `json:"text_tokens"`
-				ImageTokens     int `json:"image_tokens"`
-				ReasoningTokens int `json:"reasoning_tokens"`
-			}{
-				TextTokens:      0,
-				ImageTokens:     usageDetails.OutputImageTokens,
-				ReasoningTokens: usageDetails.ReasoningTokens,
-			},
-		},
-	}
+		}
 
-	// Re-marshal to the OpenAI format with usage information
-	responseBody, err = json.Marshal(imageResponseWithUsage)
+		// Re-marshal to the OpenAI format with usage information
+		responseBody, err = json.Marshal(imageResponseWithUsage)
 		if err != nil {
 			logger.Errorf(ctx, "序列化转换后的响应失败: %s", err.Error())
 			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
@@ -2253,13 +2253,13 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 // 以及豆包计费逻辑所需的 usage.generated_images 字段。
 func parseDoubaoImageSSEToJSON(sseBody []byte) ([]byte, error) {
 	type sseEvent struct {
-		Type       string  `json:"type"`
-		Model      string  `json:"model"`
-		URL        string  `json:"url,omitempty"`
-		B64Json    string  `json:"b64_json,omitempty"`
-		Size       string  `json:"size,omitempty"`
-		ImageIndex int     `json:"image_index"`
-		CreatedAt  int64   `json:"created_at,omitempty"`
+		Type       string `json:"type"`
+		Model      string `json:"model"`
+		URL        string `json:"url,omitempty"`
+		B64Json    string `json:"b64_json,omitempty"`
+		Size       string `json:"size,omitempty"`
+		ImageIndex int    `json:"image_index"`
+		CreatedAt  int64  `json:"created_at,omitempty"`
 		Error      *struct {
 			Message string `json:"message"`
 			Code    string `json:"code"`
@@ -2283,10 +2283,10 @@ func parseDoubaoImageSSEToJSON(sseBody []byte) ([]byte, error) {
 	}
 
 	type outJSON struct {
-		Model     string      `json:"model,omitempty"`
-		Created   int64       `json:"created,omitempty"`
-		Data      []imageItem `json:"data"`
-		Usage     doubaoUsage `json:"usage"`
+		Model   string      `json:"model,omitempty"`
+		Created int64       `json:"created,omitempty"`
+		Data    []imageItem `json:"data"`
+		Usage   doubaoUsage `json:"usage"`
 	}
 
 	var images []imageItem
@@ -3005,13 +3005,15 @@ func handleSuccessfulResponseImage(c *gin.Context, ctx context.Context, meta *ut
 
 	err := model.PostConsumeTokenQuota(meta.TokenId, quota)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx,
+			"error consuming token remain quota: "+err.Error())
 		return err
 	}
 
 	err = model.CacheUpdateUserQuota(ctx, meta.UserId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx,
+			"error update user quota cache: "+err.Error())
 		return err
 	}
 
@@ -4444,7 +4446,7 @@ func extractImageInputs(value interface{}) []string {
 			if str != "" {
 				inputs = append(inputs, str)
 			}
-		}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+		}
 	}
 
 	return inputs

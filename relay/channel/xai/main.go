@@ -206,7 +206,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						}
 					}
 
-					logger.SysError("error unmarshalling XAI stream response: " + err.Error())
+					logger.Error(c.Request.Context(),
+						"error unmarshalling XAI stream response: "+err.Error())
 					// 发送原始数据
 					writeLine(c.Writer, originalData)
 					flusher.Flush()
@@ -240,7 +241,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 					// 重新序列化
 					modifiedData, err := json.Marshal(openaiStreamResponse)
 					if err != nil {
-						logger.SysError("error marshalling modified stream response: " + err.Error())
+						logger.Error(c.Request.Context(),
+							"error marshalling modified stream response: "+err.Error())
 						writeLine(c.Writer, originalData)
 					} else {
 						writeLine(c.Writer, "data: "+string(modifiedData))
@@ -252,7 +254,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 				var streamResponse openai.CompletionsStreamResponse
 				err := json.Unmarshal([]byte(dataContent), &streamResponse)
 				if err != nil {
-					logger.SysError("error unmarshalling XAI stream response: " + err.Error())
+					logger.Error(c.Request.Context(),
+						"error unmarshalling XAI stream response: "+err.Error())
 					writeLine(c.Writer, originalData)
 					flusher.Flush()
 					continue

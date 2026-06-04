@@ -890,14 +890,14 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 	if requestStartTime, exists := c.Get("request_start_time"); exists {
 		if t, ok := requestStartTime.(time.Time); ok {
 			startTime = t
-			logger.SysLog(fmt.Sprintf("Gemini using request start time: %v", startTime))
+			logger.Info(c.Request.Context(), fmt.Sprintf("Gemini using request start time: %v", startTime))
 		} else {
 			startTime = time.Now() // fallback
-			logger.SysLog("Gemini using fallback start time (type error)")
+			logger.Info(c.Request.Context(), "Gemini using fallback start time (type error)")
 		}
 	} else {
 		startTime = time.Now() // fallback
-		logger.SysLog("Gemini using fallback start time (not found)")
+		logger.Info(c.Request.Context(), "Gemini using fallback start time (not found)")
 	}
 
 	var firstWordTime *time.Time
@@ -938,7 +938,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			var geminiResponse ChatResponse
 			err := json.Unmarshal([]byte(data), &geminiResponse)
 			if err != nil {
-				logger.SysError("error unmarshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
 				return true
 			}
 
@@ -969,7 +969,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 
 				jsonResponse, _ := json.Marshal(errorResponse)
 				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
-				logger.SysLog(fmt.Sprintf("Gemini stream blocked: %s", geminiResponse.PromptFeedback.BlockReason))
+				logger.Info(c.Request.Context(), fmt.Sprintf("Gemini stream blocked: %s", geminiResponse.PromptFeedback.BlockReason))
 				return false
 			}
 
@@ -1001,7 +1001,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 				response.Choices[0].FinishReason = &geminiResponse.Candidates[0].FinishReason
 				jsonResponse, err := json.Marshal(response)
 				if err != nil {
-					logger.SysError("error marshalling stream response: " + err.Error())
+					logger.Error(c.Request.Context(), "error marshalling stream response: "+err.Error())
 					return true
 				}
 				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
@@ -1061,7 +1061,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(), "error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
@@ -1080,9 +1080,9 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 	if firstWordTime != nil {
 		firstWordLatency := firstWordTime.Sub(startTime).Seconds()
 		c.Set("first_word_latency", firstWordLatency)
-		logger.SysLog(fmt.Sprintf("Gemini first word latency calculated: %.3f seconds", firstWordLatency))
+		logger.Info(c.Request.Context(), fmt.Sprintf("Gemini first word latency calculated: %.3f seconds", firstWordLatency))
 	} else {
-		logger.SysLog("Gemini: No first word time recorded")
+		logger.Info(c.Request.Context(), "Gemini: No first word time recorded")
 	}
 
 	return nil, responseText

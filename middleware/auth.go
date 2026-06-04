@@ -98,7 +98,7 @@ func TryUserAuth() func(c *gin.Context) {
 		id := session.Get("id")
 
 		if username != nil {
-			logger.SysLog("TryUserAuth: resolved from session, username=" + username.(string))
+			logger.Info(c.Request.Context(), "TryUserAuth: resolved from session, username="+username.(string))
 		} else {
 			// 尝试从 access token 解析
 			accessToken := c.Request.Header.Get("Authorization")
@@ -108,9 +108,9 @@ func TryUserAuth() func(c *gin.Context) {
 					username = user.Username
 					role = user.Role
 					id = user.Id
-					logger.SysLog("TryUserAuth: resolved from token, username=" + user.Username)
+					logger.Info(c.Request.Context(), "TryUserAuth: resolved from token, username="+user.Username)
 				} else {
-					logger.SysLog("TryUserAuth: token provided but validation failed, token prefix: " + accessToken[:min(len(accessToken), 20)])
+					logger.Info(c.Request.Context(), "TryUserAuth: token provided but validation failed")
 				}
 			}
 		}
@@ -136,31 +136,31 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 
-	// Gemini API 从 query 参数或 x-goog-api-key header 中获取 key
-	// 支持 v1beta、v1alpha、v1 等版本路径
-	if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
-		strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
-		strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models") ||
-		strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
-		skKey := c.Query("key")
-		if skKey != "" {
-			c.Request.Header.Set("Authorization", "Bearer "+skKey)
+		// Gemini API 从 query 参数或 x-goog-api-key header 中获取 key
+		// 支持 v1beta、v1alpha、v1 等版本路径
+		if strings.HasPrefix(c.Request.URL.Path, "/v1beta/models") ||
+			strings.HasPrefix(c.Request.URL.Path, "/v1beta/openai/models") ||
+			strings.HasPrefix(c.Request.URL.Path, "/v1alpha/models") ||
+			strings.HasPrefix(c.Request.URL.Path, "/v1/models/") {
+			skKey := c.Query("key")
+			if skKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+skKey)
+			}
+			// 从 x-goog-api-key header 中获取 key
+			xGoogKey := c.Request.Header.Get("x-goog-api-key")
+			if xGoogKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+xGoogKey)
+			}
 		}
-		// 从 x-goog-api-key header 中获取 key
-		xGoogKey := c.Request.Header.Get("x-goog-api-key")
-		if xGoogKey != "" {
-			c.Request.Header.Set("Authorization", "Bearer "+xGoogKey)
-		}
-	}
 
-	// Flux API 从 x-key header 中获取 key
-	// 支持 /flux/ 路径
-	if strings.HasPrefix(c.Request.URL.Path, "/flux/") {
-		xKey := c.Request.Header.Get("x-key")
-		if xKey != "" {
-			c.Request.Header.Set("Authorization", "Bearer "+xKey)
+		// Flux API 从 x-key header 中获取 key
+		// 支持 /flux/ 路径
+		if strings.HasPrefix(c.Request.URL.Path, "/flux/") {
+			xKey := c.Request.Header.Get("x-key")
+			if xKey != "" {
+				c.Request.Header.Set("Authorization", "Bearer "+xKey)
+			}
 		}
-	}
 		key := c.Request.Header.Get("Authorization")
 		parts := make([]string, 0)
 		key = strings.TrimPrefix(key, "Bearer ")
@@ -209,10 +209,8 @@ func CryptCallbackAuth() func(c *gin.Context) {
 		signature := c.Request.Header.Get("x-ca-signature")
 		url := "https://" + c.Request.Host + c.Request.URL.String()
 		err := model.VerifyCryptCallbackSignature(url, signature)
-		logger.SysLog("crypt-signature:" + signature)
-		logger.SysLog("crypt-url:" + url)
 		if err != nil {
-			logger.SysLog("crypt-err:" + err.Error())
+			logger.Error(c.Request.Context(), "crypt callback signature verification failed: "+err.Error())
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return
 		}

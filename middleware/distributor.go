@@ -10,10 +10,10 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/service"
 	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
+	"github.com/songquanpeng/one-api/service"
 )
 
 type ModelRequest struct {
@@ -147,7 +147,7 @@ func Distribute() func(c *gin.Context) {
 					if err != nil {
 						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 						if channel != nil {
-							logger.SysError(fmt.Sprintf("Channel does not exist：%d", channel.Id))
+							logger.Error(c.Request.Context(), fmt.Sprintf("Channel does not exist：%d", channel.Id))
 							message = "Database consistency has been violated, please contact the administrator"
 						}
 						abortWithMessage(c, http.StatusServiceUnavailable, message)
@@ -310,9 +310,9 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 			if key, keyErr := channel.GetKeyByIndex(cachedIdx); keyErr == nil {
 				actualKey = key
 				keyIndex = cachedIdx
-				logger.SysLog(fmt.Sprintf("channel:%d;using cached key index:%d for response-id cache hit", channel.Id, cachedIdx))
+				logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;using cached key index:%d for response-id cache hit", channel.Id, cachedIdx))
 			} else {
-				logger.SysLog(fmt.Sprintf("channel:%d;cached key index %d invalid (%v), falling back to normal selection", channel.Id, cachedIdx, keyErr))
+				logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;cached key index %d invalid (%v), falling back to normal selection", channel.Id, cachedIdx, keyErr))
 			}
 		}
 		// 清除 cached_key_index，避免重试时误用
@@ -332,7 +332,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 			actualKey, keyIndex, err = channel.GetNextAvailableKey()
 		}
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
 			actualKey = channel.Key // 回退到原始Key
 			keyIndex = 0
 		}
@@ -348,8 +348,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if len(actualKey) > 8 {
 		maskedKey = actualKey[:4] + "***" + actualKey[len(actualKey)-4:]
 	}
-	logger.SysLog(fmt.Sprintf("channel:%d;requestModel:%s;keyIndex:%d;maskedKey:%s",
-		channel.Id, modelName, keyIndex, maskedKey))
+	logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;requestModel:%s;keyIndex:%d;maskedKey:%s", channel.Id, modelName, keyIndex, maskedKey))
 
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
 	c.Set("base_url", channel.GetBaseURL())
@@ -372,7 +371,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		// 使用统一方法处理 Kling 凭证和 Token 生成
 		token, err := keling.GetCredentialsAndGenerateToken(channel, keyIndex)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to generate Kling token for channel %d: %s", channel.Id, err.Error()))
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to generate Kling token for channel %d: %s", channel.Id, err.Error()))
 			// 使用原始 key 作为降级方案
 			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
 			c.Set("Config", cfg)
@@ -381,7 +380,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 
 		// 设置 Authorization header
 		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-		logger.SysLog(fmt.Sprintf("Kling JWT token generated for channel %d", channel.Id))
+		logger.Info(c.Request.Context(), fmt.Sprintf("Kling JWT token generated for channel %d", channel.Id))
 	}
 	c.Set("Config", cfg)
 }
@@ -411,4 +410,3 @@ func addExcludedKeyIndex(c *gin.Context, keyIndex int) {
 	excludedKeys = append(excludedKeys, keyIndex)
 	c.Set("excluded_key_indices", excludedKeys)
 }
-

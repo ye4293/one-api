@@ -72,27 +72,27 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 					var streamResponse ChatCompletionsStreamResponse
 					err := json.Unmarshal([]byte(data), &streamResponse)
 					if err != nil {
-						logger.SysError("error unmarshalling stream response: " + err.Error())
+						logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
 						continue // just ignore the error
 					}
 
-				// 提取 Chat Completions 的 response ID 并缓存
-				if streamResponse.Id != "" && responseId == "" {
-					responseId = streamResponse.Id
-					c.Set("x_response_id", responseId)
-				}
-				// 在收到第一个非空内容时缓存（确保响应正常）
-				if responseId != "" && !idCached {
-					for _, choice := range streamResponse.Choices {
-						content := conv.AsString(choice.Delta.Content)
-						if content != "" {
-							// 第一次有内容输出时缓存 ID
-							dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Chat Completions Stream Cache")
-							idCached = true
-							break // 已缓存，跳出循环
+					// 提取 Chat Completions 的 response ID 并缓存
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+						c.Set("x_response_id", responseId)
+					}
+					// 在收到第一个非空内容时缓存（确保响应正常）
+					if responseId != "" && !idCached {
+						for _, choice := range streamResponse.Choices {
+							content := conv.AsString(choice.Delta.Content)
+							if content != "" {
+								// 第一次有内容输出时缓存 ID
+								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Chat Completions Stream Cache")
+								idCached = true
+								break // 已缓存，跳出循环
+							}
 						}
 					}
-				}
 
 					for _, choice := range streamResponse.Choices {
 						content := conv.AsString(choice.Delta.Content)
@@ -110,15 +110,15 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 					var streamResponse CompletionsStreamResponse
 					err := json.Unmarshal([]byte(data), &streamResponse)
 					if err != nil {
-						logger.SysError("error unmarshalling stream response: " + err.Error())
+						logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
 						continue
 					}
 
-				// 提取 Completions 的 response ID 并缓存
-				if streamResponse.Id != "" && responseId == "" {
-					responseId = streamResponse.Id
-					c.Set("x_response_id", responseId)
-				}
+					// 提取 Completions 的 response ID 并缓存
+					if streamResponse.Id != "" && responseId == "" {
+						responseId = streamResponse.Id
+						c.Set("x_response_id", responseId)
+					}
 					// 在收到第一个非空文本时缓存（确保响应正常）
 					if responseId != "" && !idCached {
 						for _, choice := range streamResponse.Choices {

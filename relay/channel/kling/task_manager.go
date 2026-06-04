@@ -244,7 +244,7 @@ func (tw *TaskWrapper) MarkFailed(ctx context.Context, reason string) error {
 	tw.SetFailReason(reason)
 
 	if err := tw.Update(); err != nil {
-		logger.SysError(fmt.Sprintf("Failed to mark task as failed: id=%d, error=%v", tw.GetID(), err))
+		logger.Error(ctx, fmt.Sprintf("Failed to mark task as failed: id=%d, error=%v", tw.GetID(), err))
 		return err
 	}
 

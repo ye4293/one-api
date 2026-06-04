@@ -240,7 +240,7 @@ func preConsumeImageQuota(ctx context.Context, estimatedQuota int64, meta *util.
 
 func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usage, meta *util.RelayMeta, textRequest *relaymodel.GeneralOpenAIRequest, ratio float64, preConsumedQuota int64, modelRatio float64, groupRatio float64, duration float64, title string, httpReferer string, firstWordLatency float64) {
 	// 更新多Key使用统计
-	updateMultiKeyUsage(meta, usage != nil)
+	updateMultiKeyUsage(ctx, meta, usage != nil)
 
 	if usage == nil {
 		// 打印用户和请求体信息
@@ -337,7 +337,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			billingDetails["cached_tokens"] = cachedTokens
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
 		}
-		otherInfo = appendBillingDetails(otherInfo, billingDetails)
+		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 获取 X-Request-ID
@@ -356,7 +356,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 }
 
 // updateMultiKeyUsage 更新多Key使用统计
-func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
+func updateMultiKeyUsage(ctx context.Context, meta *util.RelayMeta, success bool) {
 	// 只有多Key模式才需要更新统计
 	if !meta.IsMultiKey {
 		return
@@ -366,7 +366,7 @@ func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
 	go func() {
 		channel, err := model.GetChannelById(meta.ChannelId, true)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to get channel %d for multi-key usage update: %s",
+			logger.Error(ctx, fmt.Sprintf("Failed to get channel %d for multi-key usage update: %s",
 				meta.ChannelId, err.Error()))
 			return
 		}
@@ -377,7 +377,7 @@ func updateMultiKeyUsage(meta *util.RelayMeta, success bool) {
 		}
 		err = channel.HandleKeyUsed(keyIndex, success)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to update multi-key usage for channel %d, key %d: %s",
+			logger.Error(ctx, fmt.Sprintf("Failed to update multi-key usage for channel %d, key %d: %s",
 				meta.ChannelId, keyIndex, err.Error()))
 		}
 	}()
@@ -397,13 +397,13 @@ func getChannelHistoryInfo(c *gin.Context) string {
 }
 
 // appendBillingDetails 向 other 字段追加计费详情 JSON
-func appendBillingDetails(other string, details map[string]interface{}) string {
+func appendBillingDetails(ctx context.Context, other string, details map[string]interface{}) string {
 	if len(details) == 0 {
 		return other
 	}
 	detailsBytes, err := json.Marshal(details)
 	if err != nil {
-		logger.SysError("error marshalling billing details: " + err.Error())
+		logger.Error(ctx, "error marshalling billing details: "+err.Error())
 		return other
 	}
 	billingInfo := fmt.Sprintf("billingDetails:%s", string(detailsBytes))
@@ -470,14 +470,14 @@ func UpdateMultiKeyUsageFromContext(c *gin.Context, success bool) {
 	go func() {
 		channel, err := model.GetChannelById(channelId, true)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to get channel %d for context multi-key usage update: %s",
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to get channel %d for context multi-key usage update: %s",
 				channelId, err.Error()))
 			return
 		}
 
 		err = channel.HandleKeyUsed(keyIndex, success)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Failed to update context multi-key usage for channel %d, key %d: %s",
+			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to update context multi-key usage for channel %d, key %d: %s",
 				channelId, keyIndex, err.Error()))
 		}
 	}()

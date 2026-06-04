@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -120,7 +121,7 @@ func GoogleOAuth(c *gin.Context) {
 
 	// 构建OAuth URL，不包含client_secret
 	oAuthUrl := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&scope=%s&response_type=code&access_type=offline&state=%s", GoogleOAuthURL, config.GoogleClientId, redirectURI, Scope, state)
-	logger.SysLog(fmt.Sprintf("oAuthUrl: %s\n", string(oAuthUrl)))
+	logger.Info(c.Request.Context(), "redirecting to Google OAuth")
 	// 重定向用户到OAuth URL
 	c.Redirect(http.StatusFound, oAuthUrl)
 }
@@ -149,12 +150,12 @@ func GoogleOAuthCallback(c *gin.Context) {
 	}
 
 	code := c.Query("code")
-	tokenResult, err := GetTokenByCode(code)
+	tokenResult, err := GetTokenByCode(c.Request.Context(), code)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
-	googleUser, err := GetGoogleUserInfoByToken(tokenResult.AccessToken)
+	googleUser, err := GetGoogleUserInfoByToken(c.Request.Context(), tokenResult.AccessToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
@@ -232,7 +233,7 @@ func GoogleOAuthCallback(c *gin.Context) {
 	setupLogin(&user, c)
 }
 
-func GetTokenByCode(code string) (*GoogleTokenResult, error) {
+func GetTokenByCode(ctx context.Context, code string) (*GoogleTokenResult, error) {
 	redirect_url := config.GoogleRedirectUri
 	data := url.Values{}
 	data.Set("client_id", config.GoogleClientId)
@@ -253,7 +254,7 @@ func GetTokenByCode(code string) (*GoogleTokenResult, error) {
 		return nil, err
 	}
 
-	logger.SysLog(fmt.Sprintf("getTokenResult: %s\n", string(getTokenResult)))
+	logger.Info(ctx, "Google OAuth token exchange succeeded")
 	var tokenResult GoogleTokenResult
 	err = json.Unmarshal(getTokenResult, &tokenResult)
 	if err != nil {
@@ -262,7 +263,7 @@ func GetTokenByCode(code string) (*GoogleTokenResult, error) {
 	return &tokenResult, nil
 }
 
-func GetGoogleUserInfoByToken(token string) (*GoogleUser, error) {
+func GetGoogleUserInfoByToken(ctx context.Context, token string) (*GoogleUser, error) {
 	req, err := http.NewRequest("GET", GetUserUrl, nil)
 	if err != nil {
 		return nil, err
@@ -281,7 +282,7 @@ func GetGoogleUserInfoByToken(token string) (*GoogleUser, error) {
 	if err != nil {
 		return nil, err
 	}
-	logger.SysLog(fmt.Sprintf("userInfo: %s\n", string(userInfo)))
+	logger.Info(ctx, "Google OAuth user info fetched")
 	var user GoogleUser
 	err = json.Unmarshal(userInfo, &user)
 	if err != nil {
@@ -299,12 +300,12 @@ func GoogleBind(c *gin.Context) {
 		return
 	}
 	code := c.Query("code")
-	tokenResult, err := GetTokenByCode(code)
+	tokenResult, err := GetTokenByCode(c.Request.Context(), code)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}
-	googleUser, err := GetGoogleUserInfoByToken(tokenResult.AccessToken)
+	googleUser, err := GetGoogleUserInfoByToken(c.Request.Context(), tokenResult.AccessToken)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,

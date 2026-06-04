@@ -24,7 +24,7 @@ func DoIdentifyFace(c *gin.Context) {
 	// 读取并解析请求体
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face read body error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face read body error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -32,7 +32,7 @@ func DoIdentifyFace(c *gin.Context) {
 
 	var request map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &request); err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face parse json error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face parse json error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "invalid_request_json", http.StatusBadRequest)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -43,8 +43,7 @@ func DoIdentifyFace(c *gin.Context) {
 	_, hasVideoURL := request["video_url"]
 
 	if (!hasVideoID && !hasVideoURL) || (hasVideoID && hasVideoURL) {
-		logger.SysError(fmt.Sprintf("Kling identify-face invalid parameters: user_id=%d, has_video_id=%v, has_video_url=%v",
-			meta.UserId, hasVideoID, hasVideoURL))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face invalid parameters: user_id=%d, has_video_id=%v, has_video_url=%v", meta.UserId, hasVideoID, hasVideoURL))
 		errResp := openai.ErrorWrapper(
 			fmt.Errorf("video_id 和 video_url 必须二选一填写"),
 			"invalid_parameters",
@@ -57,8 +56,7 @@ func DoIdentifyFace(c *gin.Context) {
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face get channel error: user_id=%d, channel_id=%d, error=%v",
-			meta.UserId, meta.ChannelId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face get channel error: user_id=%d, channel_id=%d, error=%v", meta.UserId, meta.ChannelId, err))
 		errResp := openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -75,7 +73,7 @@ func DoIdentifyFace(c *gin.Context) {
 
 	convertedBody, err := json.Marshal(request)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face marshal request error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face marshal request error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "marshal_request_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -83,8 +81,7 @@ func DoIdentifyFace(c *gin.Context) {
 
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face request error: user_id=%d, channel_id=%d, error=%v",
-			meta.UserId, meta.ChannelId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face request error: user_id=%d, channel_id=%d, error=%v", meta.UserId, meta.ChannelId, err))
 		errResp := openai.ErrorWrapper(err, "request_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -94,7 +91,7 @@ func DoIdentifyFace(c *gin.Context) {
 	// 读取响应
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face read response error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face read response error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "read_response_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -102,16 +99,14 @@ func DoIdentifyFace(c *gin.Context) {
 
 	var klingResp kling.IdentifyFaceResponse
 	if err := json.Unmarshal(body, &klingResp); err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face parse response error: user_id=%d, body=%s, error=%v",
-			meta.UserId, string(body), err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face parse response error: user_id=%d, body=%s, error=%v", meta.UserId, string(body), err))
 		errResp := openai.ErrorWrapper(err, "parse_response_failed", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
 	}
 
 	if klingResp.Code != 0 {
-		logger.SysError(fmt.Sprintf("Kling identify-face API error: user_id=%d, code=%d, message=%s",
-			meta.UserId, klingResp.Code, klingResp.Message))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face API error: user_id=%d, code=%d, message=%s", meta.UserId, klingResp.Code, klingResp.Message))
 		// 透传原始响应，不扣费
 		c.JSON(http.StatusOK, klingResp)
 		return
@@ -128,7 +123,7 @@ func DoIdentifyFace(c *gin.Context) {
 	// 获取用户信息
 	user, err := dbmodel.GetUserById(meta.UserId, false)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face get user error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face get user error: user_id=%d, error=%v", meta.UserId, err))
 		user = &dbmodel.User{Username: ""}
 	}
 
@@ -151,15 +146,14 @@ func DoIdentifyFace(c *gin.Context) {
 	// 保存完整响应到 Result 字段
 	resultBytes, err := json.Marshal(klingResp)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face marshal result error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face marshal result error: user_id=%d, error=%v", meta.UserId, err))
 	} else {
 		video.Result = string(resultBytes)
 	}
 
 	// 插入数据库
 	if err := video.Insert(); err != nil {
-		logger.SysError(fmt.Sprintf("Kling identify-face insert video record error: user_id=%d, session_id=%s, error=%v",
-			meta.UserId, klingResp.Data.SessionID, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face insert video record error: user_id=%d, session_id=%s, error=%v", meta.UserId, klingResp.Data.SessionID, err))
 		// 数据库错误不影响返回结果
 	}
 
@@ -167,17 +161,14 @@ func DoIdentifyFace(c *gin.Context) {
 	if quota > 0 {
 		err := dbmodel.DecreaseUserQuota(meta.UserId, quota)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("Kling identify-face billing failed: user_id=%d, quota=%d, error=%v",
-				meta.UserId, quota, err))
+			logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face billing failed: user_id=%d, quota=%d, error=%v", meta.UserId, quota, err))
 			// 扣费失败记录日志，但不影响返回结果
 		} else {
-			logger.SysLog(fmt.Sprintf("Kling identify-face billing success: user_id=%d, quota=%d, session_id=%s, faces=%d",
-				meta.UserId, quota, klingResp.Data.SessionID, len(klingResp.Data.FaceData)))
+			logger.Info(c.Request.Context(), fmt.Sprintf("Kling identify-face billing success: user_id=%d, quota=%d, session_id=%s, faces=%d", meta.UserId, quota, klingResp.Data.SessionID, len(klingResp.Data.FaceData)))
 		}
 	}
 
-	logger.SysLog(fmt.Sprintf("Kling identify-face success: session_id=%s, faces=%d, user_id=%d, video_id=%d",
-		klingResp.Data.SessionID, len(klingResp.Data.FaceData), meta.UserId, video.Id))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Kling identify-face success: session_id=%s, faces=%d, user_id=%d, video_id=%d", klingResp.Data.SessionID, len(klingResp.Data.FaceData), meta.UserId, video.Id))
 
 	// 返回 Kling 响应
 	c.JSON(http.StatusOK, klingResp)
@@ -191,7 +182,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 读取并解析请求体
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync read body error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync read body error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "invalid_request_body", http.StatusBadRequest)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -199,7 +190,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 
 	var requestParams map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &requestParams); err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync parse json error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync parse json error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "invalid_request_json", http.StatusBadRequest)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -217,14 +208,13 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 检查用户余额（后扣费模式：仅验证余额）
 	userQuota, err := dbmodel.CacheGetUserQuota(c.Request.Context(), meta.UserId)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync get user quota error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync get user quota error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "get_user_quota_error", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
 	}
 	if userQuota < quota {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync insufficient quota: user_id=%d, user_quota=%d, required_quota=%d",
-			meta.UserId, userQuota, quota))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync insufficient quota: user_id=%d, user_quota=%d, required_quota=%d", meta.UserId, userQuota, quota))
 		errResp := openai.ErrorWrapper(
 			fmt.Errorf("余额不足"),
 			"insufficient_quota",
@@ -237,8 +227,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 获取渠道信息
 	channel, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync get channel error: user_id=%d, channel_id=%d, error=%v",
-			meta.UserId, meta.ChannelId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync get channel error: user_id=%d, channel_id=%d, error=%v", meta.UserId, meta.ChannelId, err))
 		errResp := openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -252,7 +241,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 获取用户信息
 	user, err := dbmodel.GetUserById(meta.UserId, false)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("获取用户信息失败: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("获取用户信息失败: user_id=%d, error=%v", meta.UserId, err))
 		user = &dbmodel.User{Username: ""}
 	}
 
@@ -269,7 +258,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 		Quota:     quota,
 	}
 	if err := video.Insert(); err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync insert video record error: user_id=%d, error=%v", meta.UserId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync insert video record error: user_id=%d, error=%v", meta.UserId, err))
 		errResp := openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
 		c.JSON(errResp.StatusCode, errResp.Error)
 		return
@@ -288,8 +277,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 	// 转换请求并注入回调URL和 external_task_id
 	convertedBody, err := adaptor.ConvertRequest(c, meta, requestParams, callbackURL, video.Id)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync convert request error: user_id=%d, video_id=%d, error=%v",
-			meta.UserId, video.Id, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync convert request error: user_id=%d, video_id=%d, error=%v", meta.UserId, video.Id, err))
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = err.Error()
 		video.Update()
@@ -300,8 +288,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(convertedBody))
 	if err != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync request error: user_id=%d, video_id=%d, channel_id=%d, error=%v",
-			meta.UserId, video.Id, meta.ChannelId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync request error: user_id=%d, video_id=%d, channel_id=%d, error=%v", meta.UserId, video.Id, meta.ChannelId, err))
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = err.Error()
 		video.Update()
@@ -312,8 +299,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 
 	klingResp, errWithCode := adaptor.DoResponse(c, resp, meta)
 	if errWithCode != nil {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync response error: user_id=%d, video_id=%d, code=%s, message=%s",
-			meta.UserId, video.Id, errWithCode.Error.Code, errWithCode.Error.Message))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync response error: user_id=%d, video_id=%d, code=%s, message=%s", meta.UserId, video.Id, errWithCode.Error.Code, errWithCode.Error.Message))
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = errWithCode.Error.Message
 		video.Update()
@@ -323,8 +309,7 @@ func DoAdvancedLipSync(c *gin.Context) {
 
 	// 检查 Kling API 返回的错误码
 	if klingResp.Code != 0 {
-		logger.SysError(fmt.Sprintf("Kling advanced-lip-sync API error: user_id=%d, video_id=%d, code=%d, message=%s",
-			meta.UserId, video.Id, klingResp.Code, klingResp.Message))
+		logger.Error(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync API error: user_id=%d, video_id=%d, code=%d, message=%s", meta.UserId, video.Id, klingResp.Code, klingResp.Message))
 		video.Status = kling.TaskStatusFailed
 		video.FailReason = klingResp.Message
 		video.Update()
@@ -337,12 +322,10 @@ func DoAdvancedLipSync(c *gin.Context) {
 	video.Status = klingResp.GetTaskStatus()
 	// video_id 在回调成功时才设置为真实视频ID，此处保持为空
 	if err := video.Update(); err != nil {
-		logger.SysError(fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v",
-			video.Id, video.TaskId, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("更新对口型任务失败: id=%d, task_id=%s, error=%v", video.Id, video.TaskId, err))
 	}
 
-	logger.SysLog(fmt.Sprintf("Kling advanced-lip-sync task created: id=%d, task_id=%s, user_id=%d, quota=%d",
-		video.Id, klingResp.GetTaskID(), meta.UserId, quota))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Kling advanced-lip-sync task created: id=%d, task_id=%s, user_id=%d, quota=%d", video.Id, klingResp.GetTaskID(), meta.UserId, quota))
 
 	// 返回 Kling 原始响应
 	c.JSON(http.StatusOK, klingResp)
@@ -360,7 +343,7 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 	taskManager := kling.NewTaskManager()
 	task, err := taskManager.FindTaskByTaskID(taskID)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
+		logger.Error(c.Request.Context(), fmt.Sprintf("查询任务失败: task_id=%s, error=%v", taskID, err))
 		c.JSON(http.StatusNotFound, gin.H{
 			"code":    404,
 			"message": "任务不存在",
@@ -461,7 +444,7 @@ func GetKlingVideoResult(c *gin.Context, taskID string) {
 	}
 
 	// 所有格式都解析失败，尝试返回原始数据
-	logger.SysError(fmt.Sprintf("解析查询结果失败，返回原始数据: task_id=%s", taskID))
+	logger.Error(c.Request.Context(), fmt.Sprintf("解析查询结果失败，返回原始数据: task_id=%s", taskID))
 
 	// 尝试将 result 解析为通用 JSON 对象并返回
 	var rawData interface{}

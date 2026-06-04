@@ -731,12 +731,12 @@ func recordXAIContentViolationCharge(ctx context.Context, c *gin.Context, channe
 	// 更新用户和渠道quota
 	err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 	}
 
 	err = dbmodel.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 
 	dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
@@ -764,8 +764,7 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 		// 单Key渠道的原有逻辑（不使用keyIndex参数）
 		// 添加保护检查：如果KeyCount > 1但IsMultiKey=false，可能存在逻辑错误
 		if channel.MultiKeyInfo.KeyCount > 1 {
-			logger.SysLog(fmt.Sprintf("WARNING: Channel %d has KeyCount=%d but IsMultiKey=false, this may indicate a logic error. Using multi-key logic instead.",
-				channelId, channel.MultiKeyInfo.KeyCount))
+			logger.Info(ctx, fmt.Sprintf("WARNING: Channel %d has KeyCount=%d but IsMultiKey=false, this may indicate a logic error. Using multi-key logic instead.", channelId, channel.MultiKeyInfo.KeyCount))
 			processMultiKeyChannelError(ctx, channel, keyIndex, err, modelName)
 			return
 		}
@@ -809,7 +808,7 @@ func processMultiKeyChannelError(ctx context.Context, channel *dbmodel.Channel, 
 		chId := channel.Id
 		common.ChannelDisablePool.Go(func() {
 			if keyErr := chSnapshot.HandleKeyError(keyIndex, errMsg, errCode, modelName); keyErr != nil {
-				logger.SysError(fmt.Sprintf("HandleKeyError channel %d key %d: %v", chId, keyIndex, keyErr))
+				logger.Error(ctx, fmt.Sprintf("HandleKeyError channel %d key %d: %v", chId, keyIndex, keyErr))
 			}
 		})
 	}
@@ -893,7 +892,7 @@ func RelayMidjourney(c *gin.Context) {
 	// }
 	if !MidjourneyShouldRetryByCode(MjErr) { //返回false就不执行重试
 		retryTimes = 0
-		logger.SysLog("no retry!!!")
+		logger.Info(c.Request.Context(), "no retry!!!")
 	}
 
 	// 记录使用的渠道历史，用于添加到日志中
@@ -953,7 +952,7 @@ func RelayMidjourney(c *gin.Context) {
 			if MjErr == nil {
 				return
 			}
-			logger.SysLog(fmt.Sprintf("relayMode:%+v;retry:%d\n", relayMode, i))
+			logger.Info(c.Request.Context(), fmt.Sprintf("relayMode:%+v;retry:%d\n", relayMode, i))
 		}
 	}
 	if MjErr != nil {
@@ -974,7 +973,7 @@ func RelayMidjourney(c *gin.Context) {
 			"code":        MjErr.Response.Code,
 		})
 		channelId := c.GetInt("channel_id")
-		logger.SysError(fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result)))
+		logger.Error(c.Request.Context(), fmt.Sprintf("relay error (channel #%d): %s", channelId, fmt.Sprintf("%s %s", MjErr.Response.Description, MjErr.Response.Result)))
 	}
 }
 
@@ -1172,7 +1171,7 @@ func RelayVideoResult(c *gin.Context) {
 // 完全匹配豆包原始API格式 /api/v3/contents/generations/tasks?id=task_id
 func RelayDouBaoVideoResultById(c *gin.Context) {
 	taskId := c.Param("taskid")
-	logger.SysLog(fmt.Sprintf("doubao-task-id: %s", taskId))
+	logger.Info(c.Request.Context(), fmt.Sprintf("doubao-task-id: %s", taskId))
 	if taskId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{
@@ -1291,12 +1290,12 @@ func RelayOcr(c *gin.Context) {
 			// Update user and channel quota
 			err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), int64(quota))
 			if err != nil {
-				logger.SysError("error consuming token remain quota: " + err.Error())
+				logger.Error(c.Request.Context(), "error consuming token remain quota: "+err.Error())
 			}
 
 			err = dbmodel.CacheUpdateUserQuota(ctx, userId)
 			if err != nil {
-				logger.SysError("error update user quota cache: " + err.Error())
+				logger.Error(c.Request.Context(), "error update user quota cache: "+err.Error())
 			}
 
 			dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, int64(quota))
@@ -1577,12 +1576,12 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		// Update user and channel quota
 		err := dbmodel.PostConsumeTokenQuota(c.GetInt("token_id"), quota)
 		if err != nil {
-			logger.SysError("error consuming token remain quota: " + err.Error())
+			logger.Error(c.Request.Context(), "error consuming token remain quota: "+err.Error())
 		}
 
 		err = dbmodel.CacheUpdateUserQuota(ctx, userId)
 		if err != nil {
-			logger.SysError("error update user quota cache: " + err.Error())
+			logger.Error(c.Request.Context(), "error update user quota cache: "+err.Error())
 		}
 
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)

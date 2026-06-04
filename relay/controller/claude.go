@@ -134,12 +134,12 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 			}
 		}
 	} else {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
+		logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 请求类型判断 - IsStream: %v, RequestID: %s", meta.IsStream, c.GetString("request_id")))
 		if meta.IsStream {
-			logger.SysLog("[Claude Cache Debug] 进入流式响应处理")
+			logger.Info(c.Request.Context(), "[Claude Cache Debug] 进入流式响应处理")
 			usageMetadata, openaiErr = doNativeClaudeStreamResponse(c, resp, meta)
 		} else {
-			logger.SysLog("[Claude Cache Debug] 进入非流式响应处理")
+			logger.Info(c.Request.Context(), "[Claude Cache Debug] 进入非流式响应处理")
 			usageMetadata, openaiErr = doNativeClaudeResponse(c, resp, meta)
 		}
 	}
@@ -184,12 +184,12 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *anthropic.Usage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 	}
 
 	err = dbmodel.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 
 	dbmodel.UpdateUserUsedQuotaAndRequestCount(userId, quota)
@@ -238,7 +238,7 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 		}
 	}
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
-	other = appendBillingDetails(other, billingDetails)
+	other = appendBillingDetails(ctx, other, billingDetails)
 	other = util.AppendRetryHistoryOther(c, other, duration)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
@@ -477,7 +477,7 @@ func parseUpstreamErrorMessage(responseBody []byte, requestID string) (message s
 }
 
 func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 开始处理非流式响应 - StatusCode: %d", resp.StatusCode))
+	logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 开始处理非流式响应 - StatusCode: %d", resp.StatusCode))
 	defer util.CloseResponseBodyGracefully(resp)
 
 	// 读取响应体
@@ -515,15 +515,13 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	}
 
 	// 判断是否创建或读取了缓存，并记录到 redis 中
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 非流式响应处理 - ResponseID: %s, Usage是否为空: %v",
-		claudeResponse.Id, claudeResponse.Usage == nil))
+	logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 非流式响应处理 - ResponseID: %s, Usage是否为空: %v", claudeResponse.Id, claudeResponse.Usage == nil))
 
 	if claudeResponse.Usage != nil {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
-			claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
+		logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache - ResponseID: %s, InputTokens: %d, OutputTokens: %d", claudeResponse.Id, claudeResponse.Usage.InputTokens, claudeResponse.Usage.OutputTokens))
 		cache.HandleClaudeCache(c, claudeResponse.Id, claudeResponse.Usage)
 	} else {
-		logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
+		logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理 - ResponseID: %s", claudeResponse.Id))
 	}
 
 	util.IOCopyBytesGracefully(c, resp, responseBody)
@@ -533,7 +531,7 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 // doNativeClaudeStreamResponse 处理 claude 流式响应
 // claude 流式响应格式为 SSE，每行以 "data: " 开头，后跟 JSON 对象
 func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *anthropic.Usage, err *model.ErrorWithStatusCode) {
-	logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 开始处理流式响应 - StatusCode: %d", resp.StatusCode))
+	logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 开始处理流式响应 - StatusCode: %d", resp.StatusCode))
 	defer util.CloseResponseBodyGracefully(resp)
 
 	// 检查响应状态码 - 如果不是200，读取错误信息并返回
@@ -579,16 +577,14 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			if claudeResponse.Message.Id != "" {
 				c.Set("x_response_id", claudeResponse.Message.Id)
 			}
-			logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 流式响应message_start - ResponseID: %s, Usage是否为空: %v",
-				claudeResponse.Message.Id, lastUsageMetadata == nil))
+			logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 流式响应message_start - ResponseID: %s, Usage是否为空: %v", claudeResponse.Message.Id, lastUsageMetadata == nil))
 
 			// 判断是否创建或读取了缓存，并记录到 redis 中
 			if lastUsageMetadata != nil {
-				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d, OutputTokens: %d",
-					claudeResponse.Message.Id, lastUsageMetadata.InputTokens, lastUsageMetadata.OutputTokens))
+				logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] 准备调用handleClaudeCache(流式) - ResponseID: %s, InputTokens: %d, OutputTokens: %d", claudeResponse.Message.Id, lastUsageMetadata.InputTokens, lastUsageMetadata.OutputTokens))
 				cache.HandleClaudeCache(c, claudeResponse.Message.Id, lastUsageMetadata)
 			} else {
-				logger.SysLog(fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理(流式) - ResponseID: %s", claudeResponse.Message.Id))
+				logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理(流式) - ResponseID: %s", claudeResponse.Message.Id))
 			}
 
 		} else if claudeResponse.Type == "content_block_delta" {

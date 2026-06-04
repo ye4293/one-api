@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -158,17 +159,17 @@ func AddChannel(c *gin.Context) {
 		channel.HeaderOverride = &trimmed
 	}
 
-	logger.SysLog(fmt.Sprintf("AddChannel: Received request for channel type %d", channel.Type))
-	logger.SysLog(fmt.Sprintf("AddChannel: Comparing with VertexAI type %d. Is VertexAI? %v", common.ChannelTypeVertexAI, channel.Type == common.ChannelTypeVertexAI))
+	logger.Info(c.Request.Context(), fmt.Sprintf("AddChannel: Received request for channel type %d", channel.Type))
+	logger.Info(c.Request.Context(), fmt.Sprintf("AddChannel: Comparing with VertexAI type %d. Is VertexAI? %v", common.ChannelTypeVertexAI, channel.Type == common.ChannelTypeVertexAI))
 
 	// 检查是否为多Key聚合模式
 	var keys []string
 	if channel.Type == common.ChannelTypeVertexAI {
 		keys = common.ExtractJSONObjects(channel.Key)
-		logger.SysLog(fmt.Sprintf("AddChannel: Parsed %d JSON objects for VertexAI", len(keys)))
+		logger.Info(c.Request.Context(), fmt.Sprintf("AddChannel: Parsed %d JSON objects for VertexAI", len(keys)))
 	} else {
 		keys = strings.Split(channel.Key, "\n")
-		logger.SysLog(fmt.Sprintf("AddChannel: Split keys by newline, found %d parts for channel type %d", len(keys), channel.Type))
+		logger.Info(c.Request.Context(), fmt.Sprintf("AddChannel: Split keys by newline, found %d parts for channel type %d", len(keys), channel.Type))
 	}
 
 	validKeys := []string{}
@@ -462,7 +463,7 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 }
 
 // 工具函数：处理多密钥渠道更新
-func updateMultiKeyChannel(channel *model.Channel, existingChannel *model.Channel, requestData *struct {
+func updateMultiKeyChannel(ctx context.Context, channel *model.Channel, existingChannel *model.Channel, requestData *struct {
 	model.Channel
 	KeySelectionMode int `json:"key_selection_mode"`
 	BatchImportMode  int `json:"batch_import_mode"`
@@ -488,7 +489,7 @@ func updateMultiKeyChannel(channel *model.Channel, existingChannel *model.Channe
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Updating keys for multi-key channel %d with mode %d", channel.Id, batchImportMode))
+	logger.Info(ctx, fmt.Sprintf("Updating keys for multi-key channel %d with mode %d", channel.Id, batchImportMode))
 
 	// 解析新密钥
 	validNewKeys := parseKeys(newKeyData, channel.Type)
@@ -500,11 +501,11 @@ func updateMultiKeyChannel(channel *model.Channel, existingChannel *model.Channe
 	var finalKeys []string
 	if batchImportMode == 0 { // 覆盖模式
 		finalKeys = validNewKeys
-		logger.SysLog(fmt.Sprintf("Channel %d: Overwriting with %d new keys", channel.Id, len(validNewKeys)))
+		logger.Info(ctx, fmt.Sprintf("Channel %d: Overwriting with %d new keys", channel.Id, len(validNewKeys)))
 	} else { // 追加模式
 		existingKeys := existingChannel.ParseKeys()
 		finalKeys = append(existingKeys, validNewKeys...)
-		logger.SysLog(fmt.Sprintf("Channel %d: Appending %d keys to existing %d keys", channel.Id, len(validNewKeys), len(existingKeys)))
+		logger.Info(ctx, fmt.Sprintf("Channel %d: Appending %d keys to existing %d keys", channel.Id, len(validNewKeys), len(existingKeys)))
 	}
 
 	// 更新密钥信息
@@ -622,12 +623,12 @@ func UpdateChannel(c *gin.Context) {
 		channel.HeaderOverride = &trimmed
 	}
 
-	logger.SysLog(fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
-	logger.SysLog(fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
+	logger.Info(c.Request.Context(), fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
+	logger.Info(c.Request.Context(), fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
 
 	// 处理多密钥渠道
 	if channel.MultiKeyInfo.IsMultiKey {
-		updateMultiKeyChannel(&channel, existingChannel, &requestData)
+		updateMultiKeyChannel(c.Request.Context(), &channel, existingChannel, &requestData)
 	}
 
 	err = channel.Update()
@@ -694,8 +695,7 @@ func GetChannelModelsById(c *gin.Context) {
 		})
 	}
 
-	logger.SysLog(fmt.Sprintf("Channel #%d has %d configured models: %v",
-		id, len(supportedModels), supportedModels))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Channel #%d has %d configured models: %v", id, len(supportedModels), supportedModels))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -922,8 +922,7 @@ func BatchImportChannelKeys(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("User imported %d keys to channel %d with mode %d",
-		len(validKeys), req.ChannelId, req.Mode))
+	logger.Info(c.Request.Context(), fmt.Sprintf("User imported %d keys to channel %d with mode %d", len(validKeys), req.ChannelId, req.Mode))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -983,8 +982,7 @@ func ToggleChannelKey(c *gin.Context) {
 		action = "enabled"
 	}
 
-	logger.SysLog(fmt.Sprintf("Key %d in channel %d %s",
-		*req.KeyIndex, req.ChannelId, action))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Key %d in channel %d %s", *req.KeyIndex, req.ChannelId, action))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1040,8 +1038,7 @@ func BatchToggleChannelKeys(c *gin.Context) {
 		action = "enabled"
 	}
 
-	logger.SysLog(fmt.Sprintf("Batch %s %d keys in channel %d",
-		action, len(req.KeyIndices), req.ChannelId))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Batch %s %d keys in channel %d", action, len(req.KeyIndices), req.ChannelId))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1089,8 +1086,7 @@ func ToggleChannelKeysByBatch(c *gin.Context) {
 		action = "enabled"
 	}
 
-	logger.SysLog(fmt.Sprintf("Batch %s keys with batch_id %s in channel %d",
-		action, req.BatchId, req.ChannelId))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Batch %s keys with batch_id %s in channel %d", action, req.BatchId, req.ChannelId))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1144,8 +1140,7 @@ func UpdateChannelMultiKeySettings(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Updated multi-key settings for channel %d: multi_key=%v, mode=%d",
-		req.ChannelId, req.IsMultiKey, req.KeySelectionMode))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Updated multi-key settings for channel %d: multi_key=%v, mode=%d", req.ChannelId, req.IsMultiKey, req.KeySelectionMode))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1208,8 +1203,7 @@ func RetryChannelKey(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Manually retried key %d in channel %d",
-		*req.KeyIndex, req.ChannelId))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Manually retried key %d in channel %d", *req.KeyIndex, req.ChannelId))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1513,8 +1507,7 @@ func CopyChannel(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Copied channel %d (%s) to new channel %d (%s)",
-		originChannel.Id, originChannel.Name, newChannel.Id, newChannel.Name))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Copied channel %d (%s) to new channel %d (%s)", originChannel.Id, originChannel.Name, newChannel.Id, newChannel.Name))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1557,7 +1550,7 @@ func ClearChannelQuota(c *gin.Context) {
 		return
 	}
 
-	logger.SysLog(fmt.Sprintf("Cleared used quota for channel %d (%s)", channel.Id, channel.Name))
+	logger.Info(c.Request.Context(), fmt.Sprintf("Cleared used quota for channel %d (%s)", channel.Id, channel.Name))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

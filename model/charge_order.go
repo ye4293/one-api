@@ -236,7 +236,6 @@ func HandleStripeCallback(req *http.Request) error {
 		return err
 	}
 	endpointSecret := config.StripeEndpointSecret
-	logger.SysLog(fmt.Sprintf("StripeEndpointSecret:%+v\n", endpointSecret))
 	signatureHeader := req.Header.Get("Stripe-Signature")
 	event, err = webhook.ConstructEventWithOptions(
 		payload,
@@ -247,7 +246,7 @@ func HandleStripeCallback(req *http.Request) error {
 		},
 	)
 	if err != nil {
-		logger.SysLog(fmt.Sprintf("eventerr:%+v\n", err))
+		logger.SysError(fmt.Sprintf("stripe webhook construct event failed: %v", err))
 		return err
 	}
 	switch event.Type {
@@ -256,7 +255,7 @@ func HandleStripeCallback(req *http.Request) error {
 		var charge stripe.Charge
 		err := json.Unmarshal(event.Data.Raw, &charge)
 		if err != nil {
-			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
+			logger.SysError(fmt.Sprintf("error parsing stripe webhook JSON: %v", err))
 			return err
 		}
 		err = stripeChargeSuccess(&charge)
@@ -267,7 +266,7 @@ func HandleStripeCallback(req *http.Request) error {
 		var charge stripe.Charge
 		err := json.Unmarshal(event.Data.Raw, &charge)
 		if err != nil {
-			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
+			logger.SysError(fmt.Sprintf("error parsing stripe webhook JSON: %v", err))
 			return err
 		}
 		err = stripeChargeRefund(&charge)
@@ -278,7 +277,7 @@ func HandleStripeCallback(req *http.Request) error {
 		var charge stripe.Charge
 		err := json.Unmarshal(event.Data.Raw, &charge)
 		if err != nil {
-			logger.SysLog(fmt.Sprintf("Error parsing webhook JSON: %v\n", err))
+			logger.SysError(fmt.Sprintf("error parsing stripe webhook JSON: %v", err))
 			return err
 		}
 		err = stripeChargeFail(&charge)
@@ -286,7 +285,7 @@ func HandleStripeCallback(req *http.Request) error {
 			return err
 		}
 	default:
-		logger.SysLog(fmt.Sprintf("Unhandled event type: %s\n", event.Type))
+		logger.SysLog(fmt.Sprintf("Unhandled event type: %s", event.Type))
 	}
 	return nil
 }

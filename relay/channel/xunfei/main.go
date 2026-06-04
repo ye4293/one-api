@@ -164,7 +164,8 @@ func StreamHandler(c *gin.Context, textRequest model.GeneralOpenAIRequest, appId
 			response := streamResponseXunfei2OpenAI(&xunfeiResponse)
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
@@ -283,7 +284,8 @@ func getAPIVersion(c *gin.Context, modelName string) string {
 		return apiVersion
 	}
 	apiVersion = "v1.1"
-	logger.SysLog("api_version not found, using default: " + apiVersion)
+	logger.Info(c.Request.Context(),
+		"api_version not found, using default: "+apiVersion)
 	return apiVersion
 }
 

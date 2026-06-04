@@ -169,7 +169,8 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			var baiduResponse ChatStreamResponse
 			err := json.Unmarshal([]byte(data), &baiduResponse)
 			if err != nil {
-				logger.SysError("error unmarshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error unmarshalling stream response: "+err.Error())
 				return true
 			}
 			if baiduResponse.Usage.TotalTokens != 0 {
@@ -180,7 +181,8 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			response := streamResponseBaidu2OpenAI(&baiduResponse)
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})

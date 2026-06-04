@@ -277,11 +277,11 @@ func PostConsumeQuota(ctx context.Context, tokenId int, quotaDelta int64, totalQ
 	// quotaDelta is remaining quota to be consumed
 	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 	}
 	err = model.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 	// totalQuota is total quota consumed
 	if totalQuota != 0 {
@@ -300,11 +300,11 @@ func PostConsumeQuotaWithTokens(ctx context.Context, tokenId int, quotaDelta int
 	// quotaDelta is remaining quota to be consumed
 	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 	}
 	err = model.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 	// totalQuota is total quota consumed
 	if totalQuota != 0 {
@@ -324,11 +324,11 @@ func PostConsumeQuotaWithDetailedTokens(ctx context.Context, tokenId int, quotaD
 	// quotaDelta is remaining quota to be consumed
 	err := model.PostConsumeTokenQuota(tokenId, quotaDelta)
 	if err != nil {
-		logger.SysError("error consuming token remain quota: " + err.Error())
+		logger.Error(ctx, "error consuming token remain quota: "+err.Error())
 	}
 	err = model.CacheUpdateUserQuota(ctx, userId)
 	if err != nil {
-		logger.SysError("error update user quota cache: " + err.Error())
+		logger.Error(ctx, "error update user quota cache: "+err.Error())
 	}
 	// totalQuota is total quota consumed
 	if totalQuota != 0 {
@@ -439,6 +439,6 @@ func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {
 
 	_, err := io.Copy(c.Writer, body)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("failed to copy response body: %s", err.Error()))
+		logger.Error(c.Request.Context(), fmt.Sprintf("failed to copy response body: %s", err.Error()))
 	}
 }

@@ -125,7 +125,8 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			var TencentResponse ChatResponse
 			err := json.Unmarshal([]byte(data), &TencentResponse)
 			if err != nil {
-				logger.SysError("error unmarshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error unmarshalling stream response: "+err.Error())
 				return true
 			}
 			response := streamResponseTencent2OpenAI(&TencentResponse)
@@ -134,7 +135,8 @@ func StreamHandler(c *gin.Context, resp *http.Response) (*model.ErrorWithStatusC
 			}
 			jsonResponse, err := json.Marshal(response)
 			if err != nil {
-				logger.SysError("error marshalling stream response: " + err.Error())
+				logger.Error(c.Request.Context(),
+					"error marshalling stream response: "+err.Error())
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})

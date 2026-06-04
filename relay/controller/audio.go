@@ -218,7 +218,7 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			fullRequestURL = fmt.Sprintf("%s/openai/deployments/%s/audio/speech?api-version=%s", baseURL, audioModel, apiVersion)
 		}
 		// 重新记录正确的 Azure URL
-		logger.SysLog("corrected Azure fullRequestURL: " + fullRequestURL)
+		logger.Info(c.Request.Context(), "corrected Azure fullRequestURL: "+fullRequestURL)
 	}
 
 	var req *http.Request
@@ -387,8 +387,7 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			audioInputRatio := common.GetAudioInputRatio(audioModel)
 
 			// 添加详细的倍率调试日志
-			logger.Info(ctx, fmt.Sprintf("Audio model ratios debug - Model: %s, ModelRatio: %.3f, CompletionRatio: %.3f, AudioInputRatio: %.3f, GroupRatio: %.3f",
-				audioModel, modelRatio, completionRatio, audioInputRatio, groupRatio))
+			logger.Info(ctx, fmt.Sprintf("Audio model ratios debug - Model: %s, ModelRatio: %.3f, CompletionRatio: %.3f, AudioInputRatio: %.3f, GroupRatio: %.3f", audioModel, modelRatio, completionRatio, audioInputRatio, groupRatio))
 
 			// 计算等价的输入token数量（文字输入 + 音频输入*音频倍率）
 			inputTokensEquivalent := float64(textInputTokens) + float64(audioInputTokens)*audioInputRatio
@@ -397,8 +396,7 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			// 标准公式：(inputTokensEquivalent + outputTokens * completionRatio) * modelRatio * groupRatio
 			quota = int64(math.Ceil((inputTokensEquivalent + outputTokens*completionRatio) * ratio))
 
-			logger.Info(ctx, fmt.Sprintf("Audio transcription calculation - TextInput: %d, AudioInput: %d, TextOutput: %d, AudioOutput: %d, InputEquivalent: %.2f, OutputTokens: %.2f, Quota: %d",
-				textInputTokens, audioInputTokens, textOutputTokens, audioOutputTokens, inputTokensEquivalent, outputTokens, quota))
+			logger.Info(ctx, fmt.Sprintf("Audio transcription calculation - TextInput: %d, AudioInput: %d, TextOutput: %d, AudioOutput: %d, InputEquivalent: %.2f, OutputTokens: %.2f, Quota: %d", textInputTokens, audioInputTokens, textOutputTokens, audioOutputTokens, inputTokensEquivalent, outputTokens, quota))
 		} else {
 			// 如果没有usage信息，使用传统方式计算
 			responseFormat := c.DefaultPostForm("response_format", "json")
@@ -415,8 +413,7 @@ func RelayAudioHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			totalOutputTokens = textOutputTokens
 			quota = totalInputTokens + totalOutputTokens
 
-			logger.Info(ctx, fmt.Sprintf("Audio transcription fallback - TextInput: %d, AudioInput: %d, TextOutput: %d, AudioOutput: %d, Total: %d",
-				textInputTokens, audioInputTokens, textOutputTokens, audioOutputTokens, quota))
+			logger.Info(ctx, fmt.Sprintf("Audio transcription fallback - TextInput: %d, AudioInput: %d, TextOutput: %d, AudioOutput: %d, Total: %d", textInputTokens, audioInputTokens, textOutputTokens, audioOutputTokens, quota))
 		}
 
 		// 将详细的token信息存储到context中，供后续使用
@@ -1023,32 +1020,32 @@ func handleTTSStreamResponse(c *gin.Context, resp *http.Response, audioModel str
 					textInputTokens := inputTokens.(int64)
 					audioOutputTokens := outputTokens.(int64)
 
-				// 记录详细的token信息到other字段
-				otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
-					textInputTokens, int64(0), int64(0), audioOutputTokens)
+					// 记录详细的token信息到other字段
+					otherInfo := fmt.Sprintf(`audioUsageDetails:{"text_input":%d,"text_output":%d,"audio_input":%d,"audio_output":%d}`,
+						textInputTokens, int64(0), int64(0), audioOutputTokens)
 
-				// 异步记录配额消费
-				xRequestID := c.GetString("X-Request-ID")
-				cCopy := c.Copy()
-				go func() {
-					duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
-					referer := cCopy.Request.Header.Get("HTTP-Referer")
-					title := cCopy.Request.Header.Get("X-Title")
+					// 异步记录配额消费
+					xRequestID := c.GetString("X-Request-ID")
+					cCopy := c.Copy()
+					go func() {
+						duration := math.Round(time.Since(startTime).Seconds()*1000) / 1000
+						referer := cCopy.Request.Header.Get("HTTP-Referer")
+						title := cCopy.Request.Header.Get("X-Title")
 
-					otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
-					model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
-						audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
-						duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
-					model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
-					model.UpdateChannelUsedQuota(channelId, quota)
-					model.PostConsumeTokenQuota(tokenId, quota)
-				}()
+						otherInfo = util.AppendRetryHistoryOther(cCopy, otherInfo, duration)
+						model.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, int(textInputTokens), int(audioOutputTokens),
+							audioModel, tokenName, quota, fmt.Sprintf("模型倍率 %.2f，分组倍率 %.2f", modelRatio, groupRatio),
+							duration, title, referer, true, 0.0, otherInfo, xRequestID, 0, "")
+						model.UpdateUserUsedQuotaAndRequestCount(userId, quota)
+						model.UpdateChannelUsedQuota(channelId, quota)
+						model.PostConsumeTokenQuota(tokenId, quota)
+					}()
+				}
 			}
+		} else {
+			// 没有预计算的配额，使用默认值0（使用预消费配额）
+			quota = 0
 		}
-	} else {
-		// 没有预计算的配额，使用默认值0（使用预消费配额）
-		quota = 0
-	}
 	}
 
 	logger.Info(ctx, fmt.Sprintf("TTS stream processing completed successfully, total quota: %d", quota))

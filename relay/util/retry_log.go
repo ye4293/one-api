@@ -28,7 +28,8 @@ func PublishFailedRetryHistory(c *gin.Context, attempts []RetryAttempt) {
 	}
 	bytes, err := json.Marshal(attempts)
 	if err != nil {
-		logger.SysError("marshal retry history failed: " + err.Error())
+		logger.Error(c.Request.Context(),
+			"marshal retry history failed: "+err.Error())
 		c.Set("retry_history_failed_json", "")
 		return
 	}
@@ -50,7 +51,8 @@ func AppendRetryHistoryOther(c *gin.Context, otherInfo string, finalDuration flo
 
 	var attempts []RetryAttempt
 	if err := json.Unmarshal([]byte(histStr), &attempts); err != nil {
-		logger.SysError("unmarshal retry history failed: " + err.Error())
+		logger.Error(c.Request.Context(),
+			"unmarshal retry history failed: "+err.Error())
 		return otherInfo
 	}
 
@@ -65,7 +67,8 @@ func AppendRetryHistoryOther(c *gin.Context, otherInfo string, finalDuration flo
 
 	bytes, err := json.Marshal(attempts)
 	if err != nil {
-		logger.SysError("marshal retry history with final success failed: " + err.Error())
+		logger.Error(c.Request.Context(),
+			"marshal retry history with final success failed: "+err.Error())
 		return otherInfo
 	}
 	seg := "retryHistory:" + string(bytes)
