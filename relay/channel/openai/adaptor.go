@@ -68,6 +68,14 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	return nil
 }
 
+// needsMaxCompletionTokens 判断模型是否只接受 max_completion_tokens（不接受 max_tokens）。
+// o1/o3/gpt-5.x 系列已废弃 max_tokens，需要转换。
+func needsMaxCompletionTokens(modelName string) bool {
+	return strings.HasPrefix(modelName, "o1") ||
+		strings.HasPrefix(modelName, "o3") ||
+		strings.HasPrefix(modelName, "gpt-5")
+}
+
 func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.GeneralOpenAIRequest) (any, error) {
 	if request == nil {
 		return nil, errors.New("request is nil")
@@ -78,6 +86,12 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 		request.StreamOptions = &model.StreamOptions{
 			IncludeUsage: true,
 		}
+	}
+
+	// 新一代模型只支持 max_completion_tokens，需将 max_tokens 转换
+	if request.MaxTokens > 0 && needsMaxCompletionTokens(request.Model) {
+		request.MaxCompletionTokens = request.MaxTokens
+		request.MaxTokens = 0
 	}
 
 	return request, nil
