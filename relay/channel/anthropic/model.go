@@ -1,5 +1,10 @@
 package anthropic
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // Claude API 结构体定义
 // 基于 https://platform.claude.com/docs/en/api/messages/create
 //
@@ -256,8 +261,36 @@ type InputSchema struct {
 
 // ToolChoice 工具选择
 type ToolChoice struct {
-	Type string `json:"type"`           // "auto", "any", "tool"
+	Type string `json:"type"`           // "auto", "any", "tool"；输入兼容字符串 "none" 并在 Request.UnmarshalJSON 中归一化为 nil
 	Name string `json:"name,omitempty"` // 当 type 为 "tool" 时指定工具名称
+}
+
+// UnmarshalJSON 兼容字符串和对象两种 tool_choice 写法：
+//   - "auto" / "any" / "none"
+//   - {"type":"auto"} / {"type":"tool","name":"..."}
+func (t *ToolChoice) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*t = ToolChoice{}
+		return nil
+	}
+
+	if data[0] == '"' {
+		var choice string
+		if err := json.Unmarshal(data, &choice); err != nil {
+			return err
+		}
+		*t = ToolChoice{Type: choice}
+		return nil
+	}
+
+	type toolChoiceAlias ToolChoice
+	var alias toolChoiceAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*t = ToolChoice(alias)
+	return nil
 }
 
 // ThinkingConfig 扩展思考配置
@@ -288,6 +321,22 @@ type Request struct {
 	InferenceGeo  string          `json:"inference_geo,omitempty"`  // 推理地理区域
 }
 
+// UnmarshalJSON 归一化历史兼容写法：
+//   - tool_choice 字符串 "auto"/"any" 转为结构体
+//   - tool_choice 字符串 "none" 视为未设置，避免后续转发为无效对象格式
+func (r *Request) UnmarshalJSON(data []byte) error {
+	type requestAlias Request
+	var alias requestAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*r = Request(alias)
+	if r.ToolChoice != nil && r.ToolChoice.Type == "none" && r.ToolChoice.Name == "" {
+		r.ToolChoice = nil
+	}
+	return nil
+}
+
 // CacheCreation 缓存创建统计
 type CacheCreation struct {
 	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"` // 1小时缓存创建的输入token数
@@ -307,10 +356,10 @@ type Usage struct {
 	CacheReadInputTokens        int              `json:"cache_read_input_tokens,omitempty"`     // 缓存读取输入token数
 	ClaudeCacheCreation5mTokens int              `json:"claude_cache_creation_5_m_tokens,omitempty"`
 	ClaudeCacheCreation1hTokens int              `json:"claude_cache_creation_1_h_tokens,omitempty"`
-	CacheCreation               *CacheCreation   `json:"cache_creation,omitempty"`   // 缓存创建详情
-	ServerToolUse               *ServerToolUsage `json:"server_tool_use,omitempty"`  // 服务器工具使用统计
-	InferenceGeo                string           `json:"inference_geo,omitempty"`    // 推理所在地理区域
-	ServiceTier                 string           `json:"service_tier,omitempty"`     // 服务层级: "standard", "priority", "batch"
+	CacheCreation               *CacheCreation   `json:"cache_creation,omitempty"`  // 缓存创建详情
+	ServerToolUse               *ServerToolUsage `json:"server_tool_use,omitempty"` // 服务器工具使用统计
+	InferenceGeo                string           `json:"inference_geo,omitempty"`   // 推理所在地理区域
+	ServiceTier                 string           `json:"service_tier,omitempty"`    // 服务层级: "standard", "priority", "batch"
 }
 
 // Error API 错误信息
