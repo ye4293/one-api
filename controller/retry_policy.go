@@ -1,6 +1,10 @@
 package controller
 
-import dbmodel "github.com/songquanpeng/one-api/model"
+import (
+	"context"
+
+	dbmodel "github.com/songquanpeng/one-api/model"
+)
 
 // getRetrySkipPriorityLevels enforces one extra retry on the highest priority,
 // then steps down one priority level per subsequent retry.
@@ -23,8 +27,9 @@ func appendUniqueChannelID(channelIDs []int, channelID int) []int {
 	return append(channelIDs, channelID)
 }
 
-func selectRetryChannel(group string, model string, attempt int, responseID string, failedChannelIds []int) (*dbmodel.Channel, error) {
+func selectRetryChannel(ctx context.Context, group string, model string, attempt int, responseID string, failedChannelIds []int) (*dbmodel.Channel, error) {
 	channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(
+		ctx,
 		group,
 		model,
 		getRetrySkipPriorityLevels(attempt),
