@@ -180,8 +180,6 @@ func Relay(c *gin.Context) {
 	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 
 	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
-	claudeResponseID := c.GetHeader("X-Response-ID")
-
 	lastChannel := getLastRetryFallbackChannel(channelId)
 
 	// 如果命中了亲和规则且配置了 skip_retry_on_failure，不跨渠道重试
@@ -198,13 +196,13 @@ func Relay(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
 			if lastChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastChannel.Id, currentAttempt, retryTimes)
 			channel = lastChannel
 		}
 		lastChannel = channel
@@ -925,13 +923,13 @@ func RelayMidjourney(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
 			currentAttempt := retryTimes - i + 1
-			channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
+			channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 			if err != nil {
 				if lastMjChannel == nil {
-					logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %+v (excludedChannels: %v)", err, failedChannelIds)
+					logger.Errorf(ctx, "No channels available after cycling: %v (excludedChannels: %v)", err, failedChannelIds)
 					break
 				}
-				logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastMjChannel.Id, currentAttempt, retryTimes)
+				logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastMjChannel.Id, currentAttempt, retryTimes)
 				channel = lastMjChannel
 			}
 			lastMjChannel = channel
@@ -1088,13 +1086,13 @@ func RelayVideoGenerate(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastVideoChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastVideoChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastVideoChannel.Id, currentAttempt, retryTimes)
 			channel = lastVideoChannel
 		}
 		lastVideoChannel = channel
@@ -1373,13 +1371,13 @@ func RelayRecraft(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastRecraftChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRecraftChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastRecraftChannel.Id, currentAttempt, retryTimes)
 			channel = lastRecraftChannel
 		}
 		lastRecraftChannel = channel
@@ -1739,13 +1737,13 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastImageChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastImageChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastImageChannel.Id, currentAttempt, retryTimes)
 			channel = lastImageChannel
 		}
 		lastImageChannel = channel
@@ -1891,13 +1889,13 @@ func RelayRunway(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastRunwayChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastRunwayChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastRunwayChannel.Id, currentAttempt, retryTimes)
 			channel = lastRunwayChannel
 		}
 		lastRunwayChannel = channel
@@ -2179,13 +2177,13 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "[xAI Video] %s retry %d/%d - looking for new channel", endpoint, currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastChannel == nil {
-				logger.Errorf(ctx, "[xAI Video] no channel available on retry %d/%d (excluded: %v)", currentAttempt, retryTimes, failedChannelIds)
+				logger.Errorf(ctx, "[xAI Video] no channel available after cycling on retry %d/%d", currentAttempt, retryTimes)
 				break
 			}
-			logger.Infof(ctx, "[xAI Video] no new channel, retrying with last channel #%d (%d/%d)", lastChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "[xAI Video] no channel after cycling, retrying with last channel #%d (%d/%d)", lastChannel.Id, currentAttempt, retryTimes)
 			channel = lastChannel
 		}
 		lastChannel = channel
@@ -2580,13 +2578,13 @@ func RelaySoraVideo(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
 			if lastSoraChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastSoraChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastSoraChannel.Id, currentAttempt, retryTimes)
 			channel = lastSoraChannel
 		}
 		lastSoraChannel = channel
@@ -2961,13 +2959,13 @@ func RelayGemini(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
 			if lastGeminiChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastGeminiChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastGeminiChannel.Id, currentAttempt, retryTimes)
 			channel = lastGeminiChannel
 		}
 		lastGeminiChannel = channel
@@ -3119,13 +3117,13 @@ func RelayClaude(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
 			if lastClaudeChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastClaudeChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastClaudeChannel.Id, currentAttempt, retryTimes)
 			channel = lastClaudeChannel
 		}
 		lastClaudeChannel = channel
@@ -3271,9 +3269,6 @@ func RelayResponse(c *gin.Context) {
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
 
-	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存定向）
-	claudeResponseID := c.GetHeader("X-Response-ID")
-
 	group := c.GetString("group")
 	lastResponseChannel := getLastRetryFallbackChannel(originalChannelId)
 	retryTimes := config.RetryTimes
@@ -3283,13 +3278,13 @@ func RelayResponse(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
 			if lastResponseChannel == nil {
-				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
-			logger.Infof(ctx, "No new channel found (excludedChannels: %v), retrying with last channel #%d (%d/%d)", failedChannelIds, lastResponseChannel.Id, currentAttempt, retryTimes)
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastResponseChannel.Id, currentAttempt, retryTimes)
 			channel = lastResponseChannel
 		}
 		lastResponseChannel = channel

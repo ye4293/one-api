@@ -6,15 +6,6 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 )
 
-// getRetrySkipPriorityLevels enforces one extra retry on the highest priority,
-// then steps down one priority level per subsequent retry.
-func getRetrySkipPriorityLevels(attempt int) int {
-	if attempt <= 1 {
-		return 0
-	}
-	return attempt - 1
-}
-
 func appendUniqueChannelID(channelIDs []int, channelID int) []int {
 	if channelID <= 0 {
 		return channelIDs
@@ -27,15 +18,20 @@ func appendUniqueChannelID(channelIDs []int, channelID int) []int {
 	return append(channelIDs, channelID)
 }
 
-func selectRetryChannel(ctx context.Context, group string, model string, attempt int, responseID string, failedChannelIds []int) (*dbmodel.Channel, error) {
+// selectRetryChannel 选择重试渠道，始终从最高优先级开始（skipPriorityLevels=0），
+// 依靠 CacheGetRandomSatisfiedChannel 内部 fallback 自然降级。
+// 若当前轮次所有渠道已耗尽，则重置 failedChannelIds 从头循环。
+func selectRetryChannel(ctx context.Context, group string, model string, failedChannelIds *[]int) (*dbmodel.Channel, error) {
 	channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(
-		ctx,
-		group,
-		model,
-		getRetrySkipPriorityLevels(attempt),
-		responseID,
-		failedChannelIds,
+		ctx, group, model, 0, "", *failedChannelIds,
 	)
+	if err != nil {
+		// 所有优先级均已耗尽，重置后从最高优先级重新开始
+		*failedChannelIds = nil
+		channel, _, err = dbmodel.CacheGetRandomSatisfiedChannel(
+			ctx, group, model, 0, "", nil,
+		)
+	}
 	return channel, err
 }
 
