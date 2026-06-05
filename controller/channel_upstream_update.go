@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -39,6 +40,14 @@ var (
 	upstreamMinCheckIntervalOnce  sync.Once
 	upstreamMinCheckIntervalCache int64
 )
+
+func upstreamInfo(msg string) {
+	logger.Info(context.Background(), msg)
+}
+
+func upstreamError(msg string) {
+	logger.Error(context.Background(), msg)
+}
 
 // ──────────────────────────────────────────
 // DTO
@@ -122,6 +131,7 @@ func upstreamApplySelectedModelChanges(origin, addModels, removeModels []string)
 	normalizedRemove := upstreamSubtractModelNames(upstreamNormalizeModelNames(removeModels), normalizedAdd)
 	return upstreamSubtractModelNames(upstreamMergeModelNames(origin, normalizedAdd), normalizedRemove)
 }
+
 
 // upstreamNormalizeChannelModelMapping 解析 channel.ModelMapping JSON
 func upstreamNormalizeChannelModelMapping(channel *model.Channel) map[string]string {
@@ -339,25 +349,26 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	}
 
 	ran = true
+	localModels := upstreamNormalizeModelNames(channel.GetModels())
 	pendingAdd, pendingRemove, fetchErr := upstreamCollectPendingChanges(channel, *settings)
 	settings.UpstreamModelUpdateLastCheckTime = now
 
 	if fetchErr != nil {
+		upstreamError(fmt.Sprintf("upstream update check failed: channel_id=%d channel_name=%s status=%d local_model_count=%d err=%v",
+			channel.Id, channel.Name, channel.Status, len(localModels), fetchErr))
 		_ = saveChannelUpstreamSettings(channel, *settings, false)
 		return false, 0, true, fetchErr
 	}
-
 	// 自动同步新增模型
 	var autoReenabled bool
 	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
-		origin := upstreamNormalizeModelNames(channel.GetModels())
-		merged := upstreamMergeModelNames(origin, pendingAdd)
-		if len(merged) > len(origin) {
+		merged := upstreamMergeModelNames(localModels, pendingAdd)
+		if len(merged) > len(localModels) {
 			channel.Models = strings.Join(merged, ",")
-			autoAdded = len(merged) - len(origin)
+			autoAdded = len(merged) - len(localModels)
 			modelsChanged = true
 			// 渠道因模型全删被自动禁用（models 为空）且上游恢复了模型 → 自动重新启用
-			if channel.Status == common.ChannelStatusAutoDisabled && len(origin) == 0 {
+			if channel.Status == common.ChannelStatusAutoDisabled && len(localModels) == 0 {
 				autoReenabled = true
 			}
 		}
@@ -383,27 +394,36 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 		settings.UpstreamModelUpdateLastRemovedModels = pendingRemove
 	}
 
+	if modelsChanged {
+		upstreamInfo(fmt.Sprintf("upstream sync: applying channel_id=%d channel_name=%s next_model_count=%d auto_added=%d auto_reenabled=%v all_models_removed=%v",
+			channel.Id, channel.Name, len(upstreamNormalizeModelNames(channel.GetModels())), autoAdded, autoReenabled, allModelsRemoved))
+	}
+
 	if err = saveChannelUpstreamSettings(channel, *settings, modelsChanged); err != nil {
+		upstreamError(fmt.Sprintf("upstream sync: save failed channel_id=%d channel_name=%s models_changed=%v err=%v",
+			channel.Id, channel.Name, modelsChanged, err))
 		return false, 0, true, err // DB 写入失败：内存变更未持久化，autoAdded 不计入指标
 	}
 	if modelsChanged {
 		if err = channel.UpdateAbilities(); err != nil {
+			upstreamError(fmt.Sprintf("upstream sync: UpdateAbilities failed channel_id=%d channel_name=%s model_count=%d err=%v",
+				channel.Id, channel.Name, len(upstreamNormalizeModelNames(channel.GetModels())), err))
 			return true, autoAdded, true, err
 		}
 		// 模型全删 → 自动禁用（巡检仍会扫描 auto-disabled 渠道，上游恢复后可自动重新启用）
 		if allModelsRemoved {
 			if disabled, disableErr := model.AutoDisableChannelById(channel.Id, "上游模型同步后模型列表为空", ""); disableErr != nil {
-				logger.SysLog(fmt.Sprintf("upstream sync: failed to auto-disable empty channel_id=%d err=%v", channel.Id, disableErr))
+				upstreamInfo(fmt.Sprintf("upstream sync: failed to auto-disable empty channel_id=%d err=%v", channel.Id, disableErr))
 			} else if disabled {
-				logger.SysLog(fmt.Sprintf("upstream sync: auto-disabled channel_id=%d channel_name=%s: no models remain", channel.Id, channel.Name))
+				upstreamInfo(fmt.Sprintf("upstream sync: auto-disabled channel_id=%d channel_name=%s: no models remain", channel.Id, channel.Name))
 			}
 		}
 		// 上游恢复模型 → 自动重新启用原本因模型为空而被禁用的渠道
 		if autoReenabled {
 			if reEnableErr := model.UpdateChannelStatusById(channel.Id, common.ChannelStatusEnabled); reEnableErr != nil {
-				logger.SysLog(fmt.Sprintf("upstream sync: failed to re-enable channel_id=%d err=%v", channel.Id, reEnableErr))
+				upstreamInfo(fmt.Sprintf("upstream sync: failed to re-enable channel_id=%d err=%v", channel.Id, reEnableErr))
 			} else {
-				logger.SysLog(fmt.Sprintf("upstream sync: re-enabled channel_id=%d channel_name=%s: upstream models restored", channel.Id, channel.Name))
+				upstreamInfo(fmt.Sprintf("upstream sync: re-enabled channel_id=%d channel_name=%s: upstream models restored", channel.Id, channel.Name))
 			}
 		}
 	}
@@ -434,7 +454,8 @@ func queryUpstreamChannelBatch(lastID int) ([]*model.Channel, error) {
 	var channels []*model.Channel
 	q := model.DB.
 		Select("id", "name", "type", "key", "status", "base_url", "models",
-			"settings", "model_mapping", "multi_key_info", "header_override").
+			"settings", "model_mapping", "multi_key_info", "header_override",
+			"group", "priority", "weight").
 		Where("status IN ?", []int{common.ChannelStatusEnabled, common.ChannelStatusAutoDisabled}).
 		Order("id asc").
 		Limit(upstreamUpdateBatchSize)
@@ -462,7 +483,7 @@ func runUpstreamUpdateTaskOnce() {
 	for {
 		channels, err := queryUpstreamChannelBatch(lastID)
 		if err != nil {
-			logger.SysLog(fmt.Sprintf("upstream update task query failed: %v", err))
+			upstreamError(fmt.Sprintf("upstream update task query failed: %v", err))
 			break
 		}
 		if len(channels) == 0 {
@@ -489,8 +510,6 @@ func runUpstreamUpdateTaskOnce() {
 			}
 			if err != nil {
 				failed++
-				logger.SysLog(fmt.Sprintf("upstream update check failed: channel_id=%d channel_name=%s err=%v",
-					ch.Id, ch.Name, err))
 				continue
 			}
 			// 成功执行时累计变更指标
@@ -517,7 +536,7 @@ func runUpstreamUpdateTaskOnce() {
 		upstreamRefreshCache()
 	}
 	if checked > 0 || config.DebugEnabled {
-		logger.SysLog(fmt.Sprintf(
+		upstreamInfo(fmt.Sprintf(
 			"upstream update task done: checked=%d changed=%d add=%d remove=%d failed=%d auto_added=%d",
 			checked, changed, addedTotal, removedTotal, failed, autoTotal,
 		))
@@ -531,7 +550,7 @@ func StartChannelUpstreamModelUpdateTask() {
 			return
 		}
 		if os.Getenv("CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED") == "false" {
-			logger.SysLog("upstream model update task disabled by env")
+			upstreamInfo("upstream model update task disabled by env")
 			return
 		}
 
@@ -544,7 +563,7 @@ func StartChannelUpstreamModelUpdateTask() {
 		interval := time.Duration(intervalMinutes) * time.Minute
 
 		common.SafeGoroutine(func() {
-			logger.SysLog(fmt.Sprintf(
+			upstreamInfo(fmt.Sprintf(
 				"upstream model update task started: default_interval=%s, interval follows global option in real time",
 				interval,
 			))
@@ -650,11 +669,20 @@ func doApplyChannelUpstreamModelUpdates(
 	settings.UpstreamModelUpdateLastRemovedModels = remainingRemove
 	settings.UpstreamModelUpdateLastCheckTime = helper.GetTimestamp()
 
+	if modelsChanged {
+		upstreamInfo(fmt.Sprintf("upstream sync: manual apply channel_id=%d channel_name=%s add=%d remove=%d ignore=%d",
+			channel.Id, channel.Name, len(addModels), len(removeModels), len(ignoreModels)))
+	}
+
 	if err = saveChannelUpstreamSettings(channel, settings, modelsChanged); err != nil {
+		upstreamError(fmt.Sprintf("upstream sync: manual apply save failed channel_id=%d channel_name=%s err=%v",
+			channel.Id, channel.Name, err))
 		return nil, nil, nil, nil, false, err
 	}
 	if modelsChanged {
 		if err = channel.UpdateAbilities(); err != nil {
+			upstreamError(fmt.Sprintf("upstream sync: manual apply UpdateAbilities failed channel_id=%d channel_name=%s err=%v",
+				channel.Id, channel.Name, err))
 			return addModels, removeModels, remaining, remainingRemove, true, err
 		}
 	}
