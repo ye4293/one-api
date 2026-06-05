@@ -204,7 +204,7 @@ func Distribute() func(c *gin.Context) {
 				// 路径 A/C：亲和未命中或 X-Response-ID 存在，走正常随机选渠
 				if channel == nil {
 					var cachedKeyIndex int
-					channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(userGroup, modelRequest.Model, 0, responseID)
+					channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, responseID)
 					if cachedKeyIndex >= 0 {
 						c.Set("cached_key_index", cachedKeyIndex)
 					}

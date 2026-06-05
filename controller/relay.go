@@ -198,7 +198,7 @@ func Relay(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
 		if err != nil {
 			if lastChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -925,7 +925,7 @@ func RelayMidjourney(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		if originalModel != "" {
 			currentAttempt := retryTimes - i + 1
-			channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
+			channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
 			if err != nil {
 				if lastMjChannel == nil {
 					logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %+v (excludedChannels: %v)", err, failedChannelIds)
@@ -1088,7 +1088,7 @@ func RelayVideoGenerate(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastVideoChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -1373,7 +1373,7 @@ func RelayRecraft(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastRecraftChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -1739,7 +1739,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastImageChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -1891,7 +1891,7 @@ func RelayRunway(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "RelayRunway retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastRunwayChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed and no fallback channel on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
@@ -2179,7 +2179,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "[xAI Video] %s retry %d/%d - looking for new channel", endpoint, currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastChannel == nil {
 				logger.Errorf(ctx, "[xAI Video] no channel available on retry %d/%d (excluded: %v)", currentAttempt, retryTimes, failedChannelIds)
@@ -2376,7 +2376,7 @@ func RelaySoraCharacter(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelaySoraCharacter retry attempt %d/%d", retryTimes-i+1, retryTimes)
 
-		channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(group, modelName, 0, "", failedChannelIds)
+		channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(ctx, group, modelName, 0, "", failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
 			break
@@ -2580,7 +2580,7 @@ func RelaySoraVideo(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		logger.Infof(ctx, "RelaySoraVideo retry attempt %d/%d - looking for new channel", currentAttempt, retryTimes)
 
-		channel, err := selectRetryChannel(group, modelName, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, modelName, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastSoraChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v (excludedChannels: %v)", currentAttempt, retryTimes, err, failedChannelIds)
@@ -2961,7 +2961,7 @@ func RelayGemini(c *gin.Context) {
 
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastGeminiChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -3119,7 +3119,7 @@ func RelayClaude(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, originalModel, currentAttempt, "", failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, "", failedChannelIds)
 		if err != nil {
 			if lastClaudeChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -3283,7 +3283,7 @@ func RelayResponse(c *gin.Context) {
 	}
 	for i := retryTimes; i > 0; i-- {
 		currentAttempt := retryTimes - i + 1
-		channel, err := selectRetryChannel(group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
+		channel, err := selectRetryChannel(ctx, group, originalModel, currentAttempt, claudeResponseID, failedChannelIds)
 		if err != nil {
 			if lastResponseChannel == nil {
 				logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed: %v (excludedChannels: %v)", err, failedChannelIds)
@@ -3447,6 +3447,7 @@ func RelayClaudeCountTokens(c *gin.Context) {
 
 	// 3. 使用带能力筛选的渠道选择，只选择支持 count_tokens 的渠道
 	channel, err := dbmodel.CacheGetRandomSatisfiedChannelWithCapability(
+		ctx,
 		group,
 		req.Model,
 		dbmodel.FilterSupportCountTokens,

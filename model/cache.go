@@ -373,7 +373,7 @@ func getSortedSatisfiedChannelPriorities(group string, model string, groupCol st
 	return priorities, nil
 }
 
-func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
+func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -395,7 +395,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 			channelID, parseErr := strconv.Atoi(cachedChannelID)
 			if parseErr == nil {
 				if isExcludedChannel(channelID, excludeIds) {
-					logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
+					logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
 				} else {
 					// 尝试获取该 channel
 					channel, getErr := CacheGetChannel(channelID)
@@ -424,19 +424,19 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 
 							// 如果都匹配，直接返回该 channel
 							if groupMatched && modelMatched {
-								logger.SysLog(fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d) for responseID: %s, group: %s, model: %s",
+								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d) for responseID: %s, group: %s, model: %s",
 									channelID, cachedKeyIndex, responseID, group, model))
 								return channel, cachedKeyIndex, nil
 							} else {
-								logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
+								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
 									channelID, groupMatched, modelMatched))
 							}
 						} else {
-							logger.SysLog(fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
+							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
 								channelID, channel.Status))
 						}
 					} else {
-						logger.SysLog(fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
+						logger.Info(ctx, fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
 							channelID, getErr))
 					}
 				}
@@ -453,7 +453,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	// logger.SysLog(fmt.Sprintf("Found priorities for group=%s, model=%s: %v, excludeIds=%v", group, model, priorities, excludeIds)) // 调试用，生产环境可注释
 
 	if len(priorities) == 0 {
-		logger.SysError(fmt.Sprintf("No priorities found for group=%s, model=%s, excludeIds=%v", group, model, excludeIds))
+		logger.Error(ctx, fmt.Sprintf("No priorities found for group=%s, model=%s, excludeIds=%v", group, model, excludeIds))
 		return nil, -1, errors.New("no priorities available")
 	}
 
@@ -486,12 +486,12 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 	}
 
 	if len(channels) == 0 {
-		logger.SysError(fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d, excludeIds=%v", group, model, priorityToUse, skipPriorityLevels, excludeIds))
+		logger.Error(ctx, fmt.Sprintf("No channels found for group=%s, model=%s, priority=%d, skipPriorityLevels=%d, excludeIds=%v", group, model, priorityToUse, skipPriorityLevels, excludeIds))
 
 		// 回退机制：如果当前优先级没有可用渠道，尝试下一个优先级
 		for idx := selectedPriorityIndex + 1; idx < len(priorities); idx++ {
 			priorityToUse = priorities[idx]
-			logger.SysLog(fmt.Sprintf("Fallback: trying priority %d (index %d)", priorityToUse, idx))
+			logger.Info(ctx, fmt.Sprintf("Fallback: trying priority %d (index %d)", priorityToUse, idx))
 
 			// 重新构建查询
 			fallbackQuery := DB.Table("channels").
@@ -508,7 +508,7 @@ func CacheGetRandomSatisfiedChannel(group string, model string, skipPriorityLeve
 			}
 
 			if len(channels) > 0 {
-				logger.SysLog(fmt.Sprintf("Fallback successful: found %d channels with priority %d", len(channels), priorityToUse))
+				logger.Info(ctx, fmt.Sprintf("Fallback successful: found %d channels with priority %d", len(channels), priorityToUse))
 				break
 			}
 		}
@@ -561,6 +561,7 @@ var FilterSupportCountTokens ChannelCapabilityFilter = func(channel *Channel, co
 // CacheGetRandomSatisfiedChannelWithCapability 带能力筛选的渠道选择
 // 此函数在 CacheGetRandomSatisfiedChannel 基础上增加能力过滤
 func CacheGetRandomSatisfiedChannelWithCapability(
+	ctx context.Context,
 	group string,
 	model string,
 	capabilityFilter ChannelCapabilityFilter,
