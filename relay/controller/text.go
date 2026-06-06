@@ -83,7 +83,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 
 		shouldResetRequestBody := isModelMapped || meta.ChannelType == common.ChannelTypeBaichuan ||
-			(strings.Contains(strings.ToLower(textRequest.Model), "audio") && textRequest.Stream)
+			(strings.Contains(strings.ToLower(textRequest.Model), "audio") && textRequest.Stream) ||
+			textRequest.MaxCompletionTokens > 0 // max_tokens 已被 ConvertRequest 转换，必须重新序列化
 
 		if shouldResetRequestBody {
 			jsonStr, err := json.Marshal(convertedRequest) // 使用转换后的请求
