@@ -35,21 +35,28 @@ func claudeSuffix(isStream bool) string {
 // rewriteBodyForVertexClaude 把 Anthropic 原生 /v1/messages 的请求体改写成 Vertex Anthropic
 // publisher 能接受的格式：
 //   - 注入顶层 "anthropic_version": "vertex-2023-10-16"
+//   - 注入顶层 "anthropic_beta"（白名单过滤 + 自动推断）
 //   - 删除顶层 "model" 字段（Vertex 用 URL 决定模型，body 里带 model 会被拒）
 //   - 对 4.7+（IsNoSamplingModel）做兼容修正：thinking.type "enabled" → "adaptive"、
 //     删掉 thinking.budget_tokens 与 temperature/top_p/top_k（Vertex Anthropic 不接受）
 //   - 对 4.6 及更早且 body 含 thinking 的：强制 temperature=1（Anthropic 官方要求）
-//   - 其他字段（messages、system、max_tokens、stream、tools 等）原样保留
+//   - 其他字段（messages、system、max_tokens、stream、tools、context_management 等）原样保留
 //
 // modelName 可以是带或不带 `-thinking` 后缀的名字；内部用 anthropic.IsNoSamplingModel
-// 透明处理。
-func rewriteBodyForVertexClaude(body []byte, modelName string) ([]byte, error) {
+// 透明处理。betaHeader 为客户端传入的 anthropic-beta header 原始值。
+func rewriteBodyForVertexClaude(body []byte, modelName string, betaHeader string) ([]byte, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, fmt.Errorf("rewriteBodyForVertexClaude: invalid json: %w", err)
 	}
 	delete(m, "model")
 	m["anthropic_version"] = anthropicVersion
+
+	// 注入 anthropic_beta（白名单过滤 + 根据请求体自动推断）
+	betaFlags := anthropic.MergeBetaFlags(betaHeader, m, anthropic.VertexAllowedBetaFlags)
+	if len(betaFlags) > 0 {
+		m["anthropic_beta"] = betaFlags
+	}
 
 	if anthropic.IsNoSamplingModel(modelName) {
 		if thinking, ok := m["thinking"].(map[string]interface{}); ok {
