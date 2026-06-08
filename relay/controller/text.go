@@ -50,8 +50,8 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	textRequest.Model, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = textRequest.Model
 	// get model ratio & group ratio
-	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
-	billingModelName := meta.OriginModelName
+	// 有模型重定向时使用实际调用的模型名计费
+	billingModelName := meta.BillingModelName()
 	modelRatio := common.GetModelRatio(billingModelName)
 	// groupRatio 现在是"融合后的总折扣" = 等级折扣 × 渠道折扣 × 用户渠道折扣
 	groupRatio := meta.CombinedGroupRatio()
