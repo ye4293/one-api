@@ -89,18 +89,21 @@ func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, p
 
 func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int, xResponseID string) {
 	logModelName := modelName
+	dbModelName := modelName // 入库用 origin，保证 usage 可按用户请求的模型名搜索
 	otherForLog := other
 	if other != "" {
-		for _, part := range strings.Split(other, ";") {
+		parts := strings.Split(other, ";")
+		filtered := parts[:0]
+		for _, part := range parts {
 			if strings.HasPrefix(part, "origin_model_name:") {
-				logModelName = strings.TrimPrefix(part, "origin_model_name:") + "->" + modelName
-				// 日志行已通过 -> 格式展示重定向，other 中去掉冗余的 origin_model_name
-				otherForLog = strings.ReplaceAll(other, part+";", "")
-				otherForLog = strings.ReplaceAll(otherForLog, ";"+part, "")
-				otherForLog = strings.ReplaceAll(otherForLog, part, "")
-				break
+				originModel := strings.TrimPrefix(part, "origin_model_name:")
+				logModelName = originModel + "->" + modelName
+				dbModelName = originModel
+			} else {
+				filtered = append(filtered, part)
 			}
 		}
+		otherForLog = strings.Join(filtered, ";")
 	}
 	logLine := fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, xResponseID=%s, cachedTokens=%d", userId, channelId, promptTokens, completionTokens, logModelName, tokenName, quota, content, xRequestID, xResponseID, cachedTokens)
 	if otherForLog != "" {
@@ -127,7 +130,7 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		TokenName:        tokenName,
-		ModelName:        modelName,
+		ModelName:        dbModelName,
 		CachedTokens:     cachedTokens,
 		Quota:            int(quota),
 		ChannelId:        channelId,
@@ -150,7 +153,7 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	// 注意：log.Provider 当前未在此处赋值（logs 表中 provider 字段也为空），
 	// 直方图按 model_name + channel_id 维度区分，provider 维度在 cache 层通过 channel 信息补充
 	if config.ModelMetricsEnabled {
-		RecordMetricsHistogram(modelName, "", channelId, duration, speed)
+		RecordMetricsHistogram(dbModelName, "", channelId, duration, speed)
 	}
 }
 

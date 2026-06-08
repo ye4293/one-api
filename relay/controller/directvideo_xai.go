@@ -152,7 +152,7 @@ func handleXaiVideoBilling(c *gin.Context, meta *util.RelayMeta, quota int64, ta
 		logContent := fmt.Sprintf("xAI Video Generation model: %s, total cost: $%.6f",
 			meta.BillingModelName(), float64(quota)/config.QuotaPerUnit)
 		dbmodel.RecordVideoConsumeLog(context.Background(), meta.UserId, meta.ChannelId,
-			0, 0, meta.BillingModelName(), tokenName, quota, logContent, 0, title, referer, taskId)
+			0, 0, meta.OriginModelName, tokenName, quota, logContent, 0, title, referer, taskId)
 		dbmodel.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		dbmodel.UpdateChannelUsedQuota(meta.ChannelId, quota)
 	}
