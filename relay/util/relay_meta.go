@@ -85,6 +85,15 @@ func (m *RelayMeta) GetFirstWordLatency() float64 {
 	return m.FirstWordLatency
 }
 
+// BillingModelName 返回计费记录使用的模型名。
+// 有模型重定向时返回实际调用的模型名，无重定向时与 OriginModelName 相同。
+func (m *RelayMeta) BillingModelName() string {
+	if m.ActualModelName != "" {
+		return m.ActualModelName
+	}
+	return m.OriginModelName
+}
+
 func GetRelayMeta(c *gin.Context) *RelayMeta {
 	// channelId := c.GetInt("channel_id")
 	// channel, _ := model.GetChannelById(channelId, false)

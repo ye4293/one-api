@@ -397,7 +397,7 @@ func consumeImageQuota(params *imageConsumeParams) {
 	// 模型名
 	logModelName := params.modelName
 	if logModelName == "" {
-		logModelName = params.meta.OriginModelName
+		logModelName = params.meta.BillingModelName()
 		if logModelName == "" {
 			logModelName = params.meta.ActualModelName
 		}
@@ -406,6 +406,7 @@ func consumeImageQuota(params *imageConsumeParams) {
 	// 构建 otherInfo
 	adminInfo := extractAdminInfoFromContext(params.c)
 	otherInfo := buildOtherInfoWithUsageDetails(adminInfo, params.usageDetails)
+	otherInfo = appendModelMappingInfo(otherInfo, params.meta.OriginModelName, params.meta.ActualModelName)
 	otherInfo = util.AppendRetryHistoryOther(params.c, otherInfo, duration)
 
 	if otherInfo != "" {
@@ -1315,7 +1316,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 记录消费日志
-		logModelName := meta.OriginModelName
+		logModelName := meta.BillingModelName()
 		if logModelName == "" {
 			logModelName = meta.ActualModelName
 		}

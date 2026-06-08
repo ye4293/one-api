@@ -165,8 +165,7 @@ func getPreConsumedQuota(textRequest *relaymodel.GeneralOpenAIRequest, promptTok
 func preConsumeQuota(ctx context.Context, textRequest *relaymodel.GeneralOpenAIRequest, promptTokens int, ratio float64, meta *util.RelayMeta) (int64, *relaymodel.ErrorWithStatusCode) {
 	var preConsumedQuota int64
 
-	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
-	billingModelName := meta.OriginModelName
+	billingModelName := meta.BillingModelName()
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
@@ -255,8 +254,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	completionTokens := usage.CompletionTokens
 	cachedTokens := usage.PromptTokensDetails.CachedTokens
 
-	// 使用原始模型名（重定向前）计费，确保按客户请求的模型收费
-	billingModelName := meta.OriginModelName
+	billingModelName := meta.BillingModelName()
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
@@ -344,10 +342,10 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		xRequestID := c.GetString("X-Request-ID")
 		xResponseID := c.GetString("x_response_id")
 
-		// 使用原始模型名（重定向前）记录日志
+		// 使用重定向后的实际模型名记录日志
 		logModelName := textRequest.Model
-		if meta.OriginModelName != "" {
-			logModelName = meta.OriginModelName
+		if name := meta.BillingModelName(); name != "" {
+			logModelName = name
 		}
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, cachedTokens, xResponseID)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
@@ -444,12 +442,12 @@ func enrichBillingDetailsFromContext(c *gin.Context, details map[string]interfac
 	return details
 }
 
-// appendModelMappingInfo 向 other 字段追加模型重定向信息
+// appendModelMappingInfo 向 other 字段追加模型重定向标记
 func appendModelMappingInfo(other string, originModel string, actualModel string) string {
 	if originModel == "" || actualModel == "" || originModel == actualModel {
 		return other
 	}
-	mappingInfo := fmt.Sprintf("is_model_mapped:true;upstream_model_name:%s", actualModel)
+	mappingInfo := fmt.Sprintf("is_model_mapped:true;origin_model_name:%s", originModel)
 	if other != "" {
 		return other + ";" + mappingInfo
 	}
