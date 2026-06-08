@@ -142,30 +142,6 @@ func getAwsModelIdWithRegion(c *gin.Context, requestModel string) (string, error
 	return awsModelId, nil
 }
 
-func buildAnthropicBetaHeader(anthropicBetaValues string) (json.RawMessage, error) {
-	if anthropicBetaValues == "" {
-		return nil, nil
-	}
-
-	rawValues := strings.Split(anthropicBetaValues, ",")
-	betaArray := make([]string, 0, len(rawValues))
-	for _, value := range rawValues {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			betaArray = append(betaArray, trimmed)
-		}
-	}
-	if len(betaArray) == 0 {
-		return nil, nil
-	}
-
-	betaJSON, err := json.Marshal(betaArray)
-	if err != nil {
-		return nil, errors.Wrap(err, "marshal anthropic-beta")
-	}
-	return betaJSON, nil
-}
-
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求
 func parseNativeClaudeRequest(c *gin.Context) (map[string]any, error) {
 	requestBody, err := common.GetRequestBody(c)
@@ -193,11 +169,12 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 	delete(awsClaudeReq, "stream")
 	awsClaudeReq["anthropic_version"] = "bedrock-2023-05-31"
 
-	betaJSON, err := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
-	if err != nil {
-		return nil, err
-	}
-	if len(betaJSON) > 0 {
+	betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), awsClaudeReq, anthropic.BedrockAllowedBetaFlags)
+	if len(betaFlags) > 0 {
+		betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
+		if marshalErr != nil {
+			return nil, errors.Wrap(marshalErr, "marshal anthropic-beta")
+		}
 		awsClaudeReq["anthropic_beta"] = json.RawMessage(betaJSON)
 	}
 
@@ -254,11 +231,14 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-		betaJSON, betaErr := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
-		if betaErr != nil {
-			return utils.WrapErr(betaErr), nil
-		}
-		if len(betaJSON) > 0 {
+		// OpenAI 格式转换路径：body 为 nil 因为 context_management 等字段不会出现在 OpenAI 请求中，
+		// 仅做白名单过滤，不做自动推断（自动推断在 buildNativeClaudeRequestBody 原生路径中完成）
+		betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), nil, anthropic.BedrockAllowedBetaFlags)
+		if len(betaFlags) > 0 {
+			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
+			if marshalErr != nil {
+				return utils.WrapErr(errors.Wrap(marshalErr, "marshal anthropic-beta")), nil
+			}
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 
@@ -330,11 +310,14 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-		betaJSON, betaErr := buildAnthropicBetaHeader(c.GetHeader("anthropic-beta"))
-		if betaErr != nil {
-			return utils.WrapErr(betaErr), nil
-		}
-		if len(betaJSON) > 0 {
+		// OpenAI 格式转换路径：body 为 nil 因为 context_management 等字段不会出现在 OpenAI 请求中，
+		// 仅做白名单过滤，不做自动推断（自动推断在 buildNativeClaudeRequestBody 原生路径中完成）
+		betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), nil, anthropic.BedrockAllowedBetaFlags)
+		if len(betaFlags) > 0 {
+			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
+			if marshalErr != nil {
+				return utils.WrapErr(errors.Wrap(marshalErr, "marshal anthropic-beta")), nil
+			}
 			awsClaudeReq.AnthropicBeta = betaJSON
 		}
 

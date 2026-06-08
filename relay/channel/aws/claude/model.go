@@ -28,6 +28,11 @@ type Request struct {
 	Thinking *anthropic.ThinkingConfig `json:"thinking,omitempty"`
 	// OutputConfig 输出配置（effort + format）
 	OutputConfig *anthropic.OutputConfig `json:"output_config,omitempty"`
+	// ContextManagement context editing 透传字段（仅原生 Claude 路径 buildNativeClaudeRequestBody 生效，
+	// OpenAI 格式转换路径 copier.Copy 来源 anthropic.Request 无此字段）
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+	// OutputFormat structured outputs 透传字段（同上，仅原生路径生效）
+	OutputFormat json.RawMessage `json:"output_format,omitempty"`
 }
 
 // AwsModelCanCrossRegionMap 定义哪些模型支持跨区域调用

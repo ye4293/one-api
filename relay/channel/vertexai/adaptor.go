@@ -322,7 +322,11 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read request body for claude rewrite: %w", readErr)
 		}
-		rewritten, rewriteErr := rewriteBodyForVertexClaude(raw, claudeModel)
+		var betaHeader string
+		if c != nil && c.Request != nil {
+			betaHeader = c.Request.Header.Get("anthropic-beta")
+		}
+		rewritten, rewriteErr := rewriteBodyForVertexClaude(raw, claudeModel, betaHeader)
 		if rewriteErr != nil {
 			return nil, rewriteErr
 		}
