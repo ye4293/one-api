@@ -130,7 +130,11 @@ type ImageResponse struct {
 			TextTokens  int `json:"text_tokens,omitempty"`
 		} `json:"input_tokens_details,omitempty"`
 		OutputTokens int `json:"output_tokens,omitempty"`
-		TotalTokens  int `json:"total_tokens,omitempty"`
+		OutputTokensDetails struct {
+			TextTokens      int `json:"text_tokens,omitempty"`
+			ImageTokens     int `json:"image_tokens,omitempty"`
+		} `json:"output_tokens_details,omitempty"`
+		TotalTokens int `json:"total_tokens,omitempty"`
 	} `json:"usage,omitempty"`
 }
 
