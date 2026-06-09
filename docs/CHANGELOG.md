@@ -8,6 +8,13 @@
 
 ## 2026-06-09
 
+### fix(streaming): SSE ping 格式改为 Claude 官方格式
+- **分支**: `main`
+- **类型**: fix
+- **涉及文件**: `relay/channel/common.go`, `relay/helper/common.go`, `relay/helper/stream_scanner.go`
+- **说明**: 将 ping 心跳从 SSE 注释格式 (`: PING`) 改为 Claude 官方格式 (`event: ping\ndata: {"type": "ping"}`)，与上游 Claude API 透传的 ping 保持一致。同时将 stream_scanner 中部分 println 调试日志改为 logger 正式日志。
+- **关联计划**: 无
+
 ### feat(streaming): 等待上游响应期间发送 SSE ping 保活
 - **分支**: `stream-ping`
 - **类型**: 新功能

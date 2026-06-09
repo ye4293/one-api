@@ -144,7 +144,7 @@ func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (stop func()
 				if c.Writer == nil {
 					return
 				}
-				_, err := c.Writer.Write([]byte(": PING\n\n"))
+				_, err := c.Writer.Write([]byte("event: ping\ndata: {\"type\": \"ping\"}\n\n"))
 				if err != nil {
 					return
 				}
