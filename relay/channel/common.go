@@ -1,15 +1,23 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/util"
 )
+
+const defaultPingInterval = 10 * time.Second
 
 func SetupCommonRequestHeader(c *gin.Context, req *http.Request, meta *util.RelayMeta) {
 	req.Header.Set("Content-Type", c.Request.Header.Get("Content-Type"))
@@ -37,7 +45,7 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 	// 应用渠道自定义请求头覆盖（优先级最高，覆盖用户传递和默认的header）
 	ApplyHeadersOverride(req, meta)
 
-	resp, err := DoRequest(c, req)
+	resp, err := DoRequest(c, req, meta)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
@@ -68,7 +76,7 @@ func ApplyHeadersOverride(req *http.Request, meta *util.RelayMeta) {
 	}
 }
 
-func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
+func DoRequest(c *gin.Context, req *http.Request, meta *util.RelayMeta) (*http.Response, error) {
 	// 确保请求体被关闭
 	defer func() {
 		if req.Body != nil {
@@ -79,6 +87,22 @@ func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
 		}
 	}()
 
+	// 流式请求：在等待上游响应期间发送 ping 保活，防止中间代理层断开连接
+	var stopPinger func()
+	if meta != nil && meta.IsStream && config.PingIntervalEnabled && !meta.DisablePing {
+		common.SetEventStreamHeaders(c)
+		pingInterval := time.Duration(config.PingIntervalSeconds) * time.Second
+		if pingInterval <= 0 {
+			pingInterval = defaultPingInterval
+		}
+		stopPinger = startPingKeepAlive(c, pingInterval)
+		defer func() {
+			if stopPinger != nil {
+				stopPinger()
+			}
+		}()
+	}
+
 	resp, err := util.HTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -87,4 +111,58 @@ func DoRequest(c *gin.Context, req *http.Request) (*http.Response, error) {
 		return nil, errors.New("resp is nil")
 	}
 	return resp, nil
+}
+
+// startPingKeepAlive 启动一个 goroutine 定期发送 SSE ping 注释保活。
+// 返回的 stop 函数会取消 goroutine 并同步等待其退出，确保调用方拿到控制权时不再有并发写入。
+func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) (stop func()) {
+	pingerCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	gopool.Go(func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Debug(c.Request.Context(), fmt.Sprintf("SSE pre-request ping goroutine panic recovered: %v", r))
+			}
+		}()
+
+		if pingInterval <= 0 {
+			pingInterval = defaultPingInterval
+		}
+
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+
+		maxPingDuration := 120 * time.Minute
+		pingTimeout := time.NewTimer(maxPingDuration)
+		defer pingTimeout.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if c.Writer == nil {
+					return
+				}
+				_, err := c.Writer.Write([]byte(": PING\n\n"))
+				if err != nil {
+					return
+				}
+				if flusher, ok := c.Writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			case <-pingerCtx.Done():
+				return
+			case <-c.Request.Context().Done():
+				return
+			case <-pingTimeout.C:
+				return
+			}
+		}
+	})
+
+	return func() {
+		cancel()
+		<-done
+	}
 }

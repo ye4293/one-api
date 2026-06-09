@@ -151,6 +151,47 @@ type UsageDetailsForLog struct {
 	CachedTokens    int `json:"cached_tokens,omitempty"`
 }
 
+// GPTImageUsageDetailsForLog gpt-image-* usage 明细，写入 logs.other（仅四个字段）
+type GPTImageUsageDetailsForLog struct {
+	InputText   int `json:"input_text"`
+	InputImage  int `json:"input_image"`
+	OutputText  int `json:"output_text"`
+	OutputImage int `json:"output_image"`
+}
+
+// appendGPTImageUsageDetailsToOther 将 gpt-image usage 明细追加到 other 字段
+func appendGPTImageUsageDetailsToOther(other string, details GPTImageUsageDetailsForLog) string {
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		return other
+	}
+	usageInfo := fmt.Sprintf("usageDetails:%s", string(detailsBytes))
+	if other != "" {
+		return other + ";" + usageInfo
+	}
+	return usageInfo
+}
+
+func buildGPTImageUsageDetailsForLog(usage openai.ImageResponse) GPTImageUsageDetailsForLog {
+	in := usage.Usage.InputTokensDetails
+	out := usage.Usage.OutputTokensDetails
+	details := GPTImageUsageDetailsForLog{
+		InputText:  in.TextTokens,
+		InputImage: in.ImageTokens,
+		OutputText: out.TextTokens,
+		OutputImage: out.ImageTokens,
+	}
+	// 上游未拆 output_tokens_details 时，将 output_tokens 归入 output_image
+	if details.OutputText == 0 && details.OutputImage == 0 && usage.Usage.OutputTokens > 0 {
+		details.OutputImage = usage.Usage.OutputTokens
+	}
+	// 上游未拆 input_tokens_details 时，将 input_tokens 归入 input_text
+	if details.InputText == 0 && details.InputImage == 0 && usage.Usage.InputTokens > 0 {
+		details.InputText = usage.Usage.InputTokens
+	}
+	return details
+}
+
 // buildOtherInfoWithUsageDetails 构建包含 adminInfo 和 usageDetails 的 otherInfo 字符串
 // adminInfo: 渠道历史信息（可为空）
 // usageDetails: Usage 详情（可为 nil）
@@ -1114,6 +1155,8 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 
 	// 定义 token 变量供 defer 函数使用
 	var promptTokens, completionTokens int
+	var gptImageUsageDetails GPTImageUsageDetailsForLog
+	var gptImageUsageCaptured bool
 
 	defer func(ctx context.Context) {
 		if resp == nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
@@ -1135,6 +1178,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				// 先将令牌数转换为浮点数
 				textTokens := float64(parsedResponse.Usage.InputTokensDetails.TextTokens)
 				imageTokens := float64(parsedResponse.Usage.InputTokensDetails.ImageTokens)
+				if textTokens == 0 && imageTokens == 0 && parsedResponse.Usage.InputTokens > 0 {
+					textTokens = float64(parsedResponse.Usage.InputTokens)
+				}
 				outputTokens := float64(parsedResponse.Usage.OutputTokens)
 
 				// 保存旧的 quota 值用于日志对比
@@ -1181,6 +1227,10 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 				// 使用向上取整确保小数部分不会丢失
 				promptTokens = int(math.Ceil(inputTokensEquivalent))
 				completionTokens = int(outputTokens)
+				gptImageUsageDetails = buildGPTImageUsageDetailsForLog(parsedResponse)
+				if parsedResponse.Usage.InputTokens > 0 || parsedResponse.Usage.OutputTokens > 0 {
+					gptImageUsageCaptured = true
+				}
 			}
 		}
 
@@ -1321,6 +1371,9 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			logModelName = meta.ActualModelName
 		}
 		otherInfoImg := appendModelMappingInfo("", meta.OriginModelName, meta.ActualModelName)
+		if isGPTImageModel(meta.ActualModelName) && gptImageUsageCaptured {
+			otherInfoImg = appendGPTImageUsageDetailsToOther(otherInfoImg, gptImageUsageDetails)
+		}
 		otherInfoImg = util.AppendRetryHistoryOther(c, otherInfoImg, duration)
 		if otherInfoImg != "" {
 			model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, tokenName, quota, logContent, duration, title, referer, false, 0.0, otherInfoImg, xRequestID, 0, "")
@@ -2130,11 +2183,16 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 		TextTokens  int `json:"text_tokens"`
 		ImageTokens int `json:"image_tokens"`
 	}
+	type outputTokensDetails struct {
+		TextTokens      int `json:"text_tokens"`
+		ImageTokens     int `json:"image_tokens"`
+	}
 	type usagePayload struct {
-		InputTokens        int                 `json:"input_tokens"`
-		InputTokensDetails *inputTokensDetails `json:"input_tokens_details,omitempty"`
-		OutputTokens       int                 `json:"output_tokens"`
-		TotalTokens        int                 `json:"total_tokens"`
+		InputTokens         int                  `json:"input_tokens"`
+		InputTokensDetails  *inputTokensDetails  `json:"input_tokens_details,omitempty"`
+		OutputTokens        int                  `json:"output_tokens"`
+		OutputTokensDetails *outputTokensDetails `json:"output_tokens_details,omitempty"`
+		TotalTokens         int                  `json:"total_tokens"`
 	}
 	type sseEvent struct {
 		Type  string        `json:"type"`
@@ -2194,6 +2252,13 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 				aggUsage.InputTokensDetails.TextTokens += ev.Usage.InputTokensDetails.TextTokens
 				aggUsage.InputTokensDetails.ImageTokens += ev.Usage.InputTokensDetails.ImageTokens
 			}
+			if ev.Usage.OutputTokensDetails != nil {
+				if aggUsage.OutputTokensDetails == nil {
+					aggUsage.OutputTokensDetails = &outputTokensDetails{}
+				}
+				aggUsage.OutputTokensDetails.TextTokens += ev.Usage.OutputTokensDetails.TextTokens
+				aggUsage.OutputTokensDetails.ImageTokens += ev.Usage.OutputTokensDetails.ImageTokens
+			}
 			completedCount++
 		}
 	}
@@ -2211,15 +2276,20 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 		modelName, capturedUsage.InputTokens, capturedUsage.OutputTokens)
 
 	// 构造与非流式 gpt-image-* 响应兼容的计费 JSON，供外层 defer 解析
-	type billingUsageDetails struct {
+	type billingInputTokensDetails struct {
 		TextTokens  int `json:"text_tokens"`
 		ImageTokens int `json:"image_tokens"`
 	}
+	type billingOutputTokensDetails struct {
+		TextTokens      int `json:"text_tokens"`
+		ImageTokens     int `json:"image_tokens"`
+	}
 	type billingUsage struct {
-		InputTokens        int                  `json:"input_tokens"`
-		InputTokensDetails *billingUsageDetails `json:"input_tokens_details,omitempty"`
-		OutputTokens       int                  `json:"output_tokens"`
-		TotalTokens        int                  `json:"total_tokens"`
+		InputTokens         int                         `json:"input_tokens"`
+		InputTokensDetails  *billingInputTokensDetails  `json:"input_tokens_details,omitempty"`
+		OutputTokens        int                         `json:"output_tokens"`
+		OutputTokensDetails *billingOutputTokensDetails `json:"output_tokens_details,omitempty"`
+		TotalTokens         int                         `json:"total_tokens"`
 	}
 	type billingBody struct {
 		Model string       `json:"model"`
@@ -2230,9 +2300,15 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 	b.Usage.OutputTokens = capturedUsage.OutputTokens
 	b.Usage.TotalTokens = capturedUsage.TotalTokens
 	if capturedUsage.InputTokensDetails != nil {
-		b.Usage.InputTokensDetails = &billingUsageDetails{
+		b.Usage.InputTokensDetails = &billingInputTokensDetails{
 			TextTokens:  capturedUsage.InputTokensDetails.TextTokens,
 			ImageTokens: capturedUsage.InputTokensDetails.ImageTokens,
+		}
+	}
+	if capturedUsage.OutputTokensDetails != nil {
+		b.Usage.OutputTokensDetails = &billingOutputTokensDetails{
+			TextTokens:      capturedUsage.OutputTokensDetails.TextTokens,
+			ImageTokens:     capturedUsage.OutputTokensDetails.ImageTokens,
 		}
 	}
 	billingBytes, _ := json.Marshal(b)

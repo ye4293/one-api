@@ -142,6 +142,13 @@ func getAwsModelIdWithRegion(c *gin.Context, requestModel string) (string, error
 	return awsModelId, nil
 }
 
+func truncateBytes(b []byte, max int) string {
+	if len(b) <= max {
+		return string(b)
+	}
+	return string(b[:max]) + "...(truncated)"
+}
+
 // parseNativeClaudeRequest 从请求体解析原生 Claude 请求
 func parseNativeClaudeRequest(c *gin.Context) (map[string]any, error) {
 	requestBody, err := common.GetRequestBody(c)
@@ -169,7 +176,12 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 	delete(awsClaudeReq, "stream")
 	awsClaudeReq["anthropic_version"] = "bedrock-2023-05-31"
 
-	betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), awsClaudeReq, anthropic.BedrockAllowedBetaFlags)
+	betaHeader := c.GetHeader("anthropic-beta")
+	bodyBeta := awsClaudeReq["anthropic_beta"]
+	delete(awsClaudeReq, "anthropic_beta")
+
+	betaFlags := anthropic.MergeBetaFlags(betaHeader, awsClaudeReq, anthropic.BedrockAllowedBetaFlags)
+	logger.Infof(c, "[Bedrock Beta] header=%q, bodyBeta=%v, filtered=%v", betaHeader, bodyBeta, betaFlags)
 	if len(betaFlags) > 0 {
 		betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 		if marshalErr != nil {
@@ -231,9 +243,9 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-		// OpenAI 格式转换路径：body 为 nil 因为 context_management 等字段不会出现在 OpenAI 请求中，
-		// 仅做白名单过滤，不做自动推断（自动推断在 buildNativeClaudeRequestBody 原生路径中完成）
-		betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), nil, anthropic.BedrockAllowedBetaFlags)
+		betaHeader := c.GetHeader("anthropic-beta")
+		betaFlags := anthropic.MergeBetaFlags(betaHeader, nil, anthropic.BedrockAllowedBetaFlags)
+		logger.Infof(c, "[Bedrock Beta] OpenAI path (non-stream): header=%q, filtered=%v", betaHeader, betaFlags)
 		if len(betaFlags) > 0 {
 			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 			if marshalErr != nil {
@@ -260,6 +272,7 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 	}
 	awsReq.Body = requestBody
+	logger.Infof(c, "[Bedrock Beta] final request body (first 500): %s", truncateBytes(requestBody, 500))
 
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
 	if err != nil {
@@ -310,9 +323,9 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		if err = copier.Copy(awsClaudeReq, claudeReq); err != nil {
 			return utils.WrapErr(errors.Wrap(err, "copy request")), nil
 		}
-		// OpenAI 格式转换路径：body 为 nil 因为 context_management 等字段不会出现在 OpenAI 请求中，
-		// 仅做白名单过滤，不做自动推断（自动推断在 buildNativeClaudeRequestBody 原生路径中完成）
-		betaFlags := anthropic.MergeBetaFlags(c.GetHeader("anthropic-beta"), nil, anthropic.BedrockAllowedBetaFlags)
+		betaHeader := c.GetHeader("anthropic-beta")
+		betaFlags := anthropic.MergeBetaFlags(betaHeader, nil, anthropic.BedrockAllowedBetaFlags)
+		logger.Infof(c, "[Bedrock Beta] OpenAI path (stream): header=%q, filtered=%v", betaHeader, betaFlags)
 		if len(betaFlags) > 0 {
 			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 			if marshalErr != nil {
@@ -339,6 +352,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		}
 	}
 	awsReq.Body = requestBody
+	logger.Infof(c, "[Bedrock Beta] final stream request body (first 500): %s", truncateBytes(requestBody, 500))
 
 	awsResp, err := awsCli.InvokeModelWithResponseStream(c.Request.Context(), awsReq)
 	if err != nil {
