@@ -39,7 +39,7 @@ func StringData(c *gin.Context, str string) error {
 }
 
 func PingData(c *gin.Context) error {
-	c.Writer.Write([]byte(": PING\n\n"))
+	c.Writer.Write([]byte("event: ping\ndata: {\"type\": \"ping\"}\n\n"))
 	_ = FlushWriter(c)
 	return nil
 }

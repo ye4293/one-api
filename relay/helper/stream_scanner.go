@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/songquanpeng/one-api/common"
-	"github.com/songquanpeng/one-api/common/config"
-	"github.com/songquanpeng/one-api/common/logger"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
 
 	"github.com/bytedance/gopkg/util/gopool"
 
@@ -144,7 +145,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 							return
 						}
 						if config.DebugEnabled {
-							println("ping data sent")
+							logger.Info(c, "ping data sent")
 						}
 					case <-time.After(10 * time.Second):
 						logger.Error(c, "ping data send timeout")
@@ -236,9 +237,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 				}
 			} else {
 				// done, 处理完成标志，直接退出停止读取剩余数据防止出错
-				if config.DebugEnabled {
-					println("received [DONE], stopping scanner")
-				}
+				logger.Info(c, "received [DONE], stopping scanner")
 				return
 			}
 		}

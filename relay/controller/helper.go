@@ -317,6 +317,10 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			"channel_discount":   meta.ChannelDiscount,
 			"user_channel_ratio": meta.UserChannelRatio,
 		}
+		//追加tokens详情
+		usageDetails := map[string]interface{}{
+			"cache_tokens": 0,
+		}
 		// 多 Key 渠道：记录本次实际使用的 Key 索引
 		if meta.IsMultiKey && meta.KeyIndex != nil {
 			billingDetails["is_multi_key"] = true
@@ -334,6 +338,10 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
+			usageDetails["cache_tokens"] = cachedTokens
+			if detailsBytes, err := json.Marshal(usageDetails); err == nil {
+				otherInfo = otherInfo + ";" + fmt.Sprintf("usageDetails:%s", string(detailsBytes))
+			}
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
