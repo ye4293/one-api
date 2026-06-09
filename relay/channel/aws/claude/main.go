@@ -181,7 +181,7 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 	delete(awsClaudeReq, "anthropic_beta")
 
 	betaFlags := anthropic.MergeBetaFlags(betaHeader, awsClaudeReq, anthropic.BedrockAllowedBetaFlags)
-	logger.Debugf(c, "[Bedrock Beta] header=%q, bodyBeta=%v, filtered=%v", betaHeader, bodyBeta, betaFlags)
+	logger.Infof(c, "[Bedrock Beta] header=%q, bodyBeta=%v, filtered=%v", betaHeader, bodyBeta, betaFlags)
 	if len(betaFlags) > 0 {
 		betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 		if marshalErr != nil {
@@ -245,7 +245,7 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 		betaHeader := c.GetHeader("anthropic-beta")
 		betaFlags := anthropic.MergeBetaFlags(betaHeader, nil, anthropic.BedrockAllowedBetaFlags)
-		logger.Debugf(c, "[Bedrock Beta] OpenAI path (non-stream): header=%q, filtered=%v", betaHeader, betaFlags)
+		logger.Infof(c, "[Bedrock Beta] OpenAI path (non-stream): header=%q, filtered=%v", betaHeader, betaFlags)
 		if len(betaFlags) > 0 {
 			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 			if marshalErr != nil {
@@ -272,7 +272,7 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 		}
 	}
 	awsReq.Body = requestBody
-	logger.Debugf(c, "[Bedrock Beta] final request body (first 500): %s", truncateBytes(requestBody, 500))
+	logger.Infof(c, "[Bedrock Beta] final request body (first 500): %s", truncateBytes(requestBody, 500))
 
 	awsResp, err := awsCli.InvokeModel(c.Request.Context(), awsReq)
 	if err != nil {
@@ -325,7 +325,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		}
 		betaHeader := c.GetHeader("anthropic-beta")
 		betaFlags := anthropic.MergeBetaFlags(betaHeader, nil, anthropic.BedrockAllowedBetaFlags)
-		logger.Debugf(c, "[Bedrock Beta] OpenAI path (stream): header=%q, filtered=%v", betaHeader, betaFlags)
+		logger.Infof(c, "[Bedrock Beta] OpenAI path (stream): header=%q, filtered=%v", betaHeader, betaFlags)
 		if len(betaFlags) > 0 {
 			betaJSON, marshalErr := anthropic.MarshalBetaFlags(betaFlags)
 			if marshalErr != nil {
@@ -352,7 +352,7 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 		}
 	}
 	awsReq.Body = requestBody
-	logger.Debugf(c, "[Bedrock Beta] final stream request body (first 500): %s", truncateBytes(requestBody, 500))
+	logger.Infof(c, "[Bedrock Beta] final stream request body (first 500): %s", truncateBytes(requestBody, 500))
 
 	awsResp, err := awsCli.InvokeModelWithResponseStream(c.Request.Context(), awsReq)
 	if err != nil {
