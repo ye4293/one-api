@@ -590,6 +590,15 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		} else if claudeResponse.Type == "content_block_delta" {
 			// 首字时间由 StreamScannerHandler 统一设置，这里不需要处理
 		} else if claudeResponse.Type == "message_delta" {
+			// 记录 stop_reason
+			if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
+				logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Stream] message_delta stop_reason=%s, OutputTokens=%d", *claudeResponse.Delta.StopReason, func() int {
+					if claudeResponse.Usage != nil {
+						return claudeResponse.Usage.OutputTokens
+					}
+					return 0
+				}()))
+			}
 			// 最终的usage获取
 			if claudeResponse.Usage != nil {
 				if claudeResponse.Usage.InputTokens > 0 {
