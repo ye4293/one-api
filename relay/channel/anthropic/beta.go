@@ -7,20 +7,17 @@ import (
 
 // BedrockAllowedBetaFlags AWS Bedrock 支持的 beta flags 白名单。
 // 更新时请参考 AWS Bedrock 文档确认新 flag 是否已在目标区域可用。
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html
 var BedrockAllowedBetaFlags = map[string]struct{}{
-	"computer-use-2025-01-24":          {},
+	"computer-use-2024-10-22":          {},
 	"computer-use-2025-11-24":          {},
 	"token-efficient-tools-2025-02-19": {},
 	"interleaved-thinking-2025-05-14":  {},
 	"output-128k-2025-02-19":           {},
-	"dev-full-thinking-2025-05-14":     {},
 	"context-1m-2025-08-07":            {},
 	"context-management-2025-06-27":    {},
-	"task-budgets-2026-03-13":          {},
-	"structured-outputs-2025-11-13":    {},
 	"effort-2025-11-24":                {},
 	"tool-search-tool-2025-10-19":      {},
-	"tool-examples-2025-10-29":         {},
 }
 
 // VertexAllowedBetaFlags Vertex AI 支持的 beta flags 白名单。
