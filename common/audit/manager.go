@@ -75,6 +75,13 @@ func Start(ctx context.Context) {
 	})
 }
 
+func Shutdown() {
+	if !Enabled() || recordChan == nil {
+		return
+	}
+	close(recordChan) // ingestLoop 收到 !ok 后 flush 残余并退出
+}
+
 func resetForTest() {
 	pkgConfig = nil
 	recordChan = nil

@@ -41,3 +41,19 @@ func TestIngestFlushOnBatchSize(t *testing.T) {
 		t.Errorf("应在 batch 满 2 条时 flush, got %v", dispatched)
 	}
 }
+
+func TestShutdownFlushesRemaining(t *testing.T) {
+	resetForTest()
+	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	var got int
+	testDispatch = func(batch []*AuditRecord) { got += len(batch) }
+	recordChan = make(chan *AuditRecord, 10)
+	go ingestLoop()
+	Submit(&AuditRecord{})
+	Submit(&AuditRecord{})
+	Shutdown() // 关闭 channel，ingestLoop 收尾 flush 残余
+	time.Sleep(50 * time.Millisecond)
+	if got != 2 {
+		t.Errorf("关停应 flush 残余 2 条, got %d", got)
+	}
+}
