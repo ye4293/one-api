@@ -10,9 +10,6 @@ import (
 
 const ctxKey = "audit_context"
 
-// pkgConfig 占位声明，Task 5 将由 manager 统一管理/复用。
-var pkgConfig *config
-
 // AuditContext 暂存单次请求在 relay 流程中埋点写入的数据。
 type AuditContext struct {
 	ConvertedReqHeaders http.Header
@@ -71,9 +68,6 @@ func SetMeta(c *gin.Context, isStream bool, actualModel string) {
 	c.Set("audit_is_stream", isStream)
 	c.Set("audit_actual_model", actualModel)
 }
-
-// Enabled 占位实现，Task 5 改为从 manager 读取。
-func Enabled() bool { return pkgConfig != nil && pkgConfig.Enabled }
 
 type cappedBuffer struct {
 	buf       bytes.Buffer
