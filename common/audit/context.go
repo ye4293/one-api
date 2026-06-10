@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -72,3 +74,60 @@ func SetMeta(c *gin.Context, isStream bool, actualModel string) {
 
 // Enabled 占位实现，Task 5 改为从 manager 读取。
 func Enabled() bool { return pkgConfig != nil && pkgConfig.Enabled }
+
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if remain := b.limit - b.buf.Len(); remain > 0 {
+		if len(p) > remain {
+			b.buf.Write(p[:remain])
+			b.truncated = true
+		} else {
+			b.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil // 永远"全部写入"，不打断 TeeReader
+}
+
+func WrapUpstreamBody(c *gin.Context, resp *http.Response) {
+	if !Enabled() || resp == nil || resp.Body == nil {
+		return
+	}
+	ac := getAuditContext(c)
+	if ac == nil {
+		return
+	}
+	cb := &cappedBuffer{limit: pkgConfig.MaxRespKB * 1024}
+	c.Set("audit_upstream_buf", cb)
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{
+		Reader: io.TeeReader(resp.Body, cb),
+		Closer: resp.Body,
+	}
+}
+
+func FinalizeUpstream(c *gin.Context) {
+	if !Enabled() {
+		return
+	}
+	ac := getAuditContext(c)
+	if ac == nil {
+		return
+	}
+	if v, ok := c.Get("audit_upstream_buf"); ok {
+		if cb, ok := v.(*cappedBuffer); ok {
+			ac.UpstreamResponse = cb.buf.String()
+			if cb.truncated {
+				ac.truncatedFields = append(ac.truncatedFields, "upstream_response")
+			}
+		}
+	}
+}

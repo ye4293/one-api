@@ -1,7 +1,9 @@
 package audit
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -31,5 +33,26 @@ func TestSetConvertedBodyEnabled(t *testing.T) {
 	ac := getAuditContext(c)
 	if ac == nil || ac.ConvertedReqBody != `{"model":"gpt-4"}` {
 		t.Errorf("开启时应暂存转换后请求体")
+	}
+}
+
+func TestWrapUpstreamBody(t *testing.T) {
+	pkgConfig = &config{Enabled: true, MaxRespKB: 4096}
+	c := newTestCtx()
+	InitAuditContext(c)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader("upstream-data")),
+	}
+	WrapUpstreamBody(c, resp)
+	// 模拟 DoResponse 照常消费 body
+	consumed, _ := io.ReadAll(resp.Body)
+	if string(consumed) != "upstream-data" {
+		t.Errorf("包装后 body 仍应可被完整消费, got %q", consumed)
+	}
+	// tee 旁路应抓到同样内容
+	FinalizeUpstream(c)
+	ac := getAuditContext(c)
+	if ac.UpstreamResponse != "upstream-data" {
+		t.Errorf("tee 应抓到上游响应, got %q", ac.UpstreamResponse)
 	}
 }
