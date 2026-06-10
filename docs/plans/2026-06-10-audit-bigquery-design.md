@@ -66,24 +66,36 @@
               │ (tee 最终响应)                       ▼
               │                              AuditContext (存于 gin.Context)
               ▼ defer: 请求结束后
-        组装 AuditRecord ──非阻塞写──→ [有界 channel]
+        组装 AuditRecord ──非阻塞写──→ [内存 channel, ≤1GB]
+                                            │ ingest worker drain + 批量
+                                            ▼
+                            内存占用 < 1GB ? ──是──→ 内存 batch → gzip → GCS → load job
                                             │
-        ┌───────────────────────────────────┘
-        ▼ 后台 worker（独立 goroutine，与请求完全解耦）
-   累积 batch ──(大小满 或 定时)──→ 写 NDJSON 本地文件 → gzip
-        → 上传 GCS → 提交 BigQuery load job (WRITE_APPEND)
-        channel 满 → 丢弃 + 计数告警
+                                            否（背压）
+                                            ▼
+                            写本地磁盘 NDJSON 文件 [磁盘缓冲, ~40GB]
+                                            │ uploader 后台扫描
+                                            ▼
+                            gzip → GCS → load job → 删文件
+                            磁盘也满 → 才丢弃 + 计数告警
 ```
+
+**两级缓冲（内存 1GB → 磁盘 40GB → GCS）：**
+
+- 内存满 1GB **不丢弃**，转写本地磁盘 NDJSON 文件；只有磁盘缓冲也写满才丢弃（最后兜底，几乎不触发）。
+- 1GB 内存上限对 16GB 小机器也安全；40GB 大缓冲落在磁盘（盘 100GB），不吃内存、不会 OOM。
+- 磁盘抗故障时长参考：纯文本(~50KB/条)≈ 80 万条 ≈ 6+ 小时断网；重多模态(~5MB/条)≈ 8000 条 ≈ 4 分钟。
+- **附带崩溃韧性**：落盘数据在进程崩溃重启后由 uploader 续传，不丢；仅内存中 ≤1GB 部分会丢。
 
 **关键隔离点：**
 
 - 主请求对审计的唯一依赖 = 一次**非阻塞** channel 写（`select { case ch<-r: default: drop }`），纳秒级，永不阻塞。
 - 中间件 + worker + BigQuery 客户端全部在 `audit` 包，业务代码只多几行 `c.Set("audit_xxx", ...)`。
-- worker 崩溃 / GCS 故障 / 积压都被关在 channel 下游，主链路无感。
+- ingest worker / uploader / GCS 故障 / 积压都被关在 channel 下游，主链路无感。
 
 **新增模块：**
 
-- `common/audit/`：context、redact、buffer、worker、bigquery client
+- `common/audit/`：context、redact、buffer（内存+磁盘两级）、worker、uploader、bigquery client
 - `middleware/audit.go`：审计中间件
 
 ## 4. 埋点位置与数据捕获
@@ -108,47 +120,53 @@
 
 **上游响应用 `io.TeeReader`：** `DoResponse` 照常消费 `resp.Body`，tee 旁路复制一份到审计 buffer（带上限截断），不改变现有消费逻辑。
 
-**截断策略：** 每类 payload 设独立上限（请求体默认 256KB、响应默认 1MB），超出截断并在 `truncated_fields` 标记。控制内存与 BigQuery 单行大小（防止 base64 图片撑爆缓冲）。
+**截断策略：** 每类 payload 设独立上限（请求体默认 10MB、响应默认 4MB，见 §7），超出截断并在 `truncated_fields` 标记。控制单条记录大小与 BigQuery 单行上限（100MB）。
 
 ## 5. 缓冲与投递 worker
 
-`common/audit/buffer.go` + `worker.go`
+`common/audit/buffer.go` + `worker.go` + `uploader.go`
 
 **投递入口（主请求侧唯一接触点）：**
 
 ```go
 func Submit(r *AuditRecord) {
-    n := r.SizeBytes()
-    // 双重判断：条数未满 且 字节未超硬顶
-    if atomic.LoadInt64(&bufferedBytes)+int64(n) > maxBufferBytes {
-        atomic.AddInt64(&dropped, 1)      // 超字节硬顶，丢弃
-        return
-    }
     select {
-    case recordChan <- r:                 // 成功入队
-        atomic.AddInt64(&bufferedBytes, int64(n))
+    case recordChan <- r:                 // 非阻塞入队，纳秒级
     default:
-        atomic.AddInt64(&dropped, 1)      // channel 满，丢弃
+        atomic.AddInt64(&dropped, 1)      // channel 瞬时满（极罕见），丢弃
     }
 }
 ```
 
-`recordChan` 容量有界（默认 2000 条），同时受 `AUDIT_MAX_BUFFER_MB` 字节硬顶约束（默认 1GB，见 §7 内存边界）。flush 完成后 `bufferedBytes` 扣减对应字节。这是主请求对审计的**全部成本**——一次非阻塞 channel 写 + 一次原子加。
+`recordChan` 仅作"请求 → ingest worker"的瞬时交接队列，容量小（默认 2000 条）。这是主请求对审计的**全部成本**——一次非阻塞 channel 写。内存/磁盘的两级缓冲与丢弃判断全部下沉到 ingest worker，不在请求路径上。
 
-**后台 worker（单 goroutine）：**
+**Ingest worker（drain 内存 → 决定上传或落盘）：**
 
 ```
 for {
   select {
-  case r := <-recordChan:  batch = append(batch, r)
-                           if len(batch) >= maxBatchSize { flush() }
-  case <-ticker.C:         if len(batch) > 0 { flush() }   // 定时兜底
+  case r := <-recordChan:  batch = append(batch, r); memBytes += r.Size()
+                           if len(batch) >= maxBatchSize || memBytes 触发 { dispatch(batch) }
+  case <-ticker.C:         if len(batch) > 0 { dispatch(batch) }   // 定时兜底
   }
 }
+
+func dispatch(batch):
+  序列化为 NDJSON
+  if memBytes < AUDIT_MAX_BUFFER_MB:   直接走内存上传通道 → GCS → load job
+  else:                                写入磁盘 spill 目录（背压，转磁盘）
+       if 磁盘用量 ≥ AUDIT_DISK_BUFFER_MAX_GB: 丢弃 + 计数告警
 ```
 
 - 触发：batch 达到 N 条（默认 500）**或** 刷写间隔到（默认 10s），先到先触发。
-- `flush()`：batch 序列化为 **NDJSON**（每行一条）→ 写本地临时文件 → gzip → 上传 GCS → 提交 BigQuery load job → 删临时文件。
+- 内存占用 < 1GB：直接从内存 gzip → 上传 GCS → 提交 BigQuery load job。
+- 内存占用 ≥ 1GB（背压）：NDJSON 写入 `AUDIT_DISK_BUFFER_DIR`，由 uploader 异步搬运。
+- 内存与磁盘都满：才丢弃（最后兜底）。
+
+**Uploader（后台扫描磁盘 spill 目录）：**
+
+- 扫描磁盘 NDJSON 文件 → gzip → 上传 GCS → 提交 load job → 删文件。
+- 上传失败重试 N 次；文件留在磁盘，进程重启后继续传（崩溃韧性）。
 
 **为什么经 GCS 而非直接 load 本地文件：**
 
@@ -157,11 +175,11 @@ for {
 
 **积压自我保护：**
 
-- 上传/load 慢导致 channel 积压 → `Submit` 自动丢弃计数，主请求无感。
-- worker 上传失败：重试 N 次仍失败则丢弃这批 + 告警日志，绝不无限堆积。
+- 内存 1GB 满 → 转磁盘；磁盘 40GB 满 → 丢弃 + 计数告警，绝不无限堆积撑爆。
+- 上传失败：重试仍失败则保留磁盘文件待后续重传，超过磁盘上限才丢弃。
 - `dropped` 计数定期打日志（后续可接监控告警）。
 
-**优雅关停：** 进程退出时 worker 收到信号，带超时尽力 flush 残余 batch，最大努力不丢尾部数据。
+**优雅关停：** 进程退出时 ingest worker 把残余 batch 全部 flush 到磁盘 spill 目录（落盘极快），uploader 尽力上传；未传完的磁盘文件保留，下次启动续传。
 
 ## 6. BigQuery 表结构
 
@@ -209,8 +227,10 @@ for {
 | `AUDIT_BQ_TABLE` | `request_logs` | 表名 |
 | `AUDIT_GCS_BUCKET` | - | 中转 bucket |
 | `AUDIT_CREDENTIALS_FILE` | - | GCP service account JSON 路径 |
-| `AUDIT_CHANNEL_SIZE` | `2000` | 有界 channel 容量（条数）|
-| `AUDIT_MAX_BUFFER_MB` | `1024` | **【必须项】按字节的内存硬上限**，in-flight 字节超此值即丢弃，防 OOM |
+| `AUDIT_CHANNEL_SIZE` | `2000` | 内存交接队列容量（条数），仅做请求→worker 瞬时交接 |
+| `AUDIT_MAX_BUFFER_MB` | `1024` | **内存上限（1GB）**，超过即转写本地磁盘（非丢弃线）|
+| `AUDIT_DISK_BUFFER_DIR` | `./data/audit_spill` | 磁盘缓冲目录（落盘 NDJSON spill 文件）|
+| `AUDIT_DISK_BUFFER_MAX_GB` | `40` | 磁盘缓冲上限，磁盘也满才丢弃（最后兜底）|
 | `AUDIT_BATCH_SIZE` | `500` | 批量条数触发阈值 |
 | `AUDIT_FLUSH_INTERVAL` | `10s` | 定时刷写兜底 |
 | `AUDIT_MAX_BODY_KB` | `10240` | 请求体单字段上限（10MB，覆盖多模态 base64 图片）|
@@ -218,17 +238,23 @@ for {
 | `AUDIT_REDACT_HEADERS` | `Authorization,Api-Key,X-Api-Key,Cookie,Set-Cookie` | 脱敏头列表 |
 | `AUDIT_PARTITION_EXPIRE_DAYS` | `0` | `0`=不过期；>0 自动设分区过期 |
 
-### 内存边界（关键安全设计）
+### 内存/磁盘两级缓冲（关键安全设计）
 
-caps 上调到 10MB/4MB 后，**按条数限容量已不足以防 OOM**——多模态最坏单条约 `10MB(原始体) + 10MB(转换体,含同一张图) + 4MB(上游响应) + 4MB(客户响应) ≈ 28MB`，`CHANNEL_SIZE=2000` 按条数最坏可达 56GB。因此引入 `AUDIT_MAX_BUFFER_MB` 作为**真正的兜底**：
+caps 上调到 10MB/4MB 后，多模态最坏单条约 `10MB(原始体) + 10MB(转换体,含同一张图) + 4MB(上游响应) + 4MB(客户响应) ≈ 28MB`。若全堆内存，`CHANNEL_SIZE` 按条数最坏可达数十 GB，在 16GB 小机器上必然 OOM。因此采用两级缓冲：
 
-- 维护一个原子计数器，累计**所有 in-flight 字节**（channel 中排队 + worker 当前 batch）。
-- `Submit` 时双重判断：channel 未满 **且** 累计字节 + 本条字节 ≤ `AUDIT_MAX_BUFFER_MB` → 入队并加计数；否则丢弃 + 计数告警。
-- flush 完成后扣减对应字节。
-- 内存峰值由此被**钉死在 `AUDIT_MAX_BUFFER_MB`**（默认 1GB），与单条大小无关。
-- 正常纯文本流量仅占 ~100-300MB；偶发多模态也够缓冲；只有洪峰超 1GB 才丢弃。
+- **内存层（`AUDIT_MAX_BUFFER_MB`，默认 1GB）**：ingest worker 实时统计内存中待上传字节；< 1GB 时直接从内存上传 GCS。1GB 对 16GB / 64GB 机器都安全。
+- **磁盘层（`AUDIT_DISK_BUFFER_MAX_GB`，默认 40GB）**：内存超 1GB 即把 NDJSON 批次写本地磁盘（盘 100GB），uploader 异步搬运。磁盘做大缓冲，零 OOM 风险。
+- **丢弃仅在磁盘也满时发生**：内存满→转磁盘，磁盘满→丢弃 + 计数告警。
+- 内存峰值由此**钉死在 `AUDIT_MAX_BUFFER_MB`（1GB）**，与单条大小、流量类型无关。
 
-> **取舍说明**：`{全量捕获大请求}`、`{允许大 payload}`、`{内存可控}` 三者最多同时满足两个。当前选择 = 后两者优先（内存硬顶 + 大 payload 上限），代价是多模态洪峰时会丢弃部分记录，符合"审计绝对让路"原则。
+> **取舍说明**：`{全量捕获大请求}`、`{允许大 payload}`、`{内存可控}` 三者本难兼得，两级缓冲用"磁盘换内存"同时拿下三者——大 payload 上限放开、内存钉死 1GB、大缓冲落 40GB 磁盘（抗 GCS 故障数小时）。仅当磁盘也写满（长时间大故障）才丢弃，符合"审计绝对让路"。
+
+### 多模态内存优化：转换体去重
+
+text.go 的 OpenAI 路径在 `shouldResetRequestBody=false` 时 `requestBody = c.Request.Body`（转换体 == 原始体，逐字节相同）。多模态场景下这会让同一张 10MB 图片在内存/BigQuery 里存两份。
+
+- 记录前比对：若 `converted_req_body` 与 `original_req_body` 字节相同，`converted_req_body` 存空 + 置标记列 `converted_same_as_original=true`。
+- 节省一半大 payload 的内存与存储；查询时按标记回填即可。
 
 ### 多模态内存优化：转换体去重
 
