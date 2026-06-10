@@ -13,6 +13,7 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/controller"
@@ -120,6 +121,10 @@ func main() {
 		logger.FatalLog("failed to initialize Redis: " + err.Error())
 	}
 
+	// 启动审计模块（关闭时为空操作，初始化失败自动降级，绝不阻断主服务）
+	audit.Start(context.Background())
+	defer audit.Shutdown()
+
 	// Initialize options
 	model.InitOptionMap()
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
@@ -185,7 +190,7 @@ func main() {
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())
 	})
-	
+
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 

@@ -63,8 +63,8 @@ func SetRelayRouter(router *gin.Engine) {
 
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		relayV1Router.POST("/completions", controller.Relay)
-		relayV1Router.POST("/chat/completions", controller.Relay)
+		relayV1Router.POST("/completions", middleware.Audit(), controller.Relay)
+		relayV1Router.POST("/chat/completions", middleware.Audit(), controller.Relay)
 		relayV1Router.POST("/edits", controller.Relay)
 		relayV1Router.POST("/images/edits", controller.Relay)
 		relayV1Router.POST("/images/variations", controller.RelayNotImplemented)
@@ -269,9 +269,9 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/images/editing/expand", controller.RelayKlingVideo)
 
 		// ========== 通用类接口（2个）==========
-		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)           // 同步接口
-		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo)   // 异步接口
-		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)              // 异步接口，复用逻辑
+		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)         // 同步接口
+		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo) // 异步接口
+		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)            // 异步接口，复用逻辑
 
 		// ========== 查询和管理接口（透明代理，不计费）==========
 		// 使用通配符批量处理所有 GET 查询接口
@@ -372,7 +372,7 @@ func SetRelayRouter(router *gin.Engine) {
 		xaiVideoRouter.POST("/generations", controller.RelayXaiVideoGeneration)
 		xaiVideoRouter.POST("/edits", controller.RelayXaiVideoEdit)
 		xaiVideoRouter.POST("/extensions", controller.RelayXaiVideoExtension)
-		
+
 	}
 
 	// xAI Grok Video 查询路由 - 不需要 Distribute，从数据库查找渠道
