@@ -55,7 +55,8 @@ func dispatch(batch []*AuditRecord) {
 	// 内存够：直接走内存→GCS；否则落盘
 	if buf.Len() < pkgConfig.MaxBufferMB*1024*1024 {
 		gz := gzipBytes(buf.Bytes())
-		obj := fmt.Sprintf("audit/%s/%d.ndjson.gz", time.Now().UTC().Format("2006/01/02"), time.Now().UnixNano())
+		now := time.Now()
+		obj := fmt.Sprintf("audit/%s/%d.ndjson.gz", now.UTC().Format("2006/01/02"), now.UnixNano())
 		if err := gcp.uploadAndLoad(context.Background(), obj, gz); err != nil {
 			logger.SysError("audit: 内存直传失败，转落盘: " + err.Error())
 			spillBatch(buf.Bytes())

@@ -27,6 +27,9 @@ func Dropped() int64 { return atomic.LoadInt64(&dropped) }
 func atomicAddDropped(n int64) { atomic.AddInt64(&dropped, n) }
 
 func Submit(r *AuditRecord) {
+	// 审计绝不能影响主请求：兜底 recover，防止关停时 close(recordChan) 与本次 send 竞态
+	// 导致的 send-on-closed-channel panic 逃逸到请求 goroutine。
+	defer func() { _ = recover() }()
 	if !Enabled() || recordChan == nil {
 		return
 	}

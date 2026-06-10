@@ -2,7 +2,6 @@ package audit
 
 import (
 	"encoding/json"
-	"time"
 )
 
 type bqRow struct {
@@ -58,5 +57,3 @@ func toNDJSONLine(r *AuditRecord) string {
 	b, _ := json.Marshal(row)
 	return string(b) + "\n"
 }
-
-var _ = time.Now

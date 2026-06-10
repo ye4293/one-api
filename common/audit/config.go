@@ -8,22 +8,22 @@ import (
 )
 
 type config struct {
-	Enabled         bool
-	GCPProject      string
-	BQDataset       string
-	BQTable         string
-	GCSBucket       string
-	CredentialsFile string
-	ChannelSize     int
-	MaxBufferMB     int
-	DiskBufferDir   string
-	DiskBufferMaxGB int
-	BatchSize       int
-	FlushInterval   time.Duration
-	MaxBodyKB       int
-	MaxRespKB       int
+	Enabled             bool
+	GCPProject          string
+	BQDataset           string
+	BQTable             string
+	GCSBucket           string
+	CredentialsFile     string
+	ChannelSize         int
+	MaxBufferMB         int
+	DiskBufferDir       string
+	DiskBufferMaxGB     int
+	BatchSize           int
+	FlushInterval       time.Duration
+	MaxBodyKB           int
+	MaxRespKB           int
 	PartitionExpireDays int
-	redactSet       map[string]struct{}
+	redactSet           map[string]struct{}
 }
 
 func loadConfig() *config {

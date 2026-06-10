@@ -11,7 +11,7 @@ func TestSubmitNonBlockingDropsWhenChanFull(t *testing.T) {
 	pkgConfig = &config{Enabled: true, ChannelSize: 1}
 	recordChan = make(chan *AuditRecord, 1)
 	recordChan <- &AuditRecord{} // 占满
-	Submit(&AuditRecord{})        // 不应阻塞
+	Submit(&AuditRecord{})       // 不应阻塞
 	if Dropped() != 1 {
 		t.Errorf("channel 满时应丢弃并计数, dropped=%d", Dropped())
 	}
@@ -45,14 +45,22 @@ func TestIngestFlushOnBatchSize(t *testing.T) {
 func TestShutdownFlushesRemaining(t *testing.T) {
 	resetForTest()
 	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	var mu sync.Mutex
 	var got int
-	testDispatch = func(batch []*AuditRecord) { got += len(batch) }
+	testDispatch = func(batch []*AuditRecord) {
+		mu.Lock()
+		got += len(batch)
+		mu.Unlock()
+	}
 	recordChan = make(chan *AuditRecord, 10)
-	go ingestLoop()
+	done := make(chan struct{})
+	go func() { ingestLoop(); close(done) }()
 	Submit(&AuditRecord{})
 	Submit(&AuditRecord{})
-	Shutdown() // 关闭 channel，ingestLoop 收尾 flush 残余
-	time.Sleep(50 * time.Millisecond)
+	Shutdown() // 关闭 channel，ingestLoop 收尾 flush 残余并退出
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
 	if got != 2 {
 		t.Errorf("关停应 flush 残余 2 条, got %d", got)
 	}
