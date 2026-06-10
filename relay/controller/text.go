@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
@@ -49,6 +50,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	meta.OriginModelName = textRequest.Model
 	textRequest.Model, isModelMapped = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = textRequest.Model
+	audit.SetMeta(c, meta.IsStream, meta.ActualModelName) // 审计：供中间件 defer 组装记录
 	// get model ratio & group ratio
 	// 有模型重定向时使用实际调用的模型名计费
 	billingModelName := meta.BillingModelName()
@@ -91,8 +93,12 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 			if err != nil {
 				return openai.ErrorWrapper(err, "json_marshal_failed", http.StatusInternalServerError)
 			}
+			audit.SetConvertedBody(c, string(jsonStr)) // 审计：转换后请求体
 			requestBody = bytes.NewBuffer(jsonStr)
 		} else {
+			if raw, e := common.GetRequestBody(c); e == nil {
+				audit.SetConvertedBody(c, string(raw)) // 审计：透传分支，转换体==原始体
+			}
 			requestBody = c.Request.Body
 		}
 	} else {
@@ -106,12 +112,13 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 			return openai.ErrorWrapper(err, "json_marshal_failed", http.StatusInternalServerError)
 		}
 		logger.Debugf(ctx, "converted request: \n%s", string(jsonData))
+		audit.SetConvertedBody(c, string(jsonData)) // 审计：转换后请求体
 		requestBody = bytes.NewBuffer(jsonData)
 	}
 	requestStartTime := time.Now()
 	// do request
 	resp, err := adaptor.DoRequest(c, meta, requestBody)
-	logger.Infof(ctx, "model_name: %s, hand_request_time: %.3f seconds", textRequest.Model, math.Round(time.Since(requestStartTime).Seconds()*1000) / 1000)
+	logger.Infof(ctx, "model_name: %s, hand_request_time: %.3f seconds", textRequest.Model, math.Round(time.Since(requestStartTime).Seconds()*1000)/1000)
 
 	if err != nil {
 		logger.Errorf(ctx, "DoRequest failed: %s", err.Error())
@@ -139,7 +146,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return respErr
 	}
-	logger.Infof(ctx, "model_name: %s, hand_response_time: %.3f seconds",  textRequest.Model, math.Round(time.Since(responseStartTime).Seconds()*1000) / 1000)
+	logger.Infof(ctx, "model_name: %s, hand_response_time: %.3f seconds", textRequest.Model, math.Round(time.Since(responseStartTime).Seconds()*1000)/1000)
 
 	rowDuration := time.Since(startTime).Seconds() // 计算总耗时
 	duration := math.Round(rowDuration*1000) / 1000
@@ -170,7 +177,7 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	handResultStartTime := time.Now()
 	// post-consume quota
 	go postConsumeQuota(ctx, c.Copy(), usage, meta, textRequest, ratio, preConsumedQuota, modelRatio, groupRatio, duration, title, referer, firstWordLatency)
-	
-	logger.Infof(ctx, "model_name: %s, hand_consume_quota_time: %.3f seconds", textRequest.Model, math.Round(time.Since(handResultStartTime).Seconds()*1000) / 1000)
+
+	logger.Infof(ctx, "model_name: %s, hand_consume_quota_time: %.3f seconds", textRequest.Model, math.Round(time.Since(handResultStartTime).Seconds()*1000)/1000)
 	return nil
 }
