@@ -118,15 +118,22 @@
 
 ```go
 func Submit(r *AuditRecord) {
+    n := r.SizeBytes()
+    // 双重判断：条数未满 且 字节未超硬顶
+    if atomic.LoadInt64(&bufferedBytes)+int64(n) > maxBufferBytes {
+        atomic.AddInt64(&dropped, 1)      // 超字节硬顶，丢弃
+        return
+    }
     select {
     case recordChan <- r:                 // 成功入队
+        atomic.AddInt64(&bufferedBytes, int64(n))
     default:
-        atomic.AddInt64(&dropped, 1)      // 满了直接丢，永不阻塞
+        atomic.AddInt64(&dropped, 1)      // channel 满，丢弃
     }
 }
 ```
 
-`recordChan` 容量有界（默认 10000）。这是主请求对审计的**全部成本**——一次非阻塞 channel 写。
+`recordChan` 容量有界（默认 2000 条），同时受 `AUDIT_MAX_BUFFER_MB` 字节硬顶约束（默认 1GB，见 §7 内存边界）。flush 完成后 `bufferedBytes` 扣减对应字节。这是主请求对审计的**全部成本**——一次非阻塞 channel 写 + 一次原子加。
 
 **后台 worker（单 goroutine）：**
 
@@ -176,7 +183,8 @@ for {
 | `original_req_headers` | STRING(JSON) | **已脱敏** |
 | `original_req_body` | STRING | 原始请求体 |
 | `converted_req_headers` | STRING(JSON) | **已脱敏** |
-| `converted_req_body` | STRING | 转换后请求体 |
+| `converted_req_body` | STRING | 转换后请求体（与原始相同时存空，见 `converted_same_as_original`）|
+| `converted_same_as_original` | BOOL | 转换体与原始体逐字节相同时为 `true`，去重省内存/存储 |
 | `upstream_response` | STRING | 上游原始响应（流式=拼接原始 SSE）|
 | `client_response` | STRING | 最终返回客户端的响应 |
 | `truncated_fields` | STRING(JSON) | 被截断的字段列表，如 `["upstream_response"]` |
@@ -201,13 +209,33 @@ for {
 | `AUDIT_BQ_TABLE` | `request_logs` | 表名 |
 | `AUDIT_GCS_BUCKET` | - | 中转 bucket |
 | `AUDIT_CREDENTIALS_FILE` | - | GCP service account JSON 路径 |
-| `AUDIT_CHANNEL_SIZE` | `10000` | 有界 channel 容量 |
+| `AUDIT_CHANNEL_SIZE` | `2000` | 有界 channel 容量（条数）|
+| `AUDIT_MAX_BUFFER_MB` | `1024` | **【必须项】按字节的内存硬上限**，in-flight 字节超此值即丢弃，防 OOM |
 | `AUDIT_BATCH_SIZE` | `500` | 批量条数触发阈值 |
 | `AUDIT_FLUSH_INTERVAL` | `10s` | 定时刷写兜底 |
-| `AUDIT_MAX_BODY_KB` | `256` | 请求体单字段上限 |
-| `AUDIT_MAX_RESP_KB` | `1024` | 响应单字段上限 |
+| `AUDIT_MAX_BODY_KB` | `10240` | 请求体单字段上限（10MB，覆盖多模态 base64 图片）|
+| `AUDIT_MAX_RESP_KB` | `4096` | 响应单字段上限（4MB，覆盖长文本/推理输出）|
 | `AUDIT_REDACT_HEADERS` | `Authorization,Api-Key,X-Api-Key,Cookie,Set-Cookie` | 脱敏头列表 |
 | `AUDIT_PARTITION_EXPIRE_DAYS` | `0` | `0`=不过期；>0 自动设分区过期 |
+
+### 内存边界（关键安全设计）
+
+caps 上调到 10MB/4MB 后，**按条数限容量已不足以防 OOM**——多模态最坏单条约 `10MB(原始体) + 10MB(转换体,含同一张图) + 4MB(上游响应) + 4MB(客户响应) ≈ 28MB`，`CHANNEL_SIZE=2000` 按条数最坏可达 56GB。因此引入 `AUDIT_MAX_BUFFER_MB` 作为**真正的兜底**：
+
+- 维护一个原子计数器，累计**所有 in-flight 字节**（channel 中排队 + worker 当前 batch）。
+- `Submit` 时双重判断：channel 未满 **且** 累计字节 + 本条字节 ≤ `AUDIT_MAX_BUFFER_MB` → 入队并加计数；否则丢弃 + 计数告警。
+- flush 完成后扣减对应字节。
+- 内存峰值由此被**钉死在 `AUDIT_MAX_BUFFER_MB`**（默认 1GB），与单条大小无关。
+- 正常纯文本流量仅占 ~100-300MB；偶发多模态也够缓冲；只有洪峰超 1GB 才丢弃。
+
+> **取舍说明**：`{全量捕获大请求}`、`{允许大 payload}`、`{内存可控}` 三者最多同时满足两个。当前选择 = 后两者优先（内存硬顶 + 大 payload 上限），代价是多模态洪峰时会丢弃部分记录，符合"审计绝对让路"原则。
+
+### 多模态内存优化：转换体去重
+
+text.go 的 OpenAI 路径在 `shouldResetRequestBody=false` 时 `requestBody = c.Request.Body`（转换体 == 原始体，逐字节相同）。多模态场景下这会让同一张 10MB 图片在内存/BigQuery 里存两份。
+
+- 记录前比对：若 `converted_req_body` 与 `original_req_body` 字节相同，`converted_req_body` 存空 + 置标记列 `converted_same_as_original=true`。
+- 节省一半大 payload 的内存与存储；查询时按标记回填即可。
 
 ### 脱敏（`common/audit/redact.go`）
 
