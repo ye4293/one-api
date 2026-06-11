@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-06-11
+
+### fix(anthropic): 更新 Vertex AI beta flags 白名单
+- **分支**: `main`
+- **类型**: fix
+- **涉及文件**: `relay/channel/anthropic/beta.go`
+- **说明**: 移除 Vertex 白名单中 5 个对应功能在 Vertex 上不支持的 flag（`mcp-client` x2、`files-api`、`code-execution`、`skills`），新增 3 个已验证支持的 flag（`compaction`、`context-editing`、`fallback-credit`）。经官方文档交叉验证。
+- **关联计划**: 无
+
 ## 2026-06-09
 
 ### fix(streaming): SSE ping 格式改为 Claude 官方格式
