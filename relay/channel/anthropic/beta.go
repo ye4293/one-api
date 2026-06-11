@@ -3,6 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/songquanpeng/one-api/model"
 )
 
 // BedrockAllowedBetaFlags AWS Bedrock 支持的 beta flags 白名单。
@@ -125,4 +127,35 @@ func MarshalBetaFlags(flags []string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+// BedrockVertexAllowedBetaFlags 取 Bedrock 和 Vertex 白名单的交集（最严格过滤）
+var BedrockVertexAllowedBetaFlags = func() map[string]struct{} {
+	intersection := make(map[string]struct{})
+	for k := range BedrockAllowedBetaFlags {
+		if _, ok := VertexAllowedBetaFlags[k]; ok {
+			intersection[k] = struct{}{}
+		}
+	}
+	return intersection
+}()
+
+// FilterBetaHeaderByMode 按渠道配置的 BetaFilterMode 过滤 anthropic-beta header
+func FilterBetaHeaderByMode(betaHeader string, mode model.BetaFilterMode) string {
+	if betaHeader == "" || mode == model.BetaFilterNone {
+		return betaHeader
+	}
+	var allowed map[string]struct{}
+	switch mode {
+	case model.BetaFilterBedrock:
+		allowed = BedrockAllowedBetaFlags
+	case model.BetaFilterVertex:
+		allowed = VertexAllowedBetaFlags
+	case model.BetaFilterBedrockVertex:
+		allowed = BedrockVertexAllowedBetaFlags
+	default:
+		return betaHeader
+	}
+	filtered := FilterBetaFlags(betaHeader, allowed)
+	return strings.Join(filtered, ",")
 }

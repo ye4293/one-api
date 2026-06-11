@@ -160,6 +160,16 @@ const (
 	AwsKeyTypeAPIKey AwsKeyType = "api_key" // BedrockAPIKey|Region 格式（Bearer）
 )
 
+// BetaFilterMode 定义 anthropic-beta header 的过滤策略
+type BetaFilterMode string
+
+const (
+	BetaFilterNone          BetaFilterMode = ""               // 不过滤，直接透传
+	BetaFilterBedrock       BetaFilterMode = "bedrock"        // 按 AWS Bedrock 白名单过滤
+	BetaFilterVertex        BetaFilterMode = "vertex"         // 按 Vertex AI 白名单过滤
+	BetaFilterBedrockVertex BetaFilterMode = "bedrock_vertex" // 取 Bedrock ∩ Vertex 交集过滤（最严格）
+)
+
 type ChannelConfig struct {
 	Region            string `json:"region,omitempty"`
 	SK                string `json:"sk,omitempty"`
@@ -178,6 +188,8 @@ type ChannelConfig struct {
 	AwsKeyType AwsKeyType `json:"aws_key_type,omitempty"` // 密钥格式: ak_sk 或 api_key
 	// Claude count_tokens 功能支持
 	SupportCountTokens bool `json:"support_count_tokens,omitempty"` // 是否支持 count_tokens 接口（默认 false）
+	// anthropic-beta header 过滤策略（仅 Anthropic 类型渠道代理到 Bedrock/Vertex 时使用）
+	BetaFilterMode BetaFilterMode `json:"beta_filter_mode,omitempty"`
 }
 
 func (channel *Channel) LoadConfig() (ChannelConfig, error) {
