@@ -11,6 +11,7 @@ import (
 var (
 	pkgConfig  *config
 	recordChan chan *AuditRecord
+	ingestDone chan struct{}
 	dropped    int64
 	spill      *spillStore
 	gcp        *gcpClient
@@ -72,7 +73,11 @@ func Start(ctx context.Context) {
 		gcp = client
 		spill = &spillStore{dir: cfg.DiskBufferDir, maxBytes: int64(cfg.DiskBufferMaxGB) * 1024 * 1024 * 1024}
 		recordChan = make(chan *AuditRecord, cfg.ChannelSize)
-		go ingestLoop()
+		ingestDone = make(chan struct{})
+		go func() {
+			ingestLoop()
+			close(ingestDone)
+		}()
 		go uploaderLoop()
 		logger.SysLog("audit: 审计模块已启动")
 	})
@@ -83,11 +88,15 @@ func Shutdown() {
 		return
 	}
 	close(recordChan) // ingestLoop 收到 !ok 后 flush 残余并退出
+	if ingestDone != nil {
+		<-ingestDone // 等待 flush 真正完成，避免进程退出时丢残余
+	}
 }
 
 func resetForTest() {
 	pkgConfig = nil
 	recordChan = nil
+	ingestDone = nil
 	dropped = 0
 	spill = nil
 	gcp = nil

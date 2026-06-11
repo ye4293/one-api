@@ -96,10 +96,13 @@ func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 			audit.SetConvertedBody(c, string(jsonStr)) // 审计：转换后请求体
 			requestBody = bytes.NewBuffer(jsonStr)
 		} else {
-			if raw, e := common.GetRequestBody(c); e == nil {
-				audit.SetConvertedBody(c, string(raw)) // 审计：透传分支，转换体==原始体
-			}
 			requestBody = c.Request.Body
+			if audit.Enabled() {
+				if raw, e := common.GetRequestBody(c); e == nil {
+					audit.SetConvertedBody(c, string(raw)) // 审计：透传分支，转换体==原始体
+					requestBody = bytes.NewBuffer(raw)
+				}
+			}
 		}
 	} else {
 		// 其他API类型的处理保持不变

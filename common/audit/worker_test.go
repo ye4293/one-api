@@ -42,6 +42,29 @@ func TestIngestFlushOnBatchSize(t *testing.T) {
 	}
 }
 
+func TestShutdownWaitsForFlush(t *testing.T) {
+	resetForTest()
+	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	var mu sync.Mutex
+	var got int
+	testDispatch = func(batch []*AuditRecord) {
+		mu.Lock()
+		got += len(batch)
+		mu.Unlock()
+	}
+	recordChan = make(chan *AuditRecord, 10)
+	ingestDone = make(chan struct{})
+	go func() { ingestLoop(); close(ingestDone) }()
+	Submit(&AuditRecord{})
+	Submit(&AuditRecord{})
+	Shutdown() // 应阻塞直到 ingestLoop flush 完成；返回即保证残余已 dispatch
+	mu.Lock()
+	defer mu.Unlock()
+	if got != 2 {
+		t.Errorf("Shutdown 应等待 flush 完成后再返回, got %d", got)
+	}
+}
+
 func TestShutdownFlushesRemaining(t *testing.T) {
 	resetForTest()
 	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
