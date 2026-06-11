@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-06-11
+
+### fix(audit): Shutdown 等待 flush + 透传埋点改用 bytes 缓冲
+- **分支**: `bigQuery`
+- **类型**: fix
+- **涉及文件**: `common/audit/manager.go`、`common/audit/worker_test.go`、`relay/controller/text.go`
+- **说明**: 集成层评审遗留项收口。`Shutdown()` 关闭 `recordChan` 后阻塞等待 `ingestLoop` flush 完成（新增 `ingestDone` 信号），避免将来真有 graceful shutdown 时丢失内存尾批。经评估，审计为 best-effort 旁路功能，未引入进程级 SIGTERM 处理（blast radius 过大，与收益不匹配）——重启丢失最多 ~10s（默认 FlushInterval）内存尾批属可接受。`text.go` 透传分支改为仅在 `audit.Enabled()` 时读取原始体并用 `bytes.NewBuffer(raw)` 下发，保持审计关闭时零开销，且不依赖 `c.Request.Body` 读取后的状态。
+- **关联计划**: `docs/plans/2026-06-10-audit-bigquery-implementation.md`
+
 ## 2026-06-10
 
 ### feat(audit): 模型调用全链路审计 → BigQuery
