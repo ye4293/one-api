@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"testing"
+
+	"github.com/songquanpeng/one-api/model"
 )
 
 func TestFilterBetaFlags(t *testing.T) {
@@ -241,5 +243,80 @@ func TestMarshalBetaFlags(t *testing.T) {
 	}
 	if string(got) != `["a","b"]` {
 		t.Errorf("got %s, want [\"a\",\"b\"]", string(got))
+	}
+}
+
+func TestFilterBetaHeaderByMode(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		mode   model.BetaFilterMode
+		want   string
+	}{
+		{
+			name:   "empty mode passes through",
+			header: "claude-code-20250219,context-management-2025-06-27",
+			mode:   model.BetaFilterNone,
+			want:   "claude-code-20250219,context-management-2025-06-27",
+		},
+		{
+			name:   "empty header returns empty",
+			header: "",
+			mode:   model.BetaFilterBedrock,
+			want:   "",
+		},
+		{
+			name:   "bedrock mode filters unsupported flags",
+			header: "claude-code-20250219,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05",
+			mode:   model.BetaFilterBedrock,
+			want:   "context-management-2025-06-27",
+		},
+		{
+			name:   "vertex mode filters unsupported flags",
+			header: "claude-code-20250219,context-management-2025-06-27,effort-2025-11-24",
+			mode:   model.BetaFilterVertex,
+			want:   "context-management-2025-06-27",
+		},
+		{
+			name:   "bedrock_vertex mode uses intersection",
+			header: "context-management-2025-06-27,interleaved-thinking-2025-05-14,prompt-caching-2024-07-31",
+			mode:   model.BetaFilterBedrockVertex,
+			want:   "context-management-2025-06-27,interleaved-thinking-2025-05-14",
+		},
+		{
+			name:   "all flags filtered returns empty string",
+			header: "claude-code-20250219,redact-thinking-2026-02-12",
+			mode:   model.BetaFilterBedrock,
+			want:   "",
+		},
+		{
+			name:   "unknown mode passes through",
+			header: "claude-code-20250219",
+			mode:   model.BetaFilterMode("invalid"),
+			want:   "claude-code-20250219",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FilterBetaHeaderByMode(tt.header, tt.mode)
+			if got != tt.want {
+				t.Errorf("FilterBetaHeaderByMode(%q, %q) = %q, want %q", tt.header, tt.mode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBedrockVertexAllowedBetaFlags(t *testing.T) {
+	for k := range BedrockVertexAllowedBetaFlags {
+		if _, ok := BedrockAllowedBetaFlags[k]; !ok {
+			t.Errorf("intersection flag %q not in BedrockAllowedBetaFlags", k)
+		}
+		if _, ok := VertexAllowedBetaFlags[k]; !ok {
+			t.Errorf("intersection flag %q not in VertexAllowedBetaFlags", k)
+		}
+	}
+	if len(BedrockVertexAllowedBetaFlags) == 0 {
+		t.Error("intersection should not be empty")
 	}
 }

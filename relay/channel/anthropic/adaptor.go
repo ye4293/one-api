@@ -49,7 +49,10 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	req.Header.Set("anthropic-version", anthropicVersion)
 	anthropicBeta := c.Request.Header.Get("anthropic-beta")
 	if anthropicBeta != "" {
-		req.Header.Set("anthropic-beta", anthropicBeta)
+		anthropicBeta = FilterBetaHeaderByMode(anthropicBeta, meta.Config.BetaFilterMode)
+		if anthropicBeta != "" {
+			req.Header.Set("anthropic-beta", anthropicBeta)
+		}
 	}
 
 	// 应用自定义请求头覆盖（从配置读取）
