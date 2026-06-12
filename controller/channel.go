@@ -233,8 +233,9 @@ func AddChannel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
+		"success":    true,
+		"message":    "",
+		"channel_id": channel.Id,
 	})
 }
 
