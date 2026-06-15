@@ -9,20 +9,20 @@ import (
 
 // BedrockAllowedBetaFlags AWS Bedrock 支持的 beta flags 白名单。
 // 更新时请参考 AWS Bedrock 文档确认新 flag 是否已在目标区域可用。
+// https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html
 var BedrockAllowedBetaFlags = map[string]struct{}{
-	"computer-use-2025-01-24":          {},
+	"computer-use-2024-10-22":          {},
 	"computer-use-2025-11-24":          {},
 	"token-efficient-tools-2025-02-19": {},
 	"interleaved-thinking-2025-05-14":  {},
 	"output-128k-2025-02-19":           {},
-	"dev-full-thinking-2025-05-14":     {},
 	"context-1m-2025-08-07":            {},
 	"context-management-2025-06-27":    {},
-	"task-budgets-2026-03-13":          {},
-	"structured-outputs-2025-11-13":    {},
+	"compaction-2025-11-18":            {},
+	"context-editing-2025-11-14":       {},
+	"fallback-credit-2026-03-25":       {},
 	"effort-2025-11-24":                {},
 	"tool-search-tool-2025-10-19":      {},
-	"tool-examples-2025-10-29":         {},
 }
 
 // VertexAllowedBetaFlags Vertex AI 支持的 beta flags 白名单。
@@ -37,19 +37,17 @@ var VertexAllowedBetaFlags = map[string]struct{}{
 	"token-counting-2024-11-01":                {},
 	"token-efficient-tools-2025-02-19":         {},
 	"output-128k-2025-02-19":                   {},
-	"files-api-2025-04-14":                     {},
-	"mcp-client-2025-04-04":                    {},
-	"mcp-client-2025-11-20":                    {},
 	"dev-full-thinking-2025-05-14":             {},
 	"interleaved-thinking-2025-05-14":          {},
-	"code-execution-2025-05-22":                {},
 	"extended-cache-ttl-2025-04-11":            {},
 	"context-1m-2025-08-07":                    {},
 	"context-management-2025-06-27":            {},
+	"compaction-2025-11-18":                    {},
+	"context-editing-2025-11-14":               {},
+	"fallback-credit-2026-03-25":               {},
 	"task-budgets-2026-03-13":                  {},
 	"structured-outputs-2025-11-13":            {},
 	"model-context-window-exceeded-2025-08-26": {},
-	"skills-2025-10-02":                        {},
 	"fast-mode-2026-02-01":                     {},
 }
 
