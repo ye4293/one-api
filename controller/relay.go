@@ -289,6 +289,12 @@ func Relay(c *gin.Context) {
 		}
 		// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
+		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+			break
+		}
+
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
 
@@ -1125,6 +1131,13 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		channelName = c.GetString("channel_name")
 		keyIndex := c.GetInt("key_index")
+
+		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			break
+		}
+
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
 
@@ -1395,6 +1408,12 @@ func RelayRecraft(c *gin.Context) {
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
+
+		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			break
+		}
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
@@ -1761,6 +1780,12 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 		// 将本次失败的渠道ID添加到排除列表，避免重复选择
 		failedChannelIds = appendUniqueChannelID(failedChannelIds, channelId)
+
+		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			break
+		}
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
@@ -3019,6 +3044,12 @@ func RelayGemini(c *gin.Context) {
 		})
 		util.PublishFailedRetryHistory(c, retryAttempts)
 
+		if !shouldRetry(c, geminiErr.StatusCode, geminiErr.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", geminiErr.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
+			break
+		}
+
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 	}
 
@@ -3177,6 +3208,12 @@ func RelayClaude(c *gin.Context) {
 			Status:      relayError.StatusCode,
 		})
 		util.PublishFailedRetryHistory(c, retryAttempts)
+
+		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+			break
+		}
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
@@ -3338,6 +3375,12 @@ func RelayResponse(c *gin.Context) {
 			Status:      relayError.StatusCode,
 		})
 		util.PublishFailedRetryHistory(c, retryAttempts)
+
+		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
+			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)
+			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+			break
+		}
 
 		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
