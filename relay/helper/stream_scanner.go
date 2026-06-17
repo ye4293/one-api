@@ -34,12 +34,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 	}
 	println("ping interval seconds:")
 
-	// 确保响应体总是被关闭
-	defer func() {
-		if resp.Body != nil {
-			resp.Body.Close()
-		}
-	}()
+	// resp.Body 由下方清理 defer 中关闭（在等待 goroutine 之前），此处不再重复注册
 
 	streamingTimeout := time.Duration(config.StreamingTimeout) * time.Second
 	if streamingTimeout <= 0 {
@@ -80,6 +75,12 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 		ticker.Stop()
 		if pingTicker != nil {
 			pingTicker.Stop()
+		}
+
+		// 先关闭上游连接，让阻塞在 scanner.Scan() 的 goroutine 立即返回，
+		// 否则 scanner.Scan() 是阻塞 I/O，stopChan 无法打断它。
+		if resp.Body != nil {
+			resp.Body.Close()
 		}
 
 		// 等待所有 goroutine 退出，最多等待5秒
@@ -243,7 +244,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 		}
 
 		if err := scanner.Err(); err != nil {
-			if err != io.EOF {
+			if err != io.EOF && !strings.Contains(err.Error(), "use of closed network connection") {
 				logger.Error(c, "scanner error: "+err.Error())
 			}
 		}

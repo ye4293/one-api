@@ -88,6 +88,11 @@ func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, p
 }
 
 func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int, xResponseID string) {
+	var requestIP string
+	if v := ctx.Value(logger.RequestIPKey); v != nil {
+		requestIP, _ = v.(string)
+	}
+
 	logModelName := modelName
 	dbModelName := modelName // 入库用 origin，保证 usage 可按用户请求的模型名搜索
 	otherForLog := other
@@ -105,7 +110,7 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		}
 		otherForLog = strings.Join(filtered, ";")
 	}
-	logLine := fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, xResponseID=%s, cachedTokens=%d", userId, channelId, promptTokens, completionTokens, logModelName, tokenName, quota, content, xRequestID, xResponseID, cachedTokens)
+	logLine := fmt.Sprintf("record consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, xRequestID=%s, xResponseID=%s, cachedTokens=%d, requestIP=%s", userId, channelId, promptTokens, completionTokens, logModelName, tokenName, quota, content, xRequestID, xResponseID, cachedTokens, requestIP)
 	if otherForLog != "" {
 		logLine += ", other=" + otherForLog
 	}
@@ -119,6 +124,14 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		speed = math.Round(float64(completionTokens)/duration*100) / 100
 	} else {
 		speed = 0 // 或者设置为其他默认值
+	}
+
+	if requestIP != "" {
+		if other != "" {
+			other += ";ip:" + requestIP
+		} else {
+			other = "ip:" + requestIP
+		}
 	}
 
 	log := &Log{
@@ -160,7 +173,20 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 // RecordErrorLogWithRequestID 记录错误日志（Type 为 LogTypeError）
 // 用于记录重试失败、请求错误等情况，方便后续筛选查看
 func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int, modelName string, tokenName string, content string, duration float64, other string, xRequestID string) {
-	logger.Info(ctx, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, content=%s, xRequestID=%s", userId, channelId, modelName, content, xRequestID))
+	var requestIP string
+	if v := ctx.Value(logger.RequestIPKey); v != nil {
+		requestIP, _ = v.(string)
+	}
+
+	logger.Info(ctx, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, content=%s, xRequestID=%s, requestIP=%s", userId, channelId, modelName, content, xRequestID, requestIP))
+
+	if requestIP != "" {
+		if other != "" {
+			other += ";ip:" + requestIP
+		} else {
+			other = "ip:" + requestIP
+		}
+	}
 
 	log := &Log{
 		UserId:     userId,
@@ -549,9 +575,19 @@ func GetLogsByVideoTaskId(videoTaskId string) (*Log, error) {
 
 // RecordVideoConsumeLog 记录视频任务的消费日志，包含VideoTaskId
 func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, videoTaskId string) {
-	logger.Info(ctx, fmt.Sprintf("record video consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, videoTaskId=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, videoTaskId))
+	var requestIP string
+	if v := ctx.Value(logger.RequestIPKey); v != nil {
+		requestIP, _ = v.(string)
+	}
+
+	logger.Info(ctx, fmt.Sprintf("record video consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, videoTaskId=%s, requestIP=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, videoTaskId, requestIP))
 	if !config.LogConsumeEnabled {
 		return
+	}
+
+	var other string
+	if requestIP != "" {
+		other = "ip:" + requestIP
 	}
 
 	log := &Log{
@@ -571,6 +607,7 @@ func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 		HttpReferer:      httpReferer,
 		Speed:            0,
 		VideoTaskId:      videoTaskId,
+		Other:            other,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
