@@ -18,7 +18,9 @@ func RequestId() func(c *gin.Context) {
 			id = helper.GenRequestID()
 		}
 		c.Set(logger.RequestIdKey, id)
+		clientIP := c.ClientIP()
 		ctx := context.WithValue(c.Request.Context(), logger.RequestIdKey, id)
+		ctx = context.WithValue(ctx, logger.RequestIPKey, clientIP)
 		c.Request = c.Request.WithContext(ctx)
 		// 设置到请求头，确保下游通过 GetHeader 也能获取
 		c.Request.Header.Set(logger.RequestIdKey, id)
