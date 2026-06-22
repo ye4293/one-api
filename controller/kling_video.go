@@ -474,6 +474,8 @@ func HandleKlingCallback(c *gin.Context) {
 		return
 	}
 
+	logger.Debug(c, fmt.Sprintf("[kling-v1-callback] 收到回调, raw_body=%s", string(bodyBytes)))
+
 	var notification kling.CallbackNotification
 	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
 		logger.Error(c, fmt.Sprintf("Kling callback parse error: error=%v", err))
@@ -688,6 +690,8 @@ func HandleKling30TurboCallback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+
+	logger.Debug(c, fmt.Sprintf("[kling-v2-callback] 收到回调, raw_body=%s", string(bodyBytes)))
 
 	var notification kling.Callback30TurboNotification
 	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
