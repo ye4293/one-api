@@ -293,6 +293,7 @@ func SetRelayRouter(router *gin.Engine) {
 	klingCallbackRouter := router.Group("/kling/internal")
 	{
 		klingCallbackRouter.POST("/callback", controller.HandleKlingCallback)
+		klingCallbackRouter.POST("/callback/v2", controller.HandleKling30TurboCallback)
 	}
 
 	// Kling 3.0 Turbo 路由组

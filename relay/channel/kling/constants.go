@@ -6,6 +6,7 @@ const (
 	TaskStatusSubmitted  = "submitted"
 	TaskStatusProcessing = "processing"
 	TaskStatusSucceed    = "succeed"
+	TaskStatusSucceeded  = "succeeded" // 3.0 Turbo 回调使用的成功状态值
 	TaskStatusFailed     = "failed"
 
 	// 请求类型

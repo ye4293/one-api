@@ -204,6 +204,54 @@ type QueryTaskResponse struct {
 	Data      TaskData `json:"data"`
 }
 
+// ============ 3.0 Turbo 回调结构（v2 格式） ============
+
+type Callback30TurboOutput struct {
+	Type         string  `json:"type"`                    // video/image/audio/element/voice
+	URL          string  `json:"url,omitempty"`
+	Duration     float64 `json:"duration,omitempty"`
+	WatermarkURL string  `json:"watermark_url,omitempty"`
+}
+
+type Callback30TurboBilling struct {
+	ChargeType  string  `json:"charge_type"`  // cash/unit
+	Amount      float64 `json:"amount"`
+	PackageType string  `json:"package_type"` // general 等
+}
+
+type Callback30TurboNotification struct {
+	ID         string                   `json:"id"`
+	Status     string                   `json:"status"`      // submitted/processing/succeeded/failed
+	Message    string                   `json:"message"`
+	CreateTime string                   `json:"create_time"` // ISO 8601
+	UpdateTime string                   `json:"update_time"` // ISO 8601
+	ExternalID string                   `json:"external_id,omitempty"`
+	Outputs    []Callback30TurboOutput  `json:"outputs,omitempty"`
+	Billing    []Callback30TurboBilling `json:"billing,omitempty"`
+}
+
+// GetTotalBillingAmount 计算回调中所有 billing 项的总金额（CNY）
+func (n *Callback30TurboNotification) GetTotalBillingAmount() float64 {
+	var total float64
+	for _, b := range n.Billing {
+		total += b.Amount
+	}
+	return total
+}
+
+// GetFirstVideoOutput 获取第一个 video 类型的 output
+func (n *Callback30TurboNotification) GetFirstVideoOutput() *Callback30TurboOutput {
+	for i := range n.Outputs {
+		if n.Outputs[i].Type == "video" {
+			return &n.Outputs[i]
+		}
+	}
+	if len(n.Outputs) > 0 {
+		return &n.Outputs[0]
+	}
+	return nil
+}
+
 // 人脸识别请求
 type IdentifyFaceRequest struct {
 	VideoID  string `json:"video_id,omitempty"`  // 可灵视频ID
