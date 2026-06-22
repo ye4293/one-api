@@ -120,7 +120,7 @@ func (g *gcpClient) ensureTable(ctx context.Context) error {
 	return tbl.Create(ctx, &bigquery.TableMetadata{
 		Schema:           buildBQSchema(),
 		TimePartitioning: tp,
-		Clustering:       &bigquery.Clustering{Fields: []string{"actual_model", "channel_id", "user_id"}},
+		Clustering:       &bigquery.Clustering{Fields: []string{"x_request_id", "actual_model", "channel_id", "user_id"}},
 	})
 }
 
