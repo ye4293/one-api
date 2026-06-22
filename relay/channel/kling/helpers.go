@@ -99,3 +99,15 @@ func GetModelNameByRequestType(requestType string, userModel string) string {
 func Is30TurboRequestType(requestType string) bool {
 	return requestType == RequestTypeText2Video30Turbo || requestType == RequestTypeImage2Video30Turbo
 }
+
+// NormalizeTypeForDB 将请求类型转为数据库存储的规范格式
+func NormalizeTypeForDB(requestType string) string {
+	switch requestType {
+	case RequestTypeText2Video30Turbo:
+		return RequestTypeText2Video
+	case RequestTypeImage2Video30Turbo:
+		return RequestTypeImage2Video
+	default:
+		return requestType
+	}
+}
