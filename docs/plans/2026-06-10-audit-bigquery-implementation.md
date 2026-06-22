@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 在 text/chat completions 链路旁路记录 6 类全链路数据，经两级缓冲（内存→磁盘→GCS）批量 load 到 BigQuery，与主请求完全解耦、故障让路。
+**Goal:** 在 text/chat completions 链路旁路记录 6 类全链路数据，经两级缓冲（内存→磁盘）通过 BigQuery Storage Write API 写入 BigQuery，与主请求完全解耦、故障让路。
 
-**Architecture:** 新增独立 `common/audit` 包承载全部复杂度（context 暂存、脱敏、内存+磁盘两级缓冲、ingest worker、uploader、BigQuery/GCS client）；新增 `middleware/audit.go` 在最外层零侵入捕获 3 类数据（原始请求头/体、客户端响应）；在 relay 流程 3 处插入"哑操作"埋点捕获另 3 类（转换后请求头/体、上游响应）。主请求对审计的唯一成本 = 一次非阻塞 channel 写。
+**Architecture:** 新增独立 `common/audit` 包承载全部复杂度（context 暂存、脱敏、内存+磁盘两级缓冲、ingest worker、uploader、BigQuery managedwriter client）；新增 `middleware/audit.go` 在最外层零侵入捕获 3 类数据（原始请求头/体、客户端响应）；在 relay 流程 3 处插入"哑操作"埋点捕获另 3 类（转换后请求头/体、上游响应）。主请求对审计的唯一成本 = 一次非阻塞 channel 写。
 
-**Tech Stack:** Go 1.23 / gin / `cloud.google.com/go/bigquery` / `cloud.google.com/go/storage` / 标准库 `io.TeeReader`、`encoding/json`、`compress/gzip`。
+**Tech Stack:** Go 1.23 / gin / `cloud.google.com/go/bigquery`（含 `storage/managedwriter`）/ `google.golang.org/protobuf` / 标准库 `io.TeeReader`、`encoding/json`、`compress/gzip`。
 
 **设计依据:** `docs/plans/2026-06-10-audit-bigquery-design.md`（已确认）。
 

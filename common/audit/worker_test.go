@@ -88,3 +88,70 @@ func TestShutdownFlushesRemaining(t *testing.T) {
 		t.Errorf("关停应 flush 残余 2 条, got %d", got)
 	}
 }
+
+func TestSpillAndReplay(t *testing.T) {
+	resetForTest()
+	dir := t.TempDir()
+	s := &spillStore{dir: dir, maxBytes: 100 * 1024 * 1024}
+
+	original := []*AuditRecord{
+		{
+			EventTime:  time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC),
+			XRequestID: "req-spill-1",
+			UserID:     1,
+			ChannelID:  3,
+			OriginModel: "gpt-4",
+			ActualModel: "gpt-4-0613",
+			IsStream:   true,
+			StatusCode: 200,
+			DurationMS: 500,
+			TruncatedFields: []string{"upstream_response"},
+		},
+		{
+			EventTime:  time.Date(2026, 6, 22, 10, 0, 1, 0, time.UTC),
+			XRequestID: "req-spill-2",
+			UserID:     2,
+			StatusCode: 400,
+		},
+	}
+
+	spillBatchTo(s, original)
+
+	files, err := s.scan()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("应有 1 个 spill 文件, got %d", len(files))
+	}
+
+	records, err := readSpillFile(files[0])
+	if err != nil {
+		t.Fatalf("readSpillFile: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("应读回 2 条记录, got %d", len(records))
+	}
+	if records[0].XRequestID != "req-spill-1" {
+		t.Errorf("第一条 XRequestID 不匹配: %s", records[0].XRequestID)
+	}
+	if records[1].XRequestID != "req-spill-2" {
+		t.Errorf("第二条 XRequestID 不匹配: %s", records[1].XRequestID)
+	}
+	if records[0].UserID != 1 || records[0].ChannelID != 3 {
+		t.Errorf("字段值不匹配: UserID=%d, ChannelID=%d", records[0].UserID, records[0].ChannelID)
+	}
+	if !records[0].IsStream {
+		t.Error("IsStream 应为 true")
+	}
+	if len(records[0].TruncatedFields) != 1 || records[0].TruncatedFields[0] != "upstream_response" {
+		t.Errorf("TruncatedFields 不匹配: %v", records[0].TruncatedFields)
+	}
+}
+
+func spillBatchTo(s *spillStore, batch []*AuditRecord) {
+	oldSpill := spill
+	spill = s
+	defer func() { spill = oldSpill }()
+	spillBatch(batch)
+}

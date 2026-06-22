@@ -50,8 +50,8 @@ func Start(ctx context.Context) {
 			pkgConfig = cfg
 			return
 		}
-		if cfg.GCPProject == "" || cfg.GCSBucket == "" {
-			logger.SysError("audit: 缺少 GCP 配置，自动降级为关闭")
+		if cfg.GCPProject == "" {
+			logger.SysError("audit: 缺少 GCP_PROJECT 配置，自动降级为关闭")
 			cfg.Enabled = false
 			pkgConfig = cfg
 			return
@@ -89,7 +89,10 @@ func Shutdown() {
 	}
 	close(recordChan) // ingestLoop 收到 !ok 后 flush 残余并退出
 	if ingestDone != nil {
-		<-ingestDone // 等待 flush 真正完成，避免进程退出时丢残余
+		<-ingestDone
+	}
+	if gcp != nil {
+		_ = gcp.Close()
 	}
 }
 

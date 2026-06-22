@@ -69,18 +69,18 @@
         组装 AuditRecord ──非阻塞写──→ [内存 channel, ≤1GB]
                                             │ ingest worker drain + 批量
                                             ▼
-                            内存占用 < 1GB ? ──是──→ 内存 batch → gzip → GCS → load job
+                            proto 序列化 → Storage Write API AppendRows
                                             │
-                                            否（背压）
+                                            失败？
                                             ▼
                             写本地磁盘 NDJSON 文件 [磁盘缓冲, ~40GB]
                                             │ uploader 后台扫描
                                             ▼
-                            gzip → GCS → load job → 删文件
+                            读取 NDJSON → proto → AppendRows → 删文件
                             磁盘也满 → 才丢弃 + 计数告警
 ```
 
-**两级缓冲（内存 1GB → 磁盘 40GB → GCS）：**
+**两级缓冲（内存 channel → Storage Write API → 磁盘 40GB）：**
 
 - 内存满 1GB **不丢弃**，转写本地磁盘 NDJSON 文件；只有磁盘缓冲也写满才丢弃（最后兜底，几乎不触发）。
 - 1GB 内存上限对 16GB 小机器也安全；40GB 大缓冲落在磁盘（盘 100GB），不吃内存、不会 OOM。
@@ -140,7 +140,7 @@ func Submit(r *AuditRecord) {
 
 `recordChan` 仅作"请求 → ingest worker"的瞬时交接队列，容量小（默认 2000 条）。这是主请求对审计的**全部成本**——一次非阻塞 channel 写。内存/磁盘的两级缓冲与丢弃判断全部下沉到 ingest worker，不在请求路径上。
 
-**Ingest worker（drain 内存 → 决定上传或落盘）：**
+**Ingest worker（drain 内存 → 直接写入 BigQuery）：**
 
 ```
 for {
@@ -152,26 +152,27 @@ for {
 }
 
 func dispatch(batch):
-  序列化为 NDJSON
-  if memBytes < AUDIT_MAX_BUFFER_MB:   直接走内存上传通道 → GCS → load job
-  else:                                写入磁盘 spill 目录（背压，转磁盘）
+  proto 序列化 → Storage Write API AppendRows
+  失败 → 序列化为 NDJSON → gzip 写入磁盘 spill 目录
        if 磁盘用量 ≥ AUDIT_DISK_BUFFER_MAX_GB: 丢弃 + 计数告警
 ```
 
 - 触发：batch 达到 N 条（默认 500）**或** 刷写间隔到（默认 10s），先到先触发。
-- 内存占用 < 1GB：直接从内存 gzip → 上传 GCS → 提交 BigQuery load job。
-- 内存占用 ≥ 1GB（背压）：NDJSON 写入 `AUDIT_DISK_BUFFER_DIR`，由 uploader 异步搬运。
-- 内存与磁盘都满：才丢弃（最后兜底）。
+- 正常路径：直接通过 Storage Write API `AppendRows` 写入 BigQuery（protobuf 编码，无需 GCS 中转）。
+- 写入失败：NDJSON 写入 `AUDIT_DISK_BUFFER_DIR`，由 uploader 异步重放。
+- 磁盘也满：才丢弃（最后兜底）。
 
 **Uploader（后台扫描磁盘 spill 目录）：**
 
-- 扫描磁盘 NDJSON 文件 → gzip → 上传 GCS → 提交 load job → 删文件。
-- 上传失败重试 N 次；文件留在磁盘，进程重启后继续传（崩溃韧性）。
+- 扫描磁盘 gzip NDJSON 文件 → 解压解析为 AuditRecord → proto 序列化 → AppendRows → 删文件。
+- 写入失败保留文件待重试；进程重启后继续传（崩溃韧性）。
 
-**为什么经 GCS 而非直接 load 本地文件：**
+**写入方式：BigQuery Storage Write API（DefaultStream + at-least-once）**
 
-- load job 从 GCS 加载**完全免费**（2-4TB/月省下约 $100-200 写入费）。
-- GCS 作为中转，上传失败可重试、文件可留存排查，比 Storage Write API 更解耦、更经济。
+- 使用 `managedwriter` 包的 DefaultStream，启用 `EnableWriteRetries(true)` 自动重试。
+- 无 Load Job 的 1,500 次/天/表配额限制，无 GCS 中转依赖。
+- protobuf wire format 编码效率高于 JSON，网络带宽占用更低。
+- 写入按字节收费（$0.025/GB），2-4 TB/月约 $50-100/月，换来更高可靠性与更低延迟。
 
 **积压自我保护：**
 
@@ -212,7 +213,7 @@ func dispatch(batch):
 
 - 6 类 payload 全部存为 **STRING**（不用 JSON/RECORD 类型）——请求体格式各异、可能非法 JSON、可能被截断，STRING 最稳、load 永不失败。需要时在 BQ 里 `JSON_EXTRACT` 现解析。
 - 与现有 `model.Log` 表通过 `x_request_id` 关联：审计表存"全文大字段"，业务日志表存"计费/统计指标"，职责分离。
-- 分区 + 后续可加 clustering（按 `actual_model` / `channel_id`）加速查询。
+- 分区 + **Clustering**（按 `actual_model`、`channel_id`、`user_id`）免费优化查询性能。
 - **建表幂等**：首次启动检测表是否存在，不存在则用固定 schema 建表，无需手工运维。
 
 ## 7. 配置项、脱敏与开关
@@ -224,8 +225,6 @@ func dispatch(batch):
 | `AUDIT_ENABLED` | `false` | **总开关**，关闭时埋点哑操作、worker 不启动 |
 | `AUDIT_GCP_PROJECT` | - | GCP 项目 ID |
 | `AUDIT_BQ_DATASET` | `audit` | BigQuery 数据集 |
-| `AUDIT_BQ_TABLE` | `request_logs` | 表名 |
-| `AUDIT_GCS_BUCKET` | - | 中转 bucket |
 | `AUDIT_CREDENTIALS_FILE` | - | GCP service account JSON 路径 |
 | `AUDIT_CHANNEL_SIZE` | `2000` | 内存交接队列容量（条数），仅做请求→worker 瞬时交接 |
 | `AUDIT_MAX_BUFFER_MB` | `1024` | **内存上限（1GB）**，超过即转写本地磁盘（非丢弃线）|
@@ -276,7 +275,7 @@ text.go 的 OpenAI 路径在 `shouldResetRequestBody=false` 时 `requestBody = c
 
 ### 依赖
 
-新增 `cloud.google.com/go/bigquery` + `cloud.google.com/go/storage`（GCP 官方 SDK）。
+新增 `cloud.google.com/go/bigquery`（含 `storage/managedwriter` 子包）。`google.golang.org/protobuf` 用于 proto 序列化。
 
 ## 8. 影响范围
 

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"fmt"
+	"encoding/json"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/logger"
@@ -48,38 +50,21 @@ func dispatch(batch []*AuditRecord) {
 		testDispatch(batch)
 		return
 	}
+	if err := gcp.appendRows(context.Background(), batch); err != nil {
+		logger.SysError("audit: appendRows 失败，转落盘: " + err.Error())
+		spillBatch(batch)
+	}
+}
+
+func spillBatch(batch []*AuditRecord) {
 	var buf bytes.Buffer
 	for _, r := range batch {
 		buf.WriteString(toNDJSONLine(r))
 	}
-	// 内存够：直接走内存→GCS；否则落盘
-	if buf.Len() < pkgConfig.MaxBufferMB*1024*1024 {
-		gz := gzipBytes(buf.Bytes())
-		now := time.Now()
-		obj := fmt.Sprintf("audit/%s/%d.ndjson.gz", now.UTC().Format("2006/01/02"), now.UnixNano())
-		if err := gcp.uploadAndLoad(context.Background(), obj, gz); err != nil {
-			logger.SysError("audit: 内存直传失败，转落盘: " + err.Error())
-			spillBatch(buf.Bytes())
-		}
-		return
-	}
-	spillBatch(buf.Bytes())
-}
-
-func spillBatch(ndjson []byte) {
-	if _, err := spill.write(ndjson); err != nil {
-		// 磁盘也满 → 丢弃 + 计数
+	if _, err := spill.write(buf.Bytes()); err != nil {
 		atomicAddDropped(1)
 		logger.SysError("audit: 磁盘缓冲已满，丢弃批次: " + err.Error())
 	}
-}
-
-func gzipBytes(b []byte) []byte {
-	var out bytes.Buffer
-	gw := gzip.NewWriter(&out)
-	_, _ = gw.Write(b)
-	_ = gw.Close()
-	return out.Bytes()
 }
 
 func uploaderLoop() {
@@ -89,17 +74,76 @@ func uploaderLoop() {
 	for range ticker.C {
 		files, _ := spill.scan()
 		for _, f := range files {
-			data, err := os.ReadFile(f)
+			records, err := readSpillFile(f)
 			if err != nil {
+				logger.SysError("audit: 读取 spill 文件失败: " + err.Error())
 				continue
 			}
-			// spill 文件已是 gzip；按统一对象名上传
-			obj := fmt.Sprintf("audit/%s/spill-%d.ndjson.gz", time.Now().UTC().Format("2006/01/02"), time.Now().UnixNano())
-			if err := gcp.uploadAndLoad(context.Background(), obj, data); err != nil {
-				logger.SysError("audit: spill 文件上传失败，保留待重试: " + err.Error())
+			if len(records) == 0 {
+				_ = os.Remove(f)
+				continue
+			}
+			if err := gcp.appendRows(context.Background(), records); err != nil {
+				logger.SysError("audit: spill 重放失败，保留待重试: " + err.Error())
 				continue
 			}
 			_ = os.Remove(f)
 		}
+	}
+}
+
+func readSpillFile(path string) ([]*AuditRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+	raw, err := io.ReadAll(gr)
+	if err != nil {
+		return nil, err
+	}
+	var records []*AuditRecord
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row bqRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		r := bqRowToRecord(row)
+		records = append(records, r)
+	}
+	return records, nil
+}
+
+func bqRowToRecord(row bqRow) *AuditRecord {
+	t, _ := time.Parse("2006-01-02 15:04:05.000000", row.EventTime)
+	return &AuditRecord{
+		EventTime:               t,
+		XRequestID:              row.XRequestID,
+		UserID:                  row.UserID,
+		Username:                row.Username,
+		ChannelID:               row.ChannelID,
+		TokenName:               row.TokenName,
+		OriginModel:             row.OriginModel,
+		ActualModel:             row.ActualModel,
+		IsStream:                row.IsStream,
+		StatusCode:              row.StatusCode,
+		DurationMS:              row.DurationMS,
+		OriginalReqHeaders:      row.OriginalReqHeaders,
+		OriginalReqBody:         row.OriginalReqBody,
+		ConvertedReqHeaders:     row.ConvertedReqHeaders,
+		ConvertedReqBody:        row.ConvertedReqBody,
+		ConvertedSameAsOriginal: row.ConvertedSameAsOriginal,
+		UpstreamResponse:        row.UpstreamResponse,
+		ClientResponse:          row.ClientResponse,
+		TruncatedFields:         row.TruncatedFields,
+		DroppedNote:             row.DroppedNote,
 	}
 }

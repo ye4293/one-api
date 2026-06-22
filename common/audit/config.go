@@ -12,7 +12,6 @@ type config struct {
 	GCPProject          string
 	BQDataset           string
 	BQTable             string
-	GCSBucket           string
 	CredentialsFile     string
 	ChannelSize         int
 	MaxBufferMB         int
@@ -32,7 +31,6 @@ func loadConfig() *config {
 		GCPProject:          env.String("AUDIT_GCP_PROJECT", ""),
 		BQDataset:           env.String("AUDIT_BQ_DATASET", "audit"),
 		BQTable:             env.String("AUDIT_BQ_TABLE", "request_logs"),
-		GCSBucket:           env.String("AUDIT_GCS_BUCKET", ""),
 		CredentialsFile:     env.String("AUDIT_CREDENTIALS_FILE", ""),
 		ChannelSize:         env.Int("AUDIT_CHANNEL_SIZE", 2000),
 		MaxBufferMB:         env.Int("AUDIT_MAX_BUFFER_MB", 1024),

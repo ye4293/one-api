@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-06-22
+
+### refactor(audit): 写入层从 GCS Load Job 迁移到 Storage Write API
+- **分支**: `bigQuery`
+- **类型**: 重构
+- **涉及文件**: `common/audit/bqclient.go`、`common/audit/worker.go`、`common/audit/config.go`、`common/audit/manager.go`、`common/audit/bqclient_test.go`、`common/audit/worker_test.go`、`go.mod`、`go.sum`、`docs/plans/2026-06-10-audit-bigquery-design.md`、`docs/plans/2026-06-10-audit-bigquery-implementation.md`
+- **说明**: 将审计数据写入通道从 GCS 上传 + BigQuery Load Job 替换为 BigQuery Storage Write API（`managedwriter` 包 DefaultStream + `EnableWriteRetries`），消除 Load Job 1,500 次/天/表的硬性配额限制和 `job.Wait()` 同步阻塞瓶颈。新增 protobuf 序列化（`dynamicpb` + `adapt` 包，无需 .proto codegen）；spill 落盘仍为 gzip NDJSON（调试友好），重放时转 proto→AppendRows。移除 GCS 直接依赖（`cloud.google.com/go/storage` 降级为 indirect）。建表新增 Clustering（`actual_model`、`channel_id`、`user_id`）免费优化查询。新增 4 个测试覆盖 proto 序列化和 spill 重放。
+- **关联计划**: `docs/plans/2026-06-10-audit-bigquery-design.md`
+
 ## 2026-06-11
 
 ### fix(audit): Shutdown 等待 flush + 透传埋点改用 bytes 缓冲
