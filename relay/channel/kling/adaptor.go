@@ -84,6 +84,9 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBo
 			options["callback_url"] = callbackURL
 			requestBody["options"] = options
 		}
+		if externalTaskID > 0 {
+			requestBody["external_id"] = fmt.Sprintf("%d", externalTaskID)
+		}
 		return json.Marshal(requestBody)
 	}
 
