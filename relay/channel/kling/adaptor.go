@@ -35,6 +35,9 @@ func (a *Adaptor) GetRequestURL(meta *util.RelayMeta) (string, error) {
 	// 根据请求类型确定路径前缀
 	var pathPrefix string
 	switch a.RequestType {
+	// Kling 3.0 Turbo：路径直接为 /text-to-video/kling-3.0-turbo 等
+	case RequestTypeText2Video30Turbo, RequestTypeImage2Video30Turbo:
+		return fmt.Sprintf("%s/%s", baseURL, a.RequestType), nil
 	// 音频类接口
 	case RequestTypeTextToAudio, RequestTypeVideoToAudio, RequestTypeTTS:
 		pathPrefix = "/v1/audio"
@@ -69,6 +72,21 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 
 // ConvertRequest 转换请求并注入回调URL和外部任务ID
 func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBody map[string]interface{}, callbackURL string, externalTaskID int64) ([]byte, error) {
+	if Is30TurboRequestType(a.RequestType) {
+		// 3.0 Turbo：不注入 model_name，callback_url 放入 options
+		delete(requestBody, "model")
+		delete(requestBody, "model_name")
+		if callbackURL != "" {
+			options, ok := requestBody["options"].(map[string]interface{})
+			if !ok {
+				options = make(map[string]interface{})
+			}
+			options["callback_url"] = callbackURL
+			requestBody["options"] = options
+		}
+		return json.Marshal(requestBody)
+	}
+
 	// 注入 model_name（如果请求体中没有）
 	if _, exists := requestBody["model_name"]; !exists {
 		if modelValue, ok := c.Get("model"); ok {

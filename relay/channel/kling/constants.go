@@ -45,4 +45,9 @@ const (
 	RequestTypeDeleteElements  = "delete-elements"
 	RequestTypePresetsVoices   = "presets-voices"
 	RequestTypeDeleteVoices    = "delete-voices"
+
+	// Kling 3.0 Turbo
+	RequestTypeText2Video30Turbo  = "text-to-video/kling-3.0-turbo"
+	RequestTypeImage2Video30Turbo = "image-to-video/kling-3.0-turbo"
+	RequestTypeTasks              = "tasks"
 )

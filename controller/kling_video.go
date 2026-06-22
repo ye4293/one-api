@@ -66,11 +66,8 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
 
-	// 提取用户回调 URL（可选）
-	var callbackUrl string
-	if cbUrl, ok := requestParams["callback_url"].(string); ok {
-		callbackUrl = cbUrl
-	}
+	// 提取用户回调 URL（可选，兼容顶层和 options.callback_url）
+	callbackUrl := kling.GetCallbackUrlFromRequest(requestParams)
 
 	// 提取视频V2.6模型的声音参数（可选）
 	var sound string

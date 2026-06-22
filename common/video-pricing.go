@@ -57,6 +57,10 @@ var DefaultVideoPricingRules = []VideoPricingRule{
 	{Model: "kling-video-o1", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 5},
 	// kling-v2-master，按秒计费（2元/s）
 	{Model: "kling-v2-master", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 2.0, Currency: "CNY", Priority: 10},
+	// kling-3.0-turbo，按秒计费（720p=0.8元/s，1080p=1.0元/s）
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "std", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "pro", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.0, Currency: "CNY", Priority: 10},
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 5},
 }
 
 func init() {
