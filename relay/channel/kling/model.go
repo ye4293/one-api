@@ -129,14 +129,20 @@ func (r *KlingResponse) GetInt64(key string) int64 {
 	return 0
 }
 
-// GetTaskID 获取 task_id 字段
+// GetTaskID 获取任务ID（兼容 v1 的 task_id 和 3.0 Turbo 的 id）
 func (r *KlingResponse) GetTaskID() string {
-	return r.GetString("task_id")
+	if id := r.GetString("task_id"); id != "" {
+		return id
+	}
+	return r.GetString("id")
 }
 
-// GetTaskStatus 获取 task_status 字段
+// GetTaskStatus 获取任务状态（兼容 v1 的 task_status 和 3.0 Turbo 的 status）
 func (r *KlingResponse) GetTaskStatus() string {
-	return r.GetString("task_status")
+	if s := r.GetString("task_status"); s != "" {
+		return s
+	}
+	return r.GetString("status")
 }
 
 // GetTaskData 获取 TaskData（用于异步接口）
