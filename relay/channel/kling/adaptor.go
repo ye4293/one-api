@@ -84,7 +84,12 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, meta *util.RelayMeta, requestBo
 			options["callback_url"] = callbackURL
 			requestBody["options"] = options
 		}
-		return json.Marshal(requestBody)
+		jsonBody, err := json.Marshal(requestBody)
+		if err != nil {
+			return nil, err
+		}
+		logger.Debugf(c.Request.Context(), "[kling-3.0-turbo] 发送请求体: %s", string(jsonBody))
+		return jsonBody, nil
 	}
 
 	// 注入 model_name（如果请求体中没有）
