@@ -10,7 +10,6 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
-	"github.com/songquanpeng/one-api/relay/channel/keling"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/service"
@@ -296,6 +295,12 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			}
 		}
 
+	} else if strings.HasPrefix(path, "/kling/text-to-video/") ||
+		strings.HasPrefix(path, "/kling/image-to-video/") ||
+		strings.HasPrefix(path, "/kling/tasks") {
+		// Kling 3.0 Turbo 路径处理
+		modelRequest.Model = "kling-3.0-turbo"
+
 	} else if strings.HasPrefix(path, "/ali/api/v1/") {
 		if c.Request.Method == "GET" {
 			modelRequest.Model = "wan2.6-i2v"
@@ -437,19 +442,8 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	case common.ChannelTypeAli:
 		c.Set(common.ConfigKeyPlugin, channel.Other)
 	case common.ChannelTypeKeling:
-		// 使用统一方法处理 Kling 凭证和 Token 生成
-		token, err := keling.GetCredentialsAndGenerateToken(channel, keyIndex)
-		if err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to generate Kling token for channel %d: %s", channel.Id, err.Error()))
-			// 使用原始 key 作为降级方案
-			c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
-			c.Set("Config", cfg)
-			return
-		}
-
-		// 设置 Authorization header
-		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-		logger.Info(c.Request.Context(), fmt.Sprintf("Kling JWT token generated for channel %d", channel.Id))
+		// Kling 官方鉴权方式：Authorization: Bearer <API_KEY>
+		c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", actualKey))
 	}
 	c.Set("Config", cfg)
 }

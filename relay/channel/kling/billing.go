@@ -1,8 +1,13 @@
 package kling
 
 import (
+	"context"
+	"fmt"
+
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/model"
 )
 
 // CalculateQuota 计算 Kling 视频生成费用（后扣费模式）
@@ -66,3 +71,70 @@ func CalculateQuota(params map[string]interface{}, requestType string) int64 {
 	return totalQuota
 }
 
+// ChargeVideoOnSuccess 视频/音频任务成功时的完整计费流程
+func ChargeVideoOnSuccess(ctx context.Context, video *model.Video, quota int64) error {
+	if quota <= 0 {
+		return fmt.Errorf("invalid quota: %d", quota)
+	}
+
+	if err := model.DecreaseUserQuota(video.UserId, quota); err != nil {
+		return fmt.Errorf("扣费失败: %w", err)
+	}
+
+	model.UpdateUserUsedQuotaAndRequestCount(video.UserId, quota)
+	model.UpdateChannelUsedQuota(video.ChannelId, quota)
+
+	logContent := fmt.Sprintf("Kling 任务成功，扣费 quota=%d, task_id=%s, type=%s", quota, video.TaskId, video.Type)
+	model.RecordConsumeLog(
+		ctx,
+		video.UserId,
+		video.ChannelId,
+		0, 0,
+		video.Model,
+		"",
+		quota,
+		logContent,
+		float64(video.TotalDuration),
+		"", "",
+		false,
+		0.0,
+	)
+
+	logger.Infof(ctx, "[kling-billing] 成功扣费 user_id=%d channel_id=%d quota=%d model=%s task_id=%s",
+		video.UserId, video.ChannelId, quota, video.Model, video.TaskId)
+	return nil
+}
+
+// ChargeImageOnSuccess 图片任务成功时的完整计费流程
+func ChargeImageOnSuccess(ctx context.Context, image *model.Image, quota int64) error {
+	if quota <= 0 {
+		return fmt.Errorf("invalid quota: %d", quota)
+	}
+
+	if err := model.DecreaseUserQuota(image.UserId, quota); err != nil {
+		return fmt.Errorf("扣费失败: %w", err)
+	}
+
+	model.UpdateUserUsedQuotaAndRequestCount(image.UserId, quota)
+	model.UpdateChannelUsedQuota(image.ChannelId, quota)
+
+	logContent := fmt.Sprintf("Kling 图片任务成功，扣费 quota=%d, task_id=%s", quota, image.TaskId)
+	model.RecordConsumeLog(
+		ctx,
+		image.UserId,
+		image.ChannelId,
+		0, 0,
+		image.Model,
+		"",
+		quota,
+		logContent,
+		float64(image.TotalDuration),
+		"", "",
+		false,
+		0.0,
+	)
+
+	logger.Infof(ctx, "[kling-billing] 图片扣费成功 user_id=%d channel_id=%d quota=%d model=%s task_id=%s",
+		image.UserId, image.ChannelId, quota, image.Model, image.TaskId)
+	return nil
+}
