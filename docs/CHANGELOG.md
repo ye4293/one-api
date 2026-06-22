@@ -8,6 +8,19 @@
 
 ## 2026-06-22
 
+### perf(audit): Clustering 首列改为 x_request_id
+- **分支**: `bigQuery`
+- **类型**: 性能优化
+- **涉及文件**: `common/audit/bqclient.go`
+- **说明**: 将 BigQuery 表 Clustering 字段顺序调整为 `[x_request_id, actual_model, channel_id, user_id]`，x_request_id 排首位以优化按请求 ID 精确查询的性能。
+
+### feat(audit): 新增 BigQuery 审计查看器（后端 API + 前端页面）
+- **分支**: `bigQuery`
+- **类型**: 新功能
+- **涉及文件**: `common/audit/query.go`、`controller/audit_viewer.go`、`router/api-router.go`、前端 `~/code/ezlinkai-web` 下 `app/dashboard/bigquery/`、`sections/bigquery/`、`constants/data.ts`、`components/icons.tsx`、`lib/searchparams.ts`
+- **说明**: 新增管理后台审计查看页面。后端提供 `GET /api/audit/logs`（分页列表）和 `GET /api/audit/detail`（完整详情）两个 API，通过 BigQuery 参数化查询实现，强制日期范围（≤31天）确保分区裁剪控制成本。前端新增 Audit 页面（仅管理员可见），支持按 x_request_id 精确搜索、按日期范围分页浏览、查看完整请求/响应详情。
+- **关联计划**: `docs/plans/2026-06-22-audit-bigquery-viewer.md`
+
 ### refactor(audit): 写入层从 GCS Load Job 迁移到 Storage Write API
 - **分支**: `bigQuery`
 - **类型**: 重构

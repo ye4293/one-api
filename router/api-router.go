@@ -201,6 +201,12 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			groupRoute.GET("/", controller.GetGroups)
 		}
+		auditRoute := apiRouter.Group("/audit")
+		auditRoute.Use(middleware.AdminAuth())
+		{
+			auditRoute.GET("/logs", controller.GetAuditLogs)
+			auditRoute.GET("/detail", controller.GetAuditDetail)
+		}
 	}
 	cryptoaiRoute := apiRouter.Group("/")
 	// cryptoaiRoute.GET("/pay/crypt/get_qrcode", middleware.UserAuth(), middleware.GlobalAPIRateLimit(), controller.GetQrcode)
