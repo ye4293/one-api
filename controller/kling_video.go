@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -560,9 +561,10 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota
+						// 转换为 quota（USD 金额保留两位小数）
+						usdAmount = math.Round(usdAmount*100) / 100
 						newQuota = int64(usdAmount * config.QuotaPerUnit)
-						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.2f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
 						// 金额为 0，使用系统规则
@@ -611,9 +613,10 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota
+						// 转换为 quota（USD 金额保留两位小数）
+						usdAmount = math.Round(usdAmount*100) / 100
 						newQuota = int64(usdAmount * config.QuotaPerUnit)
-						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.2f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
 						// 金额为 0，使用原有 quota
@@ -752,8 +755,9 @@ func handle30TurboCallback(c *gin.Context, task *kling.TaskWrapper, notification
 						logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 							totalCNY, convErr))
 					}
+					usdAmount = math.Round(usdAmount*100) / 100
 					newQuota = int64(usdAmount * config.QuotaPerUnit)
-					logger.Info(c, fmt.Sprintf("Using Kling v2 billing: id=%s, cny=%.4f, usd=%.4f, quota=%d",
+					logger.Info(c, fmt.Sprintf("Using Kling v2 billing: id=%s, cny=%.4f, usd=%.2f, quota=%d",
 						taskID, totalCNY, usdAmount, newQuota))
 				} else {
 					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution, video.Sound)
