@@ -8,6 +8,13 @@
 
 ## 2026-06-22
 
+### refactor(audit): 写入/查询层从 BigQuery 迁移到 Firehose + Iceberg + Athena
+- **分支**: `AthenaQuery`
+- **类型**: 重构
+- **涉及文件**: `common/audit/config.go`、`common/audit/awsclient.go`（新）、`common/audit/athena.go`（新）、`common/audit/compaction.go`（新）、`common/audit/query.go`、`common/audit/serialize.go`、`common/audit/worker.go`、`common/audit/manager.go`、`go.mod`、`go.sum`；删除 `bqclient.go`、`bqclient_test.go`
+- **说明**: 将审计模块整体从 GCP BigQuery 迁移到 AWS 原生栈（Firehose PutRecordBatch → Iceberg Table → S3 → Athena），消除跨云 egress 费用（~$184-368/月）。写入改用 JSON + Firehose PutRecordBatch（自动分片 500 条/4MB，部分失败重试）；查询改用 Athena 异步轮询（500ms 间隔，30s 超时）；SQL 注入防护用严格白名单正则校验；新增 Glue 自动建表（Iceberg 格式，day 分区 + x_request_id 排序）；新增每日 OPTIMIZE compaction。移除全部 GCP/BigQuery/protobuf 依赖。
+- **关联计划**: `docs/plans/2026-06-22-audit-athena-migration.md`
+
 ### perf(audit): Clustering 首列改为 x_request_id
 - **分支**: `bigQuery`
 - **类型**: 性能优化

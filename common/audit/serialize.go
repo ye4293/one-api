@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 )
 
-type bqRow struct {
+type firehoseRow struct {
 	EventTime               string   `json:"event_time"`
 	XRequestID              string   `json:"x_request_id"`
 	UserID                  int      `json:"user_id"`
@@ -27,13 +27,15 @@ type bqRow struct {
 	DroppedNote             string   `json:"dropped_note"`
 }
 
+const timeFormatISO = "2006-01-02T15:04:05.000000Z"
+
 func toNDJSONLine(r *AuditRecord) string {
 	convBody := r.ConvertedReqBody
 	if r.ConvertedSameAsOriginal {
 		convBody = ""
 	}
-	row := bqRow{
-		EventTime:               r.EventTime.UTC().Format("2006-01-02 15:04:05.000000"),
+	row := firehoseRow{
+		EventTime:               r.EventTime.UTC().Format(timeFormatISO),
 		XRequestID:              r.XRequestID,
 		UserID:                  r.UserID,
 		Username:                r.Username,

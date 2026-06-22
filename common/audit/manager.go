@@ -14,10 +14,10 @@ var (
 	ingestDone chan struct{}
 	dropped    int64
 	spill      *spillStore
-	gcp        *gcpClient
+	awsClient  *awsAuditClient
 	startOnce  sync.Once
+	cancelFunc context.CancelFunc
 
-	// 测试注入点
 	testDispatch func(batch []*AuditRecord)
 )
 
@@ -28,8 +28,6 @@ func Dropped() int64 { return atomic.LoadInt64(&dropped) }
 func atomicAddDropped(n int64) { atomic.AddInt64(&dropped, n) }
 
 func Submit(r *AuditRecord) {
-	// 审计绝不能影响主请求：兜底 recover，防止关停时 close(recordChan) 与本次 send 竞态
-	// 导致的 send-on-closed-channel panic 逃逸到请求 goroutine。
 	defer func() { _ = recover() }()
 	if !Enabled() || recordChan == nil {
 		return
@@ -41,8 +39,6 @@ func Submit(r *AuditRecord) {
 	}
 }
 
-// Start 在 main 中调用：加载配置、校验 GCP、建表、启动 worker。
-// 任何初始化失败都降级为关闭，绝不阻断主服务。
 func Start(ctx context.Context) {
 	startOnce.Do(func() {
 		cfg := loadConfig()
@@ -50,36 +46,46 @@ func Start(ctx context.Context) {
 			pkgConfig = cfg
 			return
 		}
-		if cfg.GCPProject == "" {
-			logger.SysError("audit: 缺少 GCP_PROJECT 配置，自动降级为关闭")
+		if cfg.AWSRegion == "" || cfg.AWSAccessKey == "" || cfg.AWSSecretKey == "" {
+			logger.SysError("audit: 缺少 AWS 凭证配置，自动降级为关闭")
 			cfg.Enabled = false
 			pkgConfig = cfg
 			return
 		}
-		client, err := newGCPClient(ctx, cfg)
-		if err != nil {
-			logger.SysError("audit: 初始化 GCP 客户端失败，降级为关闭: " + err.Error())
+		if cfg.FirehoseStream == "" {
+			logger.SysError("audit: 缺少 AUDIT_FIREHOSE_STREAM 配置，自动降级为关闭")
 			cfg.Enabled = false
 			pkgConfig = cfg
 			return
 		}
-		if err := client.ensureTable(ctx); err != nil {
-			logger.SysError("audit: 建表失败，降级为关闭: " + err.Error())
+
+		client := newAWSClient(cfg)
+
+		if err := client.ensureGlueResources(ctx); err != nil {
+			logger.SysError("audit: Glue 建表失败，降级为关闭: " + err.Error())
 			cfg.Enabled = false
 			pkgConfig = cfg
 			return
 		}
+
 		pkgConfig = cfg
-		gcp = client
+		awsClient = client
 		spill = &spillStore{dir: cfg.DiskBufferDir, maxBytes: int64(cfg.DiskBufferMaxGB) * 1024 * 1024 * 1024}
 		recordChan = make(chan *AuditRecord, cfg.ChannelSize)
 		ingestDone = make(chan struct{})
+
+		bgCtx, cancel := context.WithCancel(context.Background())
+		cancelFunc = cancel
+
 		go func() {
 			ingestLoop()
 			close(ingestDone)
 		}()
-		go uploaderLoop()
-		logger.SysLog("audit: 审计模块已启动")
+		go uploaderLoop(bgCtx)
+		if cfg.CompactionEnabled {
+			go compactionLoop(bgCtx)
+		}
+		logger.SysLog("audit: 审计模块已启动 (Firehose → Iceberg)")
 	})
 }
 
@@ -87,12 +93,15 @@ func Shutdown() {
 	if !Enabled() || recordChan == nil {
 		return
 	}
-	close(recordChan) // ingestLoop 收到 !ok 后 flush 残余并退出
+	close(recordChan)
 	if ingestDone != nil {
 		<-ingestDone
 	}
-	if gcp != nil {
-		_ = gcp.Close()
+	if cancelFunc != nil {
+		cancelFunc()
+	}
+	if awsClient != nil {
+		_ = awsClient.Close()
 	}
 }
 
@@ -102,6 +111,7 @@ func resetForTest() {
 	ingestDone = nil
 	dropped = 0
 	spill = nil
-	gcp = nil
+	awsClient = nil
+	cancelFunc = nil
 	testDispatch = nil
 }

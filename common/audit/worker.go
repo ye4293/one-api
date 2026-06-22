@@ -50,8 +50,8 @@ func dispatch(batch []*AuditRecord) {
 		testDispatch(batch)
 		return
 	}
-	if err := gcp.appendRows(context.Background(), batch); err != nil {
-		logger.SysError("audit: appendRows 失败，转落盘: " + err.Error())
+	if err := awsClient.putRecordBatch(context.Background(), batch); err != nil {
+		logger.SysError("audit: putRecordBatch 失败，转落盘: " + err.Error())
 		spillBatch(batch)
 	}
 }
@@ -67,27 +67,32 @@ func spillBatch(batch []*AuditRecord) {
 	}
 }
 
-func uploaderLoop() {
+func uploaderLoop(ctx context.Context) {
 	defer func() { recover() }()
 	ticker := time.NewTicker(pkgConfig.FlushInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		files, _ := spill.scan()
-		for _, f := range files {
-			records, err := readSpillFile(f)
-			if err != nil {
-				logger.SysError("audit: 读取 spill 文件失败: " + err.Error())
-				continue
-			}
-			if len(records) == 0 {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			files, _ := spill.scan()
+			for _, f := range files {
+				records, err := readSpillFile(f)
+				if err != nil {
+					logger.SysError("audit: 读取 spill 文件失败: " + err.Error())
+					continue
+				}
+				if len(records) == 0 {
+					_ = os.Remove(f)
+					continue
+				}
+				if err := awsClient.putRecordBatch(context.Background(), records); err != nil {
+					logger.SysError("audit: spill 重放失败，保留待重试: " + err.Error())
+					continue
+				}
 				_ = os.Remove(f)
-				continue
 			}
-			if err := gcp.appendRows(context.Background(), records); err != nil {
-				logger.SysError("audit: spill 重放失败，保留待重试: " + err.Error())
-				continue
-			}
-			_ = os.Remove(f)
 		}
 	}
 }
@@ -112,18 +117,18 @@ func readSpillFile(path string) ([]*AuditRecord, error) {
 		if line == "" {
 			continue
 		}
-		var row bqRow
+		var row firehoseRow
 		if err := json.Unmarshal([]byte(line), &row); err != nil {
 			continue
 		}
-		r := bqRowToRecord(row)
+		r := rowToRecord(row)
 		records = append(records, r)
 	}
 	return records, nil
 }
 
-func bqRowToRecord(row bqRow) *AuditRecord {
-	t, _ := time.Parse("2006-01-02 15:04:05.000000", row.EventTime)
+func rowToRecord(row firehoseRow) *AuditRecord {
+	t, _ := time.Parse(timeFormatISO, row.EventTime)
 	return &AuditRecord{
 		EventTime:               t,
 		XRequestID:              row.XRequestID,
