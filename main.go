@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/sessions"
@@ -191,6 +192,13 @@ func main() {
 		controller.StartXaiVideoTaskPoller(context.Background())
 	})
 
+	// 启动 Iceberg 审计表 compaction 定时任务（复用 poller 开关保证单机执行）
+	if isVideoTaskPollerEnabled() {
+		common.SafeGoroutine(func() {
+			startAuditCompaction(context.Background())
+		})
+	}
+
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 
@@ -224,5 +232,28 @@ func main() {
 	err = server.Run(":" + port)
 	if err != nil {
 		logger.FatalLog("failed to start HTTP server: " + err.Error())
+	}
+}
+
+func isVideoTaskPollerEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("ENABLE_VIDEO_TASK_POLLER")))
+	return v == "true" || v == "1"
+}
+
+func startAuditCompaction(ctx context.Context) {
+	if !audit.Enabled() {
+		return
+	}
+	const interval = 24 * time.Hour
+	logger.SysLog(fmt.Sprintf("audit: compaction scheduler started, interval=%v", interval))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			audit.RunCompaction(ctx)
+		}
 	}
 }
