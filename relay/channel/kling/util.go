@@ -16,6 +16,15 @@ func GenerateTaskID() string {
 
 // DetermineRequestType 从URL路径确定请求类型
 func DetermineRequestType(path string) string {
+	// Kling 3.0 Turbo（优先匹配，路径更具体）
+	if strings.Contains(path, "/text-to-video/kling-3.0-turbo") {
+		return RequestTypeText2Video30Turbo
+	} else if strings.Contains(path, "/image-to-video/kling-3.0-turbo") {
+		return RequestTypeImage2Video30Turbo
+	} else if strings.Contains(path, "/tasks") && !strings.Contains(path, "/v1/") {
+		return RequestTypeTasks
+	}
+
 	if strings.Contains(path, "/text2video") {
 		return RequestTypeText2Video
 	} else if strings.Contains(path, "/omni-video") {
@@ -108,6 +117,15 @@ func GetDurationFromRequest(params map[string]interface{}) int {
 		}
 		return duration
 	}
+	// 3.0 Turbo 嵌套格式: settings.duration
+	if settings, ok := params["settings"].(map[string]interface{}); ok {
+		if duration, ok := settings["duration"].(float64); ok {
+			if duration < 3 {
+				return 3
+			}
+			return int(duration)
+		}
+	}
 	return 5 // 默认5秒
 }
 
@@ -135,5 +153,30 @@ func GetModeFromRequest(params map[string]interface{}) string {
 			return mode
 		}
 	}
+	// 3.0 Turbo 嵌套格式: settings.resolution → 720p=std, 1080p=pro
+	if settings, ok := params["settings"].(map[string]interface{}); ok {
+		if resolution, ok := settings["resolution"].(string); ok {
+			switch resolution {
+			case "1080p":
+				return "pro"
+			case "720p":
+				return "std"
+			}
+		}
+	}
 	return "std" // 默认标准模式
+}
+
+// GetCallbackUrlFromRequest 从请求参数中提取回调URL
+// 兼容顶层 callback_url 和 3.0 Turbo 的 options.callback_url
+func GetCallbackUrlFromRequest(params map[string]interface{}) string {
+	if cbUrl, ok := params["callback_url"].(string); ok {
+		return cbUrl
+	}
+	if options, ok := params["options"].(map[string]interface{}); ok {
+		if cbUrl, ok := options["callback_url"].(string); ok {
+			return cbUrl
+		}
+	}
+	return ""
 }

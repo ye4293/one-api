@@ -157,12 +157,10 @@ func DoIdentifyFace(c *gin.Context) {
 		// 数据库错误不影响返回结果
 	}
 
-	// 立即扣费
+	// 立即扣费（完整计费流程）
 	if quota > 0 {
-		err := dbmodel.DecreaseUserQuota(meta.UserId, quota)
-		if err != nil {
+		if err := kling.ChargeVideoOnSuccess(c.Request.Context(), video, quota); err != nil {
 			logger.Error(c.Request.Context(), fmt.Sprintf("Kling identify-face billing failed: user_id=%d, quota=%d, error=%v", meta.UserId, quota, err))
-			// 扣费失败记录日志，但不影响返回结果
 		} else {
 			logger.Info(c.Request.Context(), fmt.Sprintf("Kling identify-face billing success: user_id=%d, quota=%d, session_id=%s, faces=%d", meta.UserId, quota, klingResp.Data.SessionID, len(klingResp.Data.FaceData)))
 		}

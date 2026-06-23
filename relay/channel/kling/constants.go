@@ -6,6 +6,7 @@ const (
 	TaskStatusSubmitted  = "submitted"
 	TaskStatusProcessing = "processing"
 	TaskStatusSucceed    = "succeed"
+	TaskStatusSucceeded  = "succeeded" // 3.0 Turbo 回调使用的成功状态值
 	TaskStatusFailed     = "failed"
 
 	// 请求类型
@@ -45,4 +46,9 @@ const (
 	RequestTypeDeleteElements  = "delete-elements"
 	RequestTypePresetsVoices   = "presets-voices"
 	RequestTypeDeleteVoices    = "delete-voices"
+
+	// Kling 3.0 Turbo
+	RequestTypeText2Video30Turbo  = "text-to-video/kling-3.0-turbo"
+	RequestTypeImage2Video30Turbo = "image-to-video/kling-3.0-turbo"
+	RequestTypeTasks              = "tasks"
 )
