@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/audit"
-	"github.com/songquanpeng/one-api/common/logger"
 )
 
 type auditRespWriter struct {
@@ -43,9 +42,7 @@ func Audit() gin.HandlerFunc {
 		origHeaders := c.Request.Header.Clone()
 
 		defer func() {
-			if r := recover(); r != nil {
-				logger.SysError("audit middleware recover")
-			}
+			r := recover()
 			audit.FinalizeUpstream(c)
 			audit.BuildAndSubmit(c, audit.FinalizeInput{
 				Start:          start,
@@ -55,6 +52,9 @@ func Audit() gin.HandlerFunc {
 				ClientTrunc:    arw.trunc,
 				StatusCode:     arw.Status(),
 			})
+			if r != nil {
+				panic(r)
+			}
 		}()
 		c.Next()
 	}
