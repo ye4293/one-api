@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,7 +196,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 		if err != nil {
 			usdPrice = basePrice * DefaultCNYToUSDRate
 		}
-		basePrice = usdPrice
+		basePrice = math.Round(usdPrice*100) / 100
 	}
 
 	// 根据计费类型计算总价
