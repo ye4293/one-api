@@ -8,6 +8,18 @@
 
 ## 2026-06-23
 
+### fix(audit): 修复代码审查发现的 7 项数据完整性、竞态和性能问题
+- **分支**: `AthenaQuery`
+- **类型**: 修复
+- **涉及文件**: `common/audit/awsclient.go`, `common/audit/compaction.go`, `common/audit/config.go`, `common/audit/query.go`, `common/audit/spill.go`, `common/audit/worker.go`, `main.go`
+- **说明**: 代码审查后集中修复：(1) putRecordBatch 部分成功时只 spill 未发送记录防重复写入；(2) compaction goroutine 改用可取消 context；(3) XRequestID 正则放宽兼容非十六进制 ID；(4) spillStore 加 mutex + 原子 rename 防竞态；(5) AthenaDatabase/Table 标识符校验防 SQL 注入；(6) QueryLogs 用 COUNT(*) OVER() 合并为单次查询减半延迟；(7) 新增 AUDIT_RETENTION_DAYS 数据留存策略。
+
+### fix(audit): 修复审计中间件吞没 panic 及 compaction 30 秒超时必败
+- **分支**: `AthenaQuery`
+- **类型**: 修复
+- **涉及文件**: `middleware/audit.go`, `common/audit/athena.go`
+- **说明**: (1) 审计中间件 defer 中捕获 panic 后未 re-panic，导致 Gin 的 RelayPanicRecover 无法触发——改为先完成审计采集再 re-panic；(2) compaction OPTIMIZE 查询需数分钟但 Athena 硬编码 30s 超时——改为从 context deadline 取值，compaction 传入 15 分钟超时。
+
 ### refactor(audit): compaction 从进程内定时器改为外部调度
 - **分支**: `AthenaQuery`
 - **类型**: 重构
