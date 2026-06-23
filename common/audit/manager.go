@@ -82,9 +82,6 @@ func Start(ctx context.Context) {
 			close(ingestDone)
 		}()
 		go uploaderLoop(bgCtx)
-		if cfg.CompactionEnabled {
-			go compactionLoop(bgCtx)
-		}
 		logger.SysLog("audit: 审计模块已启动 (Firehose → Iceberg)")
 	})
 }

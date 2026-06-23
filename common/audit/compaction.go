@@ -3,26 +3,13 @@ package audit
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/songquanpeng/one-api/common/logger"
 )
 
-func compactionLoop(ctx context.Context) {
-	defer func() { recover() }()
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runCompaction(ctx)
-		}
-	}
-}
-
-func runCompaction(ctx context.Context) {
+// RunCompaction 执行一次 Iceberg BIN_PACK compaction。
+// 由外部定时调度调用，不再内置定时器。
+func RunCompaction(ctx context.Context) {
 	if awsClient == nil {
 		return
 	}
@@ -34,5 +21,5 @@ func runCompaction(ctx context.Context) {
 		logger.SysError("audit: compaction failed: " + err.Error())
 		return
 	}
-	logger.SysLog("audit: daily compaction completed")
+	logger.SysLog("audit: compaction completed")
 }

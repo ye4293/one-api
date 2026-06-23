@@ -18,8 +18,6 @@ type config struct {
 	AthenaWorkgroup   string
 	S3OutputLocation  string
 	S3DataLocation    string
-	CompactionEnabled bool
-
 	ChannelSize     int
 	MaxBufferMB     int
 	DiskBufferDir   string
@@ -43,7 +41,6 @@ func loadConfig() *config {
 		AthenaWorkgroup:   env.String("AUDIT_ATHENA_WORKGROUP", "primary"),
 		S3OutputLocation:  env.String("AUDIT_S3_OUTPUT_LOCATION", ""),
 		S3DataLocation:    env.String("AUDIT_S3_DATA_LOCATION", ""),
-		CompactionEnabled: env.Bool("AUDIT_COMPACTION_ENABLED", false),
 
 		ChannelSize:     env.Int("AUDIT_CHANNEL_SIZE", 2000),
 		MaxBufferMB:     env.Int("AUDIT_MAX_BUFFER_MB", 1024),
