@@ -3,6 +3,7 @@ package kling
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // 通用请求参数
@@ -213,24 +214,24 @@ type QueryTaskResponse struct {
 // ============ 3.0 Turbo 回调结构（v2 格式） ============
 
 type Callback30TurboOutput struct {
-	Type         string  `json:"type"`                    // video/image/audio/element/voice
-	URL          string  `json:"url,omitempty"`
-	Duration     float64 `json:"duration,omitempty"`
-	WatermarkURL string  `json:"watermark_url,omitempty"`
+	Type         string `json:"type"`                    // video/image/audio/element/voice
+	URL          string `json:"url,omitempty"`
+	Duration     string `json:"duration,omitempty"`      // API 返回字符串如 "5.041"
+	WatermarkURL string `json:"watermark_url,omitempty"`
 }
 
 type Callback30TurboBilling struct {
-	ChargeType  string  `json:"charge_type"`  // cash/unit
-	Amount      float64 `json:"amount"`
-	PackageType string  `json:"package_type"` // general 等
+	ChargeType  string `json:"charge_type"`  // cash/unit
+	Amount      string `json:"amount"`       // API 返回字符串如 "4"
+	PackageType string `json:"package_type"` // general 等
 }
 
 type Callback30TurboNotification struct {
 	ID         string                   `json:"id"`
 	Status     string                   `json:"status"`      // submitted/processing/succeeded/failed
 	Message    string                   `json:"message"`
-	CreateTime string                   `json:"create_time"` // ISO 8601
-	UpdateTime string                   `json:"update_time"` // ISO 8601
+	CreateTime interface{}              `json:"create_time"` // 可能是字符串或数字
+	UpdateTime interface{}              `json:"update_time"` // 可能是字符串或数字
 	ExternalID string                   `json:"external_id,omitempty"`
 	Outputs    []Callback30TurboOutput  `json:"outputs,omitempty"`
 	Billing    []Callback30TurboBilling `json:"billing,omitempty"`
@@ -240,7 +241,9 @@ type Callback30TurboNotification struct {
 func (n *Callback30TurboNotification) GetTotalBillingAmount() float64 {
 	var total float64
 	for _, b := range n.Billing {
-		total += b.Amount
+		if amount, err := strconv.ParseFloat(b.Amount, 64); err == nil {
+			total += amount
+		}
 	}
 	return total
 }
