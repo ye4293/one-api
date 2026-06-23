@@ -210,6 +210,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 		totalPrice = basePrice
 	}
 
+	totalPrice = math.Round(totalPrice*100) / 100
 	return int64(totalPrice * config.QuotaPerUnit)
 }
 
