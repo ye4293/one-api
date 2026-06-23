@@ -746,7 +746,7 @@ func handle30TurboCallback(c *gin.Context, task *kling.TaskWrapper, notification
 				video.StoreUrl = output.URL
 				video.VideoId = taskID
 
-				actualDuration := fmt.Sprintf("%.1f", output.Duration)
+				actualDuration := output.Duration
 				video.Duration = actualDuration
 
 				oldQuota := video.Quota
