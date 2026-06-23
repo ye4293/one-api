@@ -47,7 +47,7 @@ const (
 	maxBytesPerBatch   = 4 * 1024 * 1024
 )
 
-func (c *awsAuditClient) putRecordBatch(ctx context.Context, batch []*AuditRecord) error {
+func (c *awsAuditClient) putRecordBatch(ctx context.Context, batch []*AuditRecord) (sent int, err error) {
 	records := make([]firehoseTypes.Record, 0, min(len(batch), maxRecordsPerBatch))
 	var totalBytes int
 
@@ -55,8 +55,9 @@ func (c *awsAuditClient) putRecordBatch(ctx context.Context, batch []*AuditRecor
 		data := []byte(toNDJSONLine(r))
 		if totalBytes+len(data) > maxBytesPerBatch && len(records) > 0 {
 			if err := c.sendBatch(ctx, records); err != nil {
-				return err
+				return sent, err
 			}
+			sent += len(records)
 			records = records[:0]
 			totalBytes = 0
 		}
@@ -64,16 +65,20 @@ func (c *awsAuditClient) putRecordBatch(ctx context.Context, batch []*AuditRecor
 		totalBytes += len(data)
 		if len(records) >= maxRecordsPerBatch {
 			if err := c.sendBatch(ctx, records); err != nil {
-				return err
+				return sent, err
 			}
+			sent += len(records)
 			records = records[:0]
 			totalBytes = 0
 		}
 	}
 	if len(records) > 0 {
-		return c.sendBatch(ctx, records)
+		if err := c.sendBatch(ctx, records); err != nil {
+			return sent, err
+		}
+		sent += len(records)
 	}
-	return nil
+	return sent, nil
 }
 
 func (c *awsAuditClient) sendBatch(ctx context.Context, records []firehoseTypes.Record) error {

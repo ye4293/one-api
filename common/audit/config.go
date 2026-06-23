@@ -1,11 +1,14 @@
 package audit
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/songquanpeng/one-api/common/env"
 )
+
+var reIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]{0,127}$`)
 
 type config struct {
 	Enabled           bool
@@ -26,6 +29,7 @@ type config struct {
 	FlushInterval   time.Duration
 	MaxBodyKB       int
 	MaxRespKB       int
+	RetentionDays   int
 	redactSet       map[string]struct{}
 }
 
@@ -50,6 +54,7 @@ func loadConfig() *config {
 		FlushInterval:   time.Duration(env.Int("AUDIT_FLUSH_INTERVAL_SEC", 10)) * time.Second,
 		MaxBodyKB:       env.Int("AUDIT_MAX_BODY_KB", 10240),
 		MaxRespKB:       env.Int("AUDIT_MAX_RESP_KB", 4096),
+		RetentionDays:   env.Int("AUDIT_RETENTION_DAYS", 0),
 	}
 	raw := env.String("AUDIT_REDACT_HEADERS", "Authorization,Api-Key,X-Api-Key,Cookie,Set-Cookie")
 	c.redactSet = make(map[string]struct{})
@@ -57,6 +62,14 @@ func loadConfig() *config {
 		h = strings.ToLower(strings.TrimSpace(h))
 		if h != "" {
 			c.redactSet[h] = struct{}{}
+		}
+	}
+	if c.Enabled {
+		if !reIdentifier.MatchString(c.AthenaDatabase) {
+			c.Enabled = false
+		}
+		if !reIdentifier.MatchString(c.AthenaTable) {
+			c.Enabled = false
 		}
 	}
 	return c

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -50,9 +51,11 @@ func dispatch(batch []*AuditRecord) {
 		testDispatch(batch)
 		return
 	}
-	if err := awsClient.putRecordBatch(context.Background(), batch); err != nil {
-		logger.SysError("audit: putRecordBatch 失败，转落盘: " + err.Error())
-		spillBatch(batch)
+	sent, err := awsClient.putRecordBatch(context.Background(), batch)
+	if err != nil {
+		unsent := batch[sent:]
+		logger.SysError(fmt.Sprintf("audit: putRecordBatch 失败 (sent=%d, unsent=%d)，转落盘: %s", sent, len(unsent), err.Error()))
+		spillBatch(unsent)
 	}
 }
 
@@ -62,8 +65,8 @@ func spillBatch(batch []*AuditRecord) {
 		buf.WriteString(toNDJSONLine(r))
 	}
 	if _, err := spill.write(buf.Bytes()); err != nil {
-		atomicAddDropped(1)
-		logger.SysError("audit: 磁盘缓冲已满，丢弃批次: " + err.Error())
+		atomicAddDropped(int64(len(batch)))
+		logger.SysError(fmt.Sprintf("audit: 磁盘缓冲已满，丢弃 %d 条记录: %s", len(batch), err.Error()))
 	}
 }
 
@@ -87,8 +90,12 @@ func uploaderLoop(ctx context.Context) {
 					_ = os.Remove(f)
 					continue
 				}
-				if err := awsClient.putRecordBatch(context.Background(), records); err != nil {
-					logger.SysError("audit: spill 重放失败，保留待重试: " + err.Error())
+				sent, err := awsClient.putRecordBatch(context.Background(), records)
+				if err != nil {
+					logger.SysError(fmt.Sprintf("audit: spill 重放部分失败 (sent=%d, total=%d)，保留待重试: %s", sent, len(records), err.Error()))
+					if sent > 0 {
+						spillBatch(records[sent:])
+					}
 					continue
 				}
 				_ = os.Remove(f)

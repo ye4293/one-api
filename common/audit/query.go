@@ -56,7 +56,7 @@ var (
 	ErrAuditNotEnabled = errors.New("audit is not enabled")
 	ErrInvalidParam    = errors.New("invalid query parameter")
 
-	reXRequestID = regexp.MustCompile(`^[a-fA-F0-9\-]{1,64}$`)
+	reXRequestID = regexp.MustCompile(`^[a-zA-Z0-9\-\_\.]{1,128}$`)
 	reModel      = regexp.MustCompile(`^[a-zA-Z0-9\-\.\/\:\_]{1,128}$`)
 )
 
@@ -72,38 +72,22 @@ func QueryLogs(ctx context.Context, params QueryParams) ([]AuditSummary, int64, 
 		return nil, 0, err
 	}
 
-	countSQL := fmt.Sprintf("SELECT COUNT(*) as total FROM %s %s", tableRef, where)
-	countResult, err := awsClient.executeQuery(ctx, countSQL)
-	if err != nil {
-		return nil, 0, fmt.Errorf("count query: %w", err)
-	}
-
-	var total int64
-	if len(countResult.ResultSet.Rows) > 1 {
-		row := countResult.ResultSet.Rows[1]
-		if len(row.Data) > 0 && row.Data[0].VarCharValue != nil {
-			total, _ = strconv.ParseInt(*row.Data[0].VarCharValue, 10, 64)
-		}
-	}
-	if total == 0 {
-		return []AuditSummary{}, 0, nil
-	}
-
 	offset := (params.Page - 1) * params.PageSize
-	dataSQL := fmt.Sprintf(
+	sql := fmt.Sprintf(
 		`SELECT event_time, x_request_id, user_id, username, channel_id,
 		 token_name, origin_model, actual_model, is_stream,
-		 status_code, duration_ms, dropped_note
+		 status_code, duration_ms, dropped_note,
+		 COUNT(*) OVER() AS _total
 		 FROM %s %s ORDER BY event_time DESC LIMIT %d OFFSET %d`,
 		tableRef, where, params.PageSize, offset)
 
-	dataResult, err := awsClient.executeQuery(ctx, dataSQL)
+	result, err := awsClient.executeQuery(ctx, sql)
 	if err != nil {
-		return nil, 0, fmt.Errorf("data query: %w", err)
+		return nil, 0, fmt.Errorf("query: %w", err)
 	}
 
-	results := parseAuditSummaryRows(dataResult)
-	return results, total, nil
+	summaries, total := parseAuditSummaryRowsWithTotal(result)
+	return summaries, total, nil
 }
 
 func QueryDetail(ctx context.Context, xRequestID string, startTS, endTS int64) (*AuditDetail, error) {
@@ -173,9 +157,9 @@ func buildAthenaWhere(params QueryParams) (string, error) {
 	return "WHERE " + strings.Join(clauses, " AND "), nil
 }
 
-func parseAuditSummaryRows(result *athena.GetQueryResultsOutput) []AuditSummary {
+func parseAuditSummaryRowsWithTotal(result *athena.GetQueryResultsOutput) ([]AuditSummary, int64) {
 	if result == nil || len(result.ResultSet.Rows) <= 1 {
-		return []AuditSummary{}
+		return []AuditSummary{}, 0
 	}
 
 	headers := make([]string, len(result.ResultSet.ResultSetMetadata.ColumnInfo))
@@ -184,8 +168,12 @@ func parseAuditSummaryRows(result *athena.GetQueryResultsOutput) []AuditSummary 
 	}
 
 	var summaries []AuditSummary
+	var total int64
 	for _, row := range result.ResultSet.Rows[1:] {
 		m := rowToMap(row, headers)
+		if total == 0 {
+			total = parseInt64(m["_total"])
+		}
 		s := AuditSummary{
 			EventTime:   parseAthenaTimestamp(m["event_time"]),
 			XRequestID:  m["x_request_id"],
@@ -202,7 +190,7 @@ func parseAuditSummaryRows(result *athena.GetQueryResultsOutput) []AuditSummary 
 		}
 		summaries = append(summaries, s)
 	}
-	return summaries
+	return summaries, total
 }
 
 func parseAuditDetailRow(row athenaTypes.Row, columns []athenaTypes.ColumnInfo) *AuditDetail {

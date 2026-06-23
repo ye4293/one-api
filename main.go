@@ -193,9 +193,11 @@ func main() {
 	})
 
 	// 启动 Iceberg 审计表 compaction 定时任务（复用 poller 开关保证单机执行）
+	compactCtx, compactCancel := context.WithCancel(context.Background())
+	defer compactCancel()
 	if isVideoTaskPollerEnabled() {
 		common.SafeGoroutine(func() {
-			startAuditCompaction(context.Background())
+			startAuditCompaction(compactCtx)
 		})
 	}
 
