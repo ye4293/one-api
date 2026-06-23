@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-06-23
+
+### refactor(audit): compaction 从进程内定时器改为外部调度
+- **分支**: `AthenaQuery`
+- **类型**: 重构
+- **涉及文件**: `common/audit/compaction.go`, `common/audit/manager.go`, `common/audit/config.go`, `main.go`
+- **说明**: 将 Iceberg BIN_PACK compaction 从 audit 模块内部 goroutine 剥离，改为在 main.go 中由 `ENABLE_VIDEO_TASK_POLLER` 环境变量守卫的独立定时任务。保证多实例部署时只在一台机器上执行，消除 `AUDIT_COMPACTION_ENABLED` 配置项。
+- **关联计划**: `docs/plans/2026-06-23-audit-compaction-externalize.md`
+
 ## 2026-06-22
 
 ### refactor(audit): 写入/查询层从 BigQuery 迁移到 Firehose + Iceberg + Athena
