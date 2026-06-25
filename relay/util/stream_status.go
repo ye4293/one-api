@@ -32,7 +32,7 @@ type StreamErrorEntry struct {
 type StreamStatus struct {
 	EndReason StreamEndReason
 	EndError  error
-	endOnce   sync.Once
+	endSet    bool
 
 	mu         sync.Mutex
 	Errors     []StreamErrorEntry
@@ -47,10 +47,14 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	if s == nil {
 		return
 	}
-	s.endOnce.Do(func() {
-		s.EndReason = reason
-		s.EndError = err
-	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.endSet {
+		return
+	}
+	s.endSet = true
+	s.EndReason = reason
+	s.EndError = err
 }
 
 func (s *StreamStatus) RecordError(msg string) {
@@ -91,6 +95,8 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.EndReason == StreamEndReasonDone ||
 		s.EndReason == StreamEndReasonEOF ||
 		s.EndReason == StreamEndReasonHandlerStop
@@ -100,16 +106,19 @@ func (s *StreamStatus) Summary() string {
 	if s == nil {
 		return "StreamStatus<nil>"
 	}
-	b := &strings.Builder{}
-	fmt.Fprintf(b, "reason=%s", s.EndReason)
-	if s.EndError != nil {
-		fmt.Fprintf(b, " end_error=%q", s.EndError.Error())
-	}
 	s.mu.Lock()
-	if s.ErrorCount > 0 {
-		fmt.Fprintf(b, " soft_errors=%d", s.ErrorCount)
-	}
+	reason := s.EndReason
+	endErr := s.EndError
+	errCount := s.ErrorCount
 	s.mu.Unlock()
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "reason=%s", reason)
+	if endErr != nil {
+		fmt.Fprintf(b, " end_error=%q", endErr.Error())
+	}
+	if errCount > 0 {
+		fmt.Fprintf(b, " soft_errors=%d", errCount)
+	}
 	return b.String()
 }
 
@@ -120,11 +129,6 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 		return otherInfo
 	}
 
-	status := "ok"
-	if !ss.IsNormalEnd() || ss.HasErrors() {
-		status = "error"
-	}
-
 	type streamStatusJSON struct {
 		Status     string   `json:"status"`
 		EndReason  string   `json:"end_reason"`
@@ -133,21 +137,33 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 		Errors     []string `json:"errors,omitempty"`
 	}
 
+	ss.mu.Lock()
+	endReason := ss.EndReason
+	endErr := ss.EndError
+	errorCount := ss.ErrorCount
+	msgs := make([]string, 0, len(ss.Errors))
+	for _, e := range ss.Errors {
+		msgs = append(msgs, e.Message)
+	}
+	ss.mu.Unlock()
+
+	isNormal := endReason == StreamEndReasonDone ||
+		endReason == StreamEndReasonEOF ||
+		endReason == StreamEndReasonHandlerStop
+	status := "ok"
+	if !isNormal || errorCount > 0 {
+		status = "error"
+	}
+
 	data := streamStatusJSON{
 		Status:    status,
-		EndReason: string(ss.EndReason),
+		EndReason: string(endReason),
 	}
-	if ss.EndError != nil {
-		data.EndError = ss.EndError.Error()
+	if endErr != nil {
+		data.EndError = endErr.Error()
 	}
-	if ss.ErrorCount > 0 {
-		data.ErrorCount = ss.ErrorCount
-		ss.mu.Lock()
-		msgs := make([]string, 0, len(ss.Errors))
-		for _, e := range ss.Errors {
-			msgs = append(msgs, e.Message)
-		}
-		ss.mu.Unlock()
+	if errorCount > 0 {
+		data.ErrorCount = errorCount
 		data.Errors = msgs
 	}
 
