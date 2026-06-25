@@ -71,6 +71,7 @@ func TestIsNormalEnd(t *testing.T) {
 		{StreamEndReasonScannerErr, false},
 		{StreamEndReasonPanic, false},
 		{StreamEndReasonPingFail, false},
+		{StreamEndReasonNone, false},
 	}
 	for _, tc := range cases {
 		s := NewStreamStatus()
@@ -144,5 +145,14 @@ func TestAppendStreamStatusOther_ClientGone(t *testing.T) {
 	}
 	if !strings.Contains(result, "billingDetails:{}") {
 		t.Fatalf("expected original prefix preserved in %q", result)
+	}
+}
+
+func TestAppendStreamStatusOther_NoneReasonSkipped(t *testing.T) {
+	s := NewStreamStatus()
+	// EndReason 未设置（为空）
+	result := AppendStreamStatusOther("existing", s)
+	if result != "existing" {
+		t.Fatalf("expected no append when EndReason is empty, got %q", result)
 	}
 }

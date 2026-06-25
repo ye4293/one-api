@@ -184,8 +184,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 	}
 
 	// Scanner goroutine with improved error handling
+	wg.Add(1)
 	common.RelayCtxGo(ctx, func() {
-		wg.Add(1)
 		defer func() {
 			wg.Done()
 			if r := recover(); r != nil {

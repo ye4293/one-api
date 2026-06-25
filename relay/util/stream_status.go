@@ -129,30 +129,34 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 		return otherInfo
 	}
 
-	type streamStatusJSON struct {
-		Status     string   `json:"status"`
-		EndReason  string   `json:"end_reason"`
-		EndError   string   `json:"end_error,omitempty"`
-		ErrorCount int      `json:"error_count,omitempty"`
-		Errors     []string `json:"errors,omitempty"`
-	}
-
 	ss.mu.Lock()
 	endReason := ss.EndReason
 	endErr := ss.EndError
-	errorCount := ss.ErrorCount
+	errCount := ss.ErrorCount
 	msgs := make([]string, 0, len(ss.Errors))
 	for _, e := range ss.Errors {
 		msgs = append(msgs, e.Message)
 	}
 	ss.mu.Unlock()
 
+	if endReason == StreamEndReasonNone {
+		return otherInfo
+	}
+
 	isNormal := endReason == StreamEndReasonDone ||
 		endReason == StreamEndReasonEOF ||
 		endReason == StreamEndReasonHandlerStop
 	status := "ok"
-	if !isNormal || errorCount > 0 {
+	if !isNormal || errCount > 0 {
 		status = "error"
+	}
+
+	type streamStatusJSON struct {
+		Status     string   `json:"status"`
+		EndReason  string   `json:"end_reason"`
+		EndError   string   `json:"end_error,omitempty"`
+		ErrorCount int      `json:"error_count,omitempty"`
+		Errors     []string `json:"errors,omitempty"`
 	}
 
 	data := streamStatusJSON{
@@ -162,8 +166,8 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 	if endErr != nil {
 		data.EndError = endErr.Error()
 	}
-	if errorCount > 0 {
-		data.ErrorCount = errorCount
+	if errCount > 0 {
+		data.ErrorCount = errCount
 		data.Errors = msgs
 	}
 
