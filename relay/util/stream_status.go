@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 )
 
 type StreamEndReason string
@@ -24,9 +23,18 @@ const (
 
 const maxStreamErrorEntries = 20
 
+// StreamErrorEntry 记录一条软错误消息。
 type StreamErrorEntry struct {
-	Message   string    `json:"message"`
-	Timestamp time.Time `json:"timestamp"`
+	Message string `json:"message"`
+}
+
+// streamStatusPayload 是写入 Log.Other 的 JSON 结构，定义在包级别避免每次调用重建类型。
+type streamStatusPayload struct {
+	Status     string   `json:"status"`
+	EndReason  string   `json:"end_reason"`
+	EndError   string   `json:"end_error,omitempty"`
+	ErrorCount int      `json:"error_count,omitempty"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 type StreamStatus struct {
@@ -65,10 +73,7 @@ func (s *StreamStatus) RecordError(msg string) {
 	defer s.mu.Unlock()
 	s.ErrorCount++
 	if len(s.Errors) < maxStreamErrorEntries {
-		s.Errors = append(s.Errors, StreamErrorEntry{
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
+		s.Errors = append(s.Errors, StreamErrorEntry{Message: msg})
 	}
 }
 
@@ -138,9 +143,12 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 	endReason := ss.EndReason
 	endErr := ss.EndError
 	errCount := ss.ErrorCount
-	msgs := make([]string, 0, len(ss.Errors))
-	for _, e := range ss.Errors {
-		msgs = append(msgs, e.Message)
+	var msgs []string
+	if errCount > 0 {
+		msgs = make([]string, 0, len(ss.Errors))
+		for _, e := range ss.Errors {
+			msgs = append(msgs, e.Message)
+		}
 	}
 	ss.mu.Unlock()
 
@@ -154,15 +162,7 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 		status = "error"
 	}
 
-	type streamStatusJSON struct {
-		Status     string   `json:"status"`
-		EndReason  string   `json:"end_reason"`
-		EndError   string   `json:"end_error,omitempty"`
-		ErrorCount int      `json:"error_count,omitempty"`
-		Errors     []string `json:"errors,omitempty"`
-	}
-
-	data := streamStatusJSON{
+	data := streamStatusPayload{
 		Status:    status,
 		EndReason: string(endReason),
 	}
