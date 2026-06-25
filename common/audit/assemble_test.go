@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func loadConfigEnabledForTest() *config {
+func loadConfigEnabledForTest() *auditConfig {
 	c := loadConfig()
 	c.Enabled = true
 	if c.MaxBodyKB <= 0 {

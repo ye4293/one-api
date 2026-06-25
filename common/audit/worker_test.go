@@ -8,7 +8,7 @@ import (
 
 func TestSubmitNonBlockingDropsWhenChanFull(t *testing.T) {
 	resetForTest()
-	pkgConfig = &config{Enabled: true, ChannelSize: 1}
+	pkgConfig = &auditConfig{Enabled: true, ChannelSize: 1}
 	recordChan = make(chan *AuditRecord, 1)
 	recordChan <- &AuditRecord{} // 占满
 	Submit(&AuditRecord{})       // 不应阻塞
@@ -19,7 +19,7 @@ func TestSubmitNonBlockingDropsWhenChanFull(t *testing.T) {
 
 func TestIngestFlushOnBatchSize(t *testing.T) {
 	resetForTest()
-	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 2, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	pkgConfig = &auditConfig{Enabled: true, ChannelSize: 10, BatchSize: 2, FlushInterval: time.Hour, MaxBufferMB: 1024}
 	var mu sync.Mutex
 	var dispatched [][]*AuditRecord
 	testDispatch = func(batch []*AuditRecord) {
@@ -44,7 +44,7 @@ func TestIngestFlushOnBatchSize(t *testing.T) {
 
 func TestShutdownWaitsForFlush(t *testing.T) {
 	resetForTest()
-	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	pkgConfig = &auditConfig{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
 	var mu sync.Mutex
 	var got int
 	testDispatch = func(batch []*AuditRecord) {
@@ -67,7 +67,7 @@ func TestShutdownWaitsForFlush(t *testing.T) {
 
 func TestShutdownFlushesRemaining(t *testing.T) {
 	resetForTest()
-	pkgConfig = &config{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
+	pkgConfig = &auditConfig{Enabled: true, ChannelSize: 10, BatchSize: 1000, FlushInterval: time.Hour, MaxBufferMB: 1024}
 	var mu sync.Mutex
 	var got int
 	testDispatch = func(batch []*AuditRecord) {

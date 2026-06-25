@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	pkgConfig  *config
+	pkgConfig  *auditConfig
 	recordChan chan *AuditRecord
 	ingestDone chan struct{}
 	dropped    int64

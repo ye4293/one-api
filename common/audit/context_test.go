@@ -17,7 +17,7 @@ func newTestCtx() *gin.Context {
 }
 
 func TestSetConvertedBodyDisabledIsNoop(t *testing.T) {
-	pkgConfig = &config{Enabled: false}
+	pkgConfig = &auditConfig{Enabled: false}
 	c := newTestCtx()
 	SetConvertedBody(c, "{}") // 关闭时不应 panic、不应写入
 	if _, ok := c.Get(ctxKey); ok {
@@ -26,7 +26,7 @@ func TestSetConvertedBodyDisabledIsNoop(t *testing.T) {
 }
 
 func TestSetConvertedBodyEnabled(t *testing.T) {
-	pkgConfig = &config{Enabled: true, MaxBodyKB: 10240}
+	pkgConfig = &auditConfig{Enabled: true, MaxBodyKB: 10240}
 	c := newTestCtx()
 	InitAuditContext(c)
 	SetConvertedBody(c, `{"model":"gpt-4"}`)
@@ -37,7 +37,7 @@ func TestSetConvertedBodyEnabled(t *testing.T) {
 }
 
 func TestWrapUpstreamBody(t *testing.T) {
-	pkgConfig = &config{Enabled: true, MaxRespKB: 4096}
+	pkgConfig = &auditConfig{Enabled: true, MaxRespKB: 4096}
 	c := newTestCtx()
 	InitAuditContext(c)
 	resp := &http.Response{

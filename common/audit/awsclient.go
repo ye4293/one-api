@@ -16,13 +16,13 @@ import (
 )
 
 type awsAuditClient struct {
-	cfg  *config
+	cfg  *auditConfig
 	fh   *firehose.Client
 	ath  *athena.Client
 	glue *glue.Client
 }
 
-func newAWSClient(cfg *config) *awsAuditClient {
+func newAWSClient(cfg *auditConfig) *awsAuditClient {
 	creds := aws.NewCredentialsCache(
 		credentials.NewStaticCredentialsProvider(cfg.AWSAccessKey, cfg.AWSSecretKey, ""),
 	)
