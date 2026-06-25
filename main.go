@@ -122,12 +122,13 @@ func main() {
 		logger.FatalLog("failed to initialize Redis: " + err.Error())
 	}
 
-	// 启动审计模块（关闭时为空操作，初始化失败自动降级，绝不阻断主服务）
+	// Initialize options（必须在 audit.Start 之前，审计配置从 options 表读取）
+	model.InitOptionMap()
+
+	// 启动审计模块（依赖 options 表中的配置，关闭时为空操作，初始化失败自动降级）
 	audit.Start(context.Background())
 	defer audit.Shutdown()
 
-	// Initialize options
-	model.InitOptionMap()
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
 	if common.RedisEnabled {
 		// for compatibility with old versions
