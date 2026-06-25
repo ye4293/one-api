@@ -565,7 +565,7 @@ func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.E
 						Type:    parsed.Error.Type,
 						Code:    parsed.Error.Code,
 					},
-					StatusCode: http.StatusBadRequest,
+					StatusCode: http.StatusTooManyRequests,
 				}
 			}
 		}
@@ -578,7 +578,7 @@ func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.E
 						Type:    parsed.Response.Error.Code,
 						Code:    parsed.Response.Error.Code,
 					},
-					StatusCode: http.StatusBadRequest,
+					StatusCode: http.StatusTooManyRequests,
 				}
 			}
 		}
