@@ -251,6 +251,28 @@ var ClaudeDefaultMaxTokens map[string]int             // 模型默认 MaxTokens
 var ClaudeReasoningEffortMap map[string]float64       // reasoning_effort 到百分比的映射
 var ClaudeRequestHeaders map[string]map[string]string // 请求头覆盖（模型名 -> 请求头键值对）
 
+// 审计模块配置（环境变量为初始默认值，运行时从 options 表覆盖）
+var AuditEnabled = env.Bool("AUDIT_ENABLED", false)
+var AuditAWSRegion = env.String("AUDIT_AWS_REGION", "")
+var AuditAWSAccessKey = env.String("AUDIT_AWS_ACCESS_KEY", "")
+var AuditAWSSecretKey = env.String("AUDIT_AWS_SECRET_KEY", "")
+var AuditFirehoseStream = env.String("AUDIT_FIREHOSE_STREAM", "")
+var AuditAthenaDatabase = env.String("AUDIT_ATHENA_DATABASE", "audit")
+var AuditAthenaTable = env.String("AUDIT_ATHENA_TABLE", "request_logs")
+var AuditAthenaWorkgroup = env.String("AUDIT_ATHENA_WORKGROUP", "primary")
+var AuditS3OutputLocation = env.String("AUDIT_S3_OUTPUT_LOCATION", "")
+var AuditS3DataLocation = env.String("AUDIT_S3_DATA_LOCATION", "")
+var AuditChannelSize = env.Int("AUDIT_CHANNEL_SIZE", 2000)
+var AuditMaxBufferMB = env.Int("AUDIT_MAX_BUFFER_MB", 1024)
+var AuditDiskBufferDir = env.String("AUDIT_DISK_BUFFER_DIR", "./data/audit_spill")
+var AuditDiskBufferMaxGB = env.Int("AUDIT_DISK_BUFFER_MAX_GB", 40)
+var AuditBatchSize = env.Int("AUDIT_BATCH_SIZE", 500)
+var AuditFlushIntervalSec = env.Int("AUDIT_FLUSH_INTERVAL_SEC", 10)
+var AuditMaxBodyKB = env.Int("AUDIT_MAX_BODY_KB", 10240)
+var AuditMaxRespKB = env.Int("AUDIT_MAX_RESP_KB", 4096)
+var AuditRetentionDays = env.Int("AUDIT_RETENTION_DAYS", 0)
+var AuditRedactHeaders = env.String("AUDIT_REDACT_HEADERS", "Authorization,Api-Key,X-Api-Key,Cookie,Set-Cookie")
+
 // 日志标识，用于 JSON 日志中的 service/instance 字段
 var ServiceName = env.String("SERVICE_NAME", "one-api")
 var InstanceId = env.String("INSTANCE_ID", getHostname())
