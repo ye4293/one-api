@@ -346,6 +346,8 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
+		// 把流式结束状态（如有）拼进 other
+		otherInfo = util.AppendStreamStatusOther(otherInfo, meta.StreamStatus)
 		// 获取 X-Request-ID
 		xRequestID := c.GetString("X-Request-ID")
 		xResponseID := c.GetString("x_response_id")
