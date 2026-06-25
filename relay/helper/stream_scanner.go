@@ -96,6 +96,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 			logger.Error(c.Request.Context(), "timeout waiting for goroutines to exit")
 		}
 
+		// goroutine 全部退出后打印最终流状态
+		if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+			logger.Info(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
+		} else {
+			logger.Warn(c, fmt.Sprintf("stream ended with issues: %s", info.StreamStatus.Summary()))
+		}
+
 		close(stopChan)
 	}()
 
@@ -105,8 +112,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	ctx = context.WithValue(ctx, "stop_chan", stopChan)
 
 	// Handle ping data sending with improved error handling
 	if pingEnabled && pingTicker != nil {
@@ -146,6 +151,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 					case err := <-done:
 						if err != nil {
 							logger.Error(c, "ping data error: "+err.Error())
+							info.StreamStatus.RecordError("ping data error: " + err.Error())
+							info.StreamStatus.SetEndReason(util.StreamEndReasonPingFail, err)
 							return
 						}
 						if config.DebugEnabled {
@@ -276,11 +283,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 		logger.Error(c, "streaming timeout")
 	case <-stopChan:
 		// EndReason 已由触发该 stopChan 的 goroutine 设置
-		if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
-			logger.Info(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
-		} else {
-			logger.Warn(c, fmt.Sprintf("stream ended with issues: %s", info.StreamStatus.Summary()))
-		}
 	case <-c.Request.Context().Done():
 		info.StreamStatus.SetEndReason(util.StreamEndReasonClientGone, c.Request.Context().Err())
 		logger.Info(c, "client disconnected")
