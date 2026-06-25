@@ -96,6 +96,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 			logger.Error(c.Request.Context(), "timeout waiting for goroutines to exit")
 		}
 
+		// 若无任何 goroutine 设置过 EndReason（如 stopChan 静默退出），补充兜底原因
+		info.StreamStatus.SetEndReason(util.StreamEndReasonEOF, nil)
 		// goroutine 全部退出后打印最终流状态
 		if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 			logger.Info(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))

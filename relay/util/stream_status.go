@@ -97,9 +97,14 @@ func (s *StreamStatus) IsNormalEnd() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	return isNormalEndReason(s.EndReason)
+}
+
+// isNormalEndReason 判断给定的结束原因是否属于正常结束（不加锁，供内部复用）。
+func isNormalEndReason(r StreamEndReason) bool {
+	return r == StreamEndReasonDone ||
+		r == StreamEndReasonEOF ||
+		r == StreamEndReasonHandlerStop
 }
 
 func (s *StreamStatus) Summary() string {
@@ -143,9 +148,7 @@ func AppendStreamStatusOther(otherInfo string, ss *StreamStatus) string {
 		return otherInfo
 	}
 
-	isNormal := endReason == StreamEndReasonDone ||
-		endReason == StreamEndReasonEOF ||
-		endReason == StreamEndReasonHandlerStop
+	isNormal := isNormalEndReason(endReason)
 	status := "ok"
 	if !isNormal || errCount > 0 {
 		status = "error"
