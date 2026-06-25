@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-06-25
+
+### feat(stream): 移植 StreamStatus 机制，持久化流式结束原因
+- **分支**: `stream-status-port`
+- **类型**: 新功能
+- **涉及文件**:
+  - `relay/util/stream_status.go`（新建）
+  - `relay/util/stream_status_test.go`（新建）
+  - `relay/util/relay_meta.go`
+  - `relay/helper/stream_scanner.go`
+  - `relay/controller/helper.go`
+- **说明**: 从 new-api 完整移植 StreamStatus 机制。流式请求的 `logs.Other` 字段现在包含
+  `streamStatus:{status, end_reason, end_error, errors}` 段，支持 done/timeout/client_gone/
+  scanner_error/handler_stop/eof/panic/ping_fail 共 8 种结束原因。
+- **关联计划**: `docs/superpowers/plans/2026-06-25-stream-status-port.md`
+
 ## 2026-06-11
 
 ### fix(anthropic): 更新 Vertex AI beta flags 白名单
