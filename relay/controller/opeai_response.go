@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -430,6 +431,22 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 		}
 	}
 
+	// 缓冲流的前几个事件，检测流内错误（如 insufficient_quota）
+	// 如果检测到错误，直接返回让上层重试逻辑通过 RetryKeywords 判断是否重试
+	buffered, streamErr := bufferStreamPrefix(resp.Body)
+	if streamErr != nil {
+		logger.Warnf(c.Request.Context(), "stream prefix error detected: %s", streamErr.Error.Message)
+		return nil, streamErr
+	}
+	// 重组 resp.Body：已缓冲的字节 + 剩余流，保留原始 body 的 Close 能力
+	if len(buffered) > 0 {
+		originalBody := resp.Body
+		resp.Body = &combinedReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(buffered), originalBody),
+			Closer: originalBody,
+		}
+	}
+
 	// 用于保存最后的 UsageMetadata 和文本内容
 	var lastUsageMetadata = &openai.ResponseUsage{}
 	var openaiErr *model.ErrorWithStatusCode
@@ -499,4 +516,134 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	}
 
 	return lastUsageMetadata, nil
+}
+
+// combinedReadCloser 包装 MultiReader 并委托 Close 给原始 body
+type combinedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// bufferStreamPrefix 同步读取 SSE 流的前几个事件，检测流内错误。
+// 如果发现错误事件（如 insufficient_quota），返回 ErrorWithStatusCode 以触发上层重试。
+// 如果流正常，返回已缓冲的字节用于 MultiReader 重组。
+// 注意：此函数同步阻塞，依赖上游在合理时间内发送前几个事件（由 HTTP transport 超时保证）。
+func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.ErrorWithStatusCode) {
+	var buf bytes.Buffer
+	scanner := bufio.NewScanner(io.TeeReader(body, &buf))
+	scanner.Buffer(make([]byte, 4*1024), 64*1024)
+
+	var currentEventType string
+	var dataEventCount int
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 空行表示 SSE 消息边界，重置事件类型
+		if line == "" {
+			currentEventType = ""
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		dataEventCount++
+		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+
+		if currentEventType == "error" {
+			if parsed := parseStreamErrorEvent(dataStr); parsed != nil {
+				return buf.Bytes(), &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: parsed.Error.Message,
+						Type:    parsed.Error.Type,
+						Code:    parsed.Error.Code,
+					},
+					StatusCode: http.StatusBadRequest,
+				}
+			}
+		}
+
+		if currentEventType == "response.failed" {
+			if parsed := parseResponseFailedEvent(dataStr); parsed != nil {
+				return buf.Bytes(), &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: parsed.Response.Error.Message,
+						Type:    parsed.Response.Error.Code,
+						Code:    parsed.Response.Error.Code,
+					},
+					StatusCode: http.StatusBadRequest,
+				}
+			}
+		}
+
+		if isContentProducingEvent(currentEventType) || dataEventCount >= 5 {
+			break
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+// streamErrorData 用于解析 SSE error 事件的 JSON
+type streamErrorData struct {
+	Type  string `json:"type"`
+	Error struct {
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// responseFailedData 用于解析 response.failed 事件
+type responseFailedData struct {
+	Type     string `json:"type"`
+	Response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	} `json:"response"`
+}
+
+func parseStreamErrorEvent(data string) *streamErrorData {
+	var ev streamErrorData
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil
+	}
+	if ev.Error.Message != "" {
+		return &ev
+	}
+	return nil
+}
+
+func parseResponseFailedEvent(data string) *responseFailedData {
+	var ev responseFailedData
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return nil
+	}
+	if ev.Response.Error.Message != "" {
+		return &ev
+	}
+	return nil
+}
+
+func isContentProducingEvent(eventType string) bool {
+	switch eventType {
+	case "response.output_text.delta",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.content_part.delta",
+		"response.audio.delta",
+		"response.file_search_call.searching",
+		"response.mcp_call.executing":
+		return true
+	}
+	return false
 }
