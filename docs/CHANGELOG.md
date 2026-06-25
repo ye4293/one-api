@@ -8,6 +8,19 @@
 
 ## 2026-06-25
 
+## 2026-06-25
+
+### fix(stream): 修复 wg.Add 竞态、跳过空 EndReason、补充 None 测试
+- **分支**: `stream-status-port`
+- **类型**: fix
+- **涉及文件**:
+  - `relay/helper/stream_scanner.go`
+  - `relay/util/stream_status.go`
+  - `relay/util/stream_status_test.go`
+- **说明**: 将 `wg.Add(1)` 移至 `RelayCtxGo` 调用前，消除调度延迟导致的竞态；
+  `AppendStreamStatusOther` 在 `EndReason == ""` 时提前返回，避免写入误导性 `"status":"error"` 记录；
+  测试新增 `StreamEndReasonNone` 用例及 `TestAppendStreamStatusOther_NoneReasonSkipped`。
+
 ### feat(stream): 移植 StreamStatus 机制，持久化流式结束原因
 - **分支**: `stream-status-port`
 - **类型**: 新功能
