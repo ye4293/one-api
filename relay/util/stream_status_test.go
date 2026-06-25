@@ -33,7 +33,7 @@ func TestSetEndReason_Idempotent(t *testing.T) {
 
 func TestRecordError_Limit(t *testing.T) {
 	s := NewStreamStatus()
-	for i := 0; i < 25; i++ {
+	for range 25 {
 		s.RecordError("err")
 	}
 	if s.TotalErrorCount() != 25 {
