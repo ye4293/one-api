@@ -22,7 +22,13 @@ func TestSetEndReason_FirstWins(t *testing.T) {
 func TestSetEndReason_Idempotent(t *testing.T) {
 	s := NewStreamStatus()
 	s.SetEndReason(StreamEndReasonDone, nil)
-	s.SetEndReason(StreamEndReasonDone, nil) // must not panic
+	s.SetEndReason(StreamEndReasonDone, nil)
+	s.mu.Lock()
+	got := s.EndReason
+	s.mu.Unlock()
+	if got != StreamEndReasonDone {
+		t.Fatalf("expected done after idempotent set, got %s", got)
+	}
 }
 
 func TestRecordError_Limit(t *testing.T) {
@@ -88,11 +94,15 @@ func TestNilSafe(t *testing.T) {
 func TestConcurrent(t *testing.T) {
 	s := NewStreamStatus()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(2)
+	for range 50 {
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
 			s.SetEndReason(StreamEndReasonDone, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			s.SetEndReason(StreamEndReasonTimeout, nil)
 		}()
 		go func() {
 			defer wg.Done()
@@ -103,8 +113,8 @@ func TestConcurrent(t *testing.T) {
 	s.mu.Lock()
 	got := s.EndReason
 	s.mu.Unlock()
-	if got != StreamEndReasonDone {
-		t.Fatalf("expected done after concurrent sets, got %s", got)
+	if got != StreamEndReasonDone && got != StreamEndReasonTimeout {
+		t.Fatalf("expected done or timeout, got %s", got)
 	}
 }
 
