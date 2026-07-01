@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
+	"github.com/songquanpeng/one-api/relay/model"
 )
 
 const (
@@ -107,7 +108,7 @@ func pollSingleGeminiOmniVideoTask(ctx context.Context, task *dbmodel.Video) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	status, videoURL, failReason, fetchErr := gemini.FetchAndStoreVideoResult(baseURL, apiKey, task.TaskId, task.UserId)
+	status, videoURL, failReason, rawJSON, fetchErr := gemini.FetchAndStoreVideoResult(baseURL, apiKey, task.TaskId, task.UserId)
 	if fetchErr != nil {
 		logger.Error(ctx, fmt.Sprintf("[gemini-omni-poller] fetch failed: task_id=%s, err=%v", task.TaskId, fetchErr))
 		return
@@ -115,25 +116,36 @@ func pollSingleGeminiOmniVideoTask(ctx context.Context, task *dbmodel.Video) {
 
 	switch status {
 	case "succeed":
-		if videoURL != "" {
-			_ = dbmodel.UpdateVideoStoreUrl(task.TaskId, videoURL)
+		// 按真实 token 用量计费：解析 usage → 通过 CAS 原子转终态并扣费，
+		// 与用户主动查询路径共用 applyGeminiOmniSuccess，CAS 保证只扣一次。
+		usage, parseErr := gemini.ParseGeminiOmniUsage(rawJSON)
+		if parseErr != nil {
+			logger.Error(ctx, fmt.Sprintf("[gemini-omni-poller] parse usage failed: task_id=%s, err=%v", task.TaskId, parseErr))
 		}
-		dbmodel.DB.Model(&dbmodel.Video{}).
-			Where("task_id = ? AND status = ?", task.TaskId, "processing").
-			Updates(map[string]interface{}{
-				"status":     "succeed",
-				"updated_at": time.Now().Unix(),
-			})
+		applyResult := &model.GeneralFinalVideoResponse{
+			TaskId:            task.TaskId,
+			TaskStatus:        "succeed",
+			VideoResult:       videoURL,
+			RawResult:         rawJSON,
+			InputTokens:       usage.InputTokens,
+			OutputTextTokens:  usage.OutputTextTokens,
+			OutputVideoTokens: usage.OutputVideoTokens,
+		}
+		gemini.ApplyGeminiOmniSuccess(ctx, task, applyResult)
 		logger.Info(ctx, fmt.Sprintf("[gemini-omni-poller] task completed: task_id=%s", task.TaskId))
 
 	case "failed":
+		updates := map[string]interface{}{
+			"status":      "failed",
+			"fail_reason": failReason,
+			"updated_at":  time.Now().Unix(),
+		}
+		if rawJSON != "" {
+			updates["result"] = rawJSON
+		}
 		dbmodel.DB.Model(&dbmodel.Video{}).
 			Where("task_id = ? AND status = ?", task.TaskId, "processing").
-			Updates(map[string]interface{}{
-				"status":      "failed",
-				"fail_reason": failReason,
-				"updated_at":  time.Now().Unix(),
-			})
+			Updates(updates)
 		if task.Quota > 0 {
 			_ = dbmodel.CompensateVideoTaskQuota(task.UserId, task.Quota)
 			_ = dbmodel.CompensateChannelQuota(task.ChannelId, task.Quota)
