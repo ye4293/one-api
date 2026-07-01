@@ -77,6 +77,91 @@ func BearerAuthHeaders(apiKey string) map[string]string {
 	}
 }
 
+// UploadVideoURLToR2 从远程 URL 下载视频后上传到 R2，返回公开访问 URL
+func UploadVideoURLToR2(videoURL string, userId int, videoFormat string) (string, error) {
+	if videoURL == "" {
+		return "", fmt.Errorf("video URL is required")
+	}
+	if videoFormat == "" {
+		videoFormat = "mp4"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download video: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed with HTTP %d", resp.StatusCode)
+	}
+
+	videoData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read video data: %v", err)
+	}
+
+	randomBytes := make([]byte, 8)
+	rand.Read(randomBytes)
+	timestamp := time.Now().Unix()
+	filename := fmt.Sprintf("%d_%d_%x.%s", userId, timestamp, randomBytes, videoFormat)
+
+	var contentType string
+	switch strings.ToLower(videoFormat) {
+	case "mp4":
+		contentType = "video/mp4"
+	case "webm":
+		contentType = "video/webm"
+	default:
+		contentType = "video/mp4"
+	}
+
+	awsCfg, err := awsConfig.LoadDefaultConfig(ctx,
+		awsConfig.WithRegion("us-east-1"),
+		awsConfig.WithCredentialsProvider(aws.NewCredentialsCache(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
+			return aws.Credentials{
+				AccessKeyID:     config.CfFileAccessKey,
+				SecretAccessKey: config.CfFileSecretKey,
+			}, nil
+		}))),
+		awsConfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				return aws.Endpoint{URL: config.CfFileEndpoint}, nil
+			}),
+		),
+	)
+	if err != nil {
+		return "", fmt.Errorf("unable to load SDK config: %w", err)
+	}
+
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
+
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(config.CfBucketFileName),
+		Key:         aws.String(filename),
+		Body:        bytes.NewReader(videoData),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to upload video to R2: %w", err)
+	}
+
+	if config.CfFilePublicUrl != "" {
+		return fmt.Sprintf("%s/%s", config.CfFilePublicUrl, filename), nil
+	}
+	return fmt.Sprintf("%s/%s/%s", config.CfFileEndpoint, config.CfBucketFileName, filename), nil
+}
+
 // UploadVideoBase64ToR2 将base64编码的视频数据上传到Cloudflare R2并返回URL
 func UploadVideoBase64ToR2(base64Data string, userId int, videoFormat string) (string, error) {
 	// 参数检查
