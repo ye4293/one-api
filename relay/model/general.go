@@ -110,7 +110,23 @@ type VideoResultItem struct {
 
 // VideoUsage 视频费用信息
 type VideoUsage struct {
-	CostInUsd float64 `json:"cost_in_usd"`
+	CostInUsd float64 `json:"cost_in_usd,omitempty"`
+
+	// 以下字段用于透传 Gemini Omni 上游 usage（按 token 计费明细）
+	TotalTokens        int64                `json:"total_tokens,omitempty"`
+	TotalInputTokens   int64                `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens  int64                `json:"total_output_tokens,omitempty"`
+	TotalCachedTokens  int64                `json:"total_cached_tokens,omitempty"`
+	TotalThoughtTokens int64                `json:"total_thought_tokens,omitempty"`
+	TotalToolUseTokens int64                `json:"total_tool_use_tokens,omitempty"`
+	InputTokensByModality  []VideoUsageModality `json:"input_tokens_by_modality,omitempty"`
+	OutputTokensByModality []VideoUsageModality `json:"output_tokens_by_modality,omitempty"`
+}
+
+// VideoUsageModality 按模态拆分的 token 计数
+type VideoUsageModality struct {
+	Modality string `json:"modality"`
+	Tokens   int64  `json:"tokens"`
 }
 
 type GeneralFinalVideoResponse struct {
