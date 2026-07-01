@@ -66,6 +66,8 @@ var RequiredModelNameMapping = map[string]string{
 	RequestTypeVideoEffects:           "kling-video-effects",
 	RequestTypeAvatarI2V:              "kling-avatar-image2video",
 	RequestTypeImageExpand:            "kling-image-expand",
+	RequestTypeText2Video30Turbo:      "kling-3.0-turbo",
+	RequestTypeImage2Video30Turbo:     "kling-3.0-turbo",
 }
 
 // DefaultModelMapping 用户未传 model_name 时的 Kling 官方默认值
@@ -91,4 +93,21 @@ func GetModelNameByRequestType(requestType string, userModel string) string {
 		return defaultModel
 	}
 	return ""
+}
+
+// Is30TurboRequestType 判断是否为 Kling 3.0 Turbo 请求类型
+func Is30TurboRequestType(requestType string) bool {
+	return requestType == RequestTypeText2Video30Turbo || requestType == RequestTypeImage2Video30Turbo
+}
+
+// NormalizeTypeForDB 将请求类型转为数据库存储的规范格式
+func NormalizeTypeForDB(requestType string) string {
+	switch requestType {
+	case RequestTypeText2Video30Turbo:
+		return RequestTypeText2Video
+	case RequestTypeImage2Video30Turbo:
+		return RequestTypeImage2Video
+	default:
+		return requestType
+	}
 }

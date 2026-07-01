@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +58,32 @@ var DefaultVideoPricingRules = []VideoPricingRule{
 	{Model: "kling-video-o1", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.6, Currency: "CNY", Priority: 5},
 	// kling-v2-master，按秒计费（2元/s）
 	{Model: "kling-v2-master", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 2.0, Currency: "CNY", Priority: 10},
+	// kling-3.0-turbo，按秒计费（720p=0.8元/s，1080p=1.0元/s）
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "std", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "pro", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.0, Currency: "CNY", Priority: 10},
+	{Model: "kling-3.0-turbo", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 5},
+	// 注意：gemini-omni-flash-preview 不再使用 VideoPricingRule 计费，
+	// 改为按真实 token 用量计费，见 CalculateGeminiOmniQuota。
+}
+
+// Gemini Omni token 单价（美元 / 100 万 token），按官方定价
+const (
+	GeminiOmniInputPricePerMTok       = 1.50  // 输入（文本/图片/视频/音频统一）
+	GeminiOmniOutputTextPricePerMTok  = 9.00  // 输出文本（含思考 token）
+	GeminiOmniOutputVideoPricePerMTok = 17.50 // 输出视频
+)
+
+// CalculateGeminiOmniQuota 按真实 token 用量计算 Gemini Omni 视频费用。
+//   - inputTokens: total_input_tokens
+//   - outputTextTokens: total_output_tokens - video_output_tokens（含 thought）
+//   - outputVideoTokens: output_tokens_by_modality 中 video 的 tokens
+//
+// 返回内部 quota（$1 = QuotaPerUnit）。
+func CalculateGeminiOmniQuota(inputTokens, outputTextTokens, outputVideoTokens int64) int64 {
+	cost := float64(inputTokens)*GeminiOmniInputPricePerMTok/1e6 +
+		float64(outputTextTokens)*GeminiOmniOutputTextPricePerMTok/1e6 +
+		float64(outputVideoTokens)*GeminiOmniOutputVideoPricePerMTok/1e6
+	return int64(cost * config.QuotaPerUnit)
 }
 
 func init() {
@@ -191,7 +218,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 		if err != nil {
 			usdPrice = basePrice * DefaultCNYToUSDRate
 		}
-		basePrice = usdPrice
+		basePrice = math.Round(usdPrice*100) / 100
 	}
 
 	// 根据计费类型计算总价
@@ -205,6 +232,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 		totalPrice = basePrice
 	}
 
+	totalPrice = math.Round(totalPrice*100) / 100
 	return int64(totalPrice * config.QuotaPerUnit)
 }
 

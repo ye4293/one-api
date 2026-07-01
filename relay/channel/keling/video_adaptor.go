@@ -188,33 +188,7 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		if dbErr != nil {
 			return nil, openaiAdaptor.ErrorWrapper(dbErr, "get_channel_error", http.StatusInternalServerError)
 		}
-		if ch.Type == 41 {
-			creds, credErr := GetKelingCredentialsFromConfig(meta.Config, ch, 0)
-			if credErr != nil {
-				return nil, openaiAdaptor.ErrorWrapper(credErr, "get_keling_credentials_error", http.StatusInternalServerError)
-			}
-			t, jwtErr := GenerateJWTToken(creds.AK, creds.SK)
-			if jwtErr != nil {
-				return nil, openaiAdaptor.ErrorWrapper(jwtErr, "jwt_error", http.StatusInternalServerError)
-			}
-			token = t
-		} else {
-			token = meta.APIKey
-		}
-	} else if channelType == 41 {
-		ch, dbErr := dbmodel.GetChannelById(meta.ChannelId, true)
-		if dbErr != nil {
-			return nil, openaiAdaptor.ErrorWrapper(dbErr, "get_channel_error", http.StatusInternalServerError)
-		}
-		creds, credErr := GetKelingCredentialsFromConfig(meta.Config, ch, 0)
-		if credErr != nil {
-			return nil, openaiAdaptor.ErrorWrapper(credErr, "get_keling_credentials_error", http.StatusInternalServerError)
-		}
-		t, jwtErr := GenerateJWTToken(creds.AK, creds.SK)
-		if jwtErr != nil {
-			return nil, openaiAdaptor.ErrorWrapper(jwtErr, "jwt_error", http.StatusInternalServerError)
-		}
-		token = t
+		token = ch.Key
 	} else {
 		token = meta.APIKey
 	}
@@ -306,20 +280,7 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	fullRequestUrl := fmt.Sprintf(*ch.BaseURL+pathFmt, taskId)
 
 	// Build auth token
-	var token string
-	if ch.Type == 41 {
-		creds, err := GetKelingCredentialsFromConfig(*cfg, ch, 0)
-		if err != nil {
-			return nil, openaiAdaptor.ErrorWrapper(err, "get_keling_credentials_error", http.StatusInternalServerError)
-		}
-		t, err := GenerateJWTToken(creds.AK, creds.SK)
-		if err != nil {
-			return nil, openaiAdaptor.ErrorWrapper(err, "jwt_error", http.StatusInternalServerError)
-		}
-		token = t
-	} else {
-		token = ch.Key
-	}
+	token := ch.Key
 
 	_, body, err := relaychannel.SendVideoResultQuery(fullRequestUrl, map[string]string{
 		"Authorization": "Bearer " + token,

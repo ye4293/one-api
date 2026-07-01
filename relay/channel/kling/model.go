@@ -3,6 +3,7 @@ package kling
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 // 通用请求参数
@@ -129,14 +130,20 @@ func (r *KlingResponse) GetInt64(key string) int64 {
 	return 0
 }
 
-// GetTaskID 获取 task_id 字段
+// GetTaskID 获取任务ID（兼容 v1 的 task_id 和 3.0 Turbo 的 id）
 func (r *KlingResponse) GetTaskID() string {
-	return r.GetString("task_id")
+	if id := r.GetString("task_id"); id != "" {
+		return id
+	}
+	return r.GetString("id")
 }
 
-// GetTaskStatus 获取 task_status 字段
+// GetTaskStatus 获取任务状态（兼容 v1 的 task_status 和 3.0 Turbo 的 status）
 func (r *KlingResponse) GetTaskStatus() string {
-	return r.GetString("task_status")
+	if s := r.GetString("task_status"); s != "" {
+		return s
+	}
+	return r.GetString("status")
 }
 
 // GetTaskData 获取 TaskData（用于异步接口）
@@ -202,6 +209,56 @@ type QueryTaskResponse struct {
 	Message   string   `json:"message"`
 	RequestID string   `json:"request_id"`
 	Data      TaskData `json:"data"`
+}
+
+// ============ 3.0 Turbo 回调结构（v2 格式） ============
+
+type Callback30TurboOutput struct {
+	Type         string `json:"type"`                    // video/image/audio/element/voice
+	URL          string `json:"url,omitempty"`
+	Duration     string `json:"duration,omitempty"`      // API 返回字符串如 "5.041"
+	WatermarkURL string `json:"watermark_url,omitempty"`
+}
+
+type Callback30TurboBilling struct {
+	ChargeType  string `json:"charge_type"`  // cash/unit
+	Amount      string `json:"amount"`       // API 返回字符串如 "4"
+	PackageType string `json:"package_type"` // general 等
+}
+
+type Callback30TurboNotification struct {
+	ID         string                   `json:"id"`
+	Status     string                   `json:"status"`      // submitted/processing/succeeded/failed
+	Message    string                   `json:"message"`
+	CreateTime interface{}              `json:"create_time"` // 可能是字符串或数字
+	UpdateTime interface{}              `json:"update_time"` // 可能是字符串或数字
+	ExternalID string                   `json:"external_id,omitempty"`
+	Outputs    []Callback30TurboOutput  `json:"outputs,omitempty"`
+	Billing    []Callback30TurboBilling `json:"billing,omitempty"`
+}
+
+// GetTotalBillingAmount 计算回调中所有 billing 项的总金额（CNY）
+func (n *Callback30TurboNotification) GetTotalBillingAmount() float64 {
+	var total float64
+	for _, b := range n.Billing {
+		if amount, err := strconv.ParseFloat(b.Amount, 64); err == nil {
+			total += amount
+		}
+	}
+	return total
+}
+
+// GetFirstVideoOutput 获取第一个 video 类型的 output
+func (n *Callback30TurboNotification) GetFirstVideoOutput() *Callback30TurboOutput {
+	for i := range n.Outputs {
+		if n.Outputs[i].Type == "video" {
+			return &n.Outputs[i]
+		}
+	}
+	if len(n.Outputs) > 0 {
+		return &n.Outputs[0]
+	}
+	return nil
 }
 
 // 人脸识别请求

@@ -23,6 +23,7 @@ type Video struct {
 	Username       string  `json:"username" gorm:"index:idx_videos_username"`
 	ChannelId      int     `json:"channel_id" gorm:"index:idx_videos_channel_id"`
 	UserId         int     `json:"user_id" gorm:"index:idx_videos_user_id"` // 添加用户索引
+	TokenId        int     `json:"token_id" gorm:"index:idx_videos_token_id"` // 创建任务时使用的 Token，完成后扣费记入 Token 维度
 	Model          string  `json:"model" gorm:"index:idx_videos_model"`
 	Status         string  `json:"status" gorm:"index:idx_videos_status;index:idx_videos_provider_status,priority:2"` // 添加状态索引
 	FailReason     string  `json:"fail_reason"`
@@ -63,6 +64,26 @@ func (video *Video) Update() error {
 	// 自动更新 updated_at 字段
 	video.UpdatedAt = time.Now().Unix()
 	return DB.Model(&Video{}).Where("id = ?", video.Id).Updates(video).Error
+}
+
+// UpdateIfNotTerminal 原子地将任务更新为终态，仅当当前状态不是终态（succeed/failed）时才生效。
+// 返回 (true, nil) 表示调用方赢得竞争，需执行扣费；返回 (false, nil) 表示已被其他路径
+// 转为终态，调用方必须跳过扣费以避免重复计费。参考 Image.UpdateIfNotTerminal 的 CAS 模式。
+func (video *Video) UpdateIfNotTerminal() (bool, error) {
+	result := DB.Model(&Video{}).
+		Where("task_id = ? AND status NOT IN (?, ?)", video.TaskId, "succeed", "failed").
+		Updates(map[string]interface{}{
+			"status":      video.Status,
+			"store_url":   video.StoreUrl,
+			"result":      video.Result,
+			"quota":       video.Quota,
+			"fail_reason": video.FailReason,
+			"updated_at":  time.Now().Unix(),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func GetVideoTaskById(taskId string) (*Video, error) {
@@ -283,6 +304,23 @@ func UpdateVideoStoreUrl(taskId string, storeUrl string) error {
 	}
 
 	if result.RowsAffected == 0 {
+		return fmt.Errorf("no record found for task_id: %s", taskId)
+	}
+
+	return nil
+}
+
+// UpdateVideoResult 更新视频任务的完整上游响应 JSON（result 字段）
+func UpdateVideoResult(taskId string, result string) error {
+	ret := DB.Model(&Video{}).
+		Where("task_id = ?", taskId).
+		Update("result", result)
+
+	if ret.Error != nil {
+		return fmt.Errorf("failed to update result for task_id %s: %w", taskId, ret.Error)
+	}
+
+	if ret.RowsAffected == 0 {
 		return fmt.Errorf("no record found for task_id: %s", taskId)
 	}
 

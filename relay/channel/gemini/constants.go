@@ -21,6 +21,9 @@ var ModelList = []string{
 	"gemini-3-flash-preview-thinking", "gemini-3-flash-preview", "gemini-3-flash-preview-nothinking",
 	"gemini-3.1-pro-preview-thinking", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-nothinking",
 	"gemini-3.1-flash-image-preview", "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite-preview-thinking", "gemini-3.1-flash-lite-preview-nothinking",
+
+	// Gemini Omni 系列（视频生成，Interactions API）
+	"gemini-omni-flash-preview",
 }
 
 var ModelDetails = []model.APIModel{

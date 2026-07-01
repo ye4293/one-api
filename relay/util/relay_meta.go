@@ -52,6 +52,8 @@ type RelayMeta struct {
 	ChannelDiscount float64
 	// 当前用户对当前渠道类型的额外折扣倍率，默认 1.0
 	UserChannelRatio float64
+	// StreamStatus 记录流式响应的结束原因和过程错误，非流式请求为 nil
+	StreamStatus *StreamStatus
 }
 
 // SetFirstResponseTime 设置首字响应时间（只设置一次）

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -66,11 +67,8 @@ func parseKlingRequest(c *gin.Context, requestType string) (*klingRequest, error
 	mode := kling.GetModeFromRequest(requestParams)
 	duration := fmt.Sprintf("%d", kling.GetDurationFromRequest(requestParams))
 
-	// 提取用户回调 URL（可选）
-	var callbackUrl string
-	if cbUrl, ok := requestParams["callback_url"].(string); ok {
-		callbackUrl = cbUrl
-	}
+	// 提取用户回调 URL（可选，兼容顶层和 options.callback_url）
+	callbackUrl := kling.GetCallbackUrlFromRequest(requestParams)
 
 	// 提取视频V2.6模型的声音参数（可选）
 	var sound string
@@ -232,10 +230,13 @@ func looksLikeTaskID(s string) bool {
 	return strings.Contains(s, "-") || len(s) > 10
 }
 
-// buildCallbackURL 构建回调URL
-func buildCallbackURL() (string, error) {
+// buildCallbackURL 构建回调URL（根据请求类型选择 v1 或 v2 端点）
+func buildCallbackURL(requestType string) (string, error) {
 	if config.ServerAddress == "" {
 		return "", fmt.Errorf("invalid server address")
+	}
+	if kling.Is30TurboRequestType(requestType) {
+		return fmt.Sprintf("%s/kling/internal/callback/v2", config.ServerAddress), nil
 	}
 	return fmt.Sprintf("%s/kling/internal/callback", config.ServerAddress), nil
 }
@@ -282,7 +283,7 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 		Username:    req.User.Username,
 		ChannelID:   req.Meta.ChannelId,
 		Model:       req.Model,
-		Type:        req.RequestType,
+		Type:        kling.NormalizeTypeForDB(req.RequestType),
 		Mode:        req.Mode,
 		Duration:    req.Duration,
 		Sound:       req.Sound,
@@ -299,7 +300,7 @@ func processAsyncTask(c *gin.Context, req *klingRequest) {
 	}
 
 	// 构建回调URL
-	callbackURL, err := buildCallbackURL()
+	callbackURL, err := buildCallbackURL(req.RequestType)
 	if err != nil {
 		task.MarkFailed(c.Request.Context(), "invalid server address")
 		respondError(c, err, "invalid_server_address", http.StatusInternalServerError)
@@ -362,7 +363,7 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 		Username:    req.User.Username,
 		ChannelID:   req.Meta.ChannelId,
 		Model:       req.Model,
-		Type:        req.RequestType,
+		Type:        kling.NormalizeTypeForDB(req.RequestType),
 		Mode:        req.Mode,
 		Sound:       req.Sound,
 		VoiceList:   req.VoiceList,
@@ -428,19 +429,26 @@ func processSyncTask(c *gin.Context, req *klingRequest) {
 	resultJSON, _ := json.Marshal(klingResp)
 	task.SetResult(string(resultJSON))
 
-	// 扣费
-	err = dbmodel.DecreaseUserQuota(req.Meta.UserId, req.Quota)
-	if err != nil {
-		logger.Error(c, fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
-	} else {
-		logger.Info(c, fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
-			req.Meta.UserId, req.Quota, klingResp.GetTaskID(), req.RequestType))
+	// 完整计费（扣费 + 更新渠道用量 + 审计日志）
+	if video := task.GetVideo(); video != nil {
+		video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		if err := kling.ChargeVideoOnSuccess(c.Request.Context(), video, req.Quota); err != nil {
+			logger.Error(c, fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
+		} else {
+			logger.Info(c, fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
+				req.Meta.UserId, req.Quota, klingResp.GetTaskID(), req.RequestType))
+		}
+	} else if image := task.GetImage(); image != nil {
+		image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
+		if err := kling.ChargeImageOnSuccess(c.Request.Context(), image, req.Quota); err != nil {
+			logger.Error(c, fmt.Sprintf("Sync task billing failed: user_id=%d, quota=%d, error=%v", req.Meta.UserId, req.Quota, err))
+		} else {
+			logger.Info(c, fmt.Sprintf("Sync task billing success: user_id=%d, quota=%d, task_id=%s, type=%s",
+				req.Meta.UserId, req.Quota, klingResp.GetTaskID(), req.RequestType))
+		}
 	}
 
 	// 更新任务
-	if video := task.GetVideo(); video != nil {
-		video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
-	}
 	task.Update()
 
 	logger.Info(c, fmt.Sprintf("Sync task completed: id=%d, task_id=%s, type=%s, user_id=%d, channel_id=%d, quota=%d",
@@ -465,6 +473,8 @@ func HandleKlingCallback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+
+	logger.Debug(c, fmt.Sprintf("[kling-v1-callback] 收到回调, raw_body=%s", string(bodyBytes)))
 
 	var notification kling.CallbackNotification
 	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
@@ -553,9 +563,10 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota：$1 = 500000 quota
-						newQuota = int64(usdAmount * 500000)
-						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+						// 转换为 quota（USD 金额保留两位小数）
+						usdAmount = math.Round(usdAmount*100) / 100
+						newQuota = int64(usdAmount * config.QuotaPerUnit)
+						logger.Info(c, fmt.Sprintf("Using Kling official billing: task_id=%s, cny=%s (%.4f), usd=%.2f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
 						// 金额为 0，使用系统规则
@@ -571,17 +582,14 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				}
 
 				video.Quota = newQuota
+				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
 
-				// 扣费
-				err := dbmodel.DecreaseUserQuota(video.UserId, newQuota)
-				if err != nil {
+				if err := kling.ChargeVideoOnSuccess(c.Request.Context(), video, newQuota); err != nil {
 					logger.Error(c, fmt.Sprintf("Kling callback billing failed: user_id=%d, quota=%d, error=%v", video.UserId, newQuota, err))
 				} else {
 					logger.Info(c, fmt.Sprintf("Kling callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, final_unit_deduction=%s, type=%s, model=%s, task_id=%s",
 						video.UserId, oldQuota, newQuota, actualDuration, notification.FinalUnitDeduction, video.Type, video.Model, taskID))
 				}
-
-				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
 			} else if image := task.GetImage(); image != nil {
 				// 设置 Image 特有字段
 				image.StoreUrl = notification.TaskResult.Videos[0].URL
@@ -607,9 +615,10 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 							logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
 								cnyAmount, convErr))
 						}
-						// 转换为 quota：$1 = 500000 quota
-						newQuota = int64(usdAmount * 500000)
-						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.4f, quota=%d",
+						// 转换为 quota（USD 金额保留两位小数）
+						usdAmount = math.Round(usdAmount*100) / 100
+						newQuota = int64(usdAmount * config.QuotaPerUnit)
+						logger.Info(c, fmt.Sprintf("Using Kling official billing for image: task_id=%s, cny=%s (%.4f), usd=%.2f, quota=%d",
 							taskID, notification.FinalUnitDeduction, cnyAmount, usdAmount, newQuota))
 					} else {
 						// 金额为 0，使用原有 quota
@@ -621,17 +630,14 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 				}
 
 				image.Quota = newQuota
+				image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
 
-				// 扣费
-				err := dbmodel.DecreaseUserQuota(image.UserId, newQuota)
-				if err != nil {
+				if err := kling.ChargeImageOnSuccess(c.Request.Context(), image, newQuota); err != nil {
 					logger.Error(c, fmt.Sprintf("Kling image callback billing failed: user_id=%d, quota=%d, error=%v", image.UserId, newQuota, err))
 				} else {
 					logger.Info(c, fmt.Sprintf("Kling image callback billing success: user_id=%d, old_quota=%d, new_quota=%d, final_unit_deduction=%s, task_id=%s",
 						image.UserId, oldQuota, newQuota, notification.FinalUnitDeduction, taskID))
 				}
-
-				image.TotalDuration = int(time.Now().Unix() - image.CreatedAt)
 			}
 		}
 
@@ -671,6 +677,137 @@ func handleCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling
 		callbackCtx := context.WithoutCancel(c.Request.Context())
 		// 使用 goroutine 异步发送回调，避免阻塞主流程
 		go kling.NotifyUserCallback(callbackCtx, video, notificationBytes)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "success"})
+}
+
+// HandleKling30TurboCallback 处理 Kling 3.0 Turbo 回调通知（v2 格式）
+func HandleKling30TurboCallback(c *gin.Context) {
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		logger.Error(c, fmt.Sprintf("Kling v2 callback read body error: %v", err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	logger.Debug(c, fmt.Sprintf("[kling-v2-callback] 收到回调, raw_body=%s", string(bodyBytes)))
+
+	var notification kling.Callback30TurboNotification
+	if err := json.Unmarshal(bodyBytes, &notification); err != nil {
+		logger.Error(c, fmt.Sprintf("Kling v2 callback parse error: error=%v", err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	logger.Info(c, fmt.Sprintf("Kling v2 callback received: id=%s, external_id=%s, status=%s",
+		notification.ID, notification.ExternalID, notification.Status))
+
+	taskManager := kling.NewTaskManager()
+	var task *kling.TaskWrapper
+
+	if notification.ExternalID != "" {
+		task, _ = taskManager.FindTaskByExternalID(notification.ExternalID, "")
+	}
+	if task == nil && notification.ID != "" {
+		task, _ = taskManager.FindTaskByTaskID(notification.ID)
+	}
+
+	if task == nil {
+		logger.Error(c, fmt.Sprintf("Kling v2 callback task not found: id=%s, external_id=%s",
+			notification.ID, notification.ExternalID))
+		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+		return
+	}
+
+	handle30TurboCallback(c, task, &notification, bodyBytes)
+}
+
+// handle30TurboCallback 处理 3.0 Turbo 回调逻辑
+func handle30TurboCallback(c *gin.Context, task *kling.TaskWrapper, notification *kling.Callback30TurboNotification, rawBody []byte) {
+	taskID := notification.ID
+
+	currentStatus := task.GetStatus()
+	if currentStatus == kling.TaskStatusSucceed || currentStatus == kling.TaskStatusFailed {
+		logger.Info(c, fmt.Sprintf("Kling v2 callback already processed: id=%s, status=%s", taskID, currentStatus))
+		c.JSON(http.StatusOK, gin.H{"message": "already processed"})
+		return
+	}
+
+	task.SetResult(string(rawBody))
+
+	// 状态映射：succeeded → 内部 succeed
+	if notification.Status == kling.TaskStatusSucceeded {
+		task.SetStatus(kling.TaskStatusSucceed)
+
+		output := notification.GetFirstVideoOutput()
+		if output != nil {
+			if video := task.GetVideo(); video != nil {
+				video.StoreUrl = output.URL
+				video.VideoId = taskID
+
+				actualDuration := output.Duration
+				video.Duration = actualDuration
+
+				oldQuota := video.Quota
+				var newQuota int64
+
+				totalCNY := notification.GetTotalBillingAmount()
+				if totalCNY > 0 {
+					usdAmount, convErr := common.ConvertCNYToUSD(totalCNY)
+					if convErr != nil {
+						logger.Error(c, fmt.Sprintf("CNY to USD conversion failed: cny=%.4f, error=%v, using default rate",
+							totalCNY, convErr))
+					}
+					usdAmount = math.Round(usdAmount*100) / 100
+					newQuota = int64(usdAmount * config.QuotaPerUnit)
+					logger.Info(c, fmt.Sprintf("Using Kling v2 billing: id=%s, cny=%.4f, usd=%.2f, quota=%d",
+						taskID, totalCNY, usdAmount, newQuota))
+				} else {
+					newQuota = common.CalculateVideoQuota(video.Model, video.Type, video.Mode, actualDuration, video.Resolution, video.Sound)
+					logger.Info(c, fmt.Sprintf("Using system billing rules (v2): id=%s, duration=%s, quota=%d",
+						taskID, actualDuration, newQuota))
+				}
+
+				video.Quota = newQuota
+				video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+
+				if err := kling.ChargeVideoOnSuccess(c.Request.Context(), video, newQuota); err != nil {
+					logger.Error(c, fmt.Sprintf("Kling v2 callback billing failed: user_id=%d, quota=%d, error=%v",
+						video.UserId, newQuota, err))
+				} else {
+					logger.Info(c, fmt.Sprintf("Kling v2 callback billing success: user_id=%d, old_quota=%d, new_quota=%d, duration=%s, billing_cny=%.4f, model=%s, id=%s",
+						video.UserId, oldQuota, newQuota, actualDuration, totalCNY, video.Model, taskID))
+				}
+			}
+		}
+
+		task.Update()
+
+	} else if notification.Status == kling.TaskStatusFailed {
+		task.SetStatus(kling.TaskStatusFailed)
+		task.SetFailReason(notification.Message)
+
+		if video := task.GetVideo(); video != nil {
+			video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		}
+
+		task.Update()
+		logger.Info(c, fmt.Sprintf("Kling v2 callback task failed: id=%s, message=%s", taskID, notification.Message))
+
+	} else {
+		task.SetStatus(notification.Status)
+
+		if video := task.GetVideo(); video != nil {
+			video.TotalDuration = int64(time.Now().Unix() - video.CreatedAt)
+		}
+
+		task.Update()
+	}
+
+	if video := task.GetVideo(); video != nil {
+		callbackCtx := context.WithoutCancel(c.Request.Context())
+		go kling.NotifyUserCallback(callbackCtx, video, rawBody)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "success"})

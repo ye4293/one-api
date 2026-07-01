@@ -10,7 +10,7 @@ build
 logs
 data
 /web/node_modules
-./.claude/settings.local.json
+.claude/
 .env
 agents.md
 graphify-out

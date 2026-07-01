@@ -3,6 +3,8 @@ package anthropic
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/songquanpeng/one-api/model"
 )
 
 // BedrockAllowedBetaFlags AWS Bedrock 支持的 beta flags 白名单。
@@ -16,6 +18,9 @@ var BedrockAllowedBetaFlags = map[string]struct{}{
 	"output-128k-2025-02-19":           {},
 	"context-1m-2025-08-07":            {},
 	"context-management-2025-06-27":    {},
+	"compaction-2025-11-18":            {},
+	"context-editing-2025-11-14":       {},
+	"fallback-credit-2026-03-25":       {},
 	"effort-2025-11-24":                {},
 	"tool-search-tool-2025-10-19":      {},
 }
@@ -32,19 +37,17 @@ var VertexAllowedBetaFlags = map[string]struct{}{
 	"token-counting-2024-11-01":                {},
 	"token-efficient-tools-2025-02-19":         {},
 	"output-128k-2025-02-19":                   {},
-	"files-api-2025-04-14":                     {},
-	"mcp-client-2025-04-04":                    {},
-	"mcp-client-2025-11-20":                    {},
 	"dev-full-thinking-2025-05-14":             {},
 	"interleaved-thinking-2025-05-14":          {},
-	"code-execution-2025-05-22":                {},
 	"extended-cache-ttl-2025-04-11":            {},
 	"context-1m-2025-08-07":                    {},
 	"context-management-2025-06-27":            {},
+	"compaction-2025-11-18":                    {},
+	"context-editing-2025-11-14":               {},
+	"fallback-credit-2026-03-25":               {},
 	"task-budgets-2026-03-13":                  {},
 	"structured-outputs-2025-11-13":            {},
 	"model-context-window-exceeded-2025-08-26": {},
-	"skills-2025-10-02":                        {},
 	"fast-mode-2026-02-01":                     {},
 }
 
@@ -125,4 +128,35 @@ func MarshalBetaFlags(flags []string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+// BedrockVertexAllowedBetaFlags 取 Bedrock 和 Vertex 白名单的交集（最严格过滤）
+var BedrockVertexAllowedBetaFlags = func() map[string]struct{} {
+	intersection := make(map[string]struct{})
+	for k := range BedrockAllowedBetaFlags {
+		if _, ok := VertexAllowedBetaFlags[k]; ok {
+			intersection[k] = struct{}{}
+		}
+	}
+	return intersection
+}()
+
+// FilterBetaHeaderByMode 按渠道配置的 BetaFilterMode 过滤 anthropic-beta header
+func FilterBetaHeaderByMode(betaHeader string, mode model.BetaFilterMode) string {
+	if betaHeader == "" || mode == model.BetaFilterNone {
+		return betaHeader
+	}
+	var allowed map[string]struct{}
+	switch mode {
+	case model.BetaFilterBedrock:
+		allowed = BedrockAllowedBetaFlags
+	case model.BetaFilterVertex:
+		allowed = VertexAllowedBetaFlags
+	case model.BetaFilterBedrockVertex:
+		allowed = BedrockVertexAllowedBetaFlags
+	default:
+		return betaHeader
+	}
+	filtered := FilterBetaFlags(betaHeader, allowed)
+	return strings.Join(filtered, ",")
 }

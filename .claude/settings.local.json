@@ -22,7 +22,9 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(go vet:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git diff *)",
+      "Read(//tmp/**)"
     ]
   }
 }
