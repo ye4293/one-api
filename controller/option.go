@@ -46,6 +46,10 @@ func validateOptionUpdate(option model.Option) string {
 		if option.Value == "true" && (config.StripeApiSecret == "" || config.StripeWebhookSecret == "" || config.StripePriceId == "") {
 			return "无法启用 Stripe 支付，请先填入 Stripe API Secret、Webhook Secret 和 Price ID！"
 		}
+	case "AuditEnabled":
+		if option.Value == "true" && (config.AuditAWSAccessKey == "" || config.AuditAWSSecretKey == "" || config.AuditAWSRegion == "" || config.AuditFirehoseStream == "") {
+			return "无法启用审计模块，请先填入 AWS 凭证、Region 和 Firehose Stream 名称！"
+		}
 	}
 	return ""
 }
@@ -54,7 +58,8 @@ func GetOptions(c *gin.Context) {
 	var options []*model.Option
 	config.OptionMapRWMutex.Lock()
 	for k, v := range config.OptionMap {
-		if strings.HasSuffix(k, "Token") || strings.HasSuffix(k, "Secret") {
+		if strings.HasSuffix(k, "Token") || strings.HasSuffix(k, "Secret") ||
+			strings.HasSuffix(k, "SecretKey") || strings.HasSuffix(k, "AccessKey") {
 			continue
 		}
 		options = append(options, &model.Option{

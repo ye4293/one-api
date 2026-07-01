@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 )
@@ -136,6 +137,30 @@ func InitOptionMap() {
 	// 模型监控配置
 	config.OptionMap["ModelMetricsEnabled"] = strconv.FormatBool(config.ModelMetricsEnabled)
 	config.OptionMap["ChannelAffinityConfig"] = common.AffinityConfigToJSON(common.ChannelAffinityConfig)
+
+	// 审计模块配置
+	config.OptionMap["AuditEnabled"] = strconv.FormatBool(config.AuditEnabled)
+	config.OptionMap["AuditAWSRegion"] = config.AuditAWSRegion
+	config.OptionMap["AuditAWSAccessKey"] = ""
+	config.OptionMap["AuditAWSSecretKey"] = ""
+	config.OptionMap["AuditAWSAccessKeyConfigured"] = strconv.FormatBool(config.AuditAWSAccessKey != "")
+	config.OptionMap["AuditAWSSecretKeyConfigured"] = strconv.FormatBool(config.AuditAWSSecretKey != "")
+	config.OptionMap["AuditFirehoseStream"] = config.AuditFirehoseStream
+	config.OptionMap["AuditAthenaDatabase"] = config.AuditAthenaDatabase
+	config.OptionMap["AuditAthenaTable"] = config.AuditAthenaTable
+	config.OptionMap["AuditAthenaWorkgroup"] = config.AuditAthenaWorkgroup
+	config.OptionMap["AuditS3OutputLocation"] = config.AuditS3OutputLocation
+	config.OptionMap["AuditS3DataLocation"] = config.AuditS3DataLocation
+	config.OptionMap["AuditChannelSize"] = strconv.Itoa(config.AuditChannelSize)
+	config.OptionMap["AuditMaxBufferMB"] = strconv.Itoa(config.AuditMaxBufferMB)
+	config.OptionMap["AuditDiskBufferDir"] = config.AuditDiskBufferDir
+	config.OptionMap["AuditDiskBufferMaxGB"] = strconv.Itoa(config.AuditDiskBufferMaxGB)
+	config.OptionMap["AuditBatchSize"] = strconv.Itoa(config.AuditBatchSize)
+	config.OptionMap["AuditFlushIntervalSec"] = strconv.Itoa(config.AuditFlushIntervalSec)
+	config.OptionMap["AuditMaxBodyKB"] = strconv.Itoa(config.AuditMaxBodyKB)
+	config.OptionMap["AuditMaxRespKB"] = strconv.Itoa(config.AuditMaxRespKB)
+	config.OptionMap["AuditRetentionDays"] = strconv.Itoa(config.AuditRetentionDays)
+	config.OptionMap["AuditRedactHeaders"] = config.AuditRedactHeaders
 	config.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
 }
@@ -262,6 +287,8 @@ func updateOptionMap(key string, value string) (err error) {
 			config.EpayPaymentEnabled = boolValue
 		case "ModelMetricsEnabled":
 			config.ModelMetricsEnabled = boolValue
+		case "AuditEnabled":
+			config.AuditEnabled = boolValue
 		}
 
 	}
@@ -458,6 +485,49 @@ func updateOptionMap(key string, value string) (err error) {
 		} else {
 			common.ChannelAffinityConfig = cfg
 		}
+	// 审计模块配置
+	case "AuditAWSRegion":
+		config.AuditAWSRegion = value
+	case "AuditAWSAccessKey":
+		config.AuditAWSAccessKey = value
+		config.OptionMap["AuditAWSAccessKeyConfigured"] = strconv.FormatBool(value != "")
+	case "AuditAWSSecretKey":
+		config.AuditAWSSecretKey = value
+		config.OptionMap["AuditAWSSecretKeyConfigured"] = strconv.FormatBool(value != "")
+	case "AuditFirehoseStream":
+		config.AuditFirehoseStream = value
+	case "AuditAthenaDatabase":
+		config.AuditAthenaDatabase = value
+	case "AuditAthenaTable":
+		config.AuditAthenaTable = value
+	case "AuditAthenaWorkgroup":
+		config.AuditAthenaWorkgroup = value
+	case "AuditS3OutputLocation":
+		config.AuditS3OutputLocation = value
+	case "AuditS3DataLocation":
+		config.AuditS3DataLocation = value
+	case "AuditChannelSize":
+		config.AuditChannelSize, _ = strconv.Atoi(value)
+	case "AuditMaxBufferMB":
+		config.AuditMaxBufferMB, _ = strconv.Atoi(value)
+	case "AuditDiskBufferDir":
+		config.AuditDiskBufferDir = value
+	case "AuditDiskBufferMaxGB":
+		config.AuditDiskBufferMaxGB, _ = strconv.Atoi(value)
+	case "AuditBatchSize":
+		config.AuditBatchSize, _ = strconv.Atoi(value)
+	case "AuditFlushIntervalSec":
+		config.AuditFlushIntervalSec, _ = strconv.Atoi(value)
+	case "AuditMaxBodyKB":
+		config.AuditMaxBodyKB, _ = strconv.Atoi(value)
+	case "AuditMaxRespKB":
+		config.AuditMaxRespKB, _ = strconv.Atoi(value)
+	case "AuditRetentionDays":
+		config.AuditRetentionDays, _ = strconv.Atoi(value)
+	case "AuditRedactHeaders":
+		config.AuditRedactHeaders = value
+	case "auditConfig":
+		go audit.Reload()
 	}
 	return err
 }

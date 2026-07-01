@@ -25,6 +25,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
@@ -502,6 +503,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 	meta.OriginModelName = imageRequest.Model
 	imageRequest.Model, isModelMapped = util.GetMappedModelName(imageRequest.Model, meta.ModelMapping)
 	meta.ActualModelName = imageRequest.Model
+	audit.SetMeta(c, false, meta.ActualModelName) // 审计：图片请求非流式
 
 	imageCostRatio, err := getImageCostRatio(imageRequest)
 	if err != nil {
@@ -1423,6 +1425,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 	}
+	audit.SetUpstreamResponse(c, responseBody) // 审计：捕获上游响应
 
 	// 检查HTTP状态码，如果不是成功状态码，直接返回错误
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {

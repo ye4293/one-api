@@ -7,12 +7,14 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/controller"
@@ -120,8 +122,13 @@ func main() {
 		logger.FatalLog("failed to initialize Redis: " + err.Error())
 	}
 
-	// Initialize options
+	// Initialize options（必须在 audit.Start 之前，审计配置从 options 表读取）
 	model.InitOptionMap()
+
+	// 启动审计模块（依赖 options 表中的配置，关闭时为空操作，初始化失败自动降级）
+	audit.Start(context.Background())
+	defer audit.Shutdown()
+
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
 	if common.RedisEnabled {
 		// for compatibility with old versions
@@ -190,7 +197,7 @@ func main() {
 	common.SafeGoroutine(func() {
 		controller.StartGeminiOmniVideoTaskPoller(context.Background())
 	})
-	
+
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
 

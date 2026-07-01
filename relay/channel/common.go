@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -44,11 +45,13 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 	}
 	// 应用渠道自定义请求头覆盖（优先级最高，覆盖用户传递和默认的header）
 	ApplyHeadersOverride(req, meta)
+	audit.SetConvertedHeader(c, req.Header) // 审计：覆盖后才是最终发往上游的请求头
 
 	resp, err := DoRequest(c, req, meta)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	audit.WrapUpstreamBody(c, resp) // 审计：tee 上游响应体
 	return resp, nil
 }
 

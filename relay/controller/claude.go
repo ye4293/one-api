@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -73,6 +74,8 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(fmt.Errorf("failed to parse claude request: %w", err), "failed_to_parse_request", http.StatusInternalServerError)
 	}
 	meta.IsStream = claudeReq.Stream
+	audit.SetMeta(c, claudeReq.Stream, meta.ActualModelName)
+	audit.SetConvertedBody(c, string(originRequestBody))
 	// 计算预消费配额
 	groupRatio := util.GetBillingGroupRatio(c, group)
 	modelRatio := common.GetModelRatio(modelName)
@@ -501,6 +504,8 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		}
 	}
 
+	audit.SetUpstreamResponse(c, responseBody)
+
 	// 解析 claude 原生响应
 	var claudeResponse anthropic.Response
 	if unmarshalErr := json.Unmarshal(responseBody, &claudeResponse); unmarshalErr != nil {
@@ -557,6 +562,7 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 	var lastUsageMetadata = &anthropic.Usage{}
 	var openaiErr *model.ErrorWithStatusCode
 
+	audit.WrapUpstreamBody(c, resp)
 	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
 		var claudeResponse anthropic.StreamResponse
 		err := json.Unmarshal([]byte(data), &claudeResponse)

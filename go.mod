@@ -1,12 +1,13 @@
 module github.com/songquanpeng/one-api
 
 // +heroku goVersion go1.18
-go 1.23
-
-toolchain go1.24.5
+go 1.25.0
 
 require (
 	github.com/Calcium-Ion/go-epay v0.0.4
+	github.com/aws/aws-sdk-go-v2/service/athena v1.58.4
+	github.com/aws/aws-sdk-go-v2/service/firehose v1.44.0
+	github.com/aws/aws-sdk-go-v2/service/glue v1.146.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.2
 	github.com/gin-contrib/gzip v0.0.6
 	github.com/gin-contrib/sessions v0.0.5
@@ -19,11 +20,11 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pkoukk/tiktoken-go v0.1.7
 	github.com/samber/lo v1.53.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.11.1
 	github.com/stripe/stripe-go/v78 v78.5.0
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
-	golang.org/x/crypto v0.22.0
+	golang.org/x/crypto v0.49.0
 	golang.org/x/image v0.15.0
 	gorm.io/driver/mysql v1.5.4
 	gorm.io/driver/postgres v1.5.7
@@ -32,11 +33,16 @@ require (
 )
 
 require (
+	github.com/kr/pretty v0.3.1 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+)
+
+require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.4 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.3 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.17 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.17 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.7 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.11.2 // indirect
@@ -46,28 +52,26 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.20.8 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.24.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.28.9 // indirect
-	github.com/aws/smithy-go v1.24.0
+	github.com/aws/smithy-go v1.27.1
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
-	github.com/google/go-cmp v0.5.9 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
-	github.com/volcengine/volcengine-go-sdk v1.2.23 // indirect
-	golang.org/x/sync v0.11.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.41.1
+	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.27.15
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.15
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.48.0
 	github.com/bytedance/gopkg v0.1.2
 	github.com/bytedance/sonic v1.11.3 // indirect
-	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
@@ -94,14 +98,14 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/pelletier/go-toml/v2 v2.1.1 // indirect
 	github.com/pkg/errors v0.9.1
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rs/cors/wrapper/gin v0.0.0-20240228164225-8d33ca4794ea
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	golang.org/x/arch v0.7.0 // indirect
-	golang.org/x/net v0.24.0
-	golang.org/x/sys v0.19.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
-	google.golang.org/protobuf v1.33.0 // indirect
+	golang.org/x/net v0.52.0
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

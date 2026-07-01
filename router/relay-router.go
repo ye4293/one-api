@@ -63,11 +63,11 @@ func SetRelayRouter(router *gin.Engine) {
 
 	relayV1Router.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
 	{
-		relayV1Router.POST("/completions", controller.Relay)
-		relayV1Router.POST("/chat/completions", controller.Relay)
+		relayV1Router.POST("/completions", middleware.Audit(), controller.Relay)
+		relayV1Router.POST("/chat/completions", middleware.Audit(), controller.Relay)
 		relayV1Router.POST("/edits", controller.Relay)
-		relayV1Router.POST("/images/edits", controller.Relay)
-		relayV1Router.POST("/images/variations", controller.RelayNotImplemented)
+		relayV1Router.POST("/images/edits",middleware.Audit(), controller.Relay)
+		relayV1Router.POST("/images/variations", middleware.Audit(),controller.RelayNotImplemented)
 		relayV1Router.POST("/embeddings", controller.Relay)
 		relayV1Router.POST("/engines/:model/embeddings", controller.Relay)
 		relayV1Router.POST("/audio/transcriptions", controller.Relay)
@@ -120,11 +120,11 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.POST("/images/crispUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/images/creativeUpscale", controller.RelayRecraft)
 		relayV1Router.POST("/styles", controller.RelayRecraft)
-		relayV1Router.POST("/images/generations", controller.Relay)
-		relayV1Router.POST("/messages", controller.RelayClaude)
+		relayV1Router.POST("/images/generations", middleware.Audit(), controller.Relay)
+		relayV1Router.POST("/messages",middleware.Audit(), controller.RelayClaude)
 		relayV1Router.POST("/messages/count_tokens", controller.RelayClaudeCountTokens) // Claude count_tokens 接口
-		relayV1Router.POST("/responses/compact", controller.RelayResponse)
-		relayV1Router.POST("/responses", controller.RelayResponse)
+		relayV1Router.POST("/responses/compact", middleware.Audit(),controller.RelayResponse)
+		relayV1Router.POST("/responses", middleware.Audit(),controller.RelayResponse)
 	}
 	mjModeMiddleware := func() gin.HandlerFunc {
 		return func(c *gin.Context) {
@@ -269,9 +269,9 @@ func SetRelayRouter(router *gin.Engine) {
 		klingRouter.POST("/images/editing/expand", controller.RelayKlingVideo)
 
 		// ========== 通用类接口（2个）==========
-		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)           // 同步接口
-		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo)   // 异步接口
-		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)              // 异步接口，复用逻辑
+		klingRouter.POST("/general/custom-elements", controller.DoCustomElements)         // 同步接口
+		klingRouter.POST("/general/advanced-custom-elements", controller.RelayKlingVideo) // 异步接口
+		klingRouter.POST("/general/custom-voices", controller.RelayKlingVideo)            // 异步接口，复用逻辑
 
 		// ========== 查询和管理接口（透明代理，不计费）==========
 		// 使用通配符批量处理所有 GET 查询接口
@@ -345,7 +345,7 @@ func SetRelayRouter(router *gin.Engine) {
 	// 路径格式: /v1beta/models/{model_name}:{action}
 	// 支持 generateContent, streamGenerateContent, embedContent, batchEmbedContents 等操作
 	geminiRouter := router.Group("/v1beta")
-	geminiRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	geminiRouter.Use(middleware.TokenAuth(), middleware.Distribute(),middleware.Audit())
 	{
 		// 使用通配符捕获 models/ 后的所有内容: gemini-2.0-flash:generateContent
 		geminiRouter.POST("/models/*path", controller.RelayGemini)
@@ -353,14 +353,14 @@ func SetRelayRouter(router *gin.Engine) {
 
 	// Gemini API v1 版本路由（某些模型使用 v1）
 	geminiV1Router := router.Group("/v1")
-	geminiV1Router.Use(middleware.TokenAuth(), middleware.Distribute())
+	geminiV1Router.Use(middleware.TokenAuth(), middleware.Distribute(),middleware.Audit())
 	{
 		geminiV1Router.POST("/models/*path", controller.RelayGemini)
 	}
 
 	// Gemini API v1alpha 版本路由（某些项目使用 v1alpha）
 	geminiV1AlphaRouter := router.Group("/v1alpha")
-	geminiV1AlphaRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	geminiV1AlphaRouter.Use(middleware.TokenAuth(), middleware.Distribute(),middleware.Audit())
 	{
 		geminiV1AlphaRouter.POST("/models/*path", controller.RelayGemini)
 	}
@@ -378,12 +378,12 @@ func SetRelayRouter(router *gin.Engine) {
 	// xAI Grok Video 原生透传路由组
 	// POST 端点需要 Distribute 中间件进行渠道选择
 	xaiVideoRouter := router.Group("/xai/v1/videos")
-	xaiVideoRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute())
+	xaiVideoRouter.Use(middleware.RelayPanicRecover(), middleware.TokenAuth(), middleware.Distribute(),middleware.Audit())
 	{
 		xaiVideoRouter.POST("/generations", controller.RelayXaiVideoGeneration)
 		xaiVideoRouter.POST("/edits", controller.RelayXaiVideoEdit)
 		xaiVideoRouter.POST("/extensions", controller.RelayXaiVideoExtension)
-		
+
 	}
 
 	// xAI Grok Video 查询路由 - 不需要 Distribute，从数据库查找渠道
