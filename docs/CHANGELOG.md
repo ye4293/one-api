@@ -8,6 +8,15 @@
 
 ## 2026-07-01
 
+### feat(gemini): Omni 视频结果接口透传上游 usage
+
+- **分支**: `gemini-omini`
+- **类型**: feat
+- **涉及文件**:
+  - `relay/model/general.go`
+  - `relay/channel/gemini/video_adaptor.go`
+- **说明**: `/v1/video/generations/result` 对 gemini-omni 的响应新增 `usage` 字段，透传上游 Interactions API 返回的完整 token 用量（total_tokens / input / output / cached / thought / tool_use 及按模态拆分明细）。扩展 `VideoUsage` 结构承载 token 字段；`HandleVideoResult` 成功路径与缓存命中路径（`buildCachedVideoResponse`）均从 `result` JSON 还原 usage，保持响应格式一致。
+
 ### feat(gemini): Omni 视频改为按真实 token 用量计费
 
 - **分支**: `gemini-omini`

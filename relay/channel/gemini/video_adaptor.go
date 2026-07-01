@@ -71,9 +71,14 @@ type interactionResponse struct {
 
 // interactionUsage 对应 Gemini Interactions API 返回的 usage 字段
 type interactionUsage struct {
-	TotalInputTokens  int64                      `json:"total_input_tokens"`
-	TotalOutputTokens int64                      `json:"total_output_tokens"`
-	OutputByModality  []interactionUsageModality `json:"output_tokens_by_modality,omitempty"`
+	TotalTokens        int64                      `json:"total_tokens"`
+	TotalInputTokens   int64                      `json:"total_input_tokens"`
+	TotalOutputTokens  int64                      `json:"total_output_tokens"`
+	TotalCachedTokens  int64                      `json:"total_cached_tokens"`
+	TotalThoughtTokens int64                      `json:"total_thought_tokens"`
+	TotalToolUseTokens int64                      `json:"total_tool_use_tokens"`
+	InputByModality    []interactionUsageModality `json:"input_tokens_by_modality,omitempty"`
+	OutputByModality   []interactionUsageModality `json:"output_tokens_by_modality,omitempty"`
 }
 
 type interactionUsageModality struct {
@@ -110,6 +115,34 @@ func ParseGeminiOmniUsage(rawJSON string) (GeminiOmniUsage, error) {
 		u.OutputTextTokens = 0
 	}
 	return u, nil
+}
+
+// buildVideoUsage 将上游 interactionUsage 转为响应中透传的 VideoUsage。
+func buildVideoUsage(u *interactionUsage) *model.VideoUsage {
+	if u == nil {
+		return nil
+	}
+	return &model.VideoUsage{
+		TotalTokens:            u.TotalTokens,
+		TotalInputTokens:       u.TotalInputTokens,
+		TotalOutputTokens:      u.TotalOutputTokens,
+		TotalCachedTokens:      u.TotalCachedTokens,
+		TotalThoughtTokens:     u.TotalThoughtTokens,
+		TotalToolUseTokens:     u.TotalToolUseTokens,
+		InputTokensByModality:  convertUsageModalities(u.InputByModality),
+		OutputTokensByModality: convertUsageModalities(u.OutputByModality),
+	}
+}
+
+func convertUsageModalities(in []interactionUsageModality) []model.VideoUsageModality {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]model.VideoUsageModality, len(in))
+	for i, m := range in {
+		out[i] = model.VideoUsageModality{Modality: m.Modality, Tokens: m.Tokens}
+	}
+	return out
 }
 
 type interactionStep struct {
@@ -249,6 +282,11 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 			} else {
 				log.Printf("[GeminiOmni] Failed to parse usage for task %s: %v", taskId, parseErr)
 			}
+			// 透传上游 usage 到响应，供客户端查看真实 token 用量
+			var interResp interactionResponse
+			if json.Unmarshal([]byte(rawJSON), &interResp) == nil {
+				result.Usage = buildVideoUsage(interResp.Usage)
+			}
 		}
 	case "failed":
 		result.TaskStatus = "failed"
@@ -376,7 +414,7 @@ func buildCachedVideoResponse(taskId string, videoTask *dbmodel.Video) *model.Ge
 	for i, u := range videoUrls {
 		videoResults[i] = model.VideoResultItem{Url: u}
 	}
-	return &model.GeneralFinalVideoResponse{
+	resp := &model.GeneralFinalVideoResponse{
 		TaskId:       taskId,
 		VideoResult:  videoUrls[0],
 		VideoId:      taskId,
@@ -385,6 +423,14 @@ func buildCachedVideoResponse(taskId string, videoTask *dbmodel.Video) *model.Ge
 		VideoResults: videoResults,
 		Duration:     videoTask.Duration,
 	}
+	// 缓存命中时从已落库的 result JSON 还原 usage，保持响应格式一致
+	if videoTask.Result != "" {
+		var interResp interactionResponse
+		if json.Unmarshal([]byte(videoTask.Result), &interResp) == nil {
+			resp.Usage = buildVideoUsage(interResp.Usage)
+		}
+	}
+	return resp
 }
 
 func extractVideoFromInteraction(resp *interactionResponse) string {
