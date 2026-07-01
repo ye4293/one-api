@@ -6,6 +6,48 @@
 
 ---
 
+## 2026-07-01
+
+### feat(gemini): Omni 视频改为按真实 token 用量计费
+
+- **分支**: `gemini-omini`
+- **类型**: feat
+- **涉及文件**:
+  - `common/video-pricing.go`
+  - `relay/channel/gemini/video_adaptor.go`
+  - `relay/channel/gemini/billing.go`（新增）
+  - `relay/model/general.go`
+  - `model/video.go`
+  - `relay/controller/video.go`
+  - `controller/gemini_video_poller.go`
+- **说明**: 废弃创建时固定扣 $0.20 的占位计费，改为按 Gemini 官方 token 定价（输入 $1.50/M、输出文本 $9/M、输出视频 $17.50/M）。创建任务不扣费不记消费 log，任务成功完成后从上游 `usage` 解析真实 token 计数、计算 quota 并异步扣费记 log。并发安全参考 flux：`Video.UpdateIfNotTerminal` CAS（`WHERE status NOT IN ('succeed','failed')`）保证后台 poller 与用户主动查询两条路径只扣一次；CAS 赢得竞争后 goroutine 异步执行 `PostConsumeTokenQuota` 扣费（记入 Token 维度，token_id 来自 `videos.token_id`，创建时落库）并记消费 log（真实 PromptTokens/CompletionTokens）。`videos.quota` 记总费用、`videos.result` 记完整上游 JSON。失败任务不扣不退。创建时保留 $0.2 最低余额门槛（`GetPrePaymentQuota` 返回 $0.2 用于余额校验但不实际预扣）防透支；无 TokenId 时降级为只扣用户余额。
+- **关联计划**: `docs/plans/2026-07-01-gemini-omni-usage-based-billing.md`
+- **运维提示**: 已部署实例 DB 中旧的 `gemini-omni-flash-preview` fixed $0.20 定价规则不会自动删除（虽不再生效），建议在管理后台清理。
+
+### fix(gemini): Omni 视频任务正确保存 prompt 至 videos 表
+- **分支**: `gemini-omini`
+- **类型**: fix
+- **涉及文件**:
+  - `relay/channel/interface.go`
+  - `relay/channel/gemini/video_adaptor.go`
+  - `relay/controller/video.go`
+  - `relay/controller/directvideo.go`
+  - `relay/controller/directvideo_xai.go`
+- **说明**: `VideoTaskResult` 新增 `Prompt` 字段，Gemini adaptor 提交任务时回填 `req.Prompt`，`invokeVideoAdaptorRequest` 将其透传给 `CreateVideoLog`，使 `videos.prompt` 列记录真实用户输入（此前硬编码为字面量 `"prompt"`）。其余 9 处非 adaptor 调用点补 `""` 占位以修复因 `CreateVideoLog` 签名变更导致的编译失败。
+- **关联计划**: `docs/plans/2026-07-01-gemini-prompt-persist.md`
+
+### feat(gemini): Omni 视频查询结果落库到 videos.result 字段
+- **分支**: `gemini-omini`
+- **类型**: feat
+- **涉及文件**:
+  - `model/video.go`
+  - `relay/channel/gemini/video_adaptor.go`
+  - `controller/gemini_video_poller.go`
+- **说明**: `FetchAndStoreVideoResult` 增加返回上游完整响应体 `rawJSON`；用户主动查询（`HandleVideoResult`）与后台 poller 各自将其写入 `videos.result` 字段。新增 `model.UpdateVideoResult` 方法。每次查询覆盖为最新一次上游响应。
+- **关联计划**: `docs/plans/2026-07-01-gemini-prompt-persist.md`
+
+---
+
 ## 2026-06-25
 
 ### fix(stream): 修复 wg.Add 竞态、跳过空 EndReason、补充 None 测试

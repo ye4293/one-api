@@ -123,6 +123,12 @@ type GeneralFinalVideoResponse struct {
 	Duration      string            `json:"duration"`
 	Usage         *VideoUsage       `json:"usage,omitempty"`
 	VideoDuration float64           `json:"video_duration,omitempty"` // 输入视频时长（秒），仅编辑/延伸场景
+
+	// 以下字段仅用于 Gemini Omni 按 token 计费的内部传递，不返回客户端
+	InputTokens       int64 `json:"-"`
+	OutputTextTokens  int64 `json:"-"`
+	OutputVideoTokens int64 `json:"-"`
+	RawResult         string `json:"-"`
 }
 
 type GeneralImageResponseAsync struct {

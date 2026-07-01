@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	openaiAdaptor "github.com/songquanpeng/one-api/relay/channel/openai"
@@ -23,6 +23,12 @@ type VideoAdaptor struct {
 func (a *VideoAdaptor) GetProviderName() string      { return "gemini-omni" }
 func (a *VideoAdaptor) GetChannelName() string       { return "Gemini Omni Flash" }
 func (a *VideoAdaptor) GetSupportedModels() []string { return []string{"gemini-omni-flash-preview"} }
+
+// GetPrePaymentQuota 创建时不实际预扣费（Gemini Omni 改为成功完成后按真实 token 用量计费），
+// 但保留 $0.2 的最低余额门槛用于创建时的余额校验，防止余额为 0 时无限提交任务透支。
+func (a *VideoAdaptor) GetPrePaymentQuota() int64 {
+	return int64(0.2 * config.QuotaPerUnit)
+}
 
 // --- Interactions API 请求/响应结构体 ---
 
@@ -60,6 +66,50 @@ type interactionResponse struct {
 	} `json:"error,omitempty"`
 	Steps   []interactionStep   `json:"steps,omitempty"`
 	Outputs []interactionOutput `json:"outputs,omitempty"`
+	Usage   *interactionUsage   `json:"usage,omitempty"`
+}
+
+// interactionUsage 对应 Gemini Interactions API 返回的 usage 字段
+type interactionUsage struct {
+	TotalInputTokens  int64                      `json:"total_input_tokens"`
+	TotalOutputTokens int64                      `json:"total_output_tokens"`
+	OutputByModality  []interactionUsageModality `json:"output_tokens_by_modality,omitempty"`
+}
+
+type interactionUsageModality struct {
+	Modality string `json:"modality"`
+	Tokens   int64  `json:"tokens"`
+}
+
+// GeminiOmniUsage 计费用 token 计数
+type GeminiOmniUsage struct {
+	InputTokens       int64
+	OutputTextTokens  int64 // 含思考 token（= total_output - video）
+	OutputVideoTokens int64
+}
+
+// ParseGeminiOmniUsage 从上游完整响应 JSON 解析计费用的 token 计数。
+// 输出文本 = total_output_tokens - video_tokens（思考 token 计入文本，符合官方"输出文本包括思考 token"）。
+func ParseGeminiOmniUsage(rawJSON string) (GeminiOmniUsage, error) {
+	var resp interactionResponse
+	if err := json.Unmarshal([]byte(rawJSON), &resp); err != nil {
+		return GeminiOmniUsage{}, err
+	}
+	var u GeminiOmniUsage
+	if resp.Usage == nil {
+		return u, nil
+	}
+	u.InputTokens = resp.Usage.TotalInputTokens
+	for _, m := range resp.Usage.OutputByModality {
+		if m.Modality == "video" {
+			u.OutputVideoTokens = m.Tokens
+		}
+	}
+	u.OutputTextTokens = resp.Usage.TotalOutputTokens - u.OutputVideoTokens
+	if u.OutputTextTokens < 0 {
+		u.OutputTextTokens = 0
+	}
+	return u, nil
 }
 
 type interactionStep struct {
@@ -134,13 +184,13 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 			fmt.Errorf("no interaction ID in response"), "invalid_response", http.StatusInternalServerError)
 	}
 
-	quota := common.CalculateVideoQuota("gemini-omni-flash-preview", "", "", "8", "", "")
-
+	// 创建时不扣费：改为任务成功完成后按真实 token 用量计费（见 applyGeminiOmniSuccess）。
 	return &relaychannel.VideoTaskResult{
 		TaskId:      interResp.ID,
-		TaskStatus:  "succeed",
+		TaskStatus:  "succeed", // 仅表示任务已受理
 		Credentials: meta.ActualAPIKey,
-		Quota:       quota,
+		Quota:       0,
+		Prompt:      req.Prompt,
 	}, nil
 }
 
@@ -164,9 +214,16 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 
-	status, videoURL, failReason, err := FetchAndStoreVideoResult(baseURL, apiKey, taskId, videoTask.UserId)
+	status, videoURL, failReason, rawJSON, err := FetchAndStoreVideoResult(baseURL, apiKey, taskId, videoTask.UserId)
 	if err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+
+	// 将上游完整响应 JSON 落库到 videos.result
+	if rawJSON != "" {
+		if jsonErr := dbmodel.UpdateVideoResult(taskId, rawJSON); jsonErr != nil {
+			log.Printf("[GeminiOmni] Failed to save result JSON for task %s: %v", taskId, jsonErr)
+		}
 	}
 
 	result := &model.GeneralFinalVideoResponse{
@@ -181,6 +238,18 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		result.Message = "Video generated successfully"
 		result.VideoResult = videoURL
 		result.VideoResults = []model.VideoResultItem{{Url: videoURL}}
+		// 解析真实 usage 供 controller 按 token 计费；DB 状态/扣费由 controller 的
+		// applyGeminiOmniSuccess 通过 CAS 统一处理，此处不更新 DB。
+		if rawJSON != "" {
+			result.RawResult = rawJSON
+			if usage, parseErr := ParseGeminiOmniUsage(rawJSON); parseErr == nil {
+				result.InputTokens = usage.InputTokens
+				result.OutputTextTokens = usage.OutputTextTokens
+				result.OutputVideoTokens = usage.OutputVideoTokens
+			} else {
+				log.Printf("[GeminiOmni] Failed to parse usage for task %s: %v", taskId, parseErr)
+			}
+		}
 	case "failed":
 		result.TaskStatus = "failed"
 		result.Message = failReason
@@ -197,49 +266,52 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 // FetchAndStoreVideoResult 从 Gemini Interactions API 获取视频生成结果。
 // 若已完成则下载视频并转存到 R2，返回安全的公开 URL。
 // API Key 仅用于服务端内部请求，不会暴露给终端用户。
-func FetchAndStoreVideoResult(baseURL, apiKey, taskId string, userId int) (status string, videoURL string, failReason string, err error) {
+func FetchAndStoreVideoResult(baseURL, apiKey, taskId string, userId int) (status string, videoURL string, failReason string, rawJSON string, err error) {
 	fullURL := fmt.Sprintf("%s/v1beta/interactions/%s?key=%s", baseURL, taskId, apiKey)
 
 	resp, respBody, reqErr := relaychannel.SendVideoResultQuery(fullURL, nil)
 	if reqErr != nil {
-		return "", "", "", fmt.Errorf("request failed: %v", reqErr)
+		return "", "", "", "", fmt.Errorf("request failed: %v", reqErr)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", "", fmt.Errorf("Interactions API returned HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", "", "", "", fmt.Errorf("Interactions API returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var interResp interactionResponse
 	if jsonErr := json.Unmarshal(respBody, &interResp); jsonErr != nil {
-		return "", "", "", fmt.Errorf("failed to parse response: %v", jsonErr)
+		return "", "", "", "", fmt.Errorf("failed to parse response: %v", jsonErr)
 	}
+
+	// 上游完整响应体，供调用方落库到 videos.result
+	rawJSON = string(respBody)
 
 	switch interResp.Status {
 	case "completed":
 		rawURL := extractVideoFromInteraction(&interResp)
 		if rawURL == "" {
-			return "failed", "", "Interaction completed but no video output found", nil
+			return "failed", "", "Interaction completed but no video output found", rawJSON, nil
 		}
 
 		finalURL, storeErr := storeVideoToR2(rawURL, apiKey, userId)
 		if storeErr != nil {
 			log.Printf("[GeminiOmni] R2 upload failed for task %s: %v", taskId, storeErr)
-			return "processing", "", "", nil
+			return "processing", "", "", rawJSON, nil
 		}
-		return "succeed", finalURL, "", nil
+		return "succeed", finalURL, "", rawJSON, nil
 
 	case "failed":
 		reason := "Video generation failed"
 		if interResp.Error != nil {
 			reason = interResp.Error.Message
 		}
-		return "failed", "", reason, nil
+		return "failed", "", reason, rawJSON, nil
 
 	case "cancelled":
-		return "failed", "", "Video generation was cancelled", nil
+		return "failed", "", "Video generation was cancelled", rawJSON, nil
 
 	default:
-		return "processing", "", "", nil
+		return "processing", "", "", rawJSON, nil
 	}
 }
 
