@@ -57,6 +57,8 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 		modelName != "kling-identify-face" &&
 		modelName != "kling-advanced-lip-sync":
 		return &keling.VideoAdaptor{}
+	case strings.HasPrefix(modelName, "gemini-omni"):
+		return &gemini.VideoAdaptor{}
 	case strings.HasPrefix(modelName, "veo"):
 		return &vertexai.VideoAdaptor{}
 	case strings.HasPrefix(strings.ToLower(modelName), "sora") ||
@@ -87,6 +89,8 @@ func GetVideoAdaptorByProvider(provider string) channel.VideoAdaptor {
 		return &doubao.VideoAdaptor{}
 	case "kling":
 		return &keling.VideoAdaptor{}
+	case "gemini-omni":
+		return &gemini.VideoAdaptor{}
 	case "vertexai":
 		return &vertexai.VideoAdaptor{}
 	case "sora":
