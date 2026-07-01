@@ -23,16 +23,19 @@ func athenaDeadline(ctx context.Context) time.Time {
 }
 
 func (c *awsAuditClient) executeQuery(ctx context.Context, sql string) (*athena.GetQueryResultsOutput, error) {
-	startOut, err := c.ath.StartQueryExecution(ctx, &athena.StartQueryExecutionInput{
+	input := &athena.StartQueryExecutionInput{
 		QueryString: aws.String(sql),
 		QueryExecutionContext: &athenaTypes.QueryExecutionContext{
 			Database: aws.String(c.cfg.AthenaDatabase),
 		},
-		WorkGroup: aws.String(c.cfg.AthenaWorkgroup),
 		ResultConfiguration: &athenaTypes.ResultConfiguration{
 			OutputLocation: aws.String(c.cfg.S3OutputLocation),
 		},
-	})
+	}
+	if c.cfg.AthenaWorkgroup != "" {
+		input.WorkGroup = aws.String(c.cfg.AthenaWorkgroup)
+	}
+	startOut, err := c.ath.StartQueryExecution(ctx, input)
 	if err != nil {
 		return nil, fmt.Errorf("athena StartQueryExecution: %w", err)
 	}
@@ -53,16 +56,19 @@ func (c *awsAuditClient) executeQuery(ctx context.Context, sql string) (*athena.
 }
 
 func (c *awsAuditClient) executeQueryAllPages(ctx context.Context, sql string) ([]athenaTypes.Row, []athenaTypes.ColumnInfo, error) {
-	startOut, err := c.ath.StartQueryExecution(ctx, &athena.StartQueryExecutionInput{
+	input2 := &athena.StartQueryExecutionInput{
 		QueryString: aws.String(sql),
 		QueryExecutionContext: &athenaTypes.QueryExecutionContext{
 			Database: aws.String(c.cfg.AthenaDatabase),
 		},
-		WorkGroup: aws.String(c.cfg.AthenaWorkgroup),
 		ResultConfiguration: &athenaTypes.ResultConfiguration{
 			OutputLocation: aws.String(c.cfg.S3OutputLocation),
 		},
-	})
+	}
+	if c.cfg.AthenaWorkgroup != "" {
+		input2.WorkGroup = aws.String(c.cfg.AthenaWorkgroup)
+	}
+	startOut, err := c.ath.StartQueryExecution(ctx, input2)
 	if err != nil {
 		return nil, nil, fmt.Errorf("athena StartQueryExecution: %w", err)
 	}

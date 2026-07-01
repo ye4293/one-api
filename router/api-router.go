@@ -85,6 +85,12 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.PUT("/", controller.UpdateOption)
 		}
 
+		auditAdminRoute := apiRouter.Group("/audit")
+		auditAdminRoute.Use(middleware.RootAuth())
+		{
+			auditAdminRoute.POST("/compaction", controller.TriggerAuditCompaction)
+		}
+
 		// 模型价格管理相关路由（需要管理员权限）
 		pricingRoute := apiRouter.Group("/pricing")
 		pricingRoute.Use(middleware.AdminAuth())

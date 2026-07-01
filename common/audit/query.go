@@ -30,10 +30,10 @@ type AuditSummary struct {
 
 type AuditDetail struct {
 	AuditSummary
-	OriginalReqHeaders      string   `json:"original_req_headers"`
 	OriginalReqBody         string   `json:"original_req_body"`
-	ConvertedReqHeaders     string   `json:"converted_req_headers"`
+	OriginalReqHeaders      string   `json:"original_req_headers"`
 	ConvertedReqBody        string   `json:"converted_req_body"`
+	ConvertedReqHeaders     string   `json:"converted_req_headers"`
 	ConvertedSameAsOriginal bool     `json:"converted_same_as_original"`
 	UpstreamResponse        string   `json:"upstream_response"`
 	ClientResponse          string   `json:"client_response"`
@@ -73,13 +73,23 @@ func QueryLogs(ctx context.Context, params QueryParams) ([]AuditSummary, int64, 
 	}
 
 	offset := (params.Page - 1) * params.PageSize
+	rowStart := offset + 1
+	rowEnd := offset + params.PageSize
+	// Athena 不支持 LIMIT...OFFSET，用 ROW_NUMBER() 子查询分页
 	sql := fmt.Sprintf(
 		`SELECT event_time, x_request_id, user_id, username, channel_id,
 		 token_name, origin_model, actual_model, is_stream,
-		 status_code, duration_ms, dropped_note,
-		 COUNT(*) OVER() AS _total
-		 FROM %s %s ORDER BY event_time DESC LIMIT %d OFFSET %d`,
-		tableRef, where, params.PageSize, offset)
+		 status_code, duration_ms, dropped_note, _total
+		 FROM (
+		   SELECT event_time, x_request_id, user_id, username, channel_id,
+		          token_name, origin_model, actual_model, is_stream,
+		          status_code, duration_ms, dropped_note,
+		          COUNT(*) OVER() AS _total,
+		          ROW_NUMBER() OVER(ORDER BY event_time DESC) AS _rn
+		   FROM %s %s
+		 ) t
+		 WHERE _rn >= %d AND _rn <= %d`,
+		tableRef, where, rowStart, rowEnd)
 
 	result, err := awsClient.executeQuery(ctx, sql)
 	if err != nil {
@@ -120,6 +130,20 @@ func QueryDetail(ctx context.Context, xRequestID string, startTS, endTS int64) (
 	}
 
 	detail := parseAuditDetailRow(result.ResultSet.Rows[1], result.ResultSet.ResultSetMetadata.ColumnInfo)
+
+	// 若四个 body 字段均为空且配置了 S3，按规则推导 key 尝试拉取
+	if detail.OriginalReqBody == "" && detail.UpstreamResponse == "" &&
+		detail.ClientResponse == "" && pkgConfig.BodyS3Bucket != "" {
+		s3Key := bodyS3Key(pkgConfig, detail.EventTime, xRequestID)
+		doc, err := awsClient.fetchBodyFromS3(ctx, s3Key)
+		if err == nil {
+			detail.OriginalReqBody = doc.OriginalReqBody
+			detail.ConvertedReqBody = doc.ConvertedReqBody
+			detail.UpstreamResponse = doc.UpstreamResponse
+			detail.ClientResponse = doc.ClientResponse
+		}
+	}
+
 	return detail, nil
 }
 

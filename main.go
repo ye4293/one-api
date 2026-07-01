@@ -92,6 +92,7 @@ func main() {
 	}
 	var err error
 	// Initialize SQL Database
+	os.Setenv("SQL_DSN", "root:root@tcp(127.0.0.1:3306)/oneapi")
 	model.DB, err = model.InitDB("SQL_DSN")
 	if err != nil {
 		logger.FatalLog("failed to initialize database: " + err.Error())

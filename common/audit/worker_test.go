@@ -76,12 +76,11 @@ func TestShutdownFlushesRemaining(t *testing.T) {
 		mu.Unlock()
 	}
 	recordChan = make(chan *AuditRecord, 10)
-	done := make(chan struct{})
-	go func() { ingestLoop(); close(done) }()
+	ingestDone = make(chan struct{})
+	go func() { ingestLoop(); close(ingestDone) }()
 	Submit(&AuditRecord{})
 	Submit(&AuditRecord{})
-	Shutdown() // 关闭 channel，ingestLoop 收尾 flush 残余并退出
-	<-done
+	Shutdown() // 等待 ingestLoop flush 完毕后返回
 	mu.Lock()
 	defer mu.Unlock()
 	if got != 2 {

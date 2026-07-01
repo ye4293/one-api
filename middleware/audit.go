@@ -17,7 +17,9 @@ type auditRespWriter struct {
 }
 
 func (w *auditRespWriter) Write(b []byte) (int, error) {
-	if remain := w.limit - w.buf.Len(); remain > 0 {
+	if w.limit <= 0 {
+		w.buf.Write(b)
+	} else if remain := w.limit - w.buf.Len(); remain > 0 {
 		if len(b) > remain {
 			w.buf.Write(b[:remain])
 			w.trunc = true

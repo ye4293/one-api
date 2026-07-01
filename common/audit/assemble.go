@@ -55,6 +55,31 @@ func BuildAndSubmit(c *gin.Context, in FinalizeInput) {
 
 	sameAsOrig := ac.ConvertedReqBody != "" && ac.ConvertedReqBody == origBody
 
+	// 检查四个 body 字段总大小是否超过 S3 阈值
+	convBody := ac.ConvertedReqBody
+	if sameAsOrig {
+		convBody = ""
+	}
+	totalBodySize := len(origBody) + len(convBody) + len(ac.UpstreamResponse) + len(in.ClientResponse)
+	threshold := pkgConfig.BodyS3ThresholdKB * 1024
+
+	var s3Key string
+	if pkgConfig.BodyS3Bucket != "" && threshold > 0 && totalBodySize > threshold {
+		xrid := c.GetString("X-Request-ID")
+		s3Key = bodyS3Key(pkgConfig, in.Start, xrid)
+		uploadBodyAsync(pkgConfig, awsClient.s3c, s3Key, bodyDoc{
+			OriginalReqBody:  origBody,
+			ConvertedReqBody: convBody,
+			UpstreamResponse: ac.UpstreamResponse,
+			ClientResponse:   in.ClientResponse,
+		})
+		// body 字段留空，Iceberg 只存 key
+		origBody = ""
+		convBody = ""
+		ac.UpstreamResponse = ""
+		in.ClientResponse = ""
+	}
+
 	r := &AuditRecord{
 		EventTime:               in.Start,
 		XRequestID:              c.GetString("X-Request-ID"),
@@ -70,7 +95,7 @@ func BuildAndSubmit(c *gin.Context, in FinalizeInput) {
 		OriginalReqHeaders:      origHeaders,
 		OriginalReqBody:         origBody,
 		ConvertedReqHeaders:     convHeaders,
-		ConvertedReqBody:        ac.ConvertedReqBody,
+		ConvertedReqBody:        convBody,
 		ConvertedSameAsOriginal: sameAsOrig,
 		UpstreamResponse:        ac.UpstreamResponse,
 		ClientResponse:          in.ClientResponse,

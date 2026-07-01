@@ -12,6 +12,7 @@ import (
 	firehoseTypes "github.com/aws/aws-sdk-go-v2/service/firehose/types"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	glueTypes "github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/songquanpeng/one-api/common/logger"
 )
 
@@ -20,6 +21,7 @@ type awsAuditClient struct {
 	fh   *firehose.Client
 	ath  *athena.Client
 	glue *glue.Client
+	s3c  *s3.Client
 }
 
 func newAWSClient(cfg *auditConfig) *awsAuditClient {
@@ -35,6 +37,7 @@ func newAWSClient(cfg *auditConfig) *awsAuditClient {
 		fh:   firehose.NewFromConfig(opts),
 		ath:  athena.NewFromConfig(opts),
 		glue: glue.NewFromConfig(opts),
+		s3c:  s3.NewFromConfig(opts),
 	}
 }
 
@@ -122,6 +125,63 @@ func (c *awsAuditClient) ensureGlueResources(ctx context.Context) error {
 		return fmt.Errorf("glue CreateDatabase: %w", err)
 	}
 
+	if c.cfg.AthenaWorkgroup != "" && c.cfg.S3OutputLocation != "" {
+		if err := c.ensureTableViaAthena(ctx); err != nil {
+			return err
+		}
+	} else {
+		if err := c.ensureTableViaGlue(ctx); err != nil {
+			return err
+		}
+	}
+
+	logger.SysLog("audit: Glue resources ensured (database=" + c.cfg.AthenaDatabase + ", table=" + c.cfg.AthenaTable + ")")
+	return nil
+}
+
+// ensureTableViaAthena 用一条 Athena SQL 建表并设置 day(event_time) 分区，幂等。
+func (c *awsAuditClient) ensureTableViaAthena(ctx context.Context) error {
+	tCtx, cancel := context.WithTimeout(ctx, 120*1e9) // 120s
+	defer cancel()
+	sql := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s (
+  event_time                 timestamp,
+  x_request_id              string,
+  user_id                   int,
+  username                  string,
+  channel_id                int,
+  token_name                string,
+  origin_model              string,
+  actual_model              string,
+  is_stream                 boolean,
+  status_code               int,
+  duration_ms               bigint,
+  original_req_headers      string,
+  original_req_body         string,
+  converted_req_headers     string,
+  converted_req_body        string,
+  converted_same_as_original boolean,
+  upstream_response         string,
+  client_response           string,
+  truncated_fields          array<string>,
+  dropped_note              string
+)
+PARTITIONED BY (day(event_time))
+LOCATION '%s'
+TBLPROPERTIES (
+  'table_type'='ICEBERG',
+  'format'='parquet',
+  'write_compression'='zstd'
+)`, c.cfg.AthenaDatabase, c.cfg.AthenaTable, c.cfg.S3DataLocation)
+	_, err := c.executeQuery(tCtx, sql)
+	if err != nil {
+		return fmt.Errorf("athena CreateTable: %w", err)
+	}
+	logger.SysLog("audit: table with day(event_time) partition ensured via Athena")
+	return nil
+}
+
+// ensureTableViaGlue 通过 Glue API 建表（无分区），在未配置 Athena workgroup 时使用。
+func (c *awsAuditClient) ensureTableViaGlue(ctx context.Context) error {
 	columns := []glueTypes.Column{
 		{Name: aws.String("event_time"), Type: aws.String("timestamp")},
 		{Name: aws.String("x_request_id"), Type: aws.String("string")},
@@ -144,8 +204,7 @@ func (c *awsAuditClient) ensureGlueResources(ctx context.Context) error {
 		{Name: aws.String("truncated_fields"), Type: aws.String("array<string>")},
 		{Name: aws.String("dropped_note"), Type: aws.String("string")},
 	}
-
-	_, err = c.glue.CreateTable(ctx, &glue.CreateTableInput{
+	_, err := c.glue.CreateTable(ctx, &glue.CreateTableInput{
 		DatabaseName: aws.String(c.cfg.AthenaDatabase),
 		OpenTableFormatInput: &glueTypes.OpenTableFormatInput{
 			IcebergInput: &glueTypes.IcebergInput{
@@ -161,18 +220,14 @@ func (c *awsAuditClient) ensureGlueResources(ctx context.Context) error {
 			},
 			TableType: aws.String("EXTERNAL_TABLE"),
 			Parameters: map[string]string{
-				"table_type":              "ICEBERG",
-				"format":                  "parquet",
-				"write_compression":       "zstd",
-				"optimize_rewrite_delete_file_threshold": "2",
+				"format":            "parquet",
+				"write_compression": "zstd",
 			},
 		},
 	})
 	if err != nil && !isAlreadyExistsError(err) {
 		return fmt.Errorf("glue CreateTable: %w", err)
 	}
-
-	logger.SysLog("audit: Glue resources ensured (database=" + c.cfg.AthenaDatabase + ", table=" + c.cfg.AthenaTable + ")")
 	return nil
 }
 

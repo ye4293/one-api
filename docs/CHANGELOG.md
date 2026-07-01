@@ -6,7 +6,31 @@
 
 ---
 
-## 2026-06-23
+## 2026-07-01
+
+### feat(audit): 为 /v1/messages (Claude 原生) 添加 audit 埋点
+- **分支**: `AthenaQuery`
+- **类型**: 新功能
+- **涉及文件**: `relay/controller/claude.go`
+- **说明**: 引入 `common/audit` 包，在 `RelayClaudeNative` 中调用 `SetMeta`（记录 isStream 和实际模型名）和 `SetConvertedBody`（记录转发给上游的请求体）；非流式路径在 `doNativeClaudeResponse` 中调用 `SetUpstreamResponse`；流式路径在 `doNativeClaudeStreamResponse` 中调用 `WrapUpstreamBody`，通过 TeeReader 透明捕获上游 SSE 数据。
+
+---
+
+## 2026-06-29
+
+### feat(audit): 审计配置热重载，保存后无需重启服务
+- **分支**: `AthenaQuery`
+- **类型**: 新功能
+- **涉及文件**: `common/audit/manager.go`, `model/option.go`, `common/audit/worker_test.go`
+- **说明**: `manager.go` 用 mutex+`hasStarted` 替换 `sync.Once`，提取 `doStart`/`doStop`，新增 `Reload()`。`model/option.go` 在 `updateOptionMap` 里对 key `auditConfig` 触发 `go audit.Reload()`（goroutine 避免锁重入）。保存配置后审计模块自动停止旧实例并以新配置重启，无需重启进程。
+
+### feat(audit): 将 9 个性能配置字段纳入 auditConfig JSON，支持前端覆盖
+- **分支**: `AthenaQuery`
+- **类型**: 新功能
+- **涉及文件**: `common/audit/config.go`, `d:/my/ezlinkai-web/sections/setting/view/settingPage.tsx`
+- **说明**: `loadConfig()` 新增解析 `channelSize`、`maxBufferMB`、`diskBufferDir`、`diskBufferMaxGB`、`batchSize`、`flushIntervalSec`、`maxBodyKB`、`maxRespKB`、`retentionDays` 9 个字段；整数 > 0 / 字符串非空时覆盖环境变量默认值。前端新增"高级性能配置"区块，留空则沿用默认值。
+
+
 
 ### fix(audit): 修复代码审查发现的 7 项数据完整性、竞态和性能问题
 - **分支**: `AthenaQuery`

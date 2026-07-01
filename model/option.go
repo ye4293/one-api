@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 )
@@ -525,6 +526,8 @@ func updateOptionMap(key string, value string) (err error) {
 		config.AuditRetentionDays, _ = strconv.Atoi(value)
 	case "AuditRedactHeaders":
 		config.AuditRedactHeaders = value
+	case "auditConfig":
+		go audit.Reload()
 	}
 	return err
 }

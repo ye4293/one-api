@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -74,6 +75,8 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 
 	meta.IsStream = openaiResponseRequest.Stream
+	audit.SetMeta(c, openaiResponseRequest.Stream, meta.ActualModelName)
+	audit.SetConvertedBody(c, string(originRequestBody))
 	// 计算预消费配额
 	groupRatio := util.GetBillingGroupRatio(c, group)
 	modelRatio := common.GetModelRatio(modelName)
@@ -392,6 +395,8 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		}
 	}
 
+	audit.SetUpstreamResponse(c, responseBody)
+
 	// 解析 openai response 原生响应
 	var openaiResponse openai.OpenaiResaponseResponse
 	if unmarshalErr := json.Unmarshal(responseBody, &openaiResponse); unmarshalErr != nil {
@@ -435,6 +440,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	var openaiErr *model.ErrorWithStatusCode
 	var fullText strings.Builder // 累积完整文本
 	webSearchToolCallCount := 0
+	audit.WrapUpstreamBody(c, resp)
 	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
 		var streamResponse openai.OpenaiResponseStreamResponse
 		err := json.Unmarshal([]byte(data), &streamResponse)
