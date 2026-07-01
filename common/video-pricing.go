@@ -62,6 +62,8 @@ var DefaultVideoPricingRules = []VideoPricingRule{
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "std", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "pro", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.0, Currency: "CNY", Priority: 10},
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 5},
+	// gemini-omni-flash-preview，固定价格 $0.20/次（暂无官方定价，预估值）
+	{Model: "gemini-omni-flash-preview", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypeFixed, Price: 0.20, Currency: "USD", Priority: 10},
 }
 
 func init() {
