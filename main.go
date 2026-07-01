@@ -185,6 +185,11 @@ func main() {
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())
 	})
+
+	// 启动 Gemini Omni 视频任务轮询器
+	common.SafeGoroutine(func() {
+		controller.StartGeminiOmniVideoTaskPoller(context.Background())
+	})
 	
 	// 启动 Goroutine 监控
 	go monitorGoroutines()
