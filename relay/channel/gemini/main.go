@@ -1042,6 +1042,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 							usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
 						case "AUDIO":
 							usage.CompletionTokensDetails.AudioTokens = detail.TokenCount
+						case "TEXT":
+							usage.CompletionTokensDetails.TextTokens = detail.TokenCount
 						}
 					}
 
@@ -1175,6 +1177,8 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 				usage.CompletionTokensDetails.ImageTokens = detail.TokenCount
 			case "AUDIO":
 				usage.CompletionTokensDetails.AudioTokens = detail.TokenCount
+			case "TEXT":
+				usage.CompletionTokensDetails.TextTokens = detail.TokenCount
 			}
 		}
 	}

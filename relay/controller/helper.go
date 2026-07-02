@@ -344,6 +344,23 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			}
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
+		// 当有图像/推理 token 分类时追加 usageDetails
+		details := UsageDetailsForLog{
+			InputText:       usage.PromptTokensDetails.TextTokens,
+			InputImage:      usage.PromptTokensDetails.ImageTokens,
+			OutputText:      usage.CompletionTokensDetails.TextTokens,
+			OutputImage:     usage.CompletionTokensDetails.ImageTokens,
+			OutputReasoning: usage.CompletionTokensDetails.ReasoningTokens,
+			CachedTokens:    cachedTokens,
+		}
+		if b, err := json.Marshal(details); err == nil {
+			usageInfo := fmt.Sprintf("usageDetails:%s", string(b))
+			if otherInfo != "" {
+				otherInfo = otherInfo + ";" + usageInfo
+			} else {
+				otherInfo = usageInfo
+			}
+		}
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 把流式结束状态（如有）拼进 other
