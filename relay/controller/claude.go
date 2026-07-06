@@ -107,6 +107,10 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 		}
 	}
 
+	// [映射调试] 打印发往上游官方的请求体与模型映射信息（调试完成后删除）
+	logger.Info(ctx, fmt.Sprintf("[映射调试] channel=%d OriginModel=%s ActualModel=%s ModelMapping=%v 上游请求体=%s",
+		channelId, meta.OriginModelName, meta.ActualModelName, meta.ModelMapping, string(originRequestBody)))
+
 	adaptor.Init(meta)
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewBuffer(originRequestBody))
 	if err != nil {
@@ -489,6 +493,9 @@ func doNativeClaudeResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		return nil, openai.ErrorWrapper(readErr, "read_response_body_failed", http.StatusInternalServerError)
 	}
 
+	// [映射调试] 打印上游官方返回的非流式响应体（调试完成后删除）
+	logger.Info(c.Request.Context(), fmt.Sprintf("[映射调试] 非流式上游响应 StatusCode=%d 响应体=%s", resp.StatusCode, string(responseBody)))
+
 	// 检查响应状态码
 	if resp.StatusCode != http.StatusOK {
 		// 获取系统内部的 requestID
@@ -545,6 +552,8 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		if readErr != nil {
 			return nil, openai.ErrorWrapper(readErr, "read_error_response_failed", http.StatusInternalServerError)
 		}
+		// [映射调试] 打印上游官方返回的流式错误响应体（调试完成后删除）
+		logger.Info(c.Request.Context(), fmt.Sprintf("[映射调试] 流式上游错误响应 StatusCode=%d 响应体=%s", resp.StatusCode, string(responseBody)))
 		// 获取系统内部的 requestID
 		requestID := c.GetHeader("X-Request-ID")
 		message, errType := parseUpstreamErrorMessage(responseBody, requestID)
