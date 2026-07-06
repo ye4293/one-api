@@ -98,13 +98,14 @@ func RelayClaudeNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	meta.PromptTokens = prePromptTokens
 
-	// 确保 max_tokens 存在（Claude API 必填字段），透传时用户可能未传
-	if claudeReq.MaxTokens == 0 {
-		var rawBody map[string]interface{}
-		if jsonErr := json.Unmarshal(originRequestBody, &rawBody); jsonErr == nil {
+	// 补全 max_tokens（Claude API 必填字段）并替换为映射后的模型名
+	var rawBody map[string]interface{}
+	if jsonErr := json.Unmarshal(originRequestBody, &rawBody); jsonErr == nil {
+		if claudeReq.MaxTokens == 0 {
 			rawBody["max_tokens"] = 4096
-			originRequestBody, _ = json.Marshal(rawBody)
 		}
+		rawBody["model"] = meta.ActualModelName
+		originRequestBody, _ = json.Marshal(rawBody)
 	}
 
 	adaptor.Init(meta)
@@ -592,7 +593,6 @@ func doNativeClaudeStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 			} else {
 				logger.Info(c.Request.Context(), fmt.Sprintf("[Claude Cache Debug] Usage为空，跳过缓存处理(流式) - ResponseID: %s", claudeResponse.Message.Id))
 			}
-
 		} else if claudeResponse.Type == "content_block_delta" {
 			// 首字时间由 StreamScannerHandler 统一设置，这里不需要处理
 		} else if claudeResponse.Type == "message_delta" {
