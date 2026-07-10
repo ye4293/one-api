@@ -58,6 +58,9 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Request, meta *ut
 	channel.SetupCommonRequestHeader(c, req, meta)
 	if meta.ChannelType == common.ChannelTypeAzure {
 		req.Header.Set("api-key", meta.APIKey)
+		if strings.HasPrefix(strings.Split(meta.RequestURLPath, "?")[0], "/v1/responses") {
+			req.Header.Set("x-ms-oai-image-generation-deployment", meta.ActualModelName)
+		}
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+meta.APIKey)
