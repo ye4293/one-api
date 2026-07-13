@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-07-13
+
+### feat(billing): 接入 gpt-5.6-sol/terra/luna，支持 cache_write 与 long-context 计费
+- **分支**: `dev-gpt-5.6`
+- **类型**: 新功能
+- **涉及文件**: `relay/model/misc.go`, `relay/channel/openai/model.go`, `common/model-ratio.go`, `relay/channel/openai/constants.go`, `relay/controller/helper.go`, `relay/controller/opeai_response.go`, `common/model_ratio_gpt56_test.go`
+- **说明**: 新增三个 OpenAI 兼容模型。为 `Usage.PromptTokensDetails` 与 `InputTokensDetails` 增加 `cache_write_tokens` 字段；`model-ratio.go` 配置三模型的 Model/Completion/Cache 倍率，并新增 `CacheWriteRatio`（写入 1.25x）+ `GetCacheWriteRatio` 与 `LongContextThreshold`（>272000 触发）+ `GetLongContextMultiplier`（2x）。chat 与 responses 两条计费链路均加入 cache_write 分项计费与 long-context 乘子。long 档全列 2x 通过翻倍 modelRatio 实现，无需第二套价格表。附单测覆盖倍率表、阈值边界与真实样本 quota。
+- **关联计划**: `docs/plans/2026-07-13-gpt-5.6-sol-luna-terra.md`
+
+---
+
 ## 2026-07-01
 
 ### feat(audit): 为 /v1/messages (Claude 原生) 添加 audit 埋点

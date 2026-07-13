@@ -253,11 +253,17 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 	cachedTokens := usage.PromptTokensDetails.CachedTokens
+	cacheWriteTokens := usage.PromptTokensDetails.CacheWriteTokens
 
 	billingModelName := meta.BillingModelName()
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
+	// long-context 分层定价：总输入超过阈值时整个请求价格 ×2（仅对注册了 long-context 的模型生效）。
+	// 因 long 档所有价格列统一翻倍，只需把 modelRatio（及无缓存分支用的 ratio）翻倍即可。
+	longMult := common.GetLongContextMultiplier(billingModelName, promptTokens)
+	modelRatio *= longMult
+	ratio *= longMult
 	// 预先获取计费参数，避免后续重复调用
 	modelPrice := common.GetModelPrice(billingModelName, false)
 	completionRatio := common.GetCompletionRatio(billingModelName)
@@ -270,17 +276,19 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		logContent = fmt.Sprintf("模型固定价格 %.2f$，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f", modelPrice, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio)
 	} else {
 		// 使用基于token的倍率计费
-		if cachedTokens > 0 {
-			// 有缓存命中：从输入 token 中扣除缓存部分，缓存按 cacheRatio 折扣计费
+		if cachedTokens > 0 || cacheWriteTokens > 0 {
+			// 有缓存读取或写入：从输入 token 中扣除缓存读取与写入部分，各按对应倍率计费
 			cacheRatio := common.GetCacheRatio(billingModelName)
-			nonCachedPromptTokens := promptTokens - cachedTokens
+			cacheWriteRatio := common.GetCacheWriteRatio(billingModelName)
+			nonCachedPromptTokens := promptTokens - cachedTokens - cacheWriteTokens
 			if nonCachedPromptTokens < 0 {
 				nonCachedPromptTokens = 0
 			}
 			inputQuota := float64(nonCachedPromptTokens) * modelRatio * groupRatio
 			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * groupRatio
+			cacheWriteQuota := float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * groupRatio
 			outputQuota := float64(completionTokens) * modelRatio * completionRatio * groupRatio
-			quota = int64(math.Ceil(inputQuota + cacheQuota + outputQuota))
+			quota = int64(math.Ceil(inputQuota + cacheQuota + cacheWriteQuota + outputQuota))
 		} else {
 			quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
 		}
@@ -293,7 +301,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			// we cannot just return, because we may have to return the pre-consumed quota
 			quota = 0
 		}
-		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio)
+		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f，long档倍率 %.1f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio, longMult)
 	}
 
 	quotaDelta := quota - preConsumedQuota

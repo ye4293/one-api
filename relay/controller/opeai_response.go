@@ -261,10 +261,11 @@ type OpenaiResponseTokenCost struct {
 	// 输出部分 token 数量
 	OutputTextTokens int // 输出文字 token 数量
 	// 缓存相关 token 数量
-	CacheTokens     int // 缓存token 数量（总计）
-	ReasoningTokens int // 推理token 数量
-	TotalTokens     int // 总 token 数量
-	ModelName       string
+	CacheTokens      int // 缓存读取token 数量（总计）
+	CacheWriteTokens int // 缓存写入token 数量
+	ReasoningTokens  int // 推理token 数量
+	TotalTokens      int // 总 token 数量
+	ModelName        string
 }
 
 // CalculateOpenaiResponseQuotaByRatio 使用动态倍率计算 Openai Response API 的配额消耗
@@ -314,6 +315,7 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	// 创建缓存和推理缓存
 	if usageMetadata.InputTokensDetails != nil {
 		cost.CacheTokens = usageMetadata.InputTokensDetails.CachedTokens
+		cost.CacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 	if usageMetadata.OutputTokensDetails != nil {
 		cost.ReasoningTokens = usageMetadata.OutputTokensDetails.ReasoningTokens
@@ -323,20 +325,25 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	modelRatio := common.GetModelRatio(modelName)
 	completionRatio := common.GetCompletionRatio(modelName)
 	cacheRatio := common.GetCacheRatio(modelName)
+	cacheWriteRatio := common.GetCacheWriteRatio(modelName)
+	// long-context 分层定价：总输入超过阈值时整个请求价格 ×2（仅对注册模型生效）。
+	// 因 long 档所有价格列统一翻倍，只需把 modelRatio 翻倍即可。
+	longMult := common.GetLongContextMultiplier(modelName, cost.InputTextTokens)
+	modelRatio *= longMult
 
 	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f",
-		modelName, modelRatio, completionRatio, cacheRatio))
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f, CacheWriteRatio=%.4f, LongMult=%.1f",
+		modelName, modelRatio, completionRatio, cacheRatio, cacheWriteRatio, longMult))
 
 	// 打印 token 数量
-	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存=%d, 推理缓存=%d, 总计=%d",
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存读取=%d, 缓存写入=%d, 推理缓存=%d, 总计=%d",
 		cost.InputTextTokens, cost.OutputTextTokens,
-		cost.CacheTokens, cost.ReasoningTokens,
+		cost.CacheTokens, cost.CacheWriteTokens, cost.ReasoningTokens,
 		cost.TotalTokens))
 
 	// ========== 计算各部分的等效 ratio tokens ==========
-	// 真正的输入 token = 总输入 token - 缓存 token
-	realInputTokens := cost.InputTextTokens - cost.CacheTokens
+	// 真正的输入 token = 总输入 token - 缓存读取 token - 缓存写入 token
+	realInputTokens := cost.InputTextTokens - cost.CacheTokens - cost.CacheWriteTokens
 	if realInputTokens < 0 {
 		realInputTokens = cost.InputTextTokens
 	}
@@ -344,8 +351,11 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	// 输入部分（非缓存）：tokens × modelRatio
 	inputTextQuota := float64(realInputTokens) * modelRatio
 
-	// 缓存部分：cacheTokens × modelRatio × cacheRatio
+	// 缓存读取部分：cacheTokens × modelRatio × cacheRatio
 	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio
+
+	// 缓存写入部分：cacheWriteTokens × modelRatio × cacheWriteRatio
+	cacheWriteQuota := float64(cost.CacheWriteTokens) * modelRatio * cacheWriteRatio
 
 	// 输出部分：tokens × modelRatio × completionRatio
 	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
@@ -357,7 +367,7 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	webSearchToolCallQuota := float64(0)
 
 	// 计算最终配额
-	quota := int64((inputTextQuota + cacheQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+	quota := int64((inputTextQuota + cacheQuota + cacheWriteQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 
 	return quota, cost
 }
