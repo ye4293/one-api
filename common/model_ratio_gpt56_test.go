@@ -34,16 +34,22 @@ func TestGPT56Ratios(t *testing.T) {
 	}
 }
 
-// long-context 阈值：总输入 > 272000 触发 2x，否则 1x；未注册模型恒为 1x。
-func TestGPT56LongContextMultiplier(t *testing.T) {
-	if got := GetLongContextMultiplier("gpt-5.6-sol", 272000); got != 1.0 {
-		t.Errorf("边界 272000（不含）应为 1.0，got %v", got)
+// long-context 倍率：输入×2、输出×1.5（gpt-5.6 系列）；未注册模型恒为 1x。
+func TestGPT56LongContextMultipliers(t *testing.T) {
+	// short 档
+	mults := GetLongContextMultipliers("gpt-5.6-sol", 272000)
+	if mults.InputMultiplier != 1.0 || mults.OutputMultiplier != 1.0 {
+		t.Errorf("边界 272000（short）应为 (1.0, 1.0)，got (%.1f, %.1f)", mults.InputMultiplier, mults.OutputMultiplier)
 	}
-	if got := GetLongContextMultiplier("gpt-5.6-sol", 272001); got != 2.0 {
-		t.Errorf("超过阈值应为 2.0，got %v", got)
+	// long 档
+	mults = GetLongContextMultipliers("gpt-5.6-sol", 272001)
+	if mults.InputMultiplier != 2.0 || mults.OutputMultiplier != 1.5 {
+		t.Errorf("long 档应为 (2.0, 1.5)，got (%.1f, %.1f)", mults.InputMultiplier, mults.OutputMultiplier)
 	}
-	if got := GetLongContextMultiplier("gpt-4o", 300000); got != 1.0 {
-		t.Errorf("未注册 long-context 的模型应恒为 1.0，got %v", got)
+	// 未注册模型
+	mults = GetLongContextMultipliers("gpt-4o", 300000)
+	if mults.InputMultiplier != 1.0 || mults.OutputMultiplier != 1.0 {
+		t.Errorf("未注册 long-context 的模型应恒为 (1.0, 1.0)，got (%.1f, %.1f)", mults.InputMultiplier, mults.OutputMultiplier)
 	}
 }
 
