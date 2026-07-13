@@ -15,6 +15,11 @@
 - **说明**: 新增三个 OpenAI 兼容模型。为 `Usage.PromptTokensDetails` 与 `InputTokensDetails` 增加 `cache_write_tokens` 字段；`model-ratio.go` 配置三模型的 Model/Completion/Cache 倍率，并新增 `CacheWriteRatio`（写入 1.25x）+ `GetCacheWriteRatio` 与 `LongContextThreshold`（>272000 触发）+ `GetLongContextMultiplier`（2x）。chat 与 responses 两条计费链路均加入 cache_write 分项计费与 long-context 乘子。long 档全列 2x 通过翻倍 modelRatio 实现，无需第二套价格表。附单测覆盖倍率表、阈值边界与真实样本 quota。
 - **关联计划**: `docs/plans/2026-07-13-gpt-5.6-sol-luna-terra.md`
 
+### fix(billing): 修正 gpt-5.6 long-context 输出倍率错误（×1.5 而非 ×2）
+- **分支**: `dev-gpt-5.6`
+- **类型**: 修复
+- **涉及文件**: `common/model-ratio.go`, `relay/controller/helper.go`, `relay/controller/opeai_response.go`, `common/model_ratio_gpt56_test.go`
+- **说明**: 官方定价截图确认：long 档输出 ×1.5（而非统一 ×2），输入×2。首次实现统一翻倍 `modelRatio` 导致 output 超收 33%。修正为 `GetLongContextMultipliers` 返回结构体，chat 与 responses 计费分别应用 InputMultiplier（2.0）与 OutputMultiplier（1.5）。单测验证新倍率。
 ---
 
 ## 2026-07-01
