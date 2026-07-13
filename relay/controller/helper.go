@@ -345,6 +345,12 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
+			billingDetails["cache_read_ratio"] = common.GetCacheRatio(billingModelName)
+		}
+		if cacheWriteTokens > 0 {
+			billingDetails["cache_write_tokens"] = cacheWriteTokens
+			billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(billingModelName)
+			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
