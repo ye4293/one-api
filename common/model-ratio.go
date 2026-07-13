@@ -75,10 +75,16 @@ var ModelRatio = map[string]float64{
 	"gpt-4.1-mini":            0.2,
 	"gpt-4.1-nano-2025-04-14": 0.05,
 	"gpt-4.1-nano":            0.05,
-	// gpt-5.6 系列（short context 输入价格 / 2；long context 由 GetLongContextMultiplier 动态 ×2）
-	"gpt-5.6-sol":   2.5, // 输入 $5/1M
-	"gpt-5.6-terra": 1.25, // 输入 $2.5/1M
-	"gpt-5.6-luna":  0.5, // 输入 $1/1M
+	// GPT-5.4/5.5/5.6 系列（short context 输入价格 / 2；long context 由 GetLongContextMultipliers 动态放大）
+	"gpt-5.4":                1.25, // 输入 $2.5/1M
+	"gpt-5.4-2026-03-05":     1.25,
+	"gpt-5.4-pro":            15, // 输入 $30/1M
+	"gpt-5.4-pro-2026-03-05": 15,
+	"gpt-5.5":                2.5,  // 输入 $5/1M
+	"gpt-5.5-pro":            15,   // 输入 $30/1M
+	"gpt-5.6-sol":            2.5,  // 输入 $5/1M
+	"gpt-5.6-terra":          1.25, // 输入 $2.5/1M
+	"gpt-5.6-luna":           0.5,  // 输入 $1/1M
 	// https://www.anthropic.com/api#pricing
 	"claude-instant-1.2":       0.8 / 1000 * USD,
 	"claude-2.0":               8.0 / 1000 * USD,
@@ -176,10 +182,16 @@ var CompletionRatio = map[string]float64{
 	"gpt-4o-mini-transcribe": 4, // 文字输出$5/1M, 文字输入$1.25/1M -> 5/1.25 = 4
 	// TTS模型的语音输出token比率：语音输出价格相对于文字输入的倍率
 	"gpt-4o-mini-tts": 20, // 语音输出$12/1M, 文字输入$0.6/1M -> 12/0.6 = 20
-	// gpt-5.6 系列：输出价格 / 输入价格 = 6（sol 30/5、terra 15/2.5、luna 6/1）
-	"gpt-5.6-sol":   6,
-	"gpt-5.6-terra": 6,
-	"gpt-5.6-luna":  6,
+	// GPT-5.4/5.5/5.6 系列：输出价格 / 输入价格 = 6
+	"gpt-5.4":                6,
+	"gpt-5.4-2026-03-05":     6,
+	"gpt-5.4-pro":            6,
+	"gpt-5.4-pro-2026-03-05": 6,
+	"gpt-5.5":                6,
+	"gpt-5.5-pro":            6,
+	"gpt-5.6-sol":            6,
+	"gpt-5.6-terra":          6,
+	"gpt-5.6-luna":           6,
 }
 
 // 音频输入token倍率：音频输入token相对于文本输入token的价格倍率
@@ -220,12 +232,20 @@ var CacheRatio = map[string]float64{
 	"claude-3-haiku-20240307":    0.1,
 	"claude-sonnet-4-20250514":   0.1,
 	// Gemini 模型的缓存读取倍率（官方定价：缓存读取为输入价格的 25%）
-	"gemini-2.5-pro":             0.25,
-	"gemini-2.5-flash":           0.25,
-	"gemini-2.0-flash":           0.25,
-	"gemini-2.0-flash-lite":      0.25,
-	"gemini-1.5-pro":             0.25,
-	"gemini-1.5-flash":           0.25,
+	"gemini-2.5-pro":        0.25,
+	"gemini-2.5-flash":      0.25,
+	"gemini-2.0-flash":      0.25,
+	"gemini-2.0-flash-lite": 0.25,
+	"gemini-1.5-pro":        0.25,
+	"gemini-1.5-flash":      0.25,
+	// GPT-5.4/5.5 非 pro：缓存读取为输入价格的 0.1 倍（90% 折扣）
+	"gpt-5.4":            0.1,
+	"gpt-5.4-2026-03-05": 0.1,
+	"gpt-5.5":            0.1,
+	// GPT-5.4/5.5 pro：无 cached input discount，按普通输入计费
+	"gpt-5.4-pro":            1.0,
+	"gpt-5.4-pro-2026-03-05": 1.0,
+	"gpt-5.5-pro":            1.0,
 	// gpt-5.6 系列：缓存读取为输入价格的 0.1 倍（90% 折扣）
 	"gpt-5.6-sol":   0.1,
 	"gpt-5.6-terra": 0.1,
@@ -236,17 +256,30 @@ var CacheRatio = map[string]float64{
 // OpenAI/Anthropic 口径下缓存写入价格是输入价格的 1.25 倍。
 // 仅当上游在 usage 中返回 cache_write_tokens > 0 时才参与计费，故对未配置模型无副作用。
 var CacheWriteRatio = map[string]float64{
-	"gpt-5.6-sol":   1.25,
-	"gpt-5.6-terra": 1.25,
-	"gpt-5.6-luna":  1.25,
+	// GPT-5.4/5.5 family：cache write 无额外加价，按普通输入计费
+	"gpt-5.4":                1.0,
+	"gpt-5.4-2026-03-05":     1.0,
+	"gpt-5.4-pro":            1.0,
+	"gpt-5.4-pro-2026-03-05": 1.0,
+	"gpt-5.5":                1.0,
+	"gpt-5.5-pro":            1.0,
+	"gpt-5.6-sol":            1.25,
+	"gpt-5.6-terra":          1.25,
+	"gpt-5.6-luna":           1.25,
 }
 
 // LongContextThreshold 记录支持 long-context 分层定价的模型及其触发阈值（按总输入 token 计）。
 // 只对表内模型生效，不影响其它模型。
 var LongContextThreshold = map[string]int{
-	"gpt-5.6-sol":   272000,
-	"gpt-5.6-terra": 272000,
-	"gpt-5.6-luna":  272000,
+	"gpt-5.4":                272000,
+	"gpt-5.4-2026-03-05":     272000,
+	"gpt-5.4-pro":            272000,
+	"gpt-5.4-pro-2026-03-05": 272000,
+	"gpt-5.5":                272000,
+	"gpt-5.5-pro":            272000,
+	"gpt-5.6-sol":            272000,
+	"gpt-5.6-terra":          272000,
+	"gpt-5.6-luna":           272000,
 }
 
 // LongContextMultipliers long-context 计费倍率
