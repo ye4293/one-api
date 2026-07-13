@@ -283,10 +283,11 @@ type ResponseUsage struct {
 
 // InputTokensDetails 输入 token 详细信息
 type InputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"` // 缓存的 token 数
-	TextTokens   int `json:"text_tokens,omitempty"`   // 文本 token 数
-	AudioTokens  int `json:"audio_tokens,omitempty"`  // 音频 token 数
-	ImageTokens  int `json:"image_tokens,omitempty"`  // 图像 token 数
+	CachedTokens     int `json:"cached_tokens,omitempty"`      // 缓存的 token 数（读取）
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"` // 缓存写入的 token 数
+	TextTokens       int `json:"text_tokens,omitempty"`        // 文本 token 数
+	AudioTokens      int `json:"audio_tokens,omitempty"`       // 音频 token 数
+	ImageTokens      int `json:"image_tokens,omitempty"`       // 图像 token 数
 }
 
 // OutputTokensDetails 输出 token 详细信息
