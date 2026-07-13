@@ -69,6 +69,10 @@ var ModelList = []string{
 	"gpt-5.4-mini", "gpt-5.4-mini-2026-03-17",
 	"gpt-5.4-nano", "gpt-5.4-nano-2026-03-17",
 
+	// GPT-5.5 系列 (2026-07)
+	"gpt-5.5",
+	"gpt-5.5-pro",
+
 	// GPT-5.6 系列 (sol / terra / luna，支持 cache_write 与 long-context 分层计费)
 	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 
