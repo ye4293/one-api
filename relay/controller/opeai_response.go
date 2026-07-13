@@ -210,7 +210,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	dbmodel.UpdateChannelUsedQuota(channelId, quota)
 
 	// 记录日志
-	logContent := fmt.Sprintf("openai response API %s", requestPath)
+	logContent := buildOpenaiResponseLogContent(requestPath, modelName, promptTokens)
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -249,6 +249,11 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
+}
+
+func buildOpenaiResponseLogContent(requestPath string, modelName string, inputTokens int) string {
+	longMults := common.GetLongContextMultipliers(modelName, inputTokens)
+	return fmt.Sprintf("openai response API %s，long输入倍率 %.1f，long输出倍率 %.1f", requestPath, longMults.InputMultiplier, longMults.OutputMultiplier)
 }
 
 // buildClaudeOtherInfoWithUsageDetails 构建包含 adminInfo 和 Claude usageDetails 的 otherInfo 字符串
