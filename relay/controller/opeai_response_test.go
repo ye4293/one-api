@@ -50,3 +50,15 @@ func TestBuildOpenaiResponseOtherInfoWithUsageDetailsIncludesCacheWriteTokens(t 
 		t.Fatalf("other missing adminInfo: %s", other)
 	}
 }
+
+func TestBuildOpenaiResponseLogContentIncludesLongMultipliers(t *testing.T) {
+	shortContent := buildOpenaiResponseLogContent("/v1/responses", "gpt-5.6-sol", 272000)
+	if !strings.Contains(shortContent, "long输入倍率 1.0") || !strings.Contains(shortContent, "long输出倍率 1.0") {
+		t.Fatalf("short content missing expected multipliers: %s", shortContent)
+	}
+
+	longContent := buildOpenaiResponseLogContent("/v1/responses", "gpt-5.6-sol", 272001)
+	if !strings.Contains(longContent, "long输入倍率 2.0") || !strings.Contains(longContent, "long输出倍率 1.5") {
+		t.Fatalf("long content missing expected multipliers: %s", longContent)
+	}
+}
