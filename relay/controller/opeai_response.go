@@ -326,14 +326,12 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	completionRatio := common.GetCompletionRatio(modelName)
 	cacheRatio := common.GetCacheRatio(modelName)
 	cacheWriteRatio := common.GetCacheWriteRatio(modelName)
-	// long-context 分层定价：总输入超过阈值时整个请求价格 ×2（仅对注册模型生效）。
-	// 因 long 档所有价格列统一翻倍，只需把 modelRatio 翻倍即可。
-	longMult := common.GetLongContextMultiplier(modelName, cost.InputTextTokens)
-	modelRatio *= longMult
+	// long-context 分层定价：输入×2，输出×1.5（gpt-5.6 系列）
+	longMults := common.GetLongContextMultipliers(modelName, cost.InputTextTokens)
 
 	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f, CacheWriteRatio=%.4f, LongMult=%.1f",
-		modelName, modelRatio, completionRatio, cacheRatio, cacheWriteRatio, longMult))
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f, CacheWriteRatio=%.4f, Long输入倍率=%.1f, Long输出倍率=%.1f",
+		modelName, modelRatio, completionRatio, cacheRatio, cacheWriteRatio, longMults.InputMultiplier, longMults.OutputMultiplier))
 
 	// 打印 token 数量
 	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存读取=%d, 缓存写入=%d, 推理缓存=%d, 总计=%d",
@@ -348,17 +346,17 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 		realInputTokens = cost.InputTextTokens
 	}
 
-	// 输入部分（非缓存）：tokens × modelRatio
-	inputTextQuota := float64(realInputTokens) * modelRatio
+	// 输入部分（非缓存）：tokens × modelRatio × longInputMultiplier
+	inputTextQuota := float64(realInputTokens) * modelRatio * longMults.InputMultiplier
 
-	// 缓存读取部分：cacheTokens × modelRatio × cacheRatio
-	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio
+	// 缓存读取部分：cacheTokens × modelRatio × cacheRatio × longInputMultiplier
+	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio * longMults.InputMultiplier
 
-	// 缓存写入部分：cacheWriteTokens × modelRatio × cacheWriteRatio
-	cacheWriteQuota := float64(cost.CacheWriteTokens) * modelRatio * cacheWriteRatio
+	// 缓存写入部分：cacheWriteTokens × modelRatio × cacheWriteRatio × longInputMultiplier
+	cacheWriteQuota := float64(cost.CacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier
 
-	// 输出部分：tokens × modelRatio × completionRatio
-	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
+	// 输出部分：tokens × modelRatio × completionRatio × longOutputMultiplier
+	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio * longMults.OutputMultiplier
 
 	// 图片部分计费
 	imageGenerationCallQuota := float64(0)

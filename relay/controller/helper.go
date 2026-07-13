@@ -259,11 +259,9 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
-	// long-context 分层定价：总输入超过阈值时整个请求价格 ×2（仅对注册了 long-context 的模型生效）。
-	// 因 long 档所有价格列统一翻倍，只需把 modelRatio（及无缓存分支用的 ratio）翻倍即可。
-	longMult := common.GetLongContextMultiplier(billingModelName, promptTokens)
-	modelRatio *= longMult
-	ratio *= longMult
+	// long-context 分层定价：输入（含缓存读取/写入）×2，输出×1.5（gpt-5.6 系列）
+	// 对未注册 long-context 的模型，两个倍率均为 1.0。
+	longMults := common.GetLongContextMultipliers(billingModelName, promptTokens)
 	// 预先获取计费参数，避免后续重复调用
 	modelPrice := common.GetModelPrice(billingModelName, false)
 	completionRatio := common.GetCompletionRatio(billingModelName)
@@ -284,13 +282,18 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			if nonCachedPromptTokens < 0 {
 				nonCachedPromptTokens = 0
 			}
-			inputQuota := float64(nonCachedPromptTokens) * modelRatio * groupRatio
-			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * groupRatio
-			cacheWriteQuota := float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * groupRatio
-			outputQuota := float64(completionTokens) * modelRatio * completionRatio * groupRatio
+			// 输入（含缓存）× longInputMultiplier
+			inputQuota := float64(nonCachedPromptTokens) * modelRatio * longMults.InputMultiplier * groupRatio
+			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * longMults.InputMultiplier * groupRatio
+			cacheWriteQuota := float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier * groupRatio
+			// 输出× longOutputMultiplier
+			outputQuota := float64(completionTokens) * modelRatio * completionRatio * longMults.OutputMultiplier * groupRatio
 			quota = int64(math.Ceil(inputQuota + cacheQuota + cacheWriteQuota + outputQuota))
 		} else {
-			quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+			// 无缓存分支：输入× longInputMultiplier，输出× longOutputMultiplier
+			inputQuota := float64(promptTokens) * modelRatio * longMults.InputMultiplier
+			outputQuota := float64(completionTokens) * modelRatio * completionRatio * longMults.OutputMultiplier
+			quota = int64(math.Ceil((inputQuota + outputQuota) * groupRatio))
 		}
 		if ratio != 0 && quota <= 0 {
 			quota = 1
@@ -301,7 +304,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			// we cannot just return, because we may have to return the pre-consumed quota
 			quota = 0
 		}
-		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f，long档倍率 %.1f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio, longMult)
+		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f，long输入倍率 %.1f，long输出倍率 %.1f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio, longMults.InputMultiplier, longMults.OutputMultiplier)
 	}
 
 	quotaDelta := quota - preConsumedQuota

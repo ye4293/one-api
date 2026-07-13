@@ -242,12 +242,18 @@ var CacheWriteRatio = map[string]float64{
 }
 
 // LongContextThreshold 记录支持 long-context 分层定价的模型及其触发阈值（按总输入 token 计）。
-// 当请求的总输入 token 超过阈值时，整个请求按 long 档计费（所有价格列统一 ×2）。
 // 只对表内模型生效，不影响其它模型。
 var LongContextThreshold = map[string]int{
 	"gpt-5.6-sol":   272000,
 	"gpt-5.6-terra": 272000,
 	"gpt-5.6-luna":  272000,
+}
+
+// LongContextMultipliers long-context 计费倍率
+// gpt-5.6 系列：输入/缓存读取/缓存写入 ×2，输出 ×1.5（官方定价）
+type LongContextMultipliers struct {
+	InputMultiplier  float64 // 输入、缓存读取、缓存写入的倍率（long 档 2.0）
+	OutputMultiplier float64 // 输出的倍率（long 档 1.5）
 }
 
 var DefaultModelRatio map[string]float64
@@ -585,14 +591,19 @@ func GetCacheWriteRatio(name string) float64 {
 	return 1.25
 }
 
-// GetLongContextMultiplier 返回 long-context 计费乘子。
-// 仅当模型在 LongContextThreshold 表中、且总输入 token 超过阈值时返回 2.0，否则返回 1.0。
-// 对未注册 long-context 的模型恒为 1.0，不影响其计费。
-func GetLongContextMultiplier(name string, inputTokens int) float64 {
+// GetLongContextMultipliers 返回 long-context 分层计费倍率。
+// gpt-5.6 系列：输入（含缓存读取/写入）×2，输出×1.5（官方定价）
+// 对未注册 long-context 的模型，两个倍率均为 1.0。
+func GetLongContextMultipliers(name string, inputTokens int) LongContextMultipliers {
+	var multipliers LongContextMultipliers
+	multipliers.InputMultiplier = 1.0
+	multipliers.OutputMultiplier = 1.0
+
 	if threshold, ok := LongContextThreshold[name]; ok && inputTokens > threshold {
-		return 2.0
+		multipliers.InputMultiplier = 2.0
+		multipliers.OutputMultiplier = 1.5
 	}
-	return 1.0
+	return multipliers
 }
 
 func GetCompletionRatio(name string) float64 {
