@@ -180,13 +180,20 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	cachedTokens := 0
+	cacheWriteTokens := 0
+	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil {
+		cachedTokens = usageMetadata.InputTokensDetails.CachedTokens
+		cacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
+	}
+
+	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
 	return nil
 }
 
 // recordOpenaiResponseConsumption 记录 OpenAI Response API 消费日志
-func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
+func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.Error(ctx,
@@ -227,9 +234,15 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 		"group_ratio":      groupRatio,
 	}
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
-	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil && usageMetadata.InputTokensDetails.CachedTokens > 0 {
-		billingDetails["cached_tokens"] = usageMetadata.InputTokensDetails.CachedTokens
+	if cachedTokens > 0 {
+		billingDetails["cached_tokens"] = cachedTokens
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
+		billingDetails["cache_read_ratio"] = common.GetCacheRatio(modelName)
+	}
+	if cacheWriteTokens > 0 {
+		billingDetails["cache_write_tokens"] = cacheWriteTokens
+		billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(modelName)
+		billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(modelName)
 	}
 	other = appendBillingDetails(ctx, other, billingDetails)
 	other = util.AppendRetryHistoryOther(c, other, duration)
@@ -257,11 +270,12 @@ func buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo string, usageDetails
 
 // OpenaiReseponseUsageDetails 用于存储从 Openai Response Usage 提取的详细使用信息
 type OpenaiReseponseUsageDetails struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	TotalTokens     int `json:"total_tokens"`
-	CacheTokens     int `json:"cache_tokens"`
-	ReasoningTokens int `json:"reasoning_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	TotalTokens              int `json:"total_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          int `json:"reasoning_tokens"`
 }
 
 // extractOpenaiResponseNativeUsageDetails 从 Openai Response Usage 提取详细的使用信息（用于 native 接口）
@@ -277,7 +291,8 @@ func extractOpenaiReseponseNativeUsageDetails(usageMetadata *openai.ResponseUsag
 	}
 	// 创建缓存和推理缓存
 	if usageMetadata.InputTokensDetails != nil {
-		details.CacheTokens = usageMetadata.InputTokensDetails.CachedTokens
+		details.CacheReadInputTokens = usageMetadata.InputTokensDetails.CachedTokens
+		details.CacheCreationInputTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 	if usageMetadata.OutputTokensDetails != nil {
 		details.ReasoningTokens = usageMetadata.OutputTokensDetails.ReasoningTokens

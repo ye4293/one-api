@@ -328,10 +328,6 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			"channel_discount":   meta.ChannelDiscount,
 			"user_channel_ratio": meta.UserChannelRatio,
 		}
-		//追加tokens详情
-		usageDetails := map[string]interface{}{
-			"cache_tokens": 0,
-		}
 		// 多 Key 渠道：记录本次实际使用的 Key 索引
 		if meta.IsMultiKey && meta.KeyIndex != nil {
 			billingDetails["is_multi_key"] = true
@@ -349,20 +345,24 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
-			usageDetails["cache_tokens"] = cachedTokens
-			if detailsBytes, err := json.Marshal(usageDetails); err == nil {
-				otherInfo = otherInfo + ";" + fmt.Sprintf("usageDetails:%s", string(detailsBytes))
-			}
+			billingDetails["cache_read_ratio"] = common.GetCacheRatio(billingModelName)
+		}
+		if cacheWriteTokens > 0 {
+			billingDetails["cache_write_tokens"] = cacheWriteTokens
+			billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(billingModelName)
+			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		// 当有图像/推理 token 分类时追加 usageDetails
 		details := UsageDetailsForLog{
-			InputText:       usage.PromptTokensDetails.TextTokens,
-			InputImage:      usage.PromptTokensDetails.ImageTokens,
-			OutputText:      usage.CompletionTokensDetails.TextTokens,
-			OutputImage:     usage.CompletionTokensDetails.ImageTokens,
-			OutputReasoning: usage.CompletionTokensDetails.ReasoningTokens,
-			CachedTokens:    cachedTokens,
+			InputText:                usage.PromptTokensDetails.TextTokens,
+			InputImage:               usage.PromptTokensDetails.ImageTokens,
+			OutputText:               usage.CompletionTokensDetails.TextTokens,
+			OutputImage:              usage.CompletionTokensDetails.ImageTokens,
+			OutputReasoning:          usage.CompletionTokensDetails.ReasoningTokens,
+			CachedTokens:             cachedTokens,
+			CacheReadInputTokens:     cachedTokens,
+			CacheCreationInputTokens: cacheWriteTokens,
 		}
 		if b, err := json.Marshal(details); err == nil {
 			usageInfo := fmt.Sprintf("usageDetails:%s", string(b))
