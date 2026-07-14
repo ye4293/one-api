@@ -353,8 +353,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
-		// 当有图像/推理 token 分类时追加 usageDetails
-		details := UsageDetailsForLog{
+		otherInfo = appendUsageDetailsToOther(otherInfo, UsageDetailsForLog{
 			InputText:                usage.PromptTokensDetails.TextTokens,
 			InputImage:               usage.PromptTokensDetails.ImageTokens,
 			OutputText:               usage.CompletionTokensDetails.TextTokens,
@@ -363,15 +362,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			CachedTokens:             cachedTokens,
 			CacheReadInputTokens:     cachedTokens,
 			CacheCreationInputTokens: cacheWriteTokens,
-		}
-		if b, err := json.Marshal(details); err == nil {
-			usageInfo := fmt.Sprintf("usageDetails:%s", string(b))
-			if otherInfo != "" {
-				otherInfo = otherInfo + ";" + usageInfo
-			} else {
-				otherInfo = usageInfo
-			}
-		}
+		})
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 把流式结束状态（如有）拼进 other
@@ -490,6 +481,18 @@ func appendModelMappingInfo(other string, originModel string, actualModel string
 		return other + ";" + mappingInfo
 	}
 	return mappingInfo
+}
+
+func appendUsageDetailsToOther(other string, details UsageDetailsForLog) string {
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		return other
+	}
+	usageInfo := fmt.Sprintf("usageDetails:%s", string(detailsBytes))
+	if other != "" {
+		return other + ";" + usageInfo
+	}
+	return usageInfo
 }
 
 // UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计
