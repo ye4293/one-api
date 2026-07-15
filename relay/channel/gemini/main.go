@@ -242,6 +242,7 @@ func ConvertRequest(textRequest model.GeneralOpenAIRequest) (*ChatRequest, error
 					geminiRequest.GenerationConfig.ThinkingConfig = &ThinkingConfig{}
 				}
 				geminiRequest.GenerationConfig.ThinkingConfig.ThinkingLevel = thinkingLevel
+				geminiRequest.GenerationConfig.ThinkingConfig.IncludeThoughts = true
 				logger.SysLog(fmt.Sprintf("Mapped reasoning_effort '%s' to thinking_level '%s' for Gemini 3+ model '%s'", textRequest.ReasoningEffort, thinkingLevel, textRequest.Model))
 			}
 		}
