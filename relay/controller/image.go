@@ -144,12 +144,14 @@ func buildGeminiUsageMap(totalTokens, inputTokens, outputTokens int, details Gem
 
 // UsageDetailsForLog Usage 详情结构体，用于序列化到日志 other 字段
 type UsageDetailsForLog struct {
-	InputText       int `json:"input_text"`
-	InputImage      int `json:"input_image"`
-	OutputText      int `json:"output_text"`
-	OutputImage     int `json:"output_image"`
-	OutputReasoning int `json:"output_reasoning"`
-	CachedTokens    int `json:"cached_tokens,omitempty"`
+	InputText                int `json:"input_text"`
+	InputImage               int `json:"input_image"`
+	OutputText               int `json:"output_text"`
+	OutputImage              int `json:"output_image"`
+	OutputReasoning          int `json:"output_reasoning"`
+	CachedTokens             int `json:"cached_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // GPTImageUsageDetailsForLog gpt-image-* usage 明细，写入 logs.other（仅四个字段）
@@ -177,9 +179,9 @@ func buildGPTImageUsageDetailsForLog(usage openai.ImageResponse) GPTImageUsageDe
 	in := usage.Usage.InputTokensDetails
 	out := usage.Usage.OutputTokensDetails
 	details := GPTImageUsageDetailsForLog{
-		InputText:  in.TextTokens,
-		InputImage: in.ImageTokens,
-		OutputText: out.TextTokens,
+		InputText:   in.TextTokens,
+		InputImage:  in.ImageTokens,
+		OutputText:  out.TextTokens,
 		OutputImage: out.ImageTokens,
 	}
 	// 上游未拆 output_tokens_details 时，将 output_tokens 归入 output_image
@@ -2187,8 +2189,8 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 		ImageTokens int `json:"image_tokens"`
 	}
 	type outputTokensDetails struct {
-		TextTokens      int `json:"text_tokens"`
-		ImageTokens     int `json:"image_tokens"`
+		TextTokens  int `json:"text_tokens"`
+		ImageTokens int `json:"image_tokens"`
 	}
 	type usagePayload struct {
 		InputTokens         int                  `json:"input_tokens"`
@@ -2284,8 +2286,8 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 		ImageTokens int `json:"image_tokens"`
 	}
 	type billingOutputTokensDetails struct {
-		TextTokens      int `json:"text_tokens"`
-		ImageTokens     int `json:"image_tokens"`
+		TextTokens  int `json:"text_tokens"`
+		ImageTokens int `json:"image_tokens"`
 	}
 	type billingUsage struct {
 		InputTokens         int                         `json:"input_tokens"`
@@ -2310,8 +2312,8 @@ func proxyOpenAIImageSSE(c *gin.Context, ctx context.Context, resp *http.Respons
 	}
 	if capturedUsage.OutputTokensDetails != nil {
 		b.Usage.OutputTokensDetails = &billingOutputTokensDetails{
-			TextTokens:      capturedUsage.OutputTokensDetails.TextTokens,
-			ImageTokens:     capturedUsage.OutputTokensDetails.ImageTokens,
+			TextTokens:  capturedUsage.OutputTokensDetails.TextTokens,
+			ImageTokens: capturedUsage.OutputTokensDetails.ImageTokens,
 		}
 	}
 	billingBytes, _ := json.Marshal(b)

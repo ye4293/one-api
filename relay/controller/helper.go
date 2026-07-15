@@ -253,11 +253,15 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 	cachedTokens := usage.PromptTokensDetails.CachedTokens
+	cacheWriteTokens := usage.PromptTokensDetails.CacheWriteTokens
 
 	billingModelName := meta.BillingModelName()
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
+	// long-context 分层定价：输入（含缓存读取/写入）×2，输出×1.5（gpt-5.6 系列）
+	// 对未注册 long-context 的模型，两个倍率均为 1.0。
+	longMults := common.GetLongContextMultipliers(billingModelName, promptTokens)
 	// 预先获取计费参数，避免后续重复调用
 	modelPrice := common.GetModelPrice(billingModelName, false)
 	completionRatio := common.GetCompletionRatio(billingModelName)
@@ -270,19 +274,26 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		logContent = fmt.Sprintf("模型固定价格 %.2f$，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f", modelPrice, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio)
 	} else {
 		// 使用基于token的倍率计费
-		if cachedTokens > 0 {
-			// 有缓存命中：从输入 token 中扣除缓存部分，缓存按 cacheRatio 折扣计费
+		if cachedTokens > 0 || cacheWriteTokens > 0 {
+			// 有缓存读取或写入：从输入 token 中扣除缓存读取与写入部分，各按对应倍率计费
 			cacheRatio := common.GetCacheRatio(billingModelName)
-			nonCachedPromptTokens := promptTokens - cachedTokens
+			cacheWriteRatio := common.GetCacheWriteRatio(billingModelName)
+			nonCachedPromptTokens := promptTokens - cachedTokens - cacheWriteTokens
 			if nonCachedPromptTokens < 0 {
 				nonCachedPromptTokens = 0
 			}
-			inputQuota := float64(nonCachedPromptTokens) * modelRatio * groupRatio
-			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * groupRatio
-			outputQuota := float64(completionTokens) * modelRatio * completionRatio * groupRatio
-			quota = int64(math.Ceil(inputQuota + cacheQuota + outputQuota))
+			// 输入（含缓存）× longInputMultiplier
+			inputQuota := float64(nonCachedPromptTokens) * modelRatio * longMults.InputMultiplier * groupRatio
+			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * longMults.InputMultiplier * groupRatio
+			cacheWriteQuota := float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier * groupRatio
+			// 输出× longOutputMultiplier
+			outputQuota := float64(completionTokens) * modelRatio * completionRatio * longMults.OutputMultiplier * groupRatio
+			quota = int64(math.Ceil(inputQuota + cacheQuota + cacheWriteQuota + outputQuota))
 		} else {
-			quota = int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * ratio))
+			// 无缓存分支：输入× longInputMultiplier，输出× longOutputMultiplier
+			inputQuota := float64(promptTokens) * modelRatio * longMults.InputMultiplier
+			outputQuota := float64(completionTokens) * modelRatio * completionRatio * longMults.OutputMultiplier
+			quota = int64(math.Ceil((inputQuota + outputQuota) * groupRatio))
 		}
 		if ratio != 0 && quota <= 0 {
 			quota = 1
@@ -293,7 +304,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			// we cannot just return, because we may have to return the pre-consumed quota
 			quota = 0
 		}
-		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio)
+		logContent = fmt.Sprintf("模型倍率 %.2f，等级折扣 %.2f，渠道折扣 %.2f，用户渠道折扣 %.2f，补全倍率 %.2f，long输入倍率 %.1f，long输出倍率 %.1f", modelRatio, tierRatio, meta.ChannelDiscount, meta.UserChannelRatio, completionRatio, longMults.InputMultiplier, longMults.OutputMultiplier)
 	}
 
 	quotaDelta := quota - preConsumedQuota
@@ -334,8 +345,24 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
 			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
+			billingDetails["cache_read_ratio"] = common.GetCacheRatio(billingModelName)
+		}
+		if cacheWriteTokens > 0 {
+			billingDetails["cache_write_tokens"] = cacheWriteTokens
+			billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(billingModelName)
+			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
+		otherInfo = appendUsageDetailsToOther(otherInfo, UsageDetailsForLog{
+			InputText:                usage.PromptTokensDetails.TextTokens,
+			InputImage:               usage.PromptTokensDetails.ImageTokens,
+			OutputText:               usage.CompletionTokensDetails.TextTokens,
+			OutputImage:              usage.CompletionTokensDetails.ImageTokens,
+			OutputReasoning:          usage.CompletionTokensDetails.ReasoningTokens,
+			CachedTokens:             cachedTokens,
+			CacheReadInputTokens:     cachedTokens,
+			CacheCreationInputTokens: cacheWriteTokens,
+		})
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 把流式结束状态（如有）拼进 other
@@ -454,6 +481,18 @@ func appendModelMappingInfo(other string, originModel string, actualModel string
 		return other + ";" + mappingInfo
 	}
 	return mappingInfo
+}
+
+func appendUsageDetailsToOther(other string, details UsageDetailsForLog) string {
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		return other
+	}
+	usageInfo := fmt.Sprintf("usageDetails:%s", string(detailsBytes))
+	if other != "" {
+		return other + ";" + usageInfo
+	}
+	return usageInfo
 }
 
 // UpdateMultiKeyUsageFromContext 从gin.Context中获取信息并更新多Key使用统计

@@ -145,13 +145,20 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		firstWordLatency = meta.GetFirstWordLatency()
 	}
 
-	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, 0, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	cachedTokens := 0
+	cacheWriteTokens := 0
+	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil {
+		cachedTokens = usageMetadata.InputTokensDetails.CachedTokens
+		cacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
+	}
+
+	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
 	return nil
 }
 
 // recordOpenaiResponseConsumption 记录 OpenAI Response API 消费日志
-func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
+func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.Error(ctx,
@@ -168,7 +175,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	dbmodel.UpdateChannelUsedQuota(channelId, quota)
 
 	// 记录日志
-	logContent := fmt.Sprintf("openai response API %s", requestPath)
+	logContent := buildOpenaiResponseLogContent(requestPath, modelName, promptTokens)
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -192,15 +199,26 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 		"group_ratio":      groupRatio,
 	}
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
-	if usageMetadata != nil && usageMetadata.InputTokensDetails != nil && usageMetadata.InputTokensDetails.CachedTokens > 0 {
-		billingDetails["cached_tokens"] = usageMetadata.InputTokensDetails.CachedTokens
+	if cachedTokens > 0 {
+		billingDetails["cached_tokens"] = cachedTokens
 		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
+		billingDetails["cache_read_ratio"] = common.GetCacheRatio(modelName)
+	}
+	if cacheWriteTokens > 0 {
+		billingDetails["cache_write_tokens"] = cacheWriteTokens
+		billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(modelName)
+		billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(modelName)
 	}
 	other = appendBillingDetails(ctx, other, billingDetails)
 	other = util.AppendRetryHistoryOther(c, other, duration)
 
 	dbmodel.RecordConsumeLogWithOtherAndRequestID(ctx, userId, channelId, promptTokens, completionTokens, modelName,
 		tokenName, quota, logContent, duration, title, referer, isStream, firstWordLatency, other, c.GetHeader("X-Request-ID"), 0, c.GetString("x_response_id"))
+}
+
+func buildOpenaiResponseLogContent(requestPath string, modelName string, inputTokens int) string {
+	longMults := common.GetLongContextMultipliers(modelName, inputTokens)
+	return fmt.Sprintf("openai response API %s，long输入倍率 %.1f，long输出倍率 %.1f", requestPath, longMults.InputMultiplier, longMults.OutputMultiplier)
 }
 
 // buildClaudeOtherInfoWithUsageDetails 构建包含 adminInfo 和 Claude usageDetails 的 otherInfo 字符串
@@ -222,11 +240,12 @@ func buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo string, usageDetails
 
 // OpenaiReseponseUsageDetails 用于存储从 Openai Response Usage 提取的详细使用信息
 type OpenaiReseponseUsageDetails struct {
-	InputTokens     int `json:"input_tokens"`
-	OutputTokens    int `json:"output_tokens"`
-	TotalTokens     int `json:"total_tokens"`
-	CacheTokens     int `json:"cache_tokens"`
-	ReasoningTokens int `json:"reasoning_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	TotalTokens              int `json:"total_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          int `json:"reasoning_tokens"`
 }
 
 // extractOpenaiResponseNativeUsageDetails 从 Openai Response Usage 提取详细的使用信息（用于 native 接口）
@@ -242,7 +261,8 @@ func extractOpenaiReseponseNativeUsageDetails(usageMetadata *openai.ResponseUsag
 	}
 	// 创建缓存和推理缓存
 	if usageMetadata.InputTokensDetails != nil {
-		details.CacheTokens = usageMetadata.InputTokensDetails.CachedTokens
+		details.CacheReadInputTokens = usageMetadata.InputTokensDetails.CachedTokens
+		details.CacheCreationInputTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 	if usageMetadata.OutputTokensDetails != nil {
 		details.ReasoningTokens = usageMetadata.OutputTokensDetails.ReasoningTokens
@@ -261,10 +281,11 @@ type OpenaiResponseTokenCost struct {
 	// 输出部分 token 数量
 	OutputTextTokens int // 输出文字 token 数量
 	// 缓存相关 token 数量
-	CacheTokens     int // 缓存token 数量（总计）
-	ReasoningTokens int // 推理token 数量
-	TotalTokens     int // 总 token 数量
-	ModelName       string
+	CacheTokens      int // 缓存读取token 数量（总计）
+	CacheWriteTokens int // 缓存写入token 数量
+	ReasoningTokens  int // 推理token 数量
+	TotalTokens      int // 总 token 数量
+	ModelName        string
 }
 
 // CalculateOpenaiResponseQuotaByRatio 使用动态倍率计算 Openai Response API 的配额消耗
@@ -314,6 +335,7 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	// 创建缓存和推理缓存
 	if usageMetadata.InputTokensDetails != nil {
 		cost.CacheTokens = usageMetadata.InputTokensDetails.CachedTokens
+		cost.CacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 	if usageMetadata.OutputTokensDetails != nil {
 		cost.ReasoningTokens = usageMetadata.OutputTokensDetails.ReasoningTokens
@@ -323,32 +345,38 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	modelRatio := common.GetModelRatio(modelName)
 	completionRatio := common.GetCompletionRatio(modelName)
 	cacheRatio := common.GetCacheRatio(modelName)
+	cacheWriteRatio := common.GetCacheWriteRatio(modelName)
+	// long-context 分层定价：输入×2，输出×1.5（gpt-5.6 系列）
+	longMults := common.GetLongContextMultipliers(modelName, cost.InputTextTokens)
 
 	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f",
-		modelName, modelRatio, completionRatio, cacheRatio))
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, CacheRatio=%.4f, CacheWriteRatio=%.4f, Long输入倍率=%.1f, Long输出倍率=%.1f",
+		modelName, modelRatio, completionRatio, cacheRatio, cacheWriteRatio, longMults.InputMultiplier, longMults.OutputMultiplier))
 
 	// 打印 token 数量
-	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存=%d, 推理缓存=%d, 总计=%d",
+	logger.SysLog(fmt.Sprintf("[openairesponse计费] Token数量: 输入=%d, 输出=%d, 输入缓存读取=%d, 缓存写入=%d, 推理缓存=%d, 总计=%d",
 		cost.InputTextTokens, cost.OutputTextTokens,
-		cost.CacheTokens, cost.ReasoningTokens,
+		cost.CacheTokens, cost.CacheWriteTokens, cost.ReasoningTokens,
 		cost.TotalTokens))
 
 	// ========== 计算各部分的等效 ratio tokens ==========
-	// 真正的输入 token = 总输入 token - 缓存 token
-	realInputTokens := cost.InputTextTokens - cost.CacheTokens
+	// 真正的输入 token = 总输入 token - 缓存读取 token - 缓存写入 token
+	realInputTokens := cost.InputTextTokens - cost.CacheTokens - cost.CacheWriteTokens
 	if realInputTokens < 0 {
 		realInputTokens = cost.InputTextTokens
 	}
 
-	// 输入部分（非缓存）：tokens × modelRatio
-	inputTextQuota := float64(realInputTokens) * modelRatio
+	// 输入部分（非缓存）：tokens × modelRatio × longInputMultiplier
+	inputTextQuota := float64(realInputTokens) * modelRatio * longMults.InputMultiplier
 
-	// 缓存部分：cacheTokens × modelRatio × cacheRatio
-	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio
+	// 缓存读取部分：cacheTokens × modelRatio × cacheRatio × longInputMultiplier
+	cacheQuota := float64(cost.CacheTokens) * modelRatio * cacheRatio * longMults.InputMultiplier
 
-	// 输出部分：tokens × modelRatio × completionRatio
-	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
+	// 缓存写入部分：cacheWriteTokens × modelRatio × cacheWriteRatio × longInputMultiplier
+	cacheWriteQuota := float64(cost.CacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier
+
+	// 输出部分：tokens × modelRatio × completionRatio × longOutputMultiplier
+	outputTextQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio * longMults.OutputMultiplier
 
 	// 图片部分计费
 	imageGenerationCallQuota := float64(0)
@@ -357,7 +385,7 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	webSearchToolCallQuota := float64(0)
 
 	// 计算最终配额
-	quota := int64((inputTextQuota + cacheQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
+	quota := int64((inputTextQuota + cacheQuota + cacheWriteQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 
 	return quota, cost
 }
