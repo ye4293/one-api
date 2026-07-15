@@ -319,7 +319,7 @@ func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, err
 	case "disabled":
 		err = DB.Order("id desc").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&channels).Error
 	case "auto_disabled":
-		err = DB.Order("id desc").Where("status = ?", common.ChannelStatusAutoDisabled).Find(&channels).Error
+		err = DB.Order("id desc").Where("status = ? AND auto_enabled = ?", common.ChannelStatusAutoDisabled, true).Find(&channels).Error
 	default:
 		// 对于测试，我们总是需要包含key字段
 		err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&channels).Error
