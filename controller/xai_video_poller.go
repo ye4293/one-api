@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -49,7 +48,8 @@ func isXaiVideoPollerEnabled() bool {
 
 func pollXaiVideoTasks(ctx context.Context) {
 	var tasks []dbmodel.Video
-	if err := dbmodel.DB.Where("provider = ? AND status IN ?", xaiVideoProvider, []string{"processing", "pending"}).
+	cutoff := time.Now().Unix() - 24*3600
+	if err := dbmodel.DB.Where("provider = ? AND status IN ? AND created_at >= ?", xaiVideoProvider, []string{"processing", "pending"}, cutoff).
 		Order("id ASC").Limit(100).
 		Find(&tasks).Error; err != nil {
 		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] query tasks failed: %v", err))
@@ -96,22 +96,12 @@ func pollSingleXaiVideoTask(ctx context.Context, task *dbmodel.Video) {
 	if resp.StatusCode == 200 || resp.StatusCode == 202 {
 		xai.UpdateNativeVideoTaskStatus(task.TaskId, resp.Body, task)
 		logger.Info(ctx, fmt.Sprintf("[xai-video-poller] updated: task_id=%s, status=%s", task.TaskId, task.Status))
-	} else if resp.StatusCode == 404 {
-		var errResp struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(resp.Body, &errResp) == nil && errResp.Code == "not-found" {
-			logger.Warn(ctx, fmt.Sprintf("[xai-video-poller] task not found upstream, marking expired: task_id=%s, reason=%s", task.TaskId, errResp.Error))
-			task.Status = "expired"
-			task.FailReason = errResp.Error
-			if err := task.Update(); err != nil {
-				logger.Error(ctx, fmt.Sprintf("[xai-video-poller] failed to mark expired: task_id=%s, err=%v", task.TaskId, err))
-			}
-		} else {
-			logger.Error(ctx, fmt.Sprintf("[xai-video-poller] upstream 404: task_id=%s, body=%s", task.TaskId, string(resp.Body)))
-		}
 	} else {
 		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] upstream error: task_id=%s, status_code=%d", task.TaskId, resp.StatusCode))
+		task.Status = "failed"
+		task.FailReason = fmt.Sprintf("upstream error: status_code=%d", resp.StatusCode)
+		if err := task.Update(); err != nil {
+			logger.Error(ctx, fmt.Sprintf("[xai-video-poller] failed to mark task as failed: task_id=%s, err=%v", task.TaskId, err))
+		}
 	}
 }

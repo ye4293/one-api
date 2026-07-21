@@ -96,6 +96,8 @@ func (c *awsAuditClient) sendBatch(ctx context.Context, records []firehoseTypes.
 		var retryRecords []firehoseTypes.Record
 		for i, resp := range out.RequestResponses {
 			if resp.ErrorCode != nil {
+				logger.SysError(fmt.Sprintf("audit: firehose record[%d] failed: code=%s msg=%s size=%d",
+					i, aws.ToString(resp.ErrorCode), aws.ToString(resp.ErrorMessage), len(records[i].Data)))
 				retryRecords = append(retryRecords, records[i])
 			}
 		}
