@@ -48,8 +48,9 @@ func isXaiVideoPollerEnabled() bool {
 
 func pollXaiVideoTasks(ctx context.Context) {
 	var tasks []dbmodel.Video
-	if err := dbmodel.DB.Where("provider = ? AND status IN ?", xaiVideoProvider, []string{"processing", "pending"}).
-		Order("id ASC").Limit(20).
+	cutoff := time.Now().Unix() - 24*3600
+	if err := dbmodel.DB.Where("provider = ? AND status IN ? AND created_at >= ?", xaiVideoProvider, []string{"processing", "pending"}, cutoff).
+		Order("id ASC").Limit(100).
 		Find(&tasks).Error; err != nil {
 		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] query tasks failed: %v", err))
 		return
@@ -97,5 +98,10 @@ func pollSingleXaiVideoTask(ctx context.Context, task *dbmodel.Video) {
 		logger.Info(ctx, fmt.Sprintf("[xai-video-poller] updated: task_id=%s, status=%s", task.TaskId, task.Status))
 	} else {
 		logger.Error(ctx, fmt.Sprintf("[xai-video-poller] upstream error: task_id=%s, status_code=%d", task.TaskId, resp.StatusCode))
+		task.Status = "failed"
+		task.FailReason = fmt.Sprintf("upstream error: status_code=%d", resp.StatusCode)
+		if err := task.Update(); err != nil {
+			logger.Error(ctx, fmt.Sprintf("[xai-video-poller] failed to mark task as failed: task_id=%s, err=%v", task.TaskId, err))
+		}
 	}
 }

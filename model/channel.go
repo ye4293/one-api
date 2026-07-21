@@ -65,7 +65,7 @@ type Channel struct {
 	Config             string  `json:"config"`
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 	// 是否允许被自动启用（响应时间超阈值/错误失败时跳过自动启用）
-	AutoEnabled bool `json:"auto_enabled" gorm:"default:true"`
+	AutoEnabled bool `json:"auto_enabled" gorm:"default:false"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
 	// 新增自动禁用原因字段
