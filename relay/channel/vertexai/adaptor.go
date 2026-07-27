@@ -293,7 +293,7 @@ func (a *Adaptor) ConvertRequest(c *gin.Context, relayMode int, request *model.G
 	}
 	// 使用 Gemini 的转换函数将 OpenAI 格式转换为 Gemini 格式
 	// Vertex AI 使用与 Gemini 相同的请求格式
-	return gemini.ConvertRequest(*request)
+	return gemini.ConvertRequest(c.Request.Context(), *request)
 }
 
 // ConvertImageRequest implements channel.Adaptor.
