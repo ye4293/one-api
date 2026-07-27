@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"image"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	_ "golang.org/x/image/webp"
 )
@@ -221,6 +223,95 @@ func GetMediaFromUrl(input string) (mimeType string, data string, mediaType stri
 // GetGeminiMediaInfo 获取Gemini媒体信息
 func GetGeminiMediaInfo(input string) (mimeType string, data string, mediaType string, err error) {
 	return GetMediaFromUrl(input)
+}
+
+// imageDownloadClient 用于带 context 的图片下载，无全局超时（超时通过 context 控制）
+var imageDownloadClient = &http.Client{}
+
+// GetImageFromUrlWithContext 下载 URL 图片，支持每次最多 30 秒超时（由调用方传入的 ctx 叠加控制）
+func GetImageFromUrlWithContext(ctx context.Context, input string) (mimeType string, data string, err error) {
+	// data URL 不需要网络请求
+	matches := dataURLPattern.FindStringSubmatch(input)
+	if len(matches) == 3 {
+		return matches[1], matches[2], nil
+	}
+
+	// 纯 base64
+	if isBase64(input) {
+		detectedType, err := GetMediaTypeFromBase64(input)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to detect media type from base64: %v", err)
+		}
+		if !isSupportedMediaType(detectedType) {
+			return "", "", fmt.Errorf("unsupported media type: %s", detectedType)
+		}
+		return detectedType, input, nil
+	}
+
+	// HTTP URL：在父 ctx 基础上叠加单次 30s 超时
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, input, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request for URL: %v", err)
+	}
+
+	resp, err := imageDownloadClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to download from URL: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buffer := new(bytes.Buffer)
+	if _, err = buffer.ReadFrom(io.LimitReader(resp.Body, 50*1024*1024)); err != nil {
+		return "", "", fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	mimeType = resp.Header.Get("Content-Type")
+	if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" {
+		if detected := http.DetectContentType(buffer.Bytes()); detected != "" && detected != "application/octet-stream" {
+			mimeType = detected
+		}
+	}
+	if mimeType == "" || mimeType == "application/octet-stream" || mimeType == "binary/octet-stream" {
+		mimeType = getMimeTypeFromURL(input)
+	}
+
+	if !isSupportedMediaType(mimeType) {
+		return "", "", fmt.Errorf("unsupported media type: %s for URL: %s", mimeType, input)
+	}
+
+	data = base64.StdEncoding.EncodeToString(buffer.Bytes())
+	return mimeType, data, nil
+}
+
+// GetMediaFromUrlWithContext 通用媒体处理函数（带 context）
+func GetMediaFromUrlWithContext(ctx context.Context, input string) (mimeType string, data string, mediaType string, err error) {
+	mimeType, data, err = GetImageFromUrlWithContext(ctx, input)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	switch {
+	case IsImageType(mimeType):
+		mediaType = "image"
+	case IsAudioType(mimeType):
+		mediaType = "audio"
+	case IsVideoType(mimeType):
+		mediaType = "video"
+	case IsDocumentType(mimeType):
+		mediaType = "document"
+	default:
+		mediaType = "unknown"
+	}
+
+	return mimeType, data, mediaType, nil
+}
+
+// GetGeminiMediaInfoWithContext 获取Gemini媒体信息（带 context，支持超时控制）
+func GetGeminiMediaInfoWithContext(ctx context.Context, input string) (mimeType string, data string, mediaType string, err error) {
+	return GetMediaFromUrlWithContext(ctx, input)
 }
 
 func IsImageUrl(url string) (bool, error) {

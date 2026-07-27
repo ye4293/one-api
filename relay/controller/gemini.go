@@ -162,7 +162,10 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 
 	logger.Infof(ctx, "Found %d URL(s) to download, starting concurrent download...", len(downloadTasks))
 
-	// 第二步：并发下载所有URL
+	// 第二步：并发下载所有URL，整体限制 3 分钟，单次由 GetGeminiMediaInfoWithContext 内限制 30 秒
+	downloadCtx, downloadCancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer downloadCancel()
+
 	results := make([]urlDownloadResult, len(downloadTasks))
 	var wg sync.WaitGroup
 
@@ -174,7 +177,7 @@ func processGeminiInlineDataURLs(ctx context.Context, requestBody []byte) ([]byt
 			logger.Infof(ctx, "Downloading URL [%d/%d]: %s", index+1, len(downloadTasks), t.url)
 
 			// 使用现有的图片处理函数下载并转换
-			mimeType, base64Data, mediaType, err := image.GetGeminiMediaInfo(t.url)
+			mimeType, base64Data, mediaType, err := image.GetGeminiMediaInfoWithContext(downloadCtx, t.url)
 			if err != nil {
 				logger.Warnf(ctx, "Failed to download URL [%d/%d]: %v, URL: %s", index+1, len(downloadTasks), err, t.url)
 				results[index] = urlDownloadResult{
