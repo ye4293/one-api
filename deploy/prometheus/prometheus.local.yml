@@ -1,0 +1,35 @@
+# 本地开发用 Prometheus 配置
+#
+# 与生产用的 prometheus.yml 的区别：
+#   1. target 指向 host.docker.internal —— one-api 跑在宿主机（go run / 本地二进制），
+#      Prometheus 跑在 docker 里，需要跨出容器访问宿主机。
+#      Linux 上 docker run 要加 --add-host=host.docker.internal:host-gateway。
+#   2. token 直接写字面量 devtoken。
+#      **不是偷懒** —— Prometheus 不展开配置文件里的 ${ENV_VAR}
+#      （只有 external_labels 有部分支持），写 '${METRICS_TOKEN}' 会把这 17 个字符
+#      原样当 token 发出去，导致 401 且现象很隐蔽（target DOWN 但配置看着没错）。
+#      生产环境用 authorization.credentials_file 挂载文件，见 prometheus.yml。
+#   3. 抓取间隔缩到 5s，本地调试时不用等。
+#
+# 启动方式见 README「本地启动」一节。
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: one-api
+    static_configs:
+      # 9099 是本地启动时给 METRICS_PORT 的值（避开 Prometheus 自己的 9090）
+      - targets: ['host.docker.internal:9099']
+    authorization:
+      type: Bearer
+      credentials: 'devtoken'
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

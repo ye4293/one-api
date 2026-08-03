@@ -1,0 +1,78 @@
+name: Guard Metrics Rules Ownership
+
+# 守住「Prometheus 告警/recording 规则的唯一真相源在 monitor 仓库」这条约定。
+#
+# 为什么需要一个 CI 门禁而不是只写在文档里：
+# 规则文件在本仓库和 monitor 仓库各放一份的话必然漂移，而漂移的症状是
+# 「本地测过的规则上线后行为不同」—— 这类问题极难排查，且通常在事故中才暴露。
+# 靠人记住"不要在这里放规则"是不可靠的，尤其是几个月后。
+#
+# 规则归 monitor 仓库的理由：它们在**接收端**评估（业务服务器上跑的是 agent 模式，
+# 不评估规则）。按部署位置划分归属是唯一不会产生歧义的切法。
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'deploy/prometheus/**'
+  pull_request:
+    paths:
+      - 'deploy/prometheus/**'
+
+jobs:
+  guard:
+    name: 规则文件不得在本仓库出现
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Assert no rule files under deploy/prometheus
+        run: |
+          set -e
+          forbidden=""
+          for f in alerts.yml rules.yml alerts_test.yml prometheus.yml; do
+            if [ -f "deploy/prometheus/$f" ]; then
+              forbidden="$forbidden deploy/prometheus/$f"
+            fi
+          done
+          if [ -n "$forbidden" ]; then
+            echo "::error::以下文件不应存在于本仓库：$forbidden"
+            echo ""
+            echo "Prometheus 告警与 recording 规则的**唯一真相源是 monitor 仓库**"
+            echo "（~/code/monitor/prometheus/）—— 它们在接收端评估，所以归那边。"
+            echo ""
+            echo "两边各放一份必然漂移，症状是「本地测过的规则上线后行为不同」。"
+            echo ""
+            echo "要改规则请去 monitor 仓库，并注意顺序依赖："
+            echo "  先发指标（本仓库），后发规则（monitor 仓库）——"
+            echo "  反了会让告警引用到还不存在的指标。"
+            echo ""
+            echo "本地开发需要规则时，run-local.sh 会自动从 monitor 发布的镜像里取。"
+            exit 1
+          fi
+          echo "✓ 未发现规则文件副本"
+
+      - name: Assert run-local.sh does not copy local rules
+        # run-local.sh 必须从 monitor 镜像取规则，不能从本地目录 cp ——
+        # 后者等于在本仓库偷偷维护了一份副本。
+        #
+        # 注意正则要排除 `docker cp`：从镜像里 docker cp 出来正是我们要的做法，
+        # 只有裸 `cp`（从本地路径复制）才是违规。第一版漏了这个排除，本地自测就误报了。
+        run: |
+          if grep -nE '(^|[^_a-z])cp[[:space:]]+[^|]*(alerts|rules)\.yml' deploy/prometheus/run-local.sh \
+             | grep -v 'docker cp'; then
+            echo "::error file=deploy/prometheus/run-local.sh::"\
+                 "不要从本地目录 cp 规则文件，应从 monitor 发布的镜像 docker cp 取用"
+            exit 1
+          fi
+          if ! grep -q 'monitor-prometheus' deploy/prometheus/run-local.sh; then
+            echo "::error file=deploy/prometheus/run-local.sh::"\
+                 "未从 monitor-prometheus 镜像取规则 —— 单一真相源的取用链路被破坏了"
+            exit 1
+          fi
+          echo "✓ run-local.sh 从 monitor 镜像取规则"
+
+      - name: Shellcheck-lite on run-local.sh
+        run: bash -n deploy/prometheus/run-local.sh && echo "✓ 语法 OK"

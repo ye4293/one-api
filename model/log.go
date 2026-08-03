@@ -12,6 +12,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/metrics"
 
 	"gorm.io/gorm"
 )
@@ -115,6 +116,19 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 		logLine += ", other=" + otherForLog
 	}
 	logger.Info(ctx, logLine)
+
+	// Prometheus 埋点必须在下面的 LogConsumeEnabled 早退**之前**：
+	// 那是个可后台动态关闭的开关（model/option.go），而运维关掉它的场景
+	// （DB 压力大、磁盘吃紧）恰好是最需要监控的时刻。放在后面的话，一关开关
+	// tokens 曲线就掉到 0，与"真的没流量"在 Grafana 上完全无法区分 —— 静默失明。
+	// 指标的门禁只应有 metrics.Enabled()（重启级，不可动态改）。
+	// 同理，下方 ModelMetricsEnabled 也不能作为本埋点的门禁。
+	//
+	// 代价：speed 在下面才计算，这里拿不到 → 不导出 speed 指标，
+	// 吞吐由 PromQL 从 tokens_total 与 duration_seconds_sum 派生（那也更准确，
+	// DB 侧的 AvgSpeed = sumSpeed/speedCount 是"比值的算术平均"，不等于总吞吐）。
+	metrics.ObserveConsume(dbModelName, isStream, promptTokens, completionTokens, cachedTokens, quota, duration, firstWordLatency)
+
 	if !config.LogConsumeEnabled {
 		return
 	}
@@ -581,6 +595,13 @@ func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 	}
 
 	logger.Info(ctx, fmt.Sprintf("record video consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, videoTaskId=%s, requestIP=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, videoTaskId, requestIP))
+
+	// 视频链路独立写库，不经过 RecordConsumeLogWithOtherAndRequestID，需单独埋点，
+	// 否则单价最高的模态完全没有指标。同样必须在 LogConsumeEnabled 早退之前。
+	// 刻意不记 duration 直方图：视频是异步任务，这里的 duration 是提交耗时而非生成耗时，
+	// 混进 llm_request_duration_seconds 会污染 P95。
+	metrics.ObserveVideoConsume(modelName, promptTokens, completionTokens, quota)
+
 	if !config.LogConsumeEnabled {
 		return
 	}
