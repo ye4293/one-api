@@ -16,6 +16,7 @@ import (
 	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
@@ -47,13 +48,9 @@ func monitorGoroutines() {
 			}
 		}
 
-		// 记录内存统计
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		if config.DebugEnabled {
-			logger.SysLog(fmt.Sprintf("Memory: Alloc=%dMB, TotalAlloc=%dMB, Sys=%dMB, NumGC=%d",
-				m.Alloc/1024/1024, m.TotalAlloc/1024/1024, m.Sys/1024/1024, m.NumGC))
-		}
+		// 内存统计已改由 Prometheus 的 GoCollector 导出（基于 runtime/metrics）。
+		// 这里不再周期性调用 runtime.ReadMemStats —— 那是 stop-the-world 操作，
+		// 每 30s 一次会造成无谓的停顿。按需查看仍可走 /api/monitor/health。
 	}
 }
 
@@ -104,6 +101,23 @@ func main() {
 	} else {
 		model.LOG_DB = model.DB
 	}
+	// 注册数据库连接池指标（scrape 时才取快照，平时零开销）
+	if metrics.Enabled() {
+		if sqlDB, dbErr := model.DB.DB(); dbErr == nil {
+			if regErr := metrics.RegisterDB("main", sqlDB); regErr != nil {
+				logger.SysError("failed to register main db metrics: " + regErr.Error())
+			}
+		}
+		// LOG_SQL_DSN 未设置时 LOG_DB 就是 DB（生产即此配置）。必须判等，
+		// 否则 db_name="main" 与 db_name="log" 会导出两份完全相同的数字，误导告警。
+		if model.LOG_DB != model.DB {
+			if logDB, dbErr := model.LOG_DB.DB(); dbErr == nil {
+				if regErr := metrics.RegisterDB("log", logDB); regErr != nil {
+					logger.SysError("failed to register log db metrics: " + regErr.Error())
+				}
+			}
+		}
+	}
 	err = model.CreateRootAccountIfNeed()
 	if err != nil {
 		logger.FatalLog("database init error: " + err.Error())
@@ -120,6 +134,16 @@ func main() {
 	if err != nil {
 		logger.FatalLog("failed to initialize Redis: " + err.Error())
 	}
+	// 注册 Redis 连接池指标（AWS serverless ElastiCache 有 scale 抖动，
+	// pool_timeouts_total 是唯一能提前发现的信号）
+	if metrics.Enabled() && common.RedisEnabled && common.RDB != nil {
+		if regErr := metrics.RegisterRedis(common.RDB.PoolStats); regErr != nil {
+			logger.SysError("failed to register redis metrics: " + regErr.Error())
+		}
+	}
+
+	// 注册业务指标（模型维度 + 渠道维度），两组各有独立开关
+	metrics.RegisterBusinessMetrics()
 
 	// Initialize options（必须在 audit.Start 之前，审计配置从 options 表读取）
 	model.InitOptionMap()
@@ -223,6 +247,10 @@ func main() {
 
 	// 添加监控端点
 	setupMonitoringEndpoints(server)
+
+	// 启动 Prometheus 指标服务（独立端口，不走 gin 中间件链）
+	metrics.StartServer()
+
 	var port = os.Getenv("PORT")
 	if port == "" {
 		port = strconv.Itoa(*common.Port)

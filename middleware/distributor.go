@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/midjourney"
 	relayconstant "github.com/songquanpeng/one-api/relay/constant"
@@ -218,6 +219,15 @@ func Distribute() func(c *gin.Context) {
 							logger.Error(c.Request.Context(), fmt.Sprintf("Channel does not exist：%d", channel.Id))
 							message = "Database consistency has been violated, please contact the administrator"
 						}
+						// 此前这里只有一行日志，无法配告警。注意 modelRequest.Model 是
+						// **未经 abilities 表校验的用户输入**（本分支在下面 c.Set("model", ...) 之前就 return），
+						// 是全部指标里唯一 attacker-controlled 的 label —— metrics 内部有基数守卫兜底。
+						metrics.IncNoChannel(modelRequest.Model, userGroup)
+						// 同时补上 SLO 指标需要的两个键：本分支 abort 得早，
+						// 既没设置 model 也不会走到 recordFinalErrorLog，
+						// 不补的话 503 请求根本进不了 llm_requests_total（详见 metrics.CtxModelKey 注释）。
+						c.Set(metrics.CtxRelayFailedKey, metrics.ReasonNoChannel)
+						c.Set(metrics.CtxModelKey, modelRequest.Model)
 						abortWithMessage(c, http.StatusServiceUnavailable, message)
 						return
 					}
@@ -347,6 +357,26 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 }
 
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) {
+	// 渠道调用级指标的埋点。
+	//
+	// **本函数是"渠道调用尝试"的唯一汇聚点**：controller/relay.go 里 12 个重试循环
+	// 加本文件的首次选渠，共 13 处都会经过这里。因此它承担 oneapi_channel_attempts_total
+	// 这个分母的完整性。
+	//
+	// 隐式契约：将来若新增 relay 入口而绕过本函数（直接 GetChannelById + 自行拼 context），
+	// 分母会漏计而分子（processChannelRelayError 里的 IncChannelError）照常增长，
+	// 导致渠道错误率虚高甚至超过 100%。改动本函数或新增 relay 入口时请一并检查。
+	//
+	// modelName == "" 时跳过：那是 controller/channel-test.go 的管理员测活调用，
+	// 不是真实用户流量，计入会污染渠道成功率。
+	if modelName != "" {
+		metrics.IncChannelAttempt(channel.Id)
+		// channel.Type 是现成字段，provider 推断是纯内存查表，零额外 DB/cache 查询。
+		// provider 只登记在这一条 info 指标上，不冗余到各渠道指标的 label 里
+		// （否则会放大基数）；聚合时用 group_left 关联。
+		metrics.SetChannelInfo(channel.Id, channel.Type, common.GetModelProvider(modelName, channel.Type))
+	}
+
 	c.Set("channel", channel.Type)
 	c.Set("channel_id", channel.Id)
 	c.Set("channel_name", channel.Name)

@@ -1,0 +1,14 @@
+# graphify 知识图谱排除规则
+# 第三方 Grafana 插件打包 JS，非本项目源码
+monitoring-stack/
+
+# 仓库内置前端，实际使用的前端在 ~/code/ezlinkai-web
+web/
+
+# graphify 自身输出，避免循环引用
+graphify-out/
+
+# 构建产物 / 依赖
+node_modules/
+build/
+*.min.js

@@ -1,0 +1,117 @@
+# K8s 部署片段：暴露 metrics 端口并让 Prometheus Operator 抓取
+#
+# 前提：集群已装 Prometheus Operator（提供 ServiceMonitor CRD）。
+# 若用的是原生 Prometheus，改用 kubernetes_sd_configs + annotation 发现。
+#
+# 关键点：metrics 端口只进 Service 供集群内抓取，绝不通过 Ingress 暴露。
+# /debug/pprof/heap 会 dump 进程内存内容，可能含 API key 明文。
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: one-api-metrics
+  namespace: one-api
+type: Opaque
+stringData:
+  # 生成：openssl rand -hex 32
+  token: "REPLACE_ME_WITH_RANDOM_32_BYTES"
+
+---
+# Deployment 需要补的部分（片段，请合并到现有 Deployment 中）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: one-api
+  namespace: one-api
+spec:
+  template:
+    metadata:
+      labels:
+        app: one-api
+    spec:
+      containers:
+        - name: one-api
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: METRICS_ENABLED
+              value: "true"
+            - name: METRICS_PORT
+              value: "9090"
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: one-api-metrics
+                  key: token
+            # pprof 默认关闭，需要排查 goroutine/内存泄漏时再改为 "true" 并滚动重启。
+            # 开启后通过 kubectl port-forward 访问，不要走 Service。
+            - name: PPROF_ENABLED
+              value: "false"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: one-api-metrics
+  namespace: one-api
+  labels:
+    app: one-api
+spec:
+  # headless：只给 Prometheus 做 endpoint 发现，不需要负载均衡
+  clusterIP: None
+  selector:
+    app: one-api
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: one-api
+  namespace: one-api
+  labels:
+    # 需匹配你的 Prometheus CR 里的 serviceMonitorSelector
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: ["one-api"]
+  selector:
+    matchLabels:
+      app: one-api
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      # scrape 超时要小于 interval
+      scrapeTimeout: 10s
+      bearerTokenSecret:
+        name: one-api-metrics
+        key: token
+
+---
+# 可选：禁止从集群外访问 metrics 端口（纵深防御的第一道）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: one-api-metrics-allow-prometheus
+  namespace: one-api
+spec:
+  podSelector:
+    matchLabels:
+      app: one-api
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+          protocol: TCP

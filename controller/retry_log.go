@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/metrics"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
@@ -39,6 +40,19 @@ func recordFinalErrorLog(
 	content := ""
 	if bizErr != nil {
 		content = bizErr.Error.Message
+	}
+
+	// 用户请求级失败埋点。本函数是 Relay / RelayGemini / RelayClaude / RelayResponse
+	// 四条主链路最终失败的唯一汇聚点，与写 DB 错误日志同一个函数体 ——
+	// 因此 Prometheus 的失败计数与 logs 表 LogTypeError 的行数由构造保证一致，对账不需额外解释。
+	//
+	// 同时在 context 里打标记：SSE 流式请求一旦响应头已写出，中途失败时
+	// c.Writer.Status() 仍是 200，中间件只看状态码会把失败记成成功。
+	// middleware/metrics.go 优先读这个标记，详见 metrics.CtxRelayFailedKey 的注释。
+	if bizErr != nil {
+		reason := metrics.ClassifyReason(bizErr.StatusCode, bizErr.Error.Message)
+		metrics.IncFinalError(originalModel, reason)
+		c.Set(metrics.CtxRelayFailedKey, reason)
 	}
 
 	// other：adminInfo + retryHistory（+ affinityTag）
