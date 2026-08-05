@@ -8,6 +8,18 @@
 
 ## 2026-08-05
 
+### feat(upstream): 模型探针的结论分类器（纯函数层，尚未接入）
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_probe.go`(新增), `controller/channel_upstream_probe_test.go`(新增)
+- **说明**: 上游模型探针的第一层 —— 四态结论（`alive` / `not_found` / `inconclusive` / `skipped`）与判定规则，全部为纯函数、零 IO、无运行时副作用，本 commit 尚无调用方。核心设计是**只有上游明确说「这个模型不存在」才是 `not_found`，其余一切失败都是 `inconclusive`**：把 `inconclusive` 误判成 `not_found` 的后果是批量误删模型，比漏删严重得多。`not_found` 需命中三个明确信号之一：404 且带非空错误消息、`error.code`/`error.type` 命中封闭枚举、错误消息命中关键词白名单。
+- **两条最容易翻车的边界（已用单测固化）**: (1) `"You do not have access to this model"` —— 无权限不等于不存在；(2) `"This model's maximum context length is 4096"` —— 含 `model` 字样但模型确实存在。用关键词白名单而非"400 就算不存在"正是为了挡住这两类。反过来，OpenAI 的 `"The model 'x' does not exist or you do not have access to it"` 会命中 `does not exist` 判为 `not_found` —— 对单 key 渠道这是**正确**的（这个 key 服务不了它），多 key 渠道则降级为 `inconclusive`。
+- **数字类 code 自动排除**: `error.code` 在 JSON 里可能是 string / number / null。`normalizeErrCode` 归一化后 `float64(404)` 变成 `"404"`，不在封闭枚举里，等于自动被排除 —— 数字 code 不构成「模型不存在」的明确信号。
+- **对计划的一处偏离**: `classifyProbeError` 去掉了原计划的 `bodyParsed` 参数，改用 `apiErr == nil` 表达"没解析出上游错误体"。一个参数能表达的事不用两个，否则调用方可能传出 `apiErr != nil && bodyParsed == false` 这种自相矛盾的组合。
+- **`skipped` 的语义是「探针无能力」而非「探测失败」**: 因此它在两个场景下都批准执行（信任上游）。这保证对 embedding/tts/视频类模型完全不改变现有行为，上线不引入回归。而 `inconclusive` 在两个场景下都暂缓 —— 保持现状最安全，且下轮 diff 从零重算会自然重试。
+- **验证**: 新增 `channel_upstream_probe_test.go`，含 `classifyProbeError` 的 28 个用例、`isModelNotFoundMessage` 的命中/不命中各 10+ 项、`normalizeErrCode` 的类型矩阵、`filterByProbeVerdicts` 处置表的全部 8 格 + 缺失键/未知 scene/空输入/顺序保持。`controller` 包累计 127 个用例全绿、0 失败。`go build ./...` 与 `go vet ./...`（退出码 0）通过。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
 ### feat(upstream): 自动删除模型加比例保护，防上游返回不相干列表导致一轮删光
 - **分支**: `upstream-model-probe`
 - **类型**: 新功能
