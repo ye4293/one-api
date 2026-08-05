@@ -167,6 +167,7 @@ billing account
 imagen api
 generativelanguage.googleapis.com
 console.x.ai`
+
 // 跨渠道重试关键词配置（一行一个关键词，匹配到则触发跨渠道重试）
 var RetryKeywords = `api key not valid
 invalid_api_key
@@ -240,9 +241,9 @@ var InitialRootToken = os.Getenv("INITIAL_ROOT_TOKEN")
 
 // 模型监控指标配置
 var ModelMetricsEnabled = env.Bool("MODEL_METRICS_ENABLED", true)
-var ModelMetricsAggregationInterval = env.Int("MODEL_METRICS_AGGREGATION_INTERVAL", 300)  // 聚合间隔（秒）
-var ModelMetricsRetentionDays = env.Int("MODEL_METRICS_RETENTION_DAYS", 30)               // 数据保留天数
-var ModelMetricsBackfillDays = env.Int("MODEL_METRICS_BACKFILL_DAYS", 7)                  // 首次回填天数
+var ModelMetricsAggregationInterval = env.Int("MODEL_METRICS_AGGREGATION_INTERVAL", 300) // 聚合间隔（秒）
+var ModelMetricsRetentionDays = env.Int("MODEL_METRICS_RETENTION_DAYS", 30)              // 数据保留天数
+var ModelMetricsBackfillDays = env.Int("MODEL_METRICS_BACKFILL_DAYS", 7)                 // 首次回填天数
 
 // Claude Thinking 模型配置
 var ClaudeThinkingEnabled = true                      // 是否启用 Claude 思考适配（-thinking 后缀）
@@ -279,6 +280,32 @@ var InstanceId = env.String("INSTANCE_ID", getHostname())
 
 // 慢请求阈值：200 请求超过此毫秒数才写 access log，0 表示不记录 200
 var SlowRequestThresholdMs = env.Int("SLOW_REQUEST_THRESHOLD_MS", 5000)
+
+// Prometheus 指标导出（详见 common/metrics 包注释）
+// 这几项故意不接入 options 表的动态配置：指标注册在启动时完成，运行时改开关会让
+// 时间序列突然消失，导致 Grafana 图断裂、rate() 出现假 reset。开关应为重启级。
+var MetricsEnabled = env.Bool("METRICS_ENABLED", false)
+var MetricsPort = env.Int("METRICS_PORT", 9090)
+
+// 为空时 /metrics 只接受 loopback 请求，避免忘配 token 变成匿名公开端点
+var MetricsToken = env.String("METRICS_TOKEN", "")
+
+// pprof 独立开关：/debug/pprof/heap 可能 dump 出含 API key 的内存内容，默认关闭
+var PprofEnabled = env.Bool("PPROF_ENABLED", false)
+
+// 业务指标开关（P1）。做成两个独立开关而非一个，是为了当**回滚阀门**：
+// 线上出问题只需改环境变量重启，不必回滚二进制。
+var MetricsLLMEnabled = env.Bool("METRICS_LLM_ENABLED", true)
+var MetricsChannelEnabled = env.Bool("METRICS_CHANNEL_ENABLED", true)
+
+// 模型名 label 的基数上限，超出后归并为 __other__。
+// abilities 表实测约 388 个 distinct model；留一倍余量。
+// 注意 Prometheus 的 CounterVec 子指标一旦创建就永不回收，所以上限按"历史出现过的总数"计。
+var MetricsMaxModelLabels = env.Int("METRICS_MAX_MODEL_LABELS", 500)
+
+// 延迟直方图桶边界（秒，逗号分隔）。做成可配置以免"想调桶"就得重新发版。
+// 前 7 个与 model.LatencyBoundaries 对齐，后 4 个覆盖长流式请求（STREAMING_TIMEOUT=600）。
+var MetricsLatencyBuckets = env.String("METRICS_LATENCY_BUCKETS", "0.5,1,2,3,5,10,30,60,120,300,600")
 
 func getHostname() string {
 	hostname, err := os.Hostname()

@@ -24,7 +24,12 @@
       "Bash(go vet:*)",
       "Bash(git stash:*)",
       "Bash(git diff *)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(sshpass *)",
+      "Read(//Users/yueqingli/code/monitor/**)",
+      "Bash(grep -cE \"^\\\\s+- alert:\" prometheus/alerts.yml)",
+      "Bash(grep -E \"^\\\\s+- alert:|^\\\\s+alert:\" prometheus/alerts.yml)",
+      "Bash(grep -A10 \"alerting\\\\|rule_files\" prometheus/prometheus.yml)"
     ]
   }
 }

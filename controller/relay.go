@@ -19,6 +19,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/middleware"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
@@ -752,6 +753,15 @@ func recordXAIContentViolationCharge(ctx context.Context, c *gin.Context, channe
 
 func processChannelRelayError(ctx context.Context, userId int, channelId int, channelName string, keyIndex int, err *model.ErrorWithStatusCode, modelName string) {
 	logger.Errorf(ctx, "relay error (userId #%d,channel #%d): %s", userId, channelId, err.Error.Message)
+
+	// 渠道调用级失败埋点。埋在**函数体内**而非各调用点：本函数是全部 12 个重试循环、
+	// 30 个失败点唯一的汇聚处，在这里埋点能让新增 relay 入口自动被覆盖
+	// （在调用点埋会漏掉 11/12 条链路）。
+	// 必须早于下面的 GetChannelById —— 那里 getErr != nil 会提前 return，
+	// 放在后面会漏掉"渠道查不到"这类失败。
+	// 注意这是渠道调用级语义（含重试），与用户可见的失败率不是同一个数，
+	// 详见 common/metrics/channel.go 顶部说明。
+	metrics.IncChannelError(channelId, metrics.ClassifyReason(err.StatusCode, err.Error.Message))
 
 	// 获取渠道信息
 	channel, getErr := dbmodel.GetChannelById(channelId, true)

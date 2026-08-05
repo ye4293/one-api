@@ -6,6 +6,39 @@
 
 ---
 
+## 2026-07-31
+
+### refactor(observability): 指标链路改为推送式，告警规则移交 monitor 仓库
+- **分支**: `prometheus-p0`
+- **类型**: 重构
+- **涉及文件**: `deploy/prometheus/run-local.sh`, `deploy/prometheus/docker-compose.agent.yml`(原 `docker-compose.monitoring.yml` 改名), `deploy/prometheus/README.md`, `.github/workflows/guard-metrics-rules.yml`(新增)；**删除** `deploy/prometheus/{alerts,rules,alerts_test,prometheus}.yml`
+- **说明**: 把 Prometheus 接入 `~/code/monitor`（监控服务器侧的 Loki+Grafana+Nginx 栈）时确定的分工落地。核心决定：**指标改用推送式**（业务服务器跑 Prometheus agent 抓本机后 `remote_write` 到 nginx 网关 → 监控服务器的 Prometheus），与现有 Loki 日志链路同构，业务服务器只需出站连接、不必开入站端口改安全组。**告警与 recording 规则按部署位置划归 monitor 仓库**（它们在接收端评估）—— 本仓库物理删除副本，`run-local.sh` 改为从 monitor 发布的镜像 `docker cp` 取规则，物理上无法漂移；新增 `guard-metrics-rules.yml` 把这条约定变成 CI 门禁（检测规则文件重现、检测从本地 cp 规则，正则排除 `docker cp`）。`docker-compose.monitoring.yml` 改名为 `docker-compose.agent.yml` 并把 prometheus service 改成 **agent 模式**（`--agent` + `--storage.agent.path`，去掉 retention flag —— 已实测 agent 模式带 `--storage.tsdb.retention.time` 会启动失败）。
+- **代价（必须知道）**: 本仓库失去"改指标代码时同一个 PR 里改告警规则"的能力。加一个 `oneapi_llm_*` 指标要开两个 PR、两次发布，且**有顺序依赖：先发指标，后发规则**（反了会让告警引用不存在的指标）。
+- **monitor 侧同期改动**: 新增 `prometheus/` 目录（第 5 个镜像）+ nginx `/api/v1/write` 入口（独立 `PROM_BEARER_TOKEN` 与限流 zone）+ Grafana Prometheus 数据源与两个 dashboard + `validate-rules.yml`（PR 阶段跑 promtool）。规则迁移时做了 5 处 remote_write 适配：severity 归一到 `critical/high/medium/low`、补 `category`、新增 `MetricsAgentGone`、`container` label 改 `name`、全局聚合加 `site` 维度。
+- **验证**: `go build ./...` 与 `go test -race`（metrics + middleware）通过；守卫断言双向验证（正常通过 + 插入违规能拦住）。monitor 侧 `make prom-check` 全绿（34 告警 + 15 recording rule + promtool 单测 SUCCESS），nginx 路由实测 401/415/400/403 四态正确且 Loki 链路无回归，Grafana provisioning 零错误加载。
+- **关联计划**: `docs/plans/2026-07-31-prometheus-p1-业务与主机指标.md`
+
+### feat(observability): AI 业务指标 + 主机指标（Prometheus P1）
+- **分支**: `prometheus-p0`
+- **类型**: 新功能
+- **涉及文件**: `common/metrics/{llm,channel,classify,cardinality}.go`(新增), `common/metrics/metrics_test.go`(新增), `middleware/metrics.go`(新增), `middleware/metrics_test.go`(新增), `common/metrics/registry.go`, `common/config/config.go`, `main.go`, `model/log.go`, `middleware/distributor.go`, `controller/relay.go`, `controller/retry_log.go`, `router/relay-router.go`, `deploy/prometheus/{rules.yml,alerts.yml,prometheus.yml,docker-compose.monitoring.yml,alerts_test.yml,README.md}`
+- **说明**: 覆盖用户提出的 12 项监控需求。其中 7 项主机指标（CPU/内存/磁盘/IO/网络/Load/文件系统）由 node_exporter + cAdvisor 提供，**one-api 零代码**；TPM/RPM 不建独立指标，用 `rate(counter[5m])*60` 派生。业务侧 8 处埋点全部"加一行"，`relay/controller/text.go` 零改动、12 个重试循环一行不动。三个关键设计决定：(1) **Group A（模型维度）与 Group B（渠道维度）严格不交叉** —— `model`(388) × `channel_id`(百级) × 直方图 14 序列 ≈ 110 万条会打爆 Prometheus，`model_metrics` 表能承受三元组是因为有小时聚合和唯一索引，不能照搬 DB 的维度设计；(2) **两种错误率的指标名前缀彻底分开并用 recording rule 固化公式** —— `oneapi_llm_*` 是用户请求级（SLO，重试不计）、`oneapi_channel_*` 是渠道调用级（含重试），一次请求重试 3 次全失败前者记 1 次后者记 3 次，规则是任何除法的分子分母不得跨前缀；(3) **埋点在 `LogConsumeEnabled` 早退之前** —— 那是可后台动态关闭的开关，运维关掉它的场景（DB 压力大）恰好最需要监控，放在后面则 tokens 曲线掉零与"真的没流量"完全无法区分。渠道失败埋在 `processChannelRelayError` **函数体内**而非调用点：该文件有 12 个独立重试循环、30 个调用点，在调用点埋只能覆盖 1/12。处理了 **SSE 流式 200 陷阱**（响应头写出后中途失败状态码仍是 200，只看状态码会系统性低估错误率），解法是 `recordFinalErrorLog` 写 context 标记、中间件优先读它 —— 副产品是 Prometheus 失败计数与 `logs` 表 `LogTypeError` 行数由构造保证一致。`Error.Type` 不能当 label（`relay/util/common.go` 会用上游 JSON 整体覆盖它，基数无界），改为以状态码为主键的 9 值封闭枚举并有单测守住封闭性。延迟桶前 7 个与 `model.LatencyBoundaries` 逐值对齐（有单测），后 4 个扩到 600s（生产 `STREAMING_TIMEOUT=600`，DB 侧上界 30s 使 40s 与 25 分钟的请求同桶，P95 失真）。新增 31 条告警 + 14 条 recording rule。序列数实测 ~1780（含 P0 的 108）。
+- **验证**: `go build ./...`、改动范围 `go vet`、`go test -race`（metrics + middleware）全部通过；`promtool check rules` 31+14 条合法；`promtool test rules` SUCCESS（专门为 `LLMTrafficDroppedToZero` 与 `ChannelDegraded` 流量下限写了单测，前者是最容易写成永不触发的规则）。运行时实测：503 无渠道路径三个指标齐全；基数守卫在上限 50 + 并发 200 个随机模型名下 distinct label 精确停在 51（50+`__other__`）、`label_overflow_total`=302；关掉两个开关后业务指标序列数归零而 P0 的 15 条完好。
+- **单测抓到并修复的两个真实缺陷**: (1) 基数守卫原用"先 Load 检查再 Add"，两步间有窗口，50 goroutine 并发下上限 100 冲到 113 —— 改为用 `LoadOrStore` + `Add` 返回值做原子闸门（超限回退），硬上限成立；(2) 503 请求原本完全不进 `llm_requests_total`（distributor 在 `c.Set("model")` 之前 abort 且不走 `recordFinalErrorLog`），后果是"某模型丢光全部渠道"在 SLO 上显示零影响 —— 已补 `CtxModelKey` 兜底键。
+- **未验证项**: token 精确性、独立于 `LogConsumeEnabled`、两种错误率的 1:3:1 不变式、长请求落桶、与 DB 对账、主机/容器指标 —— 需 mock 上游或 Linux 环境（本地渠道指向真实外部 API，不能压测）。
+- **关联计划**: `docs/plans/2026-07-31-prometheus-p1-业务与主机指标.md`
+
+### feat(observability): 引入 Prometheus 指标导出与 pprof（P0：进程与依赖健康度）
+- **分支**: `prometheus-p0`
+- **类型**: 新功能
+- **涉及文件**: `common/metrics/registry.go`(新增), `common/metrics/collectors.go`(新增), `common/metrics/server.go`(新增), `common/config/config.go`, `main.go`, `go.mod`, `go.sum`, `deploy/prometheus/{prometheus.yml,alerts.yml,servicemonitor.yaml,README.md}`(新增)
+- **说明**: 补齐三块此前完全观测不到的盲区：Go runtime（goroutine/GC/内存/fd/调度延迟）、DB 连接池（生产 `SQL_MAX_OPEN_CONNS=300` 跨公网连 RDS，`wait_count` 此前无任何观测手段）、Redis 连接池（AWS serverless ElastiCache 有 scale 抖动）。新增 leaf 包 `common/metrics`（只依赖 config/env/logger，禁止 import model 等以避免未来循环依赖），私有 Registry 不用 `DefaultRegisterer`；DB 指标复用官方 `collectors.NewDBStatsCollector`（导出 `go_sql_*`，带 `db_name` label），Redis 因 go-redis v8 无官方实现故自写 collector。`/metrics` 与 `/debug/pprof/*` 挂在**独立端口** + Bearer token（常量时间比较），刻意不复用 `middleware.RootAuth()`——它每次 scrape 打一次 DB，且 DB 挂掉时监控端点会一起挂。pprof 五个 handler 显式注册而非 `import _ "net/http/pprof"`，避免污染 `http.DefaultServeMux`。`LOG_DB == DB` 时只注册一次，避免导出两份相同数字误导告警。顺带移除 `monitorGoroutines()` 里每 30s 一次的 `runtime.ReadMemStats`（stop-the-world 操作，GoCollector 已基于 `runtime/metrics` 覆盖）。约 110 条固定小基数序列，无基数爆炸风险。**零业务代码侵入**，未改动 `relay/`、`controller/`、`model/`、`middleware/`；`METRICS_ENABLED=false`（默认）即完全消失。附 11 条告警规则与 K8s ServiceMonitor/NetworkPolicy 清单。业务指标（请求量/延迟/tokens/quota）继续由 `model_metrics` 与 `logs` 表承担，本次刻意不复制，避免两套数字对不上。
+- **验证**: `go build ./...` 通过；改动范围内 `go vet` 通过。本地实测：401/200 鉴权正确；`SQL_MAX_OPEN_CONNS=1` + 60 并发下 `go_sql_wait_count_total` 0→120、`wait_duration_seconds_total` 0→1.29s（证明 collector 在 `Collect()` 时实时取快照而非注册时定格）；Redis `pool_hits_total` 1→354、`pool_connections` 1→8；主端口 `/metrics` 与 `/debug/pprof/` 均返回 404，证明 `DefaultServeMux` 未被污染。
+- **注意**: `go get` 顺带升级了 5 个 `golang.org/x/*` 包（crypto/net/sync/sys/text），已验证编译通过。`docker-compose.yml` 未改动——启用需手动加 `METRICS_*` 环境变量（token 建议走 `.env` 引用，不要写入该文件）。
+- **关联计划**: `docs/plans/2026-07-31-prometheus-p0-可观测性.md`
+
+---
+
 ## 2026-07-13
 
 ### feat(billing): 接入 gpt-5.6-sol/terra/luna，支持 cache_write 与 long-context 计费

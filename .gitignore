@@ -14,3 +14,8 @@ data
 .env
 agents.md
 graphify-out
+.graphifyignore
+
+# Prometheus scrape 用的 Bearer token 文件（通过 credentials_file 挂载进容器，
+# 因为 Prometheus 不展开配置里的 ${ENV_VAR}）
+deploy/prometheus/.metrics-token
