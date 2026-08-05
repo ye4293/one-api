@@ -301,6 +301,29 @@ func upstreamCollectPendingChanges(channel *model.Channel, settings config.Chann
 	return add, remove, nil
 }
 
+// shouldBlockBulkRemove 判断本轮自动删除是否应被比例保护拦下。
+//
+// 防的场景：上游返回了一份不相干的模型列表（换了 API 版本、返回空壳列表如
+// {"data":[{"id":"default"}]}），此时 upstreamCollectPendingChanges 的
+// "上游返回空列表则拒绝"挡不住（len==1 不为 0），本地全部模型会被判为
+// pendingRemove 一轮删光，进而触发 allModelsRemoved → 整个渠道被自动禁用。
+//
+// localCount 为 0 时一律放行：没有本地模型就谈不上删除比例。
+// localCount 低于 UpstreamRemoveGuardMinLocalModels 时也放行 —— 只有 1-3 个
+// 模型的渠道任何删除都 ≥50%，若一并拦下会把"模型全删 → 自动禁用渠道"这条
+// 现有链路永久关掉。
+func shouldBlockBulkRemove(localCount, removeCount int) bool {
+	percent := config.UpstreamRemoveGuardPercent
+	if percent <= 0 || removeCount <= 0 || localCount <= 0 {
+		return false
+	}
+	if localCount < config.UpstreamRemoveGuardMinLocalModels {
+		return false
+	}
+	// 用乘法避免浮点误差：removeCount/localCount > percent/100
+	return removeCount*100 > localCount*percent
+}
+
 // ──────────────────────────────────────────
 // 持久化到 DB
 // ──────────────────────────────────────────
@@ -385,7 +408,17 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 
 	// 自动删除上游已移除的模型
 	var allModelsRemoved bool
-	if allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+	autoDeleteAllowed := allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0
+	// 比例保护：删除量占本地模型比例过高时不自动删，转人工审核。
+	// 只在真的会走自动删除时才判定与告警，避免手动 detect（allowAutoApply=false）
+	// 打出误导性的 error 日志。
+	if autoDeleteAllowed && shouldBlockBulkRemove(len(localModels), len(pendingRemove)) {
+		upstreamError(fmt.Sprintf("upstream sync: bulk remove blocked by guard channel_id=%d channel_name=%s remove=%d local=%d percent_limit=%d min_local=%d",
+			channel.Id, channel.Name, len(pendingRemove), len(localModels),
+			config.UpstreamRemoveGuardPercent, config.UpstreamRemoveGuardMinLocalModels))
+		autoDeleteAllowed = false
+	}
+	if autoDeleteAllowed {
 		current := upstreamNormalizeModelNames(channel.GetModels())
 		updated := upstreamSubtractModelNames(current, pendingRemove)
 		if len(updated) < len(current) {

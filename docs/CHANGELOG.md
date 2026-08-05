@@ -8,6 +8,18 @@
 
 ## 2026-08-05
 
+### feat(upstream): 自动删除模型加比例保护，防上游返回不相干列表导致一轮删光
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_update.go`, `controller/channel_upstream_update_test.go`, `common/config/config.go`, `model/option.go`
+- **说明**: 巡检自动删除此前的防误删保护只有两道 —— "上游返回空列表则拒绝整轮"和"ModelMapping 的 redirect source 豁免"。前者只挡得住 `len(upstream)==0`，**挡不住上游返回一个无关模型**（换了 API 版本、路径语义变化、返回空壳列表如 `{"data":[{"id":"default"}]}`）。这种情况下 `len(upstream)=1` 通过检查，本地全部模型被判 pendingRemove，一轮删光，进而触发 `allModelsRemoved` → `AutoDisableChannelById` → **整个渠道被自动禁用**。新增 `shouldBlockBulkRemove` 纯函数 + 两个可后台热改的配置项：`UpstreamRemoveGuardPercent`(默认 50) 与 `UpstreamRemoveGuardMinLocalModels`(默认 5)。触发时不删，转 `LastRemovedModels` 供人工审核并打 `upstreamError`。
+- **MinLocalModels 是必需的，不是可选项**: 本地只有 1-3 个模型的渠道，任何删除都 ≥50%。若无下限，比例保护会把现有的"模型全删 → 自动禁用渠道 → 上游恢复后自动重启用"整条链路**静默关掉**（功能看起来还在，实际永不触发）。测试里为此专门写了 4 个回归用例。
+- **配置解析上的一个刻意偏离**: 这两项没沿用仓库里 `config.X, _ = strconv.Atoi(value)` 的惯例。那个写法在解析失败时静默得 0，而这里 0 的语义是"关闭保护"/"对所有渠道启用" —— 一次脏数据就会让保护消失或误伤小渠道。改为解析失败或负数时保持默认值。
+- **代价**: 比例保护是"宁可漏删不可误删"的取舍。上游真的大批量下线模型时（比如一次下线 60%），自动删除会被拦下、需要人工在 UI 确认。这是有意的 —— 大批量删除本就该有人看一眼。
+- **说明**: `shouldBlockBulkRemove` 放在 `channel_upstream_update.go` 而非计划里写的 probe 文件 —— 它完全独立于探针（探针关闭时也生效），代码位置也应独立。
+- **验证**: 15 个表驱动用例，覆盖阈值严格大于语义、约束下限的 4 个回归用例、percent=0/负数关闭、local=0/remove=0 边界。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/` 全绿。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
 ### fix(upstream): 忽略列表（IgnoredModels）现在同时拦截自动删除
 - **分支**: `upstream-model-probe`
 - **类型**: 修复

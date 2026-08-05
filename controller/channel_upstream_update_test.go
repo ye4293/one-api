@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
 )
 
@@ -223,6 +224,56 @@ func TestUpstreamApplySelectedModelChanges(t *testing.T) {
 			got := upstreamApplySelectedModelChanges(tt.origin, tt.add, tt.remove)
 			if !equalModelSets(got, tt.want) {
 				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldBlockBulkRemove(t *testing.T) {
+	origPercent := config.UpstreamRemoveGuardPercent
+	origMinLocal := config.UpstreamRemoveGuardMinLocalModels
+	t.Cleanup(func() {
+		config.UpstreamRemoveGuardPercent = origPercent
+		config.UpstreamRemoveGuardMinLocalModels = origMinLocal
+	})
+
+	tests := []struct {
+		name     string
+		percent  int
+		minLocal int
+		local    int
+		remove   int
+		want     bool
+	}{
+		// ── 默认配置：50% / 下限 5 ──
+		{"超过阈值则拦下", 50, 5, 10, 6, true},
+		{"恰好等于阈值不拦（严格大于）", 50, 5, 10, 5, false},
+		{"低于阈值放行", 50, 5, 10, 4, false},
+		{"全部删除且达到下限则拦下", 50, 5, 5, 5, true},
+
+		// ── 约束 C 回归：小渠道必须放行，否则「模型全删 → 自动禁用渠道」链路失效 ──
+		{"本地 3 个模型全删：低于下限，放行", 50, 5, 3, 3, false},
+		{"本地 4 个模型全删：低于下限，放行", 50, 5, 4, 4, false},
+		{"本地 1 个模型全删：低于下限，放行", 50, 5, 1, 1, false},
+		{"本地恰好等于下限：启用保护", 50, 5, 5, 4, true},
+
+		// ── 关闭与边界 ──
+		{"percent=0 表示关闭保护", 0, 5, 10, 10, false},
+		{"percent 负数视为关闭", -1, 5, 10, 10, false},
+		{"remove=0 放行", 50, 5, 10, 0, false},
+		{"local=0 放行", 50, 5, 0, 3, false},
+		{"下限为 0 时小渠道也启用保护", 50, 0, 2, 2, true},
+		{"percent=100 仅在超过全量时触发（实际永不）", 100, 5, 10, 10, false},
+		{"percent=1 几乎总是触发", 1, 5, 100, 2, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config.UpstreamRemoveGuardPercent = tt.percent
+			config.UpstreamRemoveGuardMinLocalModels = tt.minLocal
+			if got := shouldBlockBulkRemove(tt.local, tt.remove); got != tt.want {
+				t.Errorf("shouldBlockBulkRemove(local=%d, remove=%d) with percent=%d minLocal=%d = %v, want %v",
+					tt.local, tt.remove, tt.percent, tt.minLocal, got, tt.want)
 			}
 		})
 	}
