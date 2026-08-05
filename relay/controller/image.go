@@ -2561,7 +2561,7 @@ func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName strin
 			if err := json.Unmarshal(responseBody, &fluxError); err == nil && len(fluxError.Detail) > 0 {
 				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
 				return openai.ErrorWrapper(
-					fmt.Errorf(errorMsg),
+					fmt.Errorf("%s", errorMsg),
 					"flux_validation_error",
 					resp.StatusCode,
 				)
@@ -3298,7 +3298,7 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			if err := json.Unmarshal(body, &fluxError); err == nil && len(fluxError.Detail) > 0 {
 				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
 				return openai.ErrorWrapper(
-					fmt.Errorf(errorMsg),
+					fmt.Errorf("%s", errorMsg),
 					"flux_validation_error",
 					resp.StatusCode,
 				)
