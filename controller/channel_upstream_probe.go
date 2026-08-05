@@ -1,10 +1,27 @@
 package controller
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/middleware"
+	"github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/constant"
+	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/relay/util"
 )
 
 // ──────────────────────────────────────────
@@ -100,26 +117,31 @@ func isModelNotFoundMessage(msg string) bool {
 // classifyProbeError 对探测的失败路径分类，只返回 not_found 或 inconclusive。
 // alive 的判定需要 usage 信息，由调用方负责，不在本函数职责内。
 //
-// apiErr 为 nil 表示没有解析出可用的上游错误体（空 body、HTML 错误页、非 JSON）。
-// 这种情况一律 inconclusive：base_url 配错或上游反代挂掉时所有模型都会返回 404，
-// 若把裸 404 判为 not_found 会一轮删光整个渠道。
+// bodyParsed 表示上游响应体是否成功解析出了**上游自己给的**错误结构。这是
+// not_found 的硬前置条件，原因是 util.RelayErrorHandler 在解析失败时会
+// **编造兜底文案**（relay/util/common.go:182-202），其中 404 的文案是
+// "资源未找到 (404): 请求的端点或模型不存在" —— 含「模型不存在」四字，正好命中
+// 下面的关键词白名单。若不以 bodyParsed 为前提，base_url 配错或上游反代挂掉时
+// 所有模型都会返回 404 + 该兜底文案，被判为 not_found 后一轮删光整个渠道。
+// 因此探针必须自己解析上游 body（见 parseProbeUpstreamError），并如实报告是否
+// 解析成功；拿不到上游原话时一律 inconclusive。
 //
 // isMultiKey 为 true 时把 not_found 降级为 inconclusive：探针只用了一个 key，
 // 而 OpenAI 把「模型不存在」和「本 key 无权限」合并进同一句错误消息，
 // 直接删除会误伤其他 key 能服务的模型。
-func classifyProbeError(statusCode int, apiErr *relaymodel.Error, netErr error, isMultiKey bool) probeVerdict {
+func classifyProbeError(statusCode int, apiErr *relaymodel.Error, bodyParsed bool, netErr error, isMultiKey bool) probeVerdict {
 	// 网络错误、超时：与模型是否存在无关
 	if netErr != nil {
 		return verdictInconclusive
 	}
-	// 没有可解析的上游错误体
-	if apiErr == nil {
+	// 没拿到上游原话（空 body、HTML 错误页、非 JSON、或只有本地编造的兜底文案）
+	if apiErr == nil || !bodyParsed {
 		return verdictInconclusive
 	}
 
 	notFound := false
 	switch {
-	// 信号 1：404 且带有非空错误消息（裸 404 不算，见上方注释）
+	// 信号 1：404 且带有非空错误消息
 	case statusCode == 404 && strings.TrimSpace(apiErr.Message) != "":
 		notFound = true
 	// 信号 2：error.code 或 error.type 命中封闭枚举
@@ -184,4 +206,518 @@ func probeVerdictApproves(v probeVerdict, scene string) bool {
 	default: // verdictInconclusive 及任何未知值
 		return false
 	}
+}
+
+// ──────────────────────────────────────────
+// 上游错误体解析
+// ──────────────────────────────────────────
+
+// probeUpstreamErrorBody 覆盖主流上游的错误响应形态。
+// 刻意不复用 util.GeneralErrorResponse：那个结构没有 code/type 字段，
+// 且配套的 RelayErrorHandler 会在解析失败时编造兜底文案（见 classifyProbeError
+// 的注释），而探针需要的恰恰是「上游到底说了什么，以及我是否真的拿到了」。
+type probeUpstreamErrorBody struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+		Code    any    `json:"code"`
+	} `json:"error"`
+	// 部分上游把错误平铺在顶层
+	Message   string `json:"message"`
+	Msg       string `json:"msg"`
+	ErrorMsg  string `json:"error_msg"`
+	ErrorCode any    `json:"error_code"`
+}
+
+// parseProbeUpstreamError 解析上游错误响应体。
+//
+// 第二个返回值表示是否真的从上游拿到了错误信息：JSON 解析失败（HTML 错误页、
+// 空 body、纯文本）或解析成功但没有任何可用字段，均返回 false。
+// 这个布尔值是 not_found 判定的硬前置条件，绝不能凭空给 true。
+func parseProbeUpstreamError(body []byte) (*relaymodel.Error, bool) {
+	if len(body) == 0 {
+		return nil, false
+	}
+	var parsed probeUpstreamErrorBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, false
+	}
+
+	apiErr := &relaymodel.Error{
+		Message: parsed.Error.Message,
+		Type:    parsed.Error.Type,
+		Code:    parsed.Error.Code,
+	}
+	// 嵌套 error 对象没给消息时回退到顶层平铺字段
+	if apiErr.Message == "" {
+		for _, candidate := range []string{parsed.Message, parsed.Msg, parsed.ErrorMsg} {
+			if candidate != "" {
+				apiErr.Message = candidate
+				break
+			}
+		}
+	}
+	if apiErr.Code == nil {
+		apiErr.Code = parsed.ErrorCode
+	}
+
+	// 一个字段都没拿到 → 视为未解析出上游错误
+	if apiErr.Message == "" && apiErr.Type == "" && normalizeErrCode(apiErr.Code) == "" {
+		return nil, false
+	}
+	return apiErr, true
+}
+
+// ──────────────────────────────────────────
+// 探测预算
+// ──────────────────────────────────────────
+
+// upstreamProbeRoundBudget 是全局每轮探测次数余额。
+// 包级变量安全的前提：upstreamUpdateTaskRunning 的 atomic.Bool CAS 已保证
+// 同一时刻只有一轮巡检在跑。每轮开头由 resetProbeRoundBudget 重置。
+var (
+	upstreamProbeRoundBudget atomic.Int64
+	probeStatAlive           atomic.Int64
+	probeStatNotFound        atomic.Int64
+	probeStatInconclusive    atomic.Int64
+	probeStatSkipped         atomic.Int64
+)
+
+// probeBudget 是单渠道的探测预算
+type probeBudget struct {
+	channelRemaining int
+	channelDeadline  time.Time
+	consecutive429   int
+	aborted          bool // 本渠道已中止（连续 429 或超预算），剩余模型不再发请求
+}
+
+func resetProbeRoundBudget() {
+	upstreamProbeRoundBudget.Store(int64(config.UpstreamModelProbeMaxPerRound))
+	probeStatAlive.Store(0)
+	probeStatNotFound.Store(0)
+	probeStatInconclusive.Store(0)
+	probeStatSkipped.Store(0)
+}
+
+func newProbeBudget() *probeBudget {
+	return &probeBudget{
+		channelRemaining: config.UpstreamModelProbeMaxPerChannel,
+		channelDeadline:  time.Now().Add(time.Duration(config.UpstreamModelProbeChannelBudgetSecs) * time.Second),
+	}
+}
+
+// take 尝试为一次探测扣减预算。返回 false 表示应停止探测（剩余按 inconclusive 处理）。
+func (b *probeBudget) take() bool {
+	if b.aborted || b.channelRemaining <= 0 || time.Now().After(b.channelDeadline) {
+		return false
+	}
+	if upstreamProbeRoundBudget.Add(-1) < 0 {
+		upstreamProbeRoundBudget.Add(1) // 回退，保持余额不为负
+		return false
+	}
+	b.channelRemaining--
+	return true
+}
+
+// note429 记录一次 429。连续次数达阈值则中止本渠道剩余探测 ——
+// 限流下的探测结果全是 inconclusive，继续探纯属烧钱。
+func (b *probeBudget) note429(is429 bool) {
+	if !is429 {
+		b.consecutive429 = 0
+		return
+	}
+	b.consecutive429++
+	if b.consecutive429 >= config.UpstreamModelProbeConsecutive429 {
+		b.aborted = true
+	}
+}
+
+// ──────────────────────────────────────────
+// 单次探测
+// ──────────────────────────────────────────
+
+// probeResult 是单次探测的完整结果，用于写日志
+type probeResult struct {
+	Model      string
+	Verdict    probeVerdict
+	StatusCode int
+	ErrCode    string
+	ErrType    string
+	Message    string
+	Duration   float64
+	Usage      *relaymodel.Usage
+	SkipReason string
+}
+
+const probeMessageMaxLen = 500
+
+func truncateProbeMessage(msg string) string {
+	msg = strings.TrimSpace(msg)
+	runes := []rune(msg)
+	if len(runes) <= probeMessageMaxLen {
+		return msg
+	}
+	return string(runes[:probeMessageMaxLen]) + "...(truncated)"
+}
+
+// probeUnsupportedReason 返回该渠道/模型无法用 chat-completions 探测的原因，
+// 空字符串表示可以探测。
+func probeUnsupportedReason(channel *model.Channel, modelName string) string {
+	if isUnsupportedTestChannel(channel.Type) {
+		name, ok := common.ChannelTypeToProvider[channel.Type]
+		if !ok {
+			name = fmt.Sprintf("type=%d", channel.Type)
+		}
+		return fmt.Sprintf("渠道类型 %s 不支持 chat-completions 探测", name)
+	}
+	if isUnsupportedTestModel(modelName) {
+		return "非聊天类模型，不支持 chat-completions 探测"
+	}
+	// Codex 仅支持 /v1/responses。复用 testChannelViaResponses 会连带写入
+	// LogTypeConsume + tokenName=channel-test 的日志，污染渠道测试记录，
+	// 第一版不支持。
+	if isCodexModel(modelName) {
+		return "Codex 系列仅支持 /v1/responses，探针暂不支持"
+	}
+	return ""
+}
+
+// doProbeChannelModel 对单个 channel×model 发一次真实的最小 chat 请求。
+//
+// 骨架复制自 testChannel（channel-test.go:251-352），四处关键差异：
+//  1. 不做 strings.Contains(channel.Models, model) 白名单检查 —— pendingAdd 的
+//     模型本就不在 channel.Models 里，该检查会让探测必然失败
+//  2. 不做 util.GetMappedModelName —— pendingAdd 是上游真名（映射会反向搞错），
+//     pendingRemove 已排除 redirect source（映射对它是恒等变换），两者用原名都对
+//  3. 设置 MaxTokens 压到最小，且强制非流式
+//  4. 自己读 resp.Body 并用 parseProbeUpstreamError 解析，不经过
+//     util.RelayErrorHandler（它会编造兜底文案，详见 classifyProbeError 注释）
+func doProbeChannelModel(channel *model.Channel, modelName string) probeResult {
+	res := probeResult{Model: modelName, Verdict: verdictInconclusive}
+	start := time.Now()
+	defer func() {
+		res.Duration = time.Since(start).Seconds()
+	}()
+
+	if reason := probeUnsupportedReason(channel, modelName); reason != "" {
+		res.Verdict = verdictSkipped
+		res.SkipReason = reason
+		return res
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/v1/chat/completions"},
+		Body:   nil,
+		Header: make(http.Header),
+	}
+
+	probeKey := channel.Key
+	keyIndex := -1
+	if channel.MultiKeyInfo.IsMultiKey {
+		actualKey, selectedIndex, keyErr := channel.GetNextAvailableKey()
+		if keyErr != nil {
+			res.Verdict = verdictSkipped
+			res.SkipReason = fmt.Sprintf("无可用 key: %v", keyErr)
+			return res
+		}
+		probeKey = actualKey
+		keyIndex = selectedIndex
+	}
+
+	c.Request.Header.Set("Authorization", "Bearer "+probeKey)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("channel", channel.Type)
+	c.Set("base_url", channel.GetBaseURL())
+	c.Set("test_key_index", keyIndex)
+	if channel.MultiKeyInfo.IsMultiKey && keyIndex >= 0 {
+		c.Set("cached_key_index", keyIndex)
+	}
+	// 传空 modelName：middleware/distributor.go 会因此跳过 metrics.IncChannelAttempt，
+	// 探针流量不污染渠道成功率指标
+	middleware.SetupContextForSelectedChannel(c, channel, "")
+
+	meta := util.GetRelayMeta(c)
+	apiType := constant.ChannelType2APIType(channel.Type)
+	adaptor := helper.GetAdaptor(apiType)
+	if adaptor == nil {
+		res.Verdict = verdictSkipped
+		res.SkipReason = fmt.Sprintf("无对应 adaptor: apiType=%d", apiType)
+		return res
+	}
+	adaptor.Init(meta)
+
+	request := buildTestRequest()
+	request.Model = modelName
+	request.Stream = false
+	request.MaxTokens = config.UpstreamModelProbeMaxTokens
+	// 刻意不套 model_mapping，见函数注释第 2 点
+	meta.OriginModelName = modelName
+	meta.ActualModelName = modelName
+
+	convertedRequest, err := adaptor.ConvertRequest(c, constant.RelayModeChatCompletions, request)
+	if err != nil {
+		res.Message = truncateProbeMessage(fmt.Sprintf("构造请求失败: %v", err))
+		return res
+	}
+	jsonData, err := json.Marshal(convertedRequest)
+	if err != nil {
+		res.Message = truncateProbeMessage(fmt.Sprintf("序列化请求失败: %v", err))
+		return res
+	}
+	requestBody := bytes.NewBuffer(jsonData)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(jsonData))
+
+	resp, err := adaptor.DoRequest(c, meta, requestBody)
+	if err != nil {
+		// 网络错误、超时：与模型存在性无关
+		res.Verdict = classifyProbeError(0, nil, false, err, channel.MultiKeyInfo.IsMultiKey)
+		res.Message = truncateProbeMessage(err.Error())
+		return res
+	}
+
+	// resp 可能为 nil（AWS SDK 等直接处理请求的渠道不返回 HTTP 响应）
+	if resp != nil {
+		res.StatusCode = resp.StatusCode
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				res.Message = truncateProbeMessage(fmt.Sprintf("读取上游响应失败: %v", readErr))
+				return res
+			}
+			apiErr, parsed := parseProbeUpstreamError(bodyBytes)
+			res.Verdict = classifyProbeError(resp.StatusCode, apiErr, parsed, nil, channel.MultiKeyInfo.IsMultiKey)
+			if apiErr != nil {
+				res.ErrCode = normalizeErrCode(apiErr.Code)
+				res.ErrType = apiErr.Type
+				res.Message = truncateProbeMessage(apiErr.Message)
+			} else {
+				res.Message = truncateProbeMessage(string(bodyBytes))
+			}
+			return res
+		}
+	}
+
+	usage, respErr := adaptor.DoResponse(c, resp, meta)
+	if respErr != nil {
+		// 200 之后的解析错误。刻意传 bodyParsed=false：这条路径上的消息可能由
+		// adaptor 自己生成而非上游原话，保守处理只会漏删、不会误删。
+		res.StatusCode = respErr.StatusCode
+		res.Verdict = classifyProbeError(respErr.StatusCode, &respErr.Error, false, nil, channel.MultiKeyInfo.IsMultiKey)
+		res.ErrCode = normalizeErrCode(respErr.Error.Code)
+		res.ErrType = respErr.Error.Type
+		res.Message = truncateProbeMessage(respErr.Error.Message)
+		return res
+	}
+	if usage == nil {
+		res.Message = "上游未返回 usage"
+		return res
+	}
+
+	// alive 判定：不把「choices 非空」当硬条件 —— AWS/Vertex 等走 SDK 的适配器
+	// 可能不填 recorder（testChannel:343 就专门处理了 resp == nil）
+	res.Usage = usage
+	if usage.CompletionTokens > 0 || usage.TotalTokens > 0 || usage.PromptTokens > 0 {
+		res.Verdict = verdictAlive
+	} else {
+		res.Message = "上游返回 usage 但 token 数全为 0"
+	}
+	return res
+}
+
+// probeChannelModel 给单次探测包一层 wall-clock 超时。
+//
+// 必需的原因：DoRequestHelper 明确不绑定 context（relay/channel/common.go:36-38），
+// 超时只由全局 HTTPClient.Timeout 控制，默认 5 分钟。串行探 30 个模型最坏 2.5 小时，
+// 而巡检本身是串行遍历所有渠道的。
+//
+// done 必须带 buffer：否则超时返回后发送方永久阻塞、goroutine 泄漏。
+// 带 buffer 时泄漏的 goroutine 会在 HTTPClient 超时后自行退出，
+// 同时存在的上限等于探测预算。
+func probeChannelModel(channel *model.Channel, modelName string, timeout time.Duration) probeResult {
+	done := make(chan probeResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- probeResult{
+					Model:   modelName,
+					Verdict: verdictInconclusive,
+					Message: truncateProbeMessage(fmt.Sprintf("探测 panic: %v", r)),
+				}
+			}
+		}()
+		done <- doProbeChannelModel(channel, modelName)
+	}()
+
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(timeout):
+		return probeResult{
+			Model:    modelName,
+			Verdict:  verdictInconclusive,
+			Message:  fmt.Sprintf("探测超时（%s）", timeout),
+			Duration: timeout.Seconds(),
+		}
+	}
+}
+
+// ──────────────────────────────────────────
+// 批量探测
+// ──────────────────────────────────────────
+
+// probeChannelModels 串行探测一批模型，返回 model → verdict。
+//
+// 刻意保持串行不引入渠道内并发：同一个 key 并发打上游更容易触发 429，
+// 而 429 恰恰是中止条件，并发只会让探测更快失效。
+//
+// 预算耗尽或连续 429 中止后，剩余模型不出现在返回值里 ——
+// filterByProbeVerdicts 会把缺失的键按 inconclusive 处理（保守）。
+func probeChannelModels(channel *model.Channel, models []string, scene string, budget *probeBudget) map[string]probeVerdict {
+	verdicts := make(map[string]probeVerdict, len(models))
+	timeout := time.Duration(config.UpstreamModelProbeTimeoutSeconds) * time.Second
+
+	for _, modelName := range models {
+		// skipped 不消耗预算：它不发请求
+		if reason := probeUnsupportedReason(channel, modelName); reason != "" {
+			verdicts[modelName] = verdictSkipped
+			probeStatSkipped.Add(1)
+			recordProbeLog(channel, probeResult{
+				Model: modelName, Verdict: verdictSkipped, SkipReason: reason,
+			}, scene)
+			continue
+		}
+		if !budget.take() {
+			upstreamInfo(fmt.Sprintf(
+				"upstream probe: budget exhausted channel_id=%d scene=%s stopped_at=%s remaining_treated_as_inconclusive=true",
+				channel.Id, scene, modelName))
+			break
+		}
+
+		res := probeChannelModel(channel, modelName, timeout)
+		verdicts[modelName] = res.Verdict
+		switch res.Verdict {
+		case verdictAlive:
+			probeStatAlive.Add(1)
+		case verdictNotFound:
+			probeStatNotFound.Add(1)
+		case verdictSkipped:
+			probeStatSkipped.Add(1)
+		default:
+			probeStatInconclusive.Add(1)
+		}
+		recordProbeLog(channel, res, scene)
+
+		budget.note429(res.StatusCode == http.StatusTooManyRequests)
+		if budget.aborted {
+			upstreamError(fmt.Sprintf(
+				"upstream probe: aborted by consecutive 429 channel_id=%d channel_name=%s scene=%s consecutive=%d",
+				channel.Id, channel.Name, scene, budget.consecutive429))
+			break
+		}
+	}
+	return verdicts
+}
+
+// recordProbeLog 把一次探测写入 logs 表（Type=LogTypeSystem）与 SysLog 摘要。
+//
+// 复用 logs 表而非新建探针表：ChannelId / ModelName / TokenName / Type 都有索引，
+// 前端现有日志页筛「类型=系统」+「令牌名称=model-probe」即可按渠道/模型检索，
+// 零前端改动。
+func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
+	var quota int64
+	var promptTokens, completionTokens int
+	ratioNote := ""
+	if res.Usage != nil {
+		promptTokens = res.Usage.PromptTokens
+		completionTokens = res.Usage.CompletionTokens
+		quota, ratioNote = calcProbeQuota(res.Model, promptTokens, completionTokens)
+	}
+
+	detail := fmt.Sprintf("探针结论=%s 场景=%s", res.Verdict, scene)
+	if res.StatusCode > 0 {
+		detail += fmt.Sprintf(" 状态码=%d", res.StatusCode)
+	}
+	if res.ErrCode != "" {
+		detail += fmt.Sprintf(" code=%s", res.ErrCode)
+	}
+	if res.ErrType != "" {
+		detail += fmt.Sprintf(" type=%s", res.ErrType)
+	}
+	if res.SkipReason != "" {
+		detail += fmt.Sprintf(" 跳过原因=%s", res.SkipReason)
+	}
+	if res.Message != "" {
+		detail += fmt.Sprintf(" 错误=%s", res.Message)
+	}
+	if ratioNote != "" {
+		detail += " " + ratioNote
+	}
+
+	other := fmt.Sprintf("probe_verdict:%s;probe_scene:%s;probe_status:%d",
+		res.Verdict, scene, res.StatusCode)
+
+	model.RecordModelProbeLog(
+		channel.Id,
+		res.Model,
+		fmt.Sprintf("模型探针: %s", channel.Name),
+		detail,
+		other,
+		res.Duration,
+		quota,
+		promptTokens,
+		completionTokens,
+	)
+
+	// 只有产生了实际判决（非 skipped）才打 SysLog，避免刷屏
+	if res.Verdict != verdictSkipped {
+		upstreamInfo(fmt.Sprintf(
+			"upstream probe: channel_id=%d channel_name=%s model=%s scene=%s verdict=%s status=%d duration=%.2fs",
+			channel.Id, channel.Name, res.Model, scene, res.Verdict, res.StatusCode, res.Duration))
+	}
+}
+
+// calcProbeQuota 换算探测消耗的 quota（仅用于日志展示，不扣配额、不累计渠道用量）。
+// 第二个返回值说明倍率来源 —— pendingAdd 的模型基本都不在倍率表里，
+// common.GetModelRatio 对未知模型返回 30，不注明会让看日志的人困惑。
+func calcProbeQuota(modelName string, promptTokens, completionTokens int) (int64, string) {
+	if promptTokens+completionTokens == 0 {
+		return 0, ""
+	}
+	modelRatio := common.GetModelRatio(modelName)
+	completionRatio := common.GetCompletionRatio(modelName)
+	quota := int64(math.Ceil((float64(promptTokens) + float64(completionTokens)*completionRatio) * modelRatio))
+	if quota <= 0 {
+		quota = 1
+	}
+	note := fmt.Sprintf("模型倍率=%.2f 补全倍率=%.2f", modelRatio, completionRatio)
+	if _, known := common.ModelRatio[modelName]; !known {
+		note += "（倍率表无此模型，按默认值计）"
+	}
+	return quota, note
+}
+
+// ──────────────────────────────────────────
+// 对外入口：过滤 pending 列表
+// ──────────────────────────────────────────
+
+// upstreamProbeEnabledFor 判断某渠道是否应走探针
+func upstreamProbeEnabledFor(settings *config.ChannelOtherSettings) bool {
+	if !config.UpstreamModelProbeEnabled {
+		return false
+	}
+	return !settings.UpstreamModelProbeDisabled
+}
+
+// probeFilterPendingModels 用真实请求过滤 pending 列表，返回批准执行的模型。
+// held 为被暂缓的模型，调用方应把它们留在 settings 里供管理员在 UI 上处置。
+func probeFilterPendingModels(channel *model.Channel, models []string, scene string, budget *probeBudget) (approved, held []string) {
+	if len(models) == 0 {
+		return models, nil
+	}
+	verdicts := probeChannelModels(channel, models, scene, budget)
+	return filterByProbeVerdicts(models, verdicts, scene)
 }

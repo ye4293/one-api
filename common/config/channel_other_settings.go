@@ -14,6 +14,10 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastDetectedModels []string `json:"upstream_model_update_last_detected_models,omitempty"`
 	// 上次检测到的待删除模型列表
 	UpstreamModelUpdateLastRemovedModels []string `json:"upstream_model_update_last_removed_models,omitempty"`
-	// 手动标记为永久忽略的模型（不再自动加入）
+	// 手动标记为永久忽略的模型（不再自动加入，也不会被自动删除）
 	UpstreamModelUpdateIgnoredModels []string `json:"upstream_model_update_ignored_models,omitempty"`
+	// 关闭本渠道的真实请求探针（负极性：默认 false = 跟随全局开关）。
+	// 用负极性 + omitempty 是为了让现有渠道的 settings JSON 一个字节都不变，
+	// 零迁移风险。
+	UpstreamModelProbeDisabled bool `json:"upstream_model_probe_disabled,omitempty"`
 }

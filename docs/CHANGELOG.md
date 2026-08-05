@@ -8,6 +8,24 @@
 
 ## 2026-08-05
 
+### feat(upstream): 上游模型同步接入真实请求探针
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_test.go`, `controller/channel_upstream_update.go`, `model/log.go`, `model/option.go`, `common/config/config.go`, `common/config/channel_other_settings.go`
+- **说明**: 给巡检的 diff 结果加一道真实请求验证门 —— pendingAdd 探测通过才加入、pendingRemove 探测确认「上游明确说不存在」才删除。`UpstreamModelProbeEnabled` 默认关闭。探测量等于 diff 大小，平时接近 0，只在上游列表变动时产生调用。**手动 apply 路径不走探针**，管理员保留最终决定权（否则渠道持续限流时探测全是 `inconclusive`，管理员会被锁死）。只在「该方向真的会被自动应用」时才探 —— 结果只进人工队列的话探测是白花钱。
+- **🔴 实现中发现并修掉的一个致命缺陷**: 原设计打算用 `util.RelayErrorHandler` 拿上游错误。读代码发现它在 body 解析失败时会**编造兜底文案**（`relay/util/common.go:182-202`），其中 404 那条是 `"资源未找到 (404): 请求的端点或模型不存在"` —— **含「模型不存在」四字，正好命中关键词白名单**，且同时命中「404 + Message 非空」信号，属双重命中。真实后果：base_url 配错或上游反代挂掉 → 所有模型返回 404 + 该文案 → 全部判 `not_found` → 一轮删光整个渠道。实测 8 条兜底文案里只有 404 那条会命中，而 404 恰恰是配置出错时最典型的返回。**修法有两层**：(1) 探针改为自己解析上游 body（`parseProbeUpstreamError`），不经过会编造文案的 `RelayErrorHandler`；(2) 恢复 `bodyParsed` 参数作为 `not_found` 的硬前置条件，拿不到上游原话时一律 `inconclusive`。
+- **教训（值得记住）**: 这个缺陷我的单测原本抓不到 —— 因为测试里手动构造了 `apiErr = nil`，而真实调用路径下 `RelayErrorHandler` 永远返回非 nil 且 Message 永远非空。**纯函数的测试用例必须来自真实调用路径的可能输入，而不是想象的输入。** 现已加 `TestRelayErrorHandlerFallbackMessagesNeverCauseNotFound` 把全部 8 条兜底文案钉死，并做了反向断言（若 404 文案不再命中白名单则测试主动失败并提示重新评估门禁必要性）。实测有效性：临时去掉 `bodyParsed` 门禁后该测试立刻 FAIL。
+- **超时必须外层自己包**: `relay/channel/common.go:36-38` 明确「不绑定客户端 context」，超时只由全局 `HTTPClient.Timeout` 控制（默认 **5 分钟**）。串行探 30 个模型最坏 2.5 小时，而巡检本身是串行遍历所有渠道的。解法是 `goroutine + buffered chan + select`。`done` 必须带 buffer，否则超时返回后发送方永久阻塞、goroutine 泄漏；带 buffer 时泄漏的 goroutine 会在 HTTPClient 超时后自行退出，同时存在上限等于探测预算。
+- **日志复用 logs 表，零前端改动**: 新增 `model.RecordModelProbeLog`（`Type=LogTypeSystem`、`TokenName=model-probe`）。**不能复用** `RecordConsumeLogWithOtherAndRequestID` —— 它在 `LogConsumeEnabled` 早退之前无条件调用 `metrics.ObserveConsume`（该埋点位置是 P1 时有意为之），复用会让探针流量污染 `oneapi_llm_*` 指标；且它硬编码 `LogTypeConsume`。quota 仅记录不扣费；`SumUsedQuota`/`SumUsedToken` 都按 `LogTypeConsume` 过滤，`LogTypeSystem` 不进营收统计。前端日志页筛「类型=系统」+「令牌名称=model-probe」即可按渠道/模型检索。
+- **不能复用 `testChannel`**: `channel-test.go:294` 有 `strings.Contains(channel.Models, specifiedModel)` 白名单检查，而 pendingAdd 的模型压根不在 `channel.Models` 里，必然返回 `not supported by this channel`。故新写 `doProbeChannelModel`，`channel-test.go` **零改动**（它挂着管理员测活和自动启停渠道两条命脉）。另刻意不套 `util.GetMappedModelName`：pendingAdd 是上游真名（映射会反向搞错），pendingRemove 已排除 redirect source（映射对它是恒等变换），两者用原名都正确。
+- **settings 回填以原始 pending 为基准**: 被探针暂缓的模型必须留在 `LastDetectedModels`/`LastRemovedModels` 里，管理员才能在 UI 上看到并手动决策。`approved == pending` 时等价于原来的清空行为。
+- **成本控制**: 每渠道 30 次 + 全局每轮 200 次 + 单渠道 120s 时长预算 + 单次 20s 超时 + 连续 2 次 429 中止本渠道（限流下结果全是 `inconclusive`，继续探纯烧钱）。刻意保持串行不引入渠道内并发 —— 同一个 key 并发打上游更容易触发 429，而 429 恰恰是中止条件。全局预算用包级 `atomic.Int64`，安全前提是 `upstreamUpdateTaskRunning` 的 CAS 已保证同一时刻只有一轮巡检；因此 `checkAndPersistUpstreamChanges` **签名完全不变**，三个 HTTP handler 调用点无需改动。
+- **配置解析**: 新增 `setPositiveIntOption` helper。超时/预算/上限这类项取 0 的语义是"立即失败/永不执行"，沿用 `config.X, _ = strconv.Atoi(value)` 会让一次脏数据静默瘫痪功能。每渠道逃生舱 `UpstreamModelProbeDisabled` 用**负极性 + omitempty**，现有渠道的 settings JSON 一个字节都不变，零迁移风险。
+- **未做（有意）**: 僵尸模型（上游列表虚报、两边都有 → diff 为空 → 探针不触发）探不到；`not_found` 的 pendingAdd 每轮会重探（上游一直虚报就一直有成本，可选缓解是进程内 `sync.Map` 缓存 + TTH，待观察真实成本后再定）；Codex 模型判 `skipped`（复用 `testChannelViaResponses` 会连带写 `LogTypeConsume` 污染渠道测试记录）。
+- **验证**: `controller` 包累计 **183 个用例全绿、0 失败**。新增 `parseProbeUpstreamError` 的 20 个用例（HTML/纯文本/截断 JSON/空对象一律 false，标准 OpenAI 与顶层平铺形态一律 true）、`probeBudget` 的 6 个用例（单渠道上限、全局跨渠道共享、时间预算、连续 429、非 429 重置计数、中止后一律失败）、`truncateProbeMessage` 的多字节安全、`upstreamProbeEnabledFor` 与 `probeUnsupportedReason` 的矩阵。`go build ./...` 与 `go vet ./...`（退出码 0）通过。
+- **尚未验证（需真实上游）**: 各 adaptor 的 alive 判定准确性、探测 quota 数值、429 中止的实际触发、单轮巡检总耗时、`oneapi_llm_*` 指标未被污染。上线须按计划文档的灰度步骤逐项核对。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
 ### feat(upstream): 模型探针的结论分类器（纯函数层，尚未接入）
 - **分支**: `upstream-model-probe`
 - **类型**: 新功能

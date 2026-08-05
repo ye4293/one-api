@@ -146,6 +146,17 @@ var UpstreamModelUpdateIntervalMinutes = 0 // 上游模型巡检间隔（分钟�
 // channel_upstream_update.go 的 allModelsRemoved 分支）。
 var UpstreamRemoveGuardPercent = 50       // 0 表示关闭比例保护
 var UpstreamRemoveGuardMinLocalModels = 5 // 本地模型数低于此值时不启用比例保护
+
+// 上游模型同步的真实请求探针：对 diff 出的 pendingAdd / pendingRemove 逐个发一次
+// 最小 chat 请求验证，只有上游明确说「模型不存在」才允许删除，探测通过才允许新增。
+// 默认关闭（opt-in）—— 探针会产生真实上游请求与真实 token 成本。
+var UpstreamModelProbeEnabled = false
+var UpstreamModelProbeMaxPerChannel = 30      // 单渠道单轮探测次数上限
+var UpstreamModelProbeMaxPerRound = 200       // 全局单轮探测次数上限
+var UpstreamModelProbeTimeoutSeconds = 20     // 单次探测 wall-clock 超时（秒）
+var UpstreamModelProbeChannelBudgetSecs = 120 // 单渠道探测总时长预算（秒）
+var UpstreamModelProbeMaxTokens = 16          // 探测请求的 max_tokens
+var UpstreamModelProbeConsecutive429 = 2      // 连续 N 次 429 后中止本渠道剩余探测
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0

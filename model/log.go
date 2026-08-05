@@ -221,6 +221,43 @@ func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int,
 	}
 }
 
+// RecordModelProbeLog 记录上游模型探针日志（Type 为 LogTypeSystem）
+//
+// 刻意不复用 RecordConsumeLogWithOtherAndRequestID：那个入口在
+// `if !config.LogConsumeEnabled { return }` 之前无条件调用 metrics.ObserveConsume
+// （见本文件 :120-131 的注释，埋点位置是有意为之），复用会让探针流量污染
+// oneapi_llm_* 的 tokens/quota/duration 指标；且它硬编码 Type = LogTypeConsume。
+//
+// quota 仅记录不扣费：不调用 UpdateUserUsedQuotaAndRequestCount /
+// UpdateChannelUsedQuota（与 recordChannelTestConsumeLog 的行为一致）。
+// 由于 SumUsedQuota / SumUsedToken 都按 LogTypeConsume 过滤，
+// LogTypeSystem 的 quota 不会进营收统计。
+//
+// UserId 固定 0 且不查 Username：探针一轮可能写数十条日志，
+// GetUsernameById 是一次 DB 查询，没有必要。
+func RecordModelProbeLog(channelId int, modelName, title, content, other string,
+	duration float64, quota int64, promptTokens, completionTokens int) {
+	log := &Log{
+		UserId:           0,
+		Username:         "",
+		CreatedAt:        helper.GetTimestamp(),
+		Type:             LogTypeSystem,
+		Content:          content,
+		TokenName:        "model-probe",
+		ModelName:        modelName,
+		ChannelId:        channelId,
+		Quota:            int(quota),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		Duration:         duration,
+		Title:            title,
+		Other:            other,
+	}
+	if err := LOG_DB.Create(log).Error; err != nil {
+		logger.SysError("failed to record model probe log: " + err.Error())
+	}
+}
+
 func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, xRequestId string, xResponseId string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
