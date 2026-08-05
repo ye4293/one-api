@@ -270,6 +270,12 @@ func upstreamCollectPendingChangesFromModels(
 		if _, ok := redirectSrcSet[m]; ok {
 			return false // redirect source 不因上游缺失而删除
 		}
+		if isIgnored(m) {
+			// 忽略列表同时拦截自动删除：保护「上游 /v1/models 不暴露但实际可用」的
+			// 手工维护模型。此前忽略列表只作用于 pendingAdd，管理员把模型加进忽略
+			// 列表后仍会被 AutoDelete 删掉，与 "ignored" 的字面语义相悖。
+			return false
+		}
 		_, exists := upstreamSet[m]
 		return !exists
 	})

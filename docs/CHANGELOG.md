@@ -6,6 +6,29 @@
 
 ---
 
+## 2026-08-05
+
+### fix(upstream): 忽略列表（IgnoredModels）现在同时拦截自动删除
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_update.go`, `controller/channel_upstream_update_test.go`(新增)
+- **说明**: `upstreamCollectPendingChangesFromModels` 里 pendingAdd 有 `isIgnored` 过滤，pendingRemove 没有 —— 导致 `IgnoredModels` 只拦新增、不拦删除。翻车场景很实际：上游 `/v1/models` 不暴露但实际可调用的模型（相当常见），管理员手动加进渠道并写入忽略列表以为受保护，结果每轮 diff 它都进 pendingRemove，开了 AutoDelete 就被删掉。从 `ignored` 的字面语义看应该是"巡检别碰这个模型"，而非"别新增但可以删"。现给 pendingRemove 补上同一个 `isIgnored` 闭包。
+- **行为变更（必须知道）**: `regex:` 规则从此同时具备"永不自动删除"语义。用宽规则（如 `regex:.*`）的用户会感知 —— 这些模型将不再被自动同步删除。这是本次有意选择的方向：忽略列表本就是"保护手工维护模型"的天然机制。
+- **顺带**: 这是 `controller/` 包的**第一个测试文件**。此前该包零测试覆盖，`upstreamCollectPendingChangesFromModels` 这个纯函数一直没有任何保护。新增 18 个表驱动用例，覆盖基础 diff、去重/trim、ModelMapping 的 redirect target/source 语义、忽略列表对两个方向的作用、非法 regex 不 panic（`:241` 的 err 被吞掉）。
+- **验证**: 按 TDD 先写测试 —— 改动前 3 个 pendingRemove 忽略用例 FAIL、其余 15 个 PASS，改动后全绿。`go build ./...` 与 `go vet ./...` 通过。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+### fix(vet): 修复 11 处非常量格式串导致的二次格式化
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/relay.go`(9 处), `relay/controller/image.go`(2 处)
+- **说明**: `go vet ./...` 在 main 分支即失败 11 处，意味着 CLAUDE.md 要求的"提交前必跑 `go vet`"实际从未通过；且 `go test` 默认执行 vet 子集（含 printf 检查），导致 `controller` 包根本无法运行测试 —— 这也是该包长期零测试覆盖的一个隐性原因。两类问题都是真实缺陷：(1) `controller/relay.go` 的 `retryLog` 已是 `formatRetryLog` 的产物，再传给 `logger.Infof` 会走 `fmt.Sprintf(retryLog)` 二次格式化，而 `retryLog` 内含 `retryReason`（上游错误原因），一旦含 `%` 就输出 `%!q(MISSING)` 类垃圾 → 改为 `logger.Info`；(2) `relay/controller/image.go` 的 `fmt.Errorf(errorMsg)`，其 `errorMsg` 拼了 `fluxError.Detail[0].Msg`，**直接来自上游 API 响应体且该错误会返回给最终用户** → 改为 `fmt.Errorf("%s", errorMsg)`，刻意不新增 `errors` import 以缩小改动面。
+- **发现方式**: 为上游探针功能给 `controller` 包写第一个测试时被 `go test` 挡住而暴露。
+- **验证**: `go build ./...` 通过；`go vet ./...` 退出码 0、零输出。
+- **注意**: `go test ./...` 全量仍有一处失败 —— `common/image/image_test.go` 的 `TestDecode` 从 Wikipedia `http.Get` 下载图片，下载失败后 `img` 为 nil 直接 panic。这是预先存在的外网依赖测试，与本次改动无关，未处理。
+
+---
+
 ## 2026-07-31
 
 ### refactor(observability): 指标链路改为推送式，告警规则移交 monitor 仓库
