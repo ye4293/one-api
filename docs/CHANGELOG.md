@@ -8,6 +8,20 @@
 
 ## 2026-08-06
 
+### fix(test/probe): GPT 与 Claude 的新旧模型 max_tokens 兼容
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel-test.go`, `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_test.go`, `common/config/config.go`, `model/option.go`
+- **说明**: `buildTestRequest` 原本对所有模型发同一份请求，探针又固定 `max_tokens=16`。这在两类模型上**必然 400**，而且失败原因与「模型是否可用」无关。新增 `testRequestMaxTokensFor(modelName)` 按模型能力给值，测活（弹框 / 自动巡检）与探针共用。
+- **🔴 修掉一个既有 bug（不是探针引入的）**: Claude 的 `MaxTokens` 字段是 `json:"max_tokens"`，**没有 omitempty**（`anthropic/model.go:309`）。而 `buildTestRequest` 从不设置它 → 发给 Anthropic 的是 `"max_tokens": 0` → API 直接拒绝。**这意味着弹框测试 Claude 模型、以及自动巡检测活 Claude 渠道，一直都是失败的**。这很可能就是「新旧模型兼容错误」的主要来源之一。
+- **我引入的同类风险也一并修掉**: 探针的 `max_tokens=16` 经 `openai/adaptor.go:86-88` 转成 `max_completion_tokens: 16`。对 Claude thinking 模型，thinking budget 有 1024 下限（`anthropic/main.go:133-136`）且 Anthropic 要求 `max_tokens > budget_tokens`，16 必然 400；对 OpenAI 推理模型，16 不够覆盖 reasoning tokens，会导致空内容或报错。
+- **取值**: Claude thinking → 1200（大于 budget 下限 1024 并留出可见输出余量）；OpenAI 推理模型（o1/o3/o4/gpt-5）→ 1000；其余 → 16。
+- **范围限定 GPT + Claude**：其他厂商的参数兼容暂不处理。项目对 Claude 的 `temperature` 兼容**早已完善**，无需改动 —— `IsThinkingModel` 强制 `temperature=1` 并清空 `top_p`/`top_k`（`anthropic/main.go:143-146`）、`IsNoSamplingModel` 处理 Opus 4.7+ 的「temperature is deprecated for this model」（`:160-164`）。OpenAI 侧因 `Temperature` 带 `omitempty`、`buildTestRequest` 不设值，零值不会被发出，本就安全。
+- **移除配置项** `UpstreamModelProbeMaxTokens`（改为按模型自适应，固定值已无意义）。功能未上线，options 表无此 key，无迁移成本。
+- **前缀匹配的边界**: `isOpenAIReasoningModel` 用 `lower == p || HasPrefix(lower, p+"-")` 而非裸 `HasPrefix`，否则 `gpt-51-turbo` 会被 `gpt-5` 误匹配、`openai-custom` 会被 `o1` 误匹配。单测里专门固化了 5 条误匹配边界。
+- **验证**: 新增 `TestTestRequestMaxTokensFor`（18 组，含 thinking / 推理模型 / 普通模型 / 5 条前缀误匹配边界 / 「任何模型都必须 >= 1」）与 `TestIsOpenAIReasoningModel`（9 命中 + 10 不命中）。**实测有效性**：临时退回一刀切 → thinking 与推理模型用例立刻 FAIL 并报出 `= 16, want 1200`。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/ ./model/` 全绿。
+- **尚未处理**: `temperature` 类参数错误目前仍归为 `inconclusive`。按同构逻辑（上游能对参数报错说明它认识这个模型）本应判模型可用，但需要真实错误样本才能准确匹配各家格式，留待后续。
+
 ### fix(upstream): 429 / 503 改为模型级判定，不再中止渠道探测
 - **分支**: `upstream-model-probe`
 - **类型**: 修复

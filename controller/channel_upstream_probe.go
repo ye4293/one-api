@@ -505,9 +505,11 @@ func doProbeChannelModel(channel *model.Channel, modelName string) probeResult {
 	}
 	adaptor.Init(meta)
 
-	request := buildTestRequest()
+	// max_tokens 按模型能力自适应：Claude thinking 需 > 1024 的 thinking budget，
+	// OpenAI 推理模型需覆盖 reasoning tokens，一刀切小值会让这两类必然失败。
+	// 见 testRequestMaxTokensFor 的注释。
+	request := buildTestRequest(modelName)
 	request.Stream = false
-	request.MaxTokens = config.UpstreamModelProbeMaxTokens
 	// 套用 model_mapping，与 testChannel 及真实请求路径保持一致。
 	//
 	// 探针要回答的不是「上游有没有这个名字」，而是「这个模型加进本地列表后，

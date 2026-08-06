@@ -590,6 +590,83 @@ func TestProbeBudget(t *testing.T) {
 	})
 }
 
+// TestTestRequestMaxTokensFor 锁定新旧模型的 max_tokens 兼容。
+//
+// 一刀切的小值会让两类模型必然 400，且都不是「模型不可用」：
+//   - Claude thinking：thinking budget 下限 1024，Anthropic 要求
+//     max_tokens > budget_tokens
+//   - OpenAI 推理模型：max_completion_tokens 需覆盖 reasoning tokens
+//
+// 另外 Claude 的 max_tokens 无 omitempty，任何模型都必须拿到 >= 1 的值。
+func TestTestRequestMaxTokensFor(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  int
+	}{
+		// Claude thinking：必须大于 thinking budget 下限 1024
+		{"claude thinking", "claude-3-7-sonnet-20250219-thinking", 1200},
+		{"claude opus thinking", "claude-opus-4-thinking", 1200},
+
+		// OpenAI 推理模型
+		{"o1", "o1", 1000},
+		{"o1-mini", "o1-mini", 1000},
+		{"o3", "o3", 1000},
+		{"o3-mini-2025-01-31", "o3-mini-2025-01-31", 1000},
+		{"o4-mini", "o4-mini", 1000},
+		{"gpt-5", "gpt-5", 1000},
+		{"gpt-5-mini", "gpt-5-mini", 1000},
+		{"大小写不敏感", "O3-MINI", 1000},
+
+		// 普通模型用小值即可
+		{"gpt-4o", "gpt-4o", testRequestMaxTokens},
+		{"gpt-3.5-turbo", "gpt-3.5-turbo", testRequestMaxTokens},
+		{"claude 非 thinking", "claude-3-5-sonnet-20241022", testRequestMaxTokens},
+		{"deepseek", "deepseek-chat", testRequestMaxTokens},
+
+		// 前缀匹配的边界：这些不是推理模型，不能误判
+		{"o1 不能匹配 openai 开头的模型", "openai-custom", testRequestMaxTokens},
+		{"o3 不能匹配 o3x 这种连写", "o3x-turbo", testRequestMaxTokens},
+		{"gpt-5 不能匹配 gpt-51", "gpt-51-turbo", testRequestMaxTokens},
+		{"gpt-4 不受影响", "gpt-4-turbo", testRequestMaxTokens},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := testRequestMaxTokensFor(tt.model); got != tt.want {
+				t.Errorf("testRequestMaxTokensFor(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("任何模型都必须拿到 >= 1 的值", func(t *testing.T) {
+		// Claude 的 max_tokens 无 omitempty，0 会被发出去导致 Anthropic 400
+		for _, m := range []string{"", "gpt-4o", "claude-3-5-sonnet", "未知模型", "o1"} {
+			if got := testRequestMaxTokensFor(m); got < 1 {
+				t.Errorf("模型 %q 得到 max_tokens=%d，会让 Claude 收到 0 并 400", m, got)
+			}
+		}
+	})
+}
+
+func TestIsOpenAIReasoningModel(t *testing.T) {
+	hits := []string{"o1", "o1-mini", "o1-pro", "o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "O3-Mini"}
+	for _, m := range hits {
+		if !isOpenAIReasoningModel(m) {
+			t.Errorf("isOpenAIReasoningModel(%q) = false, want true", m)
+		}
+	}
+	// 前缀误匹配是这里唯一真正的风险
+	misses := []string{
+		"", "gpt-4", "gpt-4o", "gpt-51", "gpt-51-turbo",
+		"openai-custom", "o3x", "o1x-turbo", "claude-3-opus", "deepseek-chat",
+	}
+	for _, m := range misses {
+		if isOpenAIReasoningModel(m) {
+			t.Errorf("isOpenAIReasoningModel(%q) = true, want false（前缀误匹配）", m)
+		}
+	}
+}
+
 func TestUpstreamProbeEnabledFor(t *testing.T) {
 	orig := config.UpstreamModelProbeEnabled
 	t.Cleanup(func() { config.UpstreamModelProbeEnabled = orig })
