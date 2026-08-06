@@ -610,8 +610,9 @@ func runUpstreamUpdateTaskOnce() {
 		))
 		if config.UpstreamModelProbeEnabled {
 			upstreamInfo(fmt.Sprintf(
-				"upstream probe round done: alive=%d not_found=%d inconclusive=%d skipped=%d round_budget_left=%d",
+				"upstream probe round done: alive=%d not_found=%d rate_limited=%d unavailable=%d inconclusive=%d skipped=%d round_budget_left=%d",
 				probeStatAlive.Load(), probeStatNotFound.Load(),
+				probeStatRateLimited.Load(), probeStatUnavailable.Load(),
 				probeStatInconclusive.Load(), probeStatSkipped.Load(),
 				upstreamProbeRoundBudget.Load(),
 			))

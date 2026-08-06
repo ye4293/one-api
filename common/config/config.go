@@ -156,7 +156,6 @@ var UpstreamModelProbeMaxPerRound = 200       // 全局单轮探测次数上限
 var UpstreamModelProbeTimeoutSeconds = 10     // 单次探测 wall-clock 超时（秒）
 var UpstreamModelProbeChannelBudgetSecs = 120 // 单渠道探测总时长预算（秒）
 var UpstreamModelProbeMaxTokens = 16          // 探测请求的 max_tokens
-var UpstreamModelProbeConsecutive429 = 2      // 连续 N 次 429 后中止本渠道剩余探测
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0

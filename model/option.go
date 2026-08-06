@@ -45,7 +45,6 @@ func InitOptionMap() {
 	config.OptionMap["UpstreamModelProbeTimeoutSeconds"] = strconv.Itoa(config.UpstreamModelProbeTimeoutSeconds)
 	config.OptionMap["UpstreamModelProbeChannelBudgetSecs"] = strconv.Itoa(config.UpstreamModelProbeChannelBudgetSecs)
 	config.OptionMap["UpstreamModelProbeMaxTokens"] = strconv.Itoa(config.UpstreamModelProbeMaxTokens)
-	config.OptionMap["UpstreamModelProbeConsecutive429"] = strconv.Itoa(config.UpstreamModelProbeConsecutive429)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -519,8 +518,6 @@ func updateOptionMap(key string, value string) (err error) {
 		setPositiveIntOption(&config.UpstreamModelProbeChannelBudgetSecs, value)
 	case "UpstreamModelProbeMaxTokens":
 		setPositiveIntOption(&config.UpstreamModelProbeMaxTokens, value)
-	case "UpstreamModelProbeConsecutive429":
-		setPositiveIntOption(&config.UpstreamModelProbeConsecutive429, value)
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

@@ -40,6 +40,21 @@ const (
 	verdictAlive probeVerdict = "alive"
 	// verdictNotFound 上游明确表示该模型不存在
 	verdictNotFound probeVerdict = "not_found"
+	// verdictRateLimited 上游对该模型限流（429）。
+	//
+	// 语义上这是「模型可用」的证据：上游能对它做限流，说明它认识这个模型
+	// 并愿意服务，只是速率超了。因此在 pendingRemove 场景下绝不能删。
+	//
+	// 但 pendingAdd 场景仍然不加 —— 很多网关的限流检查发生在模型路由之前，
+	// 对不存在的模型也会返回 429，直接当 alive 会把不存在的模型加进列表。
+	// 不加的代价只是延迟一轮（下轮 diff 会重试）。
+	verdictRateLimited probeVerdict = "rate_limited"
+	// verdictUnavailable 该模型当前无可用后端（503）。
+	//
+	// 是模型级信号而非渠道级：渠道本身正常，只是这个模型此刻服务不了，
+	// 因此不触发渠道中止，继续探其他模型。
+	// 两个场景都不动：可能是暂时的，因一次 503 就删掉已有模型是过度反应。
+	verdictUnavailable probeVerdict = "unavailable"
 	// verdictInconclusive 本次探测无结论（默认归类）
 	verdictInconclusive probeVerdict = "inconclusive"
 	// verdictSkipped 该模型无法用 chat/completions 探测，探针无能力判断
@@ -134,6 +149,18 @@ func classifyProbeError(statusCode int, apiErr *relaymodel.Error, bodyParsed boo
 	if netErr != nil {
 		return verdictInconclusive
 	}
+
+	// 429：上游能对这个模型做限流，说明它认识该模型并愿意服务 —— 是「模型可用」
+	// 的证据，而非渠道故障。独立成 verdict 而不并入 inconclusive，是为了让日志里
+	// 能区分「被限流」与「真的没结论」，两者的运维含义完全不同。
+	if statusCode == http.StatusTooManyRequests {
+		return verdictRateLimited
+	}
+	// 503：该模型当前无可用后端。是模型级信号，渠道本身正常。
+	if statusCode == http.StatusServiceUnavailable {
+		return verdictUnavailable
+	}
+
 	// 没拿到上游原话（空 body、HTML 错误页、非 JSON、或只有本地编造的兜底文案）
 	if apiErr == nil || !bodyParsed {
 		return verdictInconclusive
@@ -166,17 +193,19 @@ func classifyProbeError(statusCode int, apiErr *relaymodel.Error, bodyParsed boo
 //
 // 处置规则（scene 决定同一结论的动作）：
 //
-//	              alive    not_found    inconclusive    skipped
-//	pending_add    批准       暂缓           暂缓         批准
-//	pending_remove 暂缓       批准           暂缓         批准
+//	                alive  not_found  rate_limited  unavailable  inconclusive  skipped
+//	pending_add      批准     暂缓        暂缓          暂缓          暂缓        批准
+//	pending_remove   暂缓     批准        暂缓          暂缓          暂缓        批准
 //
-// 两条原则：
-//   - inconclusive 一律暂缓（保持现状最安全；下轮 diff 从零重算会自然重试）
+// 三条原则：
+//   - inconclusive / rate_limited / unavailable 一律暂缓（保持现状最安全；
+//     下轮 diff 从零重算会自然重试）
 //   - skipped 一律批准（探针对这类模型无能力，维持「信任上游」的现有行为，
 //     上线不引入回归）
+//   - 429 与 503 虽然处置上同为「不动」，但保留独立 verdict —— 日志里
+//     「限流 45 个」与「无结论 45 个」的运维含义完全不同
 //
-// verdicts 里缺失的模型按 inconclusive 处理 —— 探测被预算或 429 中止时会出现，
-// 必须保守。
+// verdicts 里缺失的模型按 inconclusive 处理 —— 探测被预算中止时会出现，必须保守。
 func filterByProbeVerdicts(models []string, verdicts map[string]probeVerdict, scene string) (approved, held []string) {
 	approved = make([]string, 0, len(models))
 	held = make([]string, 0)
@@ -203,6 +232,12 @@ func probeVerdictApproves(v probeVerdict, scene string) bool {
 		return scene == probeScenePendingAdd
 	case verdictNotFound:
 		return scene == probeScenePendingRemove
+	case verdictRateLimited, verdictUnavailable:
+		// 429/503 两个方向都不动：
+		//   pendingRemove —— 模型可用（429）或只是暂时不可用（503），删了是误伤
+		//   pendingAdd    —— 429 可能来自模型路由之前的限流检查，加了可能是假的；
+		//                    503 说明当前用不了，加进去也是坏的
+		return false
 	default: // verdictInconclusive 及任何未知值
 		return false
 	}
@@ -281,14 +316,16 @@ var (
 	probeStatNotFound        atomic.Int64
 	probeStatInconclusive    atomic.Int64
 	probeStatSkipped         atomic.Int64
+	probeStatRateLimited     atomic.Int64
+	probeStatUnavailable     atomic.Int64
 )
 
 // probeBudget 是单渠道的探测预算
 type probeBudget struct {
 	channelRemaining int
 	channelDeadline  time.Time
-	consecutive429   int
-	aborted          bool // 本渠道已中止（连续 429 或超预算），剩余模型不再发请求
+	aborted          bool // 本渠道已中止，剩余模型不再发请求
+	abortReason      string
 }
 
 func resetProbeRoundBudget() {
@@ -297,6 +334,8 @@ func resetProbeRoundBudget() {
 	probeStatNotFound.Store(0)
 	probeStatInconclusive.Store(0)
 	probeStatSkipped.Store(0)
+	probeStatRateLimited.Store(0)
+	probeStatUnavailable.Store(0)
 }
 
 func newProbeBudget() *probeBudget {
@@ -319,16 +358,28 @@ func (b *probeBudget) take() bool {
 	return true
 }
 
-// note429 记录一次 429。连续次数达阈值则中止本渠道剩余探测 ——
-// 限流下的探测结果全是 inconclusive，继续探纯属烧钱。
-func (b *probeBudget) note429(is429 bool) {
-	if !is429 {
-		b.consecutive429 = 0
+// noteResult 检查本次结果是否表明「整个渠道都探不下去了」，是则中止剩余探测。
+//
+// 只有确定性的**渠道级**故障才中止，且第一次就停 —— 这几种错误重试不可能成功，
+// 继续探只是白白消耗全局预算：
+//
+//	401 key 无效 / 403 无权限 / 402 欠费
+//
+// 刻意**不**中止的情况：
+//   - 429 限流 —— 说明模型可用，渠道正常，是有效探测结果
+//   - 503 无可用后端 —— 模型级信号，渠道本身正常，其他模型可能好的
+//   - 5xx / 超时 —— 可能只是这一个模型慢或抖动，由次数与时长预算兜底
+func (b *probeBudget) noteResult(res probeResult) {
+	if b.aborted {
 		return
 	}
-	b.consecutive429++
-	if b.consecutive429 >= config.UpstreamModelProbeConsecutive429 {
-		b.aborted = true
+	switch res.StatusCode {
+	case http.StatusUnauthorized:
+		b.aborted, b.abortReason = true, "key 无效（401）"
+	case http.StatusForbidden:
+		b.aborted, b.abortReason = true, "无权限（403）"
+	case http.StatusPaymentRequired:
+		b.aborted, b.abortReason = true, "账户欠费（402）"
 	}
 }
 
@@ -624,16 +675,20 @@ func probeChannelModels(channel *model.Channel, models []string, scene string, b
 			probeStatNotFound.Add(1)
 		case verdictSkipped:
 			probeStatSkipped.Add(1)
+		case verdictRateLimited:
+			probeStatRateLimited.Add(1)
+		case verdictUnavailable:
+			probeStatUnavailable.Add(1)
 		default:
 			probeStatInconclusive.Add(1)
 		}
 		recordProbeLog(channel, res, scene)
 
-		budget.note429(res.StatusCode == http.StatusTooManyRequests)
+		budget.noteResult(res)
 		if budget.aborted {
 			upstreamError(fmt.Sprintf(
-				"upstream probe: aborted by consecutive 429 channel_id=%d channel_name=%s scene=%s consecutive=%d",
-				channel.Id, channel.Name, scene, budget.consecutive429))
+				"upstream probe: aborted channel_id=%d channel_name=%s scene=%s reason=%s remaining_treated_as_inconclusive=true",
+				channel.Id, channel.Name, scene, budget.abortReason))
 			break
 		}
 	}

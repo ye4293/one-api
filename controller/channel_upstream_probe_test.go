@@ -196,11 +196,39 @@ func TestClassifyProbeError(t *testing.T) {
 			want:       verdictInconclusive,
 		},
 		{
-			name:       "429 限流",
+			name:       "429 限流判为 rate_limited（模型可用的证据）",
 			statusCode: 429,
 			apiErr:     &relaymodel.Error{Type: "rate_limit_error", Message: "Rate limit reached"},
 			bodyParsed: true,
-			want:       verdictInconclusive,
+			want:       verdictRateLimited,
+		},
+		{
+			name:       "429 即便无可解析错误体也判 rate_limited",
+			statusCode: 429,
+			apiErr:     nil,
+			bodyParsed: false,
+			want:       verdictRateLimited,
+		},
+		{
+			name:       "503 判为 unavailable（模型级信号，渠道正常）",
+			statusCode: 503,
+			apiErr:     &relaymodel.Error{Message: "No available backend for this model"},
+			bodyParsed: true,
+			want:       verdictUnavailable,
+		},
+		{
+			name:       "503 无错误体同样判 unavailable",
+			statusCode: 503,
+			apiErr:     nil,
+			bodyParsed: false,
+			want:       verdictUnavailable,
+		},
+		{
+			name:       "429 优先于网络错误之外的一切判定",
+			statusCode: 429,
+			apiErr:     &relaymodel.Error{Message: "model does not exist"},
+			bodyParsed: true,
+			want:       verdictRateLimited,
 		},
 		{
 			name:       "402 余额不足",
@@ -307,8 +335,11 @@ func TestRelayErrorHandlerFallbackMessagesNeverCauseNotFound(t *testing.T) {
 				Param:   strconv.Itoa(statusCode),
 			}
 			got := classifyProbeError(statusCode, apiErr, false /* bodyParsed */, nil, false)
-			if got != verdictInconclusive {
-				t.Errorf("兜底文案被判为 %v，必须是 inconclusive：%q", got, msg)
+			// 断言的是「不得判为 not_found」而非「必须是 inconclusive」——
+			// 429/503 有各自的 verdict（rate_limited / unavailable），
+			// 把断言写成等于 inconclusive 会在新增 verdict 时误报。
+			if got == verdictNotFound {
+				t.Errorf("兜底文案被判为 not_found，会导致误删：%q", msg)
 			}
 		})
 	}
@@ -471,12 +502,10 @@ func TestProbeBudget(t *testing.T) {
 	origPerChannel := config.UpstreamModelProbeMaxPerChannel
 	origPerRound := config.UpstreamModelProbeMaxPerRound
 	origBudgetSecs := config.UpstreamModelProbeChannelBudgetSecs
-	orig429 := config.UpstreamModelProbeConsecutive429
 	t.Cleanup(func() {
 		config.UpstreamModelProbeMaxPerChannel = origPerChannel
 		config.UpstreamModelProbeMaxPerRound = origPerRound
 		config.UpstreamModelProbeChannelBudgetSecs = origBudgetSecs
-		config.UpstreamModelProbeConsecutive429 = orig429
 	})
 
 	t.Run("单渠道次数上限生效", func(t *testing.T) {
@@ -523,27 +552,61 @@ func TestProbeBudget(t *testing.T) {
 		}
 	})
 
-	t.Run("连续 429 达阈值则中止本渠道", func(t *testing.T) {
-		config.UpstreamModelProbeConsecutive429 = 2
-		b := newProbeBudget()
-		b.note429(true)
-		if b.aborted {
-			t.Error("1 次 429 不应中止")
-		}
-		b.note429(true)
-		if !b.aborted {
-			t.Error("2 次连续 429 应中止")
+	t.Run("确定性渠道级故障第一次就中止", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			code int
+		}{
+			{"401 key 无效", 401},
+			{"403 无权限", 403},
+			{"402 欠费", 402},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				b := newProbeBudget()
+				b.noteResult(probeResult{StatusCode: tc.code})
+				if !b.aborted {
+					t.Errorf("状态码 %d 应第一次就中止本渠道", tc.code)
+				}
+				if b.abortReason == "" {
+					t.Error("中止必须记录原因，否则日志无法排查")
+				}
+			})
 		}
 	})
 
-	t.Run("非 429 重置连续计数", func(t *testing.T) {
-		config.UpstreamModelProbeConsecutive429 = 2
+	t.Run("429 与 503 不中止渠道", func(t *testing.T) {
+		// 429 说明模型可用、渠道正常；503 是模型级信号，渠道本身正常。
+		// 两者都不该拖累同渠道其他模型的探测。
+		for _, code := range []int{429, 503} {
+			b := newProbeBudget()
+			for i := 0; i < 5; i++ {
+				b.noteResult(probeResult{StatusCode: code})
+			}
+			if b.aborted {
+				t.Errorf("状态码 %d 连续 5 次也不应中止渠道", code)
+			}
+		}
+	})
+
+	t.Run("5xx 与超时不中止渠道（由预算兜底）", func(t *testing.T) {
+		for _, code := range []int{500, 502, 504, 0 /* 超时/网络错误 */} {
+			b := newProbeBudget()
+			for i := 0; i < 5; i++ {
+				b.noteResult(probeResult{StatusCode: code})
+			}
+			if b.aborted {
+				t.Errorf("状态码 %d 不应中止渠道，应由次数/时长预算兜底", code)
+			}
+		}
+	})
+
+	t.Run("中止后重复 noteResult 不覆盖原因", func(t *testing.T) {
 		b := newProbeBudget()
-		b.note429(true)
-		b.note429(false) // 重置
-		b.note429(true)
-		if b.aborted {
-			t.Error("429 被非 429 打断后不应累计中止")
+		b.noteResult(probeResult{StatusCode: 401})
+		first := b.abortReason
+		b.noteResult(probeResult{StatusCode: 403})
+		if b.abortReason != first {
+			t.Errorf("中止原因被覆盖：%q → %q，应保留首个原因", first, b.abortReason)
 		}
 	})
 
