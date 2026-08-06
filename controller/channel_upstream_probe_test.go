@@ -552,72 +552,40 @@ func TestProbeBudget(t *testing.T) {
 		}
 	})
 
-	t.Run("确定性渠道级故障第一次就中止", func(t *testing.T) {
-		for _, tc := range []struct {
-			name string
-			code int
-		}{
-			{"401 key 无效", 401},
-			{"403 无权限", 403},
-			{"402 欠费", 402},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				b := newProbeBudget()
-				b.noteResult(probeResult{StatusCode: tc.code})
-				if !b.aborted {
-					t.Errorf("状态码 %d 应第一次就中止本渠道", tc.code)
-				}
-				if b.abortReason == "" {
-					t.Error("中止必须记录原因，否则日志无法排查")
-				}
-			})
-		}
-	})
-
-	t.Run("429 与 503 不中止渠道", func(t *testing.T) {
-		// 429 说明模型可用、渠道正常；503 是模型级信号，渠道本身正常。
-		// 两者都不该拖累同渠道其他模型的探测。
-		for _, code := range []int{429, 503} {
-			b := newProbeBudget()
-			for i := 0; i < 5; i++ {
-				b.noteResult(probeResult{StatusCode: code})
-			}
-			if b.aborted {
-				t.Errorf("状态码 %d 连续 5 次也不应中止渠道", code)
-			}
-		}
-	})
-
-	t.Run("5xx 与超时不中止渠道（由预算兜底）", func(t *testing.T) {
-		for _, code := range []int{500, 502, 504, 0 /* 超时/网络错误 */} {
-			b := newProbeBudget()
-			for i := 0; i < 5; i++ {
-				b.noteResult(probeResult{StatusCode: code})
-			}
-			if b.aborted {
-				t.Errorf("状态码 %d 不应中止渠道，应由次数/时长预算兜底", code)
-			}
-		}
-	})
-
-	t.Run("中止后重复 noteResult 不覆盖原因", func(t *testing.T) {
-		b := newProbeBudget()
-		b.noteResult(probeResult{StatusCode: 401})
-		first := b.abortReason
-		b.noteResult(probeResult{StatusCode: 403})
-		if b.abortReason != first {
-			t.Errorf("中止原因被覆盖：%q → %q，应保留首个原因", first, b.abortReason)
-		}
-	})
-
-	t.Run("中止后 take 一律失败", func(t *testing.T) {
-		config.UpstreamModelProbeMaxPerChannel = 100
+	// 探针没有任何「渠道级中止」机制：只回答「这个模型怎么样」，不从单个模型的
+	// 失败去推断「整个渠道都完了」。曾对 401/403/402 立即中止，但那是错的 ——
+	// 403 常是模型级权限、402 语义各家不一、401 在多 key 渠道下只代表一个 key。
+	// 本用例锁死这条不变式：任何状态码都不影响预算的可用性。
+	t.Run("任何状态码都不中止渠道，探测只受预算约束", func(t *testing.T) {
+		config.UpstreamModelProbeMaxPerChannel = 10
 		config.UpstreamModelProbeMaxPerRound = 100
+		config.UpstreamModelProbeChannelBudgetSecs = 60
+		resetProbeRoundBudget()
+
+		// 覆盖曾经会触发中止的码，以及各类失败码
+		for _, code := range []int{401, 403, 402, 429, 503, 500, 502, 504, 404, 0} {
+			b := newProbeBudget()
+			if !b.take() {
+				t.Fatalf("状态码 %d：首次 take 应成功", code)
+			}
+			// 模拟拿到该状态码的结果后，预算仍然可继续使用
+			if !b.take() {
+				t.Errorf("状态码 %d 后续 take 失败 —— 不应存在渠道级中止", code)
+			}
+		}
+	})
+
+	t.Run("预算耗尽是唯一的停止条件", func(t *testing.T) {
+		config.UpstreamModelProbeMaxPerChannel = 2
+		config.UpstreamModelProbeMaxPerRound = 100
+		config.UpstreamModelProbeChannelBudgetSecs = 60
 		resetProbeRoundBudget()
 		b := newProbeBudget()
-		b.aborted = true
+		if !b.take() || !b.take() {
+			t.Fatal("前两次 take 应成功")
+		}
 		if b.take() {
-			t.Error("已中止的渠道 take 应返回 false")
+			t.Error("次数预算耗尽后应停止")
 		}
 	})
 }

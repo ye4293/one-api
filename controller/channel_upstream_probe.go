@@ -334,12 +334,24 @@ var (
 	probeStatUnavailable     atomic.Int64
 )
 
-// probeBudget 是单渠道的探测预算
+// probeBudget 是单渠道的探测预算。
+//
+// 这里刻意**没有**任何「渠道级中止」机制：探针只回答「这个模型怎么样」，
+// 不从单个模型的失败去推断「整个渠道都完了」。曾经尝试过对 401/403/402
+// 立即中止，但那是错的 ——
+//   - 403 经常是模型级权限（OpenAI 部分模型需组织验证、中转站按套餐分组），
+//     中止会误伤同渠道其他完全正常的模型
+//   - 402 语义各家网关不统一，可能是按模型分配的额度
+//   - 401 虽是 key 级，但探针只用了一个 key（GetNextAvailableKey），
+//     多 key 渠道下不能代表其他 key
+//
+// 资源控制全部交给预算：单渠道次数（MaxPerChannel）、单渠道时长
+// （ChannelBudgetSecs）、全局每轮次数（MaxPerRound）。
+// 极端情况下 key 整体失效的渠道会吃掉 30 次全局配额，但这些请求立即返回、
+// 不占用时长，代价可接受。
 type probeBudget struct {
 	channelRemaining int
 	channelDeadline  time.Time
-	aborted          bool // 本渠道已中止，剩余模型不再发请求
-	abortReason      string
 }
 
 func resetProbeRoundBudget() {
@@ -361,7 +373,7 @@ func newProbeBudget() *probeBudget {
 
 // take 尝试为一次探测扣减预算。返回 false 表示应停止探测（剩余按 inconclusive 处理）。
 func (b *probeBudget) take() bool {
-	if b.aborted || b.channelRemaining <= 0 || time.Now().After(b.channelDeadline) {
+	if b.channelRemaining <= 0 || time.Now().After(b.channelDeadline) {
 		return false
 	}
 	if upstreamProbeRoundBudget.Add(-1) < 0 {
@@ -370,31 +382,6 @@ func (b *probeBudget) take() bool {
 	}
 	b.channelRemaining--
 	return true
-}
-
-// noteResult 检查本次结果是否表明「整个渠道都探不下去了」，是则中止剩余探测。
-//
-// 只有确定性的**渠道级**故障才中止，且第一次就停 —— 这几种错误重试不可能成功，
-// 继续探只是白白消耗全局预算：
-//
-//	401 key 无效 / 403 无权限 / 402 欠费
-//
-// 刻意**不**中止的情况：
-//   - 429 限流 —— 说明模型可用，渠道正常，是有效探测结果
-//   - 503 无可用后端 —— 模型级信号，渠道本身正常，其他模型可能好的
-//   - 5xx / 超时 —— 可能只是这一个模型慢或抖动，由次数与时长预算兜底
-func (b *probeBudget) noteResult(res probeResult) {
-	if b.aborted {
-		return
-	}
-	switch res.StatusCode {
-	case http.StatusUnauthorized:
-		b.aborted, b.abortReason = true, "key 无效（401）"
-	case http.StatusForbidden:
-		b.aborted, b.abortReason = true, "无权限（403）"
-	case http.StatusPaymentRequired:
-		b.aborted, b.abortReason = true, "账户欠费（402）"
-	}
 }
 
 // ──────────────────────────────────────────
@@ -697,14 +684,6 @@ func probeChannelModels(channel *model.Channel, models []string, scene string, b
 			probeStatInconclusive.Add(1)
 		}
 		recordProbeLog(channel, res, scene)
-
-		budget.noteResult(res)
-		if budget.aborted {
-			upstreamError(fmt.Sprintf(
-				"upstream probe: aborted channel_id=%d channel_name=%s scene=%s reason=%s remaining_treated_as_inconclusive=true",
-				channel.Id, channel.Name, scene, budget.abortReason))
-			break
-		}
 	}
 	return verdicts
 }
