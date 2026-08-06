@@ -449,6 +449,7 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 	// 执行查询
 	var results []HourlyData
 	tx := LOG_DB.Model(&Log{}).Select(field)
+	tx = applyBillableLogTypes(tx)
 	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
 	err := tx.Group(hourExpr).
 		Scan(&results).Error
@@ -497,6 +498,7 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	// 执行查询
 	var results []HourlyData
 	tx := LOG_DB.Model(&Log{}).Select(field).Where("user_id = ?", userId)
+	tx = applyBillableLogTypes(tx)
 	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
 	err := tx.Group(hourExpr).
 		Scan(&results).Error
@@ -544,6 +546,19 @@ func GetUserDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	return getDashboardMetrics(userId)
 }
 
+// applyBillableLogTypes 把聚合查询限定到「代表真实用户流量」的日志类型。
+//
+// 必需的原因：logs 表里除了 LogTypeConsume/LogTypeError，还有不代表用户流量的行 ——
+// 注册赠送（LogTypeSystem，quota/tokens 全为 0，只污染 count）以及模型探针
+// （LogTypeSystem，带真实的 quota/tokens）。Dashboard 与曲线图此前不过滤 type，
+// 会把这些行算进 RPM/TPM/请求数/消耗额/Top-5 模型榜。
+//
+// 口径与 model_metrics.go:200 的 AggregateLogsForHour 保持一致，
+// 避免同一个仓库里两套统计口径对不上。
+func applyBillableLogTypes(tx *gorm.DB) *gorm.DB {
+	return tx.Where("type IN (?, ?)", LogTypeConsume, LogTypeError)
+}
+
 // getDashboardMetrics 内部实现，userId=0 表示查所有用户
 func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	now := time.Now()
@@ -585,6 +600,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 			COALESCE(SUM(quota), 0) as quota_sum
 		`)
 	txMinute = applyUserFilter(txMinute)
+	txMinute = applyBillableLogTypes(txMinute)
 	txMinute = applyLogIdRange(txMinute, oneMinuteAgo, currentTime)
 	if err := txMinute.Row().Scan(&result.RPM, &result.TPM, &result.QuotaPM); err != nil {
 		return nil, err
@@ -597,6 +613,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 			COALESCE(SUM(quota), 0) as used_pd
 		`)
 	txDaily = applyUserFilter(txDaily)
+	txDaily = applyBillableLogTypes(txDaily)
 	txDaily = applyTodayIdRange(txDaily)
 	if err := txDaily.Row().Scan(&result.RequestPD, &result.UsedPD); err != nil {
 		return nil, err
@@ -606,6 +623,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	txModels := LOG_DB.Model(&Log{}).
 		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum")
 	txModels = applyUserFilter(txModels)
+	txModels = applyBillableLogTypes(txModels)
 	txModels = applyTodayIdRange(txModels)
 	if err := txModels.Group("model_name").Order("quota_sum DESC").Limit(5).Scan(&result.ModelStats).Error; err != nil {
 		return nil, err
