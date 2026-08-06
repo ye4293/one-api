@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-06
+
+### fix(model): UpdateAbilities 的先删后插改为事务，防止渠道模型被静默清空
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `model/ability.go`, `model/ability_test.go`(新增)
+- **说明**: `UpdateAbilities` 一直是「先 `DeleteAbilities` 全删、再 `AddAbilities` 全建」且**没有事务包裹**。INSERT 失败时 DELETE 已经提交，该渠道的 abilities 变成 **0 条 —— 等价于所有模型不可路由**，且调用方只看到一个主键冲突错误，完全联想不到"模型已经全没了"。抽出 `addAbilitiesTx` / `deleteAbilitiesTx` 接受 `*gorm.DB`，`UpdateAbilities` 用 `DB.Transaction` 包裹；`AddAbilities` / `DeleteAbilities` 的公开签名保持不变（`model/channel.go:494/558/649` 三处独立调用不受影响）。已确认 `channel.Update()`（`channel.go:619`）用的是全局 `DB` 而非事务句柄，不会产生嵌套事务。
+- **影响面比看起来大**: `UpdateAbilities` 在**任何** `channel.Update()` 时都会执行 —— 管理员在 UI 编辑渠道（哪怕只改个备注）、批量导入 Key、上游同步 apply，全都走这条路。
+- **触发条件在生产中很可能已经发生过**: `AddAbilities` 对 `channel.Models` **不做去重**，重复模型名会构造出主键 `(group, model, channel_id)` 相同的记录导致插入失败。而管理员从 UI 手工编辑模型列表时没有任何去重保护。表现为「编辑渠道后该渠道所有模型突然不可用」，排查时只会看到一条主键冲突报错。
+- **验证**: 新增 `model` 包的**第一个测试文件**（此前该包零测试），用 SQLite 内存库。核心用例 `TestUpdateAbilitiesRollsBackOnInsertFailure` 用重复模型名触发真实的插入失败。**实测有效性**：临时去掉事务后该测试立刻 FAIL，且报出 `失败前 3 条 ability，失败后 0 条` —— 直接复现了"所有模型不可路由"。另有跨渠道隔离、Enabled 跟随渠道状态、清空模型列表三组用例。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./model/ ./controller/` 全绿。
+- **未做（待确认）**: `AddAbilities` 仍不对 models/groups 去重。事务只保证「失败时不损坏数据」，去重才能保证「不失败」，两者互补。加去重会改变行为（静默接受重复输入 vs 报错），需单独确认。
+
+### chore(upstream): 探针单次超时默认值 20s → 10s
+- **分支**: `upstream-model-probe`
+- **类型**: 优化
+- **涉及文件**: `common/config/config.go`
+- **说明**: 探针发的是 `max_tokens=16` 的最小请求，正常 1-3s 返回；超过 10s 基本是模型有问题或上游过载，继续等没有信息量。20s 超时会让单个卡住的模型白白吃掉 1/6 的单渠道时长预算（默认 120s）。按实测口径：平均响应 ≤4s 时瓶颈是 `MaxPerChannel=30` 而非时长预算；调低超时主要是压缩异常样本的尾部开销。该项可后台热改，无需发版。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+---
+
 ## 2026-08-05
 
 ### feat(upstream): 上游模型同步接入真实请求探针
