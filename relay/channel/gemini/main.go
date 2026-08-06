@@ -519,7 +519,7 @@ func ConvertRequest(ctx context.Context, textRequest model.GeneralOpenAIRequest)
 					logger.SysLog(fmt.Sprintf("Unsupported media type for image_url: %s", mediaType))
 				}
 			} else if part.Type == model.ContentTypeAudioURL {
-				mimeType, data, mediaType, err := image.GetGeminiMediaInfoWithContext(downloadCtx, part.AudioURL.Url)
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.AudioURL.Url)
 				if err != nil {
 					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for audio_url: %v", err))
 					continue
@@ -530,7 +530,7 @@ func ConvertRequest(ctx context.Context, textRequest model.GeneralOpenAIRequest)
 					logger.SysLog(fmt.Sprintf("Expected audio type but got: %s", mediaType))
 				}
 			} else if part.Type == model.ContentTypeVideoURL {
-				mimeType, data, mediaType, err := image.GetGeminiMediaInfoWithContext(downloadCtx, part.VideoURL.Url)
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.VideoURL.Url)
 				if err != nil {
 					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for video_url: %v", err))
 					continue
@@ -555,7 +555,7 @@ func ConvertRequest(ctx context.Context, textRequest model.GeneralOpenAIRequest)
 					addMediaPart(&parts, detectedType, part.InputAudio.Data)
 				}
 			} else if part.Type == model.ContentTypeFileURL {
-				mimeType, data, mediaType, err := image.GetGeminiMediaInfoWithContext(downloadCtx, part.FileURL.Url)
+				mimeType, data, mediaType, err := image.GetGeminiMediaInfo(part.FileURL.Url)
 				if err != nil {
 					logger.SysLog(fmt.Sprintf("Error in GetGeminiMediaInfo for file_url: %v", err))
 					continue

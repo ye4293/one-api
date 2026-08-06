@@ -76,20 +76,42 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 	return nil, errors.New("unable to select a channel based on weight")
 }
 
+// normalizeAbilityKeys 把逗号分隔的 models / group 字段拆成规范化列表：
+// 去首尾空白、丢弃空项、保序去重。
+//
+// 去重是必需的而非锦上添花：abilities 的主键是 (group, model, channel_id)，
+// 重复项会构造出主键相同的记录导致整批插入失败。而管理员从 UI 手工编辑模型
+// 列表时没有任何去重保护，一旦写重就会让该渠道的 abilities 无法重建
+// （事务保证已有数据不被损坏，但这次更新会整体失败）。
+func normalizeAbilityKeys(raw string) []string {
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
 func (channel *Channel) AddAbilities() error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+	return channel.addAbilitiesTx(DB)
+}
+
+// addAbilitiesTx 在给定句柄（DB 或事务）上创建该渠道的 abilities
+func (channel *Channel) addAbilitiesTx(tx *gorm.DB) error {
+	models_ := normalizeAbilityKeys(channel.Models)
+	groups_ := normalizeAbilityKeys(channel.Group)
 	abilities := make([]Ability, 0, len(models_)*len(groups_))
 	for _, model := range models_ {
-		model = strings.TrimSpace(model) // 去除空格
-		if model == "" {
-			continue // 跳过空模型
-		}
 		for _, group := range groups_ {
-			group = strings.TrimSpace(group) // 去除空格
-			if group == "" {
-				continue // 跳过空组
-			}
 			ability := Ability{
 				Group:     group,
 				Model:     model,
@@ -111,7 +133,7 @@ func (channel *Channel) AddAbilities() error {
 			end = len(abilities)
 		}
 		batch := abilities[i:end]
-		if err := DB.Create(&batch).Error; err != nil {
+		if err := tx.Create(&batch).Error; err != nil {
 			return err
 		}
 	}
@@ -119,24 +141,28 @@ func (channel *Channel) AddAbilities() error {
 }
 
 func (channel *Channel) DeleteAbilities() error {
-	return DB.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
+	return channel.deleteAbilitiesTx(DB)
+}
+
+// deleteAbilitiesTx 在给定句柄（DB 或事务）上删除该渠道的全部 abilities
+func (channel *Channel) deleteAbilitiesTx(tx *gorm.DB) error {
+	return tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
 }
 
 // UpdateAbilities updates abilities of this channel.
 // Make sure the channel is completed before calling this function.
+//
+// 先 DELETE 后 INSERT 必须在同一个事务内：否则 INSERT 失败时 DELETE 已经提交，
+// 该渠道的 abilities 会变成空 —— 等价于「所有模型不可路由」，且不会有任何报错
+// 提示模型已经消失。真实的触发路径：channel.Models 含重复模型名时，
+// addAbilitiesTx 会构造出主键 (group, model, channel_id) 相同的记录导致插入失败。
 func (channel *Channel) UpdateAbilities() error {
-	// A quick and dirty way to update abilities
-	// First delete all abilities of this channel
-	err := channel.DeleteAbilities()
-	if err != nil {
-		return err
-	}
-	// Then add new abilities
-	err = channel.AddAbilities()
-	if err != nil {
-		return err
-	}
-	return nil
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := channel.deleteAbilitiesTx(tx); err != nil {
+			return err
+		}
+		return channel.addAbilitiesTx(tx)
+	})
 }
 
 // UpdateAbilityStatus 已废弃：请使用 UpdateChannelStatusById 确保数据一致性

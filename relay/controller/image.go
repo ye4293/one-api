@@ -56,7 +56,7 @@ var imageDownloadClientOnce sync.Once
 func getImageDownloadClient() *http.Client {
 	imageDownloadClientOnce.Do(func() {
 		imageDownloadClient = &http.Client{
-			Timeout: 120 * time.Second, // 整体超时 120 秒
+			Timeout: 30 * time.Second, // 整体超时 30 秒
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
 					Timeout:   30 * time.Second, // 连接超时 30 秒
@@ -64,7 +64,7 @@ func getImageDownloadClient() *http.Client {
 				}).DialContext,
 				ForceAttemptHTTP2:     true,
 				TLSHandshakeTimeout:   30 * time.Second,
-				ResponseHeaderTimeout: 60 * time.Second,
+				ResponseHeaderTimeout: 20 * time.Second,
 				IdleConnTimeout:       90 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 				MaxIdleConns:          100,
@@ -2561,7 +2561,7 @@ func handleFluxImageRequest(c *gin.Context, ctx context.Context, modelName strin
 			if err := json.Unmarshal(responseBody, &fluxError); err == nil && len(fluxError.Detail) > 0 {
 				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
 				return openai.ErrorWrapper(
-					fmt.Errorf(errorMsg),
+					fmt.Errorf("%s", errorMsg),
 					"flux_validation_error",
 					resp.StatusCode,
 				)
@@ -3298,7 +3298,7 @@ func GetImageResult(c *gin.Context, taskId string) *relaymodel.ErrorWithStatusCo
 			if err := json.Unmarshal(body, &fluxError); err == nil && len(fluxError.Detail) > 0 {
 				errorMsg := fmt.Sprintf("Flux API validation error: %s", fluxError.Detail[0].Msg)
 				return openai.ErrorWrapper(
-					fmt.Errorf(errorMsg),
+					fmt.Errorf("%s", errorMsg),
 					"flux_validation_error",
 					resp.StatusCode,
 				)
@@ -4534,8 +4534,8 @@ func extractImageInputs(value interface{}) []string {
 	return inputs
 }
 
-// parseImageInput 解析单个图片输入（URL或base64数据）
-func parseImageInput(ctx context.Context, input string) gemini.Part {
+// parseImageInput 解析单个图片输入（URL或base64数据），失败时返回具体错误
+func parseImageInput(ctx context.Context, input string) (gemini.Part, error) {
 	// 检查是否是base64格式的数据URL
 	if strings.HasPrefix(input, "data:") {
 		// 解析data URL格式: data:image/png;base64,BASE64_DATA
@@ -4565,7 +4565,7 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 				MimeType: mimeType,
 				Data:     imageData,
 			},
-		}
+		}, nil
 	} else if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		// 处理URL格式的图片：下载并转换为base64
 		logger.Infof(ctx, "Downloading image from URL: %s", input)
@@ -4573,7 +4573,7 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 		imageData, mimeType, err := downloadImageToBase64(ctx, input)
 		if err != nil {
 			logger.Errorf(ctx, "Failed to download image from URL %s: %v", input, err)
-			return gemini.Part{}
+			return gemini.Part{}, fmt.Errorf("Failed to download %s: %w", input, err)
 		}
 
 		logger.Infof(ctx, "Successfully downloaded image from URL, MIME type: %s, size: %d bytes", mimeType, len(imageData))
@@ -4583,7 +4583,7 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 				MimeType: mimeType,
 				Data:     imageData,
 			},
-		}
+		}, nil
 	} else {
 		// 假设是纯base64数据（没有data URL前缀）
 		return gemini.Part{
@@ -4591,7 +4591,7 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 				MimeType: "image/png", // 默认PNG格式
 				Data:     input,
 			},
-		}
+		}, nil
 	}
 }
 
@@ -4599,9 +4599,8 @@ func parseImageInput(ctx context.Context, input string) gemini.Part {
 func downloadImageToBase64(ctx context.Context, imageURL string) (base64Data string, mimeType string, err error) {
 	startTime := time.Now()
 
-	// 为图片下载创建独立的超时上下文，不受全局 RELAY_TIMEOUT 影响
-	// 图片下载最多等待 120 秒，避免单张图片阻塞整个请求
-	downloadCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// 为图片下载创建独立的超时上下文，每次单张图片最多等待 30 秒
+	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// 获取复用的 HTTP 客户端
@@ -4849,6 +4848,10 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 	startTime := time.Now()
 	logger.Infof(ctx, "Starting concurrent processing of %d images with %d workers", len(imageInputs), concurrency)
 
+	// 对本次请求所有图片下载设置 3 分钟总超时；单张由 downloadImageToBase64 内限制 30 秒
+	downloadCtx, downloadCancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer downloadCancel()
+
 	// 填充任务队列
 	validTasks := 0
 	for i, imageInput := range imageInputs {
@@ -4876,21 +4879,9 @@ func processImagesConcurrently(ctx context.Context, imageInputs []string) ([]gem
 			for task := range taskChan {
 				logger.Debugf(ctx, "Worker %d processing image %d: starting", workerID, task.index+1)
 
-				part := parseImageInput(ctx, task.input)
-
-				var err error
-				if part.InlineData == nil {
-					// 生成更详细的错误信息
-					inputPreview := task.input
-					if len(inputPreview) > 100 {
-						inputPreview = inputPreview[:100] + "..."
-					}
-					if strings.HasPrefix(task.input, "http://") || strings.HasPrefix(task.input, "https://") {
-						err = fmt.Errorf("failed to download image from URL: %s", inputPreview)
-					} else {
-						err = fmt.Errorf("failed to parse image input (index %d)", task.index+1)
-					}
-					logger.Warnf(ctx, "Worker %d processing image %d: failed", workerID, task.index+1)
+				part, err := parseImageInput(downloadCtx, task.input)
+				if err != nil {
+					logger.Warnf(ctx, "Worker %d processing image %d: failed: %v", workerID, task.index+1, err)
 				} else {
 					logger.Debugf(ctx, "Worker %d processing image %d: success (MIME: %s, size: %d bytes)",
 						workerID, task.index+1, part.InlineData.MimeType, len(part.InlineData.Data))

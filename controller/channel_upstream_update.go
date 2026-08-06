@@ -132,7 +132,6 @@ func upstreamApplySelectedModelChanges(origin, addModels, removeModels []string)
 	return upstreamSubtractModelNames(upstreamMergeModelNames(origin, normalizedAdd), normalizedRemove)
 }
 
-
 // upstreamNormalizeChannelModelMapping 解析 channel.ModelMapping JSON
 func upstreamNormalizeChannelModelMapping(channel *model.Channel) map[string]string {
 	if channel.ModelMapping == nil {
@@ -270,6 +269,12 @@ func upstreamCollectPendingChangesFromModels(
 		if _, ok := redirectSrcSet[m]; ok {
 			return false // redirect source 不因上游缺失而删除
 		}
+		if isIgnored(m) {
+			// 忽略列表同时拦截自动删除：保护「上游 /v1/models 不暴露但实际可用」的
+			// 手工维护模型。此前忽略列表只作用于 pendingAdd，管理员把模型加进忽略
+			// 列表后仍会被 AutoDelete 删掉，与 "ignored" 的字面语义相悖。
+			return false
+		}
 		_, exists := upstreamSet[m]
 		return !exists
 	})
@@ -293,6 +298,29 @@ func upstreamCollectPendingChanges(channel *model.Channel, settings config.Chann
 		upstreamNormalizeChannelModelMapping(channel),
 	)
 	return add, remove, nil
+}
+
+// shouldBlockBulkRemove 判断本轮自动删除是否应被比例保护拦下。
+//
+// 防的场景：上游返回了一份不相干的模型列表（换了 API 版本、返回空壳列表如
+// {"data":[{"id":"default"}]}），此时 upstreamCollectPendingChanges 的
+// "上游返回空列表则拒绝"挡不住（len==1 不为 0），本地全部模型会被判为
+// pendingRemove 一轮删光，进而触发 allModelsRemoved → 整个渠道被自动禁用。
+//
+// localCount 为 0 时一律放行：没有本地模型就谈不上删除比例。
+// localCount 低于 UpstreamRemoveGuardMinLocalModels 时也放行 —— 只有 1-3 个
+// 模型的渠道任何删除都 ≥50%，若一并拦下会把"模型全删 → 自动禁用渠道"这条
+// 现有链路永久关掉。
+func shouldBlockBulkRemove(localCount, removeCount int) bool {
+	percent := config.UpstreamRemoveGuardPercent
+	if percent <= 0 || removeCount <= 0 || localCount <= 0 {
+		return false
+	}
+	if localCount < config.UpstreamRemoveGuardMinLocalModels {
+		return false
+	}
+	// 用乘法避免浮点误差：removeCount/localCount > percent/100
+	return removeCount*100 > localCount*percent
 }
 
 // ──────────────────────────────────────────
@@ -359,10 +387,31 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 		_ = saveChannelUpstreamSettings(channel, *settings, false)
 		return false, 0, true, fetchErr
 	}
+	// ── 真实请求探针：只在自动巡检路径（allowAutoApply=true）生效 ──
+	// 手动 apply 不走探针，管理员保留最终决定权 —— 否则渠道持续限流时
+	// 探测全是 inconclusive，管理员会被探针锁死、什么也改不了。
+	//
+	// 只在「该方向真的会被自动应用」时才探：结果只进人工队列的话探测是白花钱。
+	approvedAdd, approvedRemove := pendingAdd, pendingRemove
+	if allowAutoApply && upstreamProbeEnabledFor(settings) {
+		budget := newProbeBudget()
+		if settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
+			approvedAdd, _ = probeFilterPendingModels(channel, pendingAdd, probeScenePendingAdd, budget)
+		}
+		if settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+			approvedRemove, _ = probeFilterPendingModels(channel, pendingRemove, probeScenePendingRemove, budget)
+		}
+		if len(pendingAdd) > 0 || len(pendingRemove) > 0 {
+			upstreamInfo(fmt.Sprintf("upstream probe: channel_id=%d channel_name=%s add_approved=%d/%d remove_approved=%d/%d",
+				channel.Id, channel.Name,
+				len(approvedAdd), len(pendingAdd), len(approvedRemove), len(pendingRemove)))
+		}
+	}
+
 	// 自动同步新增模型
 	var autoReenabled bool
-	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
-		merged := upstreamMergeModelNames(localModels, pendingAdd)
+	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(approvedAdd) > 0 {
+		merged := upstreamMergeModelNames(localModels, approvedAdd)
 		if len(merged) > len(localModels) {
 			channel.Models = strings.Join(merged, ",")
 			autoAdded = len(merged) - len(localModels)
@@ -372,21 +421,36 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 				autoReenabled = true
 			}
 		}
-		settings.UpstreamModelUpdateLastDetectedModels = []string{}
+		// 以原始 pendingAdd 为基准回填：被探针暂缓的模型必须留在 settings 里，
+		// 管理员才能在 UI 上看到并手动决策。approved == pending 时等价于清空，
+		// 与探针关闭前的行为一致。
+		settings.UpstreamModelUpdateLastDetectedModels = upstreamSubtractModelNames(pendingAdd, approvedAdd)
 	} else {
 		settings.UpstreamModelUpdateLastDetectedModels = pendingAdd
 	}
 
 	// 自动删除上游已移除的模型
 	var allModelsRemoved bool
-	if allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+	autoDeleteAllowed := allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(approvedRemove) > 0
+	// 比例保护：删除量占本地模型比例过高时不自动删，转人工审核。
+	// 只在真的会走自动删除时才判定与告警，避免手动 detect（allowAutoApply=false）
+	// 打出误导性的 error 日志。
+	if autoDeleteAllowed && shouldBlockBulkRemove(len(localModels), len(approvedRemove)) {
+		upstreamError(fmt.Sprintf("upstream sync: bulk remove blocked by guard channel_id=%d channel_name=%s remove=%d local=%d percent_limit=%d min_local=%d",
+			channel.Id, channel.Name, len(approvedRemove), len(localModels),
+			config.UpstreamRemoveGuardPercent, config.UpstreamRemoveGuardMinLocalModels))
+		autoDeleteAllowed = false
+	}
+	if autoDeleteAllowed {
 		current := upstreamNormalizeModelNames(channel.GetModels())
-		updated := upstreamSubtractModelNames(current, pendingRemove)
+		updated := upstreamSubtractModelNames(current, approvedRemove)
 		if len(updated) < len(current) {
 			channel.Models = strings.Join(updated, ",")
 			modelsChanged = true
 			allModelsRemoved = len(updated) == 0
-			settings.UpstreamModelUpdateLastRemovedModels = []string{} // 已删除，清空待删列表
+			// 以原始 pendingRemove 为基准回填：被探针暂缓（alive / inconclusive）的
+			// 模型必须留在 settings 里供管理员审核，不能因为「删过了」就清空。
+			settings.UpstreamModelUpdateLastRemovedModels = upstreamSubtractModelNames(pendingRemove, approvedRemove)
 		} else {
 			settings.UpstreamModelUpdateLastRemovedModels = pendingRemove // 未能删除，保留供手动审核
 		}
@@ -475,6 +539,10 @@ func runUpstreamUpdateTaskOnce() {
 	}
 	defer upstreamUpdateTaskRunning.Store(false)
 
+	// 重置本轮全局探测预算与统计。放在 CAS 之后：CAS 已保证同一时刻只有一轮在跑，
+	// 因此包级预算变量无需额外加锁。
+	resetProbeRoundBudget()
+
 	checked, failed, changed := 0, 0, 0
 	addedTotal, removedTotal, autoTotal := 0, 0, 0
 	refreshNeeded := false
@@ -540,6 +608,15 @@ func runUpstreamUpdateTaskOnce() {
 			"upstream update task done: checked=%d changed=%d add=%d remove=%d failed=%d auto_added=%d",
 			checked, changed, addedTotal, removedTotal, failed, autoTotal,
 		))
+		if config.UpstreamModelProbeEnabled {
+			upstreamInfo(fmt.Sprintf(
+				"upstream probe round done: alive=%d not_found=%d rate_limited=%d unavailable=%d inconclusive=%d skipped=%d round_budget_left=%d",
+				probeStatAlive.Load(), probeStatNotFound.Load(),
+				probeStatRateLimited.Load(), probeStatUnavailable.Load(),
+				probeStatInconclusive.Load(), probeStatSkipped.Load(),
+				upstreamProbeRoundBudget.Load(),
+			))
+		}
 	}
 }
 

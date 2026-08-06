@@ -221,6 +221,43 @@ func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int,
 	}
 }
 
+// RecordModelProbeLog 记录上游模型探针日志（Type 为 LogTypeSystem）
+//
+// 刻意不复用 RecordConsumeLogWithOtherAndRequestID：那个入口在
+// `if !config.LogConsumeEnabled { return }` 之前无条件调用 metrics.ObserveConsume
+// （见本文件 :120-131 的注释，埋点位置是有意为之），复用会让探针流量污染
+// oneapi_llm_* 的 tokens/quota/duration 指标；且它硬编码 Type = LogTypeConsume。
+//
+// quota 仅记录不扣费：不调用 UpdateUserUsedQuotaAndRequestCount /
+// UpdateChannelUsedQuota（与 recordChannelTestConsumeLog 的行为一致）。
+// 由于 SumUsedQuota / SumUsedToken 都按 LogTypeConsume 过滤，
+// LogTypeSystem 的 quota 不会进营收统计。
+//
+// UserId 固定 0 且不查 Username：探针一轮可能写数十条日志，
+// GetUsernameById 是一次 DB 查询，没有必要。
+func RecordModelProbeLog(channelId int, modelName, title, content, other string,
+	duration float64, quota int64, promptTokens, completionTokens int) {
+	log := &Log{
+		UserId:           0,
+		Username:         "",
+		CreatedAt:        helper.GetTimestamp(),
+		Type:             LogTypeSystem,
+		Content:          content,
+		TokenName:        "model-probe",
+		ModelName:        modelName,
+		ChannelId:        channelId,
+		Quota:            int(quota),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		Duration:         duration,
+		Title:            title,
+		Other:            other,
+	}
+	if err := LOG_DB.Create(log).Error; err != nil {
+		logger.SysError("failed to record model probe log: " + err.Error())
+	}
+}
+
 func GetCurrentAllLogsAndCount(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, xRequestId string, xResponseId string, page int, pageSize int, channel int) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 
@@ -412,6 +449,7 @@ func GetAllGraph(timestamp int64, target string) ([]HourlyData, error) {
 	// 执行查询
 	var results []HourlyData
 	tx := LOG_DB.Model(&Log{}).Select(field)
+	tx = applyBillableLogTypes(tx)
 	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
 	err := tx.Group(hourExpr).
 		Scan(&results).Error
@@ -460,6 +498,7 @@ func GetUserGraph(userId int, timestamp int64, target string) ([]HourlyData, err
 	// 执行查询
 	var results []HourlyData
 	tx := LOG_DB.Model(&Log{}).Select(field).Where("user_id = ?", userId)
+	tx = applyBillableLogTypes(tx)
 	tx = applyLogIdRange(tx, startOfDay.Unix(), endOfDay.Unix()-1)
 	err := tx.Group(hourExpr).
 		Scan(&results).Error
@@ -507,6 +546,19 @@ func GetUserDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	return getDashboardMetrics(userId)
 }
 
+// applyBillableLogTypes 把聚合查询限定到「代表真实用户流量」的日志类型。
+//
+// 必需的原因：logs 表里除了 LogTypeConsume/LogTypeError，还有不代表用户流量的行 ——
+// 注册赠送（LogTypeSystem，quota/tokens 全为 0，只污染 count）以及模型探针
+// （LogTypeSystem，带真实的 quota/tokens）。Dashboard 与曲线图此前不过滤 type，
+// 会把这些行算进 RPM/TPM/请求数/消耗额/Top-5 模型榜。
+//
+// 口径与 model_metrics.go:200 的 AggregateLogsForHour 保持一致，
+// 避免同一个仓库里两套统计口径对不上。
+func applyBillableLogTypes(tx *gorm.DB) *gorm.DB {
+	return tx.Where("type IN (?, ?)", LogTypeConsume, LogTypeError)
+}
+
 // getDashboardMetrics 内部实现，userId=0 表示查所有用户
 func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	now := time.Now()
@@ -548,6 +600,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 			COALESCE(SUM(quota), 0) as quota_sum
 		`)
 	txMinute = applyUserFilter(txMinute)
+	txMinute = applyBillableLogTypes(txMinute)
 	txMinute = applyLogIdRange(txMinute, oneMinuteAgo, currentTime)
 	if err := txMinute.Row().Scan(&result.RPM, &result.TPM, &result.QuotaPM); err != nil {
 		return nil, err
@@ -560,6 +613,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 			COALESCE(SUM(quota), 0) as used_pd
 		`)
 	txDaily = applyUserFilter(txDaily)
+	txDaily = applyBillableLogTypes(txDaily)
 	txDaily = applyTodayIdRange(txDaily)
 	if err := txDaily.Row().Scan(&result.RequestPD, &result.UsedPD); err != nil {
 		return nil, err
@@ -569,6 +623,7 @@ func getDashboardMetrics(userId int) (*DashboardMetrics, error) {
 	txModels := LOG_DB.Model(&Log{}).
 		Select("model_name, COALESCE(SUM(quota), 0) as quota_sum")
 	txModels = applyUserFilter(txModels)
+	txModels = applyBillableLogTypes(txModels)
 	txModels = applyTodayIdRange(txModels)
 	if err := txModels.Group("model_name").Order("quota_sum DESC").Limit(5).Scan(&result.ModelStats).Error; err != nil {
 		return nil, err

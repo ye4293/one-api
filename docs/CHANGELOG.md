@@ -6,6 +6,162 @@
 
 ---
 
+## 2026-08-06
+
+### fix(test/probe): GPT 与 Claude 的新旧模型 max_tokens 兼容
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel-test.go`, `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_test.go`, `common/config/config.go`, `model/option.go`
+- **说明**: `buildTestRequest` 原本对所有模型发同一份请求，探针又固定 `max_tokens=16`。这在两类模型上**必然 400**，而且失败原因与「模型是否可用」无关。新增 `testRequestMaxTokensFor(modelName)` 按模型能力给值，测活（弹框 / 自动巡检）与探针共用。
+- **🔴 修掉一个既有 bug（不是探针引入的）**: Claude 的 `MaxTokens` 字段是 `json:"max_tokens"`，**没有 omitempty**（`anthropic/model.go:309`）。而 `buildTestRequest` 从不设置它 → 发给 Anthropic 的是 `"max_tokens": 0` → API 直接拒绝。**这意味着弹框测试 Claude 模型、以及自动巡检测活 Claude 渠道，一直都是失败的**。这很可能就是「新旧模型兼容错误」的主要来源之一。
+- **我引入的同类风险也一并修掉**: 探针的 `max_tokens=16` 经 `openai/adaptor.go:86-88` 转成 `max_completion_tokens: 16`。对 Claude thinking 模型，thinking budget 有 1024 下限（`anthropic/main.go:133-136`）且 Anthropic 要求 `max_tokens > budget_tokens`，16 必然 400；对 OpenAI 推理模型，16 不够覆盖 reasoning tokens，会导致空内容或报错。
+- **取值**: Claude thinking → 1200（大于 budget 下限 1024 并留出可见输出余量）；OpenAI 推理模型（o1/o3/o4/gpt-5）→ 1000；其余 → 16。
+- **范围限定 GPT + Claude**：其他厂商的参数兼容暂不处理。项目对 Claude 的 `temperature` 兼容**早已完善**，无需改动 —— `IsThinkingModel` 强制 `temperature=1` 并清空 `top_p`/`top_k`（`anthropic/main.go:143-146`）、`IsNoSamplingModel` 处理 Opus 4.7+ 的「temperature is deprecated for this model」（`:160-164`）。OpenAI 侧因 `Temperature` 带 `omitempty`、`buildTestRequest` 不设值，零值不会被发出，本就安全。
+- **移除配置项** `UpstreamModelProbeMaxTokens`（改为按模型自适应，固定值已无意义）。功能未上线，options 表无此 key，无迁移成本。
+- **前缀匹配的边界**: `isOpenAIReasoningModel` 用 `lower == p || HasPrefix(lower, p+"-")` 而非裸 `HasPrefix`，否则 `gpt-51-turbo` 会被 `gpt-5` 误匹配、`openai-custom` 会被 `o1` 误匹配。单测里专门固化了 5 条误匹配边界。
+- **验证**: 新增 `TestTestRequestMaxTokensFor`（18 组，含 thinking / 推理模型 / 普通模型 / 5 条前缀误匹配边界 / 「任何模型都必须 >= 1」）与 `TestIsOpenAIReasoningModel`（9 命中 + 10 不命中）。**实测有效性**：临时退回一刀切 → thinking 与推理模型用例立刻 FAIL 并报出 `= 16, want 1200`。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/ ./model/` 全绿。
+- **尚未处理**: `temperature` 类参数错误目前仍归为 `inconclusive`。按同构逻辑（上游能对参数报错说明它认识这个模型）本应判模型可用，但需要真实错误样本才能准确匹配各家格式，留待后续。
+
+### fix(upstream): 429 / 503 改为模型级判定，不再中止渠道探测
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_test.go`, `controller/channel_upstream_update.go`, `common/config/config.go`, `model/option.go`
+- **说明**: 原实现把 429 归为「上游整体不可用」，连续 2 次就中止**整个渠道**的剩余探测；503 则完全没处理。这两个判断都错了 —— 它们是**模型级**信号，渠道本身是好的，不该拖累同渠道其他模型的探测。
+- **新增两个 verdict**:
+  - `rate_limited`(429) —— 上游能对这个模型做限流，说明它认识该模型并愿意服务，**是模型可用的证据**
+  - `unavailable`(503) —— 该模型当前无可用后端，模型级信号，渠道正常
+- **处置**：
+  - `429` 两个方向都「不动」。pendingRemove 不删是因为模型可用，删了是误伤；pendingAdd 不加是因为 —— **很多网关的限流检查发生在模型路由之前，对不存在的模型也会返回 429**，直接当 alive 会把不存在的模型加进列表，不加的代价只是延迟一轮。
+  - `503` **pendingRemove 准予删除**，pendingAdd 不加。准删的依据是双重信号：能进 pendingRemove 就意味着上游 `/v1/models` 已不返回它，503 是第二个独立证据，两者都指向「这个模型没了」。留着反而更糟 —— 请求会路由到它然后失败；删掉后路由能找到其他仍提供该模型的渠道。**「503 只是临时抖动会导致误删」的担心不成立**：临时抖动时 models 接口通常仍列着该模型，根本不会进 pendingRemove，探针也就不会被触发。批量误删仍有比例保护（>50% 且本地 ≥5 个模型）兜底。
+- **为什么 unavailable 不并入 not_found（处置相同）/ rate_limited 不并入 inconclusive（处置相同）**: 运维含义完全不同 —— 「模型下架了」和「模型还在但后端全挂了」需要的动作不一样，后者通常意味着要联系上游。上线看日志时「限流 45 个 + 无结论 5 个」和「无结论 50 个」是两回事，前者说明该渠道正被限流、探测结果基本有效，后者说明探针真的没拿到信息。轮末统计日志已加上这两个计数。
+- **彻底移除「渠道级中止」机制**: 原实现对连续 429 中止，中途改为对 401/403/402 中止，最终**全部删掉**。确立的原则是：**探针只回答「这个模型怎么样」，不从单个模型的失败去推断「整个渠道都完了」**。逐条否掉中止理由 ——
+  - `403` 经常是**模型级权限**（OpenAI 部分模型需组织验证、Azure deployment 权限、中转站按套餐分组），中止会误伤同渠道其他完全正常的模型
+  - `402` 语义各家网关不统一，有些平台按模型分配额度
+  - `401` 虽是 key 级，但探针只用了一个 key（`GetNextAvailableKey`），**多 key 渠道下不能代表其他 key** —— 这一点在 `classifyProbeError` 里已为 `not_found` 做了降级，中止逻辑却漏了
+  - 收益也比预估的小：这几类都是**立即返回**，只消耗次数配额、不占用时长预算
+  
+  资源控制全部交给预算：单渠道次数（30）、单渠道时长（120s）、全局每轮次数（200）。代价是 key 整体失效的渠道会吃掉 30 次全局配额，可接受。`probeBudget` 因此简化掉 `aborted` / `abortReason` 两个字段和整个 `noteResult` 方法。
+- **原实现的两个缺陷随之消失**: (1) 超时路径 `StatusCode=0` 会让 `note429(false)` **重置连续计数**，而超时恰恰是限流最常见的表现形式，导致 `429 → 超时 → 429` 永远触发不了中止；(2)「连续」定义过严，`429 → 成功 → 429` 这种限流边缘状态永远累计不到阈值。既然中止机制整个删掉，这两个缺陷不复存在。
+- **移除配置项** `UpstreamModelProbeConsecutive429`（连续 429 中止阈值已无意义）。该功能尚未上线，options 表中不存在此 key，无迁移成本。
+- **顺带修正一处测试断言**: `TestRelayErrorHandlerFallbackMessagesNeverCauseNotFound` 原本断言 `== inconclusive`，但它的真实意图是「不得判为 not_found」。断言写窄会在新增 verdict 时误报，已改为 `!= verdictNotFound`。
+- **验证**: `controller` + `model` 两包 **216 个用例全绿、0 失败**。新增 429/503 各 2 组判定用例；中止相关用例改为锁死「任何状态码都不中止渠道」这条不变式（覆盖 401/403/402/429/503/500/502/504/404/超时共 10 个码）+「预算耗尽是唯一停止条件」。**实测有效性**：临时去掉 429 判定分支 → 相关用例立刻 FAIL。`go build ./...`、`go vet ./...`（退出码 0）通过。
+
+### fix(stats): Dashboard 与曲线图统一按可计费日志类型过滤
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `model/log.go`
+- **说明**: `GetAllGraph`（`:451`）、`GetUserGraph`（`:500`）、`getDashboardMetrics` 的三条查询（`:603/616/626`）此前对 logs 表**不做任何 type 过滤**，`COUNT(*)` / `SUM(quota)` / `SUM(prompt_tokens+completion_tokens)` 会把非用户流量的日志行一并算进去。新增 `applyBillableLogTypes` helper（`type IN (LogTypeConsume, LogTypeError)`），口径与 `model_metrics.go:200` 的 `AggregateLogsForHour` 对齐 —— 此前同一个仓库里两套统计口径并存。
+- **发现方式**: 代码审计。这是我在 commit `8957594` 引入探针日志时**声称已验证、实际漏掉**的问题。当时只查了 `SumUsedQuota`（它确实按 `LogTypeConsume` 过滤）就下了「不会污染统计」的结论，没有穷举所有聚合路径。教训：验证「新数据不污染统计」时必须枚举**所有**读取路径，单点验证不足以支撑全称结论。
+- **为什么探针触发了这个既有缺陷**: 既有的 `LogTypeSystem` 行只有注册赠送日志，经 `RecordLog` 写入且**不设 `Quota`/`PromptTokens`/`CompletionTokens`**（`log.go:62-77`），金额全为 0，只贡献 `count`。探针日志是**第一批带非零金额的 system 行**，会同时污染请求数、token 数、quota 消耗和 Top-5 模型榜。所以缺陷是既有的，探针是把它暴露出来的触发条件。
+- **顺带修正的既有偏差**: 注册赠送日志此前会被计入 Dashboard 的请求数与曲线图的 count（虽不贡献金额）。修复后这部分也被正确排除 —— 统计口径更准，但**已部署实例升级后 Dashboard 的历史请求数会略微下降**，属预期内。
+- **影响面**: 修复前，探针开启时污染管理员 Dashboard 的 RPM/TPM/QuotaPM/今日请求数/今日消耗/Top-5 模型榜。营收统计（`SumUsedQuota`/`SumUsedToken`）与模型性能指标（`AggregateLogsForHour`）本就有正确过滤，未受影响。
+- **验证**: `go build ./...`、`go vet ./...`（退出码 0）、`go test ./model/ ./controller/` 全绿。
+
+### fix(upstream): 探针改为套用 model_mapping，与真实请求路径对齐
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_probe.go`, `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+- **说明**: 探针原本刻意跳过 `util.GetMappedModelName`，用上游原名请求。这是设计上的错误 —— 它只回答了「上游有没有这个名字」，而探针真正要回答的是「**这个模型加进本地列表后，用户请求它能不能成功**」。用户请求走的就是映射后的名字，探针不走同一条链路，就可能出现「探针报 alive、用户实际调用失败」，比不探更糟。另一层理由：管理员显式配置 `model_mapping` 已经表达了「该模型要用映射名调上游」，这个显式意图应优先于 `/v1/models` 的自动发现结果。现与 `testChannel`（`channel-test.go:325-327`）保持一致。
+- **不会双重映射**: `GetRelayMeta`（`relay_meta.go:164-170`）内部也会应用映射，但它基于 `meta.OriginModelName`，而探针给 `SetupContextForSelectedChannel` 传的是空字符串，那里是空转。已确认。
+- **日志新增映射信息**: `probeResult` 加 `MappedModel` 字段，仅在与原名不同时写入日志 `映射后=xxx`。否则排查时会困惑「我探的是 gpt-4，为什么错误里说 gpt-4-turbo 不存在」。
+- **计费口径不变**: `calcProbeQuota` 仍用原名而非映射名，与 `recordChannelTestConsumeLog`（`channel-test.go:361` 传的也是原名）的既有惯例一致 —— 按请求的模型名计费，而非上游实际用的名字。
+- **验证**: `go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/ ./model/` 全绿。映射逻辑复用 `util.GetMappedModelName`（对不在映射表中的模型是恒等变换），未新增单测。
+
+### fix(model): AddAbilities 对 models / groups 去重，从源头消除主键冲突
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `model/ability.go`, `model/ability_test.go`
+- **说明**: 新增 `normalizeAbilityKeys`（trim + 丢空项 + 保序去重），`addAbilitiesTx` 改为先规范化再做笛卡尔积。此前 `AddAbilities` 直接 `strings.Split` 后逐项 trim，重复模型名会构造出主键 `(group, model, channel_id)` 相同的记录，导致整批插入失败。管理员从 UI 手工编辑模型列表时没有任何去重保护，一次手滑就会让该渠道的 abilities 无法重建。
+- **与上一条的关系是互补而非重复**: 事务保证「失败时不损坏已有数据」，去重保证「不失败」。两者都要 —— 事务是安全网，去重是治本。
+- **行为变更**: 重复输入从「报主键冲突错误」变为「静默去重后正常工作」。这与上游同步路径（`upstreamNormalizeModelNames` 早就在去重）的行为一致，也比报错对管理员更友好。副作用是 UI 上填重复模型名不再有任何提示，保存后列表里仍是原样字符串、只有 abilities 被去重。
+- **顺带简化**: 内层循环不再需要 trim 和空值判断，规范化统一在入口完成。
+- **测试改造**: 去重后「重复模型名」不再是有效的插入失败源，上一条的事务回归测试会失效。改用 SQLite 触发器（`RAISE(ABORT)`）制造插入失败 —— 这样回归测试只验证「INSERT 失败就回滚」这一个属性，不再耦合任何具体失败原因。注意 SQLite 触发器体内不允许绑定变量（`trigger cannot use variables`），只能拼字符串。
+- **验证**: 新增 `TestAddAbilitiesDeduplicates`（7 组：模型重复/带空格重复/分组重复/两者都重复/混入空项/无重复不受影响）与 `TestNormalizeAbilityKeys`（7 组含保序、空串、全分隔符）。改造后重新验证事务回归测试仍然有效：临时去掉事务 → 立刻 FAIL 并报 `失败前 3 条 ability，失败后 0 条`。`model` 包 **24 个用例全绿**，`go build ./...`、`go vet ./...`（退出码 0）通过。
+
+### fix(model): UpdateAbilities 的先删后插改为事务，防止渠道模型被静默清空
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `model/ability.go`, `model/ability_test.go`(新增)
+- **说明**: `UpdateAbilities` 一直是「先 `DeleteAbilities` 全删、再 `AddAbilities` 全建」且**没有事务包裹**。INSERT 失败时 DELETE 已经提交，该渠道的 abilities 变成 **0 条 —— 等价于所有模型不可路由**，且调用方只看到一个主键冲突错误，完全联想不到"模型已经全没了"。抽出 `addAbilitiesTx` / `deleteAbilitiesTx` 接受 `*gorm.DB`，`UpdateAbilities` 用 `DB.Transaction` 包裹；`AddAbilities` / `DeleteAbilities` 的公开签名保持不变（`model/channel.go:494/558/649` 三处独立调用不受影响）。已确认 `channel.Update()`（`channel.go:619`）用的是全局 `DB` 而非事务句柄，不会产生嵌套事务。
+- **影响面比看起来大**: `UpdateAbilities` 在**任何** `channel.Update()` 时都会执行 —— 管理员在 UI 编辑渠道（哪怕只改个备注）、批量导入 Key、上游同步 apply，全都走这条路。
+- **触发条件在生产中很可能已经发生过**: `AddAbilities` 对 `channel.Models` **不做去重**，重复模型名会构造出主键 `(group, model, channel_id)` 相同的记录导致插入失败。而管理员从 UI 手工编辑模型列表时没有任何去重保护。表现为「编辑渠道后该渠道所有模型突然不可用」，排查时只会看到一条主键冲突报错。
+- **验证**: 新增 `model` 包的**第一个测试文件**（此前该包零测试），用 SQLite 内存库。核心用例 `TestUpdateAbilitiesRollsBackOnInsertFailure` 用重复模型名触发真实的插入失败。**实测有效性**：临时去掉事务后该测试立刻 FAIL，且报出 `失败前 3 条 ability，失败后 0 条` —— 直接复现了"所有模型不可路由"。另有跨渠道隔离、Enabled 跟随渠道状态、清空模型列表三组用例。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./model/ ./controller/` 全绿。
+- **未做（待确认）**: ~~`AddAbilities` 仍不对 models/groups 去重~~ → 已在下一条补上。
+
+### chore(upstream): 探针单次超时默认值 20s → 10s
+- **分支**: `upstream-model-probe`
+- **类型**: 优化
+- **涉及文件**: `common/config/config.go`
+- **说明**: 探针发的是 `max_tokens=16` 的最小请求，正常 1-3s 返回；超过 10s 基本是模型有问题或上游过载，继续等没有信息量。20s 超时会让单个卡住的模型白白吃掉 1/6 的单渠道时长预算（默认 120s）。按实测口径：平均响应 ≤4s 时瓶颈是 `MaxPerChannel=30` 而非时长预算；调低超时主要是压缩异常样本的尾部开销。该项可后台热改，无需发版。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+---
+
+## 2026-08-05
+
+### feat(upstream): 上游模型同步接入真实请求探针
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_test.go`, `controller/channel_upstream_update.go`, `model/log.go`, `model/option.go`, `common/config/config.go`, `common/config/channel_other_settings.go`
+- **说明**: 给巡检的 diff 结果加一道真实请求验证门 —— pendingAdd 探测通过才加入、pendingRemove 探测确认「上游明确说不存在」才删除。`UpstreamModelProbeEnabled` 默认关闭。探测量等于 diff 大小，平时接近 0，只在上游列表变动时产生调用。**手动 apply 路径不走探针**，管理员保留最终决定权（否则渠道持续限流时探测全是 `inconclusive`，管理员会被锁死）。只在「该方向真的会被自动应用」时才探 —— 结果只进人工队列的话探测是白花钱。
+- **🔴 实现中发现并修掉的一个致命缺陷**: 原设计打算用 `util.RelayErrorHandler` 拿上游错误。读代码发现它在 body 解析失败时会**编造兜底文案**（`relay/util/common.go:182-202`），其中 404 那条是 `"资源未找到 (404): 请求的端点或模型不存在"` —— **含「模型不存在」四字，正好命中关键词白名单**，且同时命中「404 + Message 非空」信号，属双重命中。真实后果：base_url 配错或上游反代挂掉 → 所有模型返回 404 + 该文案 → 全部判 `not_found` → 一轮删光整个渠道。实测 8 条兜底文案里只有 404 那条会命中，而 404 恰恰是配置出错时最典型的返回。**修法有两层**：(1) 探针改为自己解析上游 body（`parseProbeUpstreamError`），不经过会编造文案的 `RelayErrorHandler`；(2) 恢复 `bodyParsed` 参数作为 `not_found` 的硬前置条件，拿不到上游原话时一律 `inconclusive`。
+- **教训（值得记住）**: 这个缺陷我的单测原本抓不到 —— 因为测试里手动构造了 `apiErr = nil`，而真实调用路径下 `RelayErrorHandler` 永远返回非 nil 且 Message 永远非空。**纯函数的测试用例必须来自真实调用路径的可能输入，而不是想象的输入。** 现已加 `TestRelayErrorHandlerFallbackMessagesNeverCauseNotFound` 把全部 8 条兜底文案钉死，并做了反向断言（若 404 文案不再命中白名单则测试主动失败并提示重新评估门禁必要性）。实测有效性：临时去掉 `bodyParsed` 门禁后该测试立刻 FAIL。
+- **超时必须外层自己包**: `relay/channel/common.go:36-38` 明确「不绑定客户端 context」，超时只由全局 `HTTPClient.Timeout` 控制（默认 **5 分钟**）。串行探 30 个模型最坏 2.5 小时，而巡检本身是串行遍历所有渠道的。解法是 `goroutine + buffered chan + select`。`done` 必须带 buffer，否则超时返回后发送方永久阻塞、goroutine 泄漏；带 buffer 时泄漏的 goroutine 会在 HTTPClient 超时后自行退出，同时存在上限等于探测预算。
+- **日志复用 logs 表，零前端改动**: 新增 `model.RecordModelProbeLog`（`Type=LogTypeSystem`、`TokenName=model-probe`）。**不能复用** `RecordConsumeLogWithOtherAndRequestID` —— 它在 `LogConsumeEnabled` 早退之前无条件调用 `metrics.ObserveConsume`（该埋点位置是 P1 时有意为之），复用会让探针流量污染 `oneapi_llm_*` 指标；且它硬编码 `LogTypeConsume`。quota 仅记录不扣费；`SumUsedQuota`/`SumUsedToken` 都按 `LogTypeConsume` 过滤，`LogTypeSystem` 不进营收统计。前端日志页筛「类型=系统」+「令牌名称=model-probe」即可按渠道/模型检索。**⚠️ 此处的验证不完整 —— 只查了 `SumUsedQuota` 就下了结论，遗漏了 `GetAllGraph` / `GetUserGraph` / `getDashboardMetrics` 三条不过滤 type 的聚合路径。已由 2026-08-06 的审计发现并修复，见下方条目。**
+- **不能复用 `testChannel`**: `channel-test.go:294` 有 `strings.Contains(channel.Models, specifiedModel)` 白名单检查，而 pendingAdd 的模型压根不在 `channel.Models` 里，必然返回 `not supported by this channel`。故新写 `doProbeChannelModel`，`channel-test.go` **零改动**（它挂着管理员测活和自动启停渠道两条命脉）。另刻意不套 `util.GetMappedModelName`：pendingAdd 是上游真名（映射会反向搞错），pendingRemove 已排除 redirect source（映射对它是恒等变换），两者用原名都正确。
+- **settings 回填以原始 pending 为基准**: 被探针暂缓的模型必须留在 `LastDetectedModels`/`LastRemovedModels` 里，管理员才能在 UI 上看到并手动决策。`approved == pending` 时等价于原来的清空行为。
+- **成本控制**: 每渠道 30 次 + 全局每轮 200 次 + 单渠道 120s 时长预算 + 单次 20s 超时 + 连续 2 次 429 中止本渠道（限流下结果全是 `inconclusive`，继续探纯烧钱）。刻意保持串行不引入渠道内并发 —— 同一个 key 并发打上游更容易触发 429，而 429 恰恰是中止条件。全局预算用包级 `atomic.Int64`，安全前提是 `upstreamUpdateTaskRunning` 的 CAS 已保证同一时刻只有一轮巡检；因此 `checkAndPersistUpstreamChanges` **签名完全不变**，三个 HTTP handler 调用点无需改动。
+- **配置解析**: 新增 `setPositiveIntOption` helper。超时/预算/上限这类项取 0 的语义是"立即失败/永不执行"，沿用 `config.X, _ = strconv.Atoi(value)` 会让一次脏数据静默瘫痪功能。每渠道逃生舱 `UpstreamModelProbeDisabled` 用**负极性 + omitempty**，现有渠道的 settings JSON 一个字节都不变，零迁移风险。
+- **未做（有意）**: 僵尸模型（上游列表虚报、两边都有 → diff 为空 → 探针不触发）探不到；`not_found` 的 pendingAdd 每轮会重探（上游一直虚报就一直有成本，可选缓解是进程内 `sync.Map` 缓存 + TTH，待观察真实成本后再定）；Codex 模型判 `skipped`（复用 `testChannelViaResponses` 会连带写 `LogTypeConsume` 污染渠道测试记录）。
+- **验证**: `controller` 包累计 **183 个用例全绿、0 失败**。新增 `parseProbeUpstreamError` 的 20 个用例（HTML/纯文本/截断 JSON/空对象一律 false，标准 OpenAI 与顶层平铺形态一律 true）、`probeBudget` 的 6 个用例（单渠道上限、全局跨渠道共享、时间预算、连续 429、非 429 重置计数、中止后一律失败）、`truncateProbeMessage` 的多字节安全、`upstreamProbeEnabledFor` 与 `probeUnsupportedReason` 的矩阵。`go build ./...` 与 `go vet ./...`（退出码 0）通过。
+- **尚未验证（需真实上游）**: 各 adaptor 的 alive 判定准确性、探测 quota 数值、429 中止的实际触发、单轮巡检总耗时、`oneapi_llm_*` 指标未被污染。上线须按计划文档的灰度步骤逐项核对。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+### feat(upstream): 模型探针的结论分类器（纯函数层，尚未接入）
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_probe.go`(新增), `controller/channel_upstream_probe_test.go`(新增)
+- **说明**: 上游模型探针的第一层 —— 四态结论（`alive` / `not_found` / `inconclusive` / `skipped`）与判定规则，全部为纯函数、零 IO、无运行时副作用，本 commit 尚无调用方。核心设计是**只有上游明确说「这个模型不存在」才是 `not_found`，其余一切失败都是 `inconclusive`**：把 `inconclusive` 误判成 `not_found` 的后果是批量误删模型，比漏删严重得多。`not_found` 需命中三个明确信号之一：404 且带非空错误消息、`error.code`/`error.type` 命中封闭枚举、错误消息命中关键词白名单。
+- **两条最容易翻车的边界（已用单测固化）**: (1) `"You do not have access to this model"` —— 无权限不等于不存在；(2) `"This model's maximum context length is 4096"` —— 含 `model` 字样但模型确实存在。用关键词白名单而非"400 就算不存在"正是为了挡住这两类。反过来，OpenAI 的 `"The model 'x' does not exist or you do not have access to it"` 会命中 `does not exist` 判为 `not_found` —— 对单 key 渠道这是**正确**的（这个 key 服务不了它），多 key 渠道则降级为 `inconclusive`。
+- **数字类 code 自动排除**: `error.code` 在 JSON 里可能是 string / number / null。`normalizeErrCode` 归一化后 `float64(404)` 变成 `"404"`，不在封闭枚举里，等于自动被排除 —— 数字 code 不构成「模型不存在」的明确信号。
+- **对计划的一处偏离**: `classifyProbeError` 去掉了原计划的 `bodyParsed` 参数，改用 `apiErr == nil` 表达"没解析出上游错误体"。一个参数能表达的事不用两个，否则调用方可能传出 `apiErr != nil && bodyParsed == false` 这种自相矛盾的组合。
+- **`skipped` 的语义是「探针无能力」而非「探测失败」**: 因此它在两个场景下都批准执行（信任上游）。这保证对 embedding/tts/视频类模型完全不改变现有行为，上线不引入回归。而 `inconclusive` 在两个场景下都暂缓 —— 保持现状最安全，且下轮 diff 从零重算会自然重试。
+- **验证**: 新增 `channel_upstream_probe_test.go`，含 `classifyProbeError` 的 28 个用例、`isModelNotFoundMessage` 的命中/不命中各 10+ 项、`normalizeErrCode` 的类型矩阵、`filterByProbeVerdicts` 处置表的全部 8 格 + 缺失键/未知 scene/空输入/顺序保持。`controller` 包累计 127 个用例全绿、0 失败。`go build ./...` 与 `go vet ./...`（退出码 0）通过。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+### feat(upstream): 自动删除模型加比例保护，防上游返回不相干列表导致一轮删光
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_update.go`, `controller/channel_upstream_update_test.go`, `common/config/config.go`, `model/option.go`
+- **说明**: 巡检自动删除此前的防误删保护只有两道 —— "上游返回空列表则拒绝整轮"和"ModelMapping 的 redirect source 豁免"。前者只挡得住 `len(upstream)==0`，**挡不住上游返回一个无关模型**（换了 API 版本、路径语义变化、返回空壳列表如 `{"data":[{"id":"default"}]}`）。这种情况下 `len(upstream)=1` 通过检查，本地全部模型被判 pendingRemove，一轮删光，进而触发 `allModelsRemoved` → `AutoDisableChannelById` → **整个渠道被自动禁用**。新增 `shouldBlockBulkRemove` 纯函数 + 两个可后台热改的配置项：`UpstreamRemoveGuardPercent`(默认 50) 与 `UpstreamRemoveGuardMinLocalModels`(默认 5)。触发时不删，转 `LastRemovedModels` 供人工审核并打 `upstreamError`。
+- **MinLocalModels 是必需的，不是可选项**: 本地只有 1-3 个模型的渠道，任何删除都 ≥50%。若无下限，比例保护会把现有的"模型全删 → 自动禁用渠道 → 上游恢复后自动重启用"整条链路**静默关掉**（功能看起来还在，实际永不触发）。测试里为此专门写了 4 个回归用例。
+- **配置解析上的一个刻意偏离**: 这两项没沿用仓库里 `config.X, _ = strconv.Atoi(value)` 的惯例。那个写法在解析失败时静默得 0，而这里 0 的语义是"关闭保护"/"对所有渠道启用" —— 一次脏数据就会让保护消失或误伤小渠道。改为解析失败或负数时保持默认值。
+- **代价**: 比例保护是"宁可漏删不可误删"的取舍。上游真的大批量下线模型时（比如一次下线 60%），自动删除会被拦下、需要人工在 UI 确认。这是有意的 —— 大批量删除本就该有人看一眼。
+- **说明**: `shouldBlockBulkRemove` 放在 `channel_upstream_update.go` 而非计划里写的 probe 文件 —— 它完全独立于探针（探针关闭时也生效），代码位置也应独立。
+- **验证**: 15 个表驱动用例，覆盖阈值严格大于语义、约束下限的 4 个回归用例、percent=0/负数关闭、local=0/remove=0 边界。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/` 全绿。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+### fix(upstream): 忽略列表（IgnoredModels）现在同时拦截自动删除
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_update.go`, `controller/channel_upstream_update_test.go`(新增)
+- **说明**: `upstreamCollectPendingChangesFromModels` 里 pendingAdd 有 `isIgnored` 过滤，pendingRemove 没有 —— 导致 `IgnoredModels` 只拦新增、不拦删除。翻车场景很实际：上游 `/v1/models` 不暴露但实际可调用的模型（相当常见），管理员手动加进渠道并写入忽略列表以为受保护，结果每轮 diff 它都进 pendingRemove，开了 AutoDelete 就被删掉。从 `ignored` 的字面语义看应该是"巡检别碰这个模型"，而非"别新增但可以删"。现给 pendingRemove 补上同一个 `isIgnored` 闭包。
+- **行为变更（必须知道）**: `regex:` 规则从此同时具备"永不自动删除"语义。用宽规则（如 `regex:.*`）的用户会感知 —— 这些模型将不再被自动同步删除。这是本次有意选择的方向：忽略列表本就是"保护手工维护模型"的天然机制。
+- **顺带**: 这是 `controller/` 包的**第一个测试文件**。此前该包零测试覆盖，`upstreamCollectPendingChangesFromModels` 这个纯函数一直没有任何保护。新增 18 个表驱动用例，覆盖基础 diff、去重/trim、ModelMapping 的 redirect target/source 语义、忽略列表对两个方向的作用、非法 regex 不 panic（`:241` 的 err 被吞掉）。
+- **验证**: 按 TDD 先写测试 —— 改动前 3 个 pendingRemove 忽略用例 FAIL、其余 15 个 PASS，改动后全绿。`go build ./...` 与 `go vet ./...` 通过。
+- **关联计划**: `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+
+### fix(vet): 修复 11 处非常量格式串导致的二次格式化
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/relay.go`(9 处), `relay/controller/image.go`(2 处)
+- **说明**: `go vet ./...` 在 main 分支即失败 11 处，意味着 CLAUDE.md 要求的"提交前必跑 `go vet`"实际从未通过；且 `go test` 默认执行 vet 子集（含 printf 检查），导致 `controller` 包根本无法运行测试 —— 这也是该包长期零测试覆盖的一个隐性原因。两类问题都是真实缺陷：(1) `controller/relay.go` 的 `retryLog` 已是 `formatRetryLog` 的产物，再传给 `logger.Infof` 会走 `fmt.Sprintf(retryLog)` 二次格式化，而 `retryLog` 内含 `retryReason`（上游错误原因），一旦含 `%` 就输出 `%!q(MISSING)` 类垃圾 → 改为 `logger.Info`；(2) `relay/controller/image.go` 的 `fmt.Errorf(errorMsg)`，其 `errorMsg` 拼了 `fluxError.Detail[0].Msg`，**直接来自上游 API 响应体且该错误会返回给最终用户** → 改为 `fmt.Errorf("%s", errorMsg)`，刻意不新增 `errors` import 以缩小改动面。
+- **发现方式**: 为上游探针功能给 `controller` 包写第一个测试时被 `go test` 挡住而暴露。
+- **验证**: `go build ./...` 通过；`go vet ./...` 退出码 0、零输出。
+- **注意**: `go test ./...` 全量仍有一处失败 —— `common/image/image_test.go` 的 `TestDecode` 从 Wikipedia `http.Get` 下载图片，下载失败后 `img` 为 nil 直接 panic。这是预先存在的外网依赖测试，与本次改动无关，未处理。
+
+---
+
 ## 2026-07-31
 
 ### refactor(observability): 指标链路改为推送式，告警规则移交 monitor 仓库

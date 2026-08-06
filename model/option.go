@@ -37,6 +37,13 @@ func InitOptionMap() {
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
 	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
 	config.OptionMap["UpstreamModelUpdateIntervalMinutes"] = strconv.Itoa(config.UpstreamModelUpdateIntervalMinutes)
+	config.OptionMap["UpstreamRemoveGuardPercent"] = strconv.Itoa(config.UpstreamRemoveGuardPercent)
+	config.OptionMap["UpstreamRemoveGuardMinLocalModels"] = strconv.Itoa(config.UpstreamRemoveGuardMinLocalModels)
+	config.OptionMap["UpstreamModelProbeEnabled"] = strconv.FormatBool(config.UpstreamModelProbeEnabled)
+	config.OptionMap["UpstreamModelProbeMaxPerChannel"] = strconv.Itoa(config.UpstreamModelProbeMaxPerChannel)
+	config.OptionMap["UpstreamModelProbeMaxPerRound"] = strconv.Itoa(config.UpstreamModelProbeMaxPerRound)
+	config.OptionMap["UpstreamModelProbeTimeoutSeconds"] = strconv.Itoa(config.UpstreamModelProbeTimeoutSeconds)
+	config.OptionMap["UpstreamModelProbeChannelBudgetSecs"] = strconv.Itoa(config.UpstreamModelProbeChannelBudgetSecs)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -234,6 +241,15 @@ func UpdateOption(key string, value string) error {
 	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
+}
+
+// setPositiveIntOption 解析正整数配置项。解析失败或 <= 0 时保持原值不动 ——
+// 这类项（超时、预算、上限）取 0 的语义是"立即失败/永不执行"，
+// 沿用 `config.X, _ = strconv.Atoi(value)` 会让一次脏数据静默瘫痪功能。
+func setPositiveIntOption(target *int, value string) {
+	if v, err := strconv.Atoi(value); err == nil && v > 0 {
+		*target = v
+	}
 }
 
 func updateOptionMap(key string, value string) (err error) {
@@ -478,6 +494,27 @@ func updateOptionMap(key string, value string) (err error) {
 		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
 	case "UpstreamModelUpdateIntervalMinutes":
 		config.UpstreamModelUpdateIntervalMinutes, _ = strconv.Atoi(value)
+	case "UpstreamRemoveGuardPercent":
+		// 解析失败或负数时保持默认值，不静默退化为 0（0 表示关闭比例保护）
+		if v, parseErr := strconv.Atoi(value); parseErr == nil && v >= 0 {
+			config.UpstreamRemoveGuardPercent = v
+		}
+	case "UpstreamRemoveGuardMinLocalModels":
+		// 同上：解析失败不能退化为 0，否则 1-2 个模型的渠道也会被比例保护拦住，
+		// 把"模型全删 → 自动禁用渠道"链路误关掉
+		if v, parseErr := strconv.Atoi(value); parseErr == nil && v >= 0 {
+			config.UpstreamRemoveGuardMinLocalModels = v
+		}
+	case "UpstreamModelProbeEnabled":
+		config.UpstreamModelProbeEnabled = value == "true"
+	case "UpstreamModelProbeMaxPerChannel":
+		setPositiveIntOption(&config.UpstreamModelProbeMaxPerChannel, value)
+	case "UpstreamModelProbeMaxPerRound":
+		setPositiveIntOption(&config.UpstreamModelProbeMaxPerRound, value)
+	case "UpstreamModelProbeTimeoutSeconds":
+		setPositiveIntOption(&config.UpstreamModelProbeTimeoutSeconds, value)
+	case "UpstreamModelProbeChannelBudgetSecs":
+		setPositiveIntOption(&config.UpstreamModelProbeChannelBudgetSecs, value)
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

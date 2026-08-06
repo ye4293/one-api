@@ -23,6 +23,7 @@ import (
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
+	"github.com/songquanpeng/one-api/relay/channel/anthropic"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
@@ -32,10 +33,52 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func buildTestRequest() *relaymodel.GeneralOpenAIRequest {
+// testRequestMaxTokens 是普通聊天模型的探测/测活输出上限。
+// 只需要确认模型能应答，不需要完整回复。
+const testRequestMaxTokens = 16
+
+// isOpenAIReasoningModel 判断是否为 OpenAI 推理模型（o 系列 / gpt-5 系列）。
+// 这类模型会先产出 reasoning tokens 再产出可见内容，输出上限太小会导致
+// 空响应甚至直接报错。
+func isOpenAIReasoningModel(modelName string) bool {
+	lower := strings.ToLower(strings.TrimSpace(modelName))
+	for _, p := range []string{"o1", "o3", "o4", "gpt-5"} {
+		if lower == p || strings.HasPrefix(lower, p+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// testRequestMaxTokensFor 按模型能力给出测试/探测请求的 max_tokens。
+//
+// 一刀切的小值会在两类模型上必然失败，且都不是「模型不可用」：
+//
+//   - Claude thinking 模型：thinking budget 有 1024 的下限
+//     （anthropic/main.go:133-136），而 Anthropic 要求 max_tokens > budget_tokens，
+//     给 16 会直接 400
+//   - OpenAI 推理模型（o1/o3/o4/gpt-5）：max_completion_tokens 需要覆盖
+//     reasoning tokens，16 会导致空内容或报错
+//
+// 另外 Claude 的 max_tokens 字段没有 omitempty（anthropic/model.go:309），
+// 不设值会发出 "max_tokens": 0，Anthropic 直接拒绝 —— 所以任何情况下都必须给
+// 一个 >= 1 的值，不能靠「不设置」蒙混过关。
+func testRequestMaxTokensFor(modelName string) int {
+	if anthropic.IsThinkingModel(modelName) {
+		// 需大于 thinking budget 下限 1024，留出少量可见输出的余量
+		return 1200
+	}
+	if isOpenAIReasoningModel(modelName) {
+		return 1000
+	}
+	return testRequestMaxTokens
+}
+
+func buildTestRequest(modelName string) *relaymodel.GeneralOpenAIRequest {
 	testRequest := &relaymodel.GeneralOpenAIRequest{
-		Stream: false,
-		Model:  "gpt-3.5-turbo",
+		Stream:    false,
+		Model:     "gpt-3.5-turbo",
+		MaxTokens: testRequestMaxTokensFor(modelName),
 	}
 	testMessage := relaymodel.Message{
 		Role:    "user",
@@ -320,7 +363,7 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 		err, openaiErr = testChannelViaResponses(channel, modelName, testKey)
 		return err, openaiErr, modelName, keyIndex
 	}
-	request := buildTestRequest()
+	request := buildTestRequest(modelName)
 	request.Model = modelName
 	meta.OriginModelName = modelName
 	request.Model, _ = util.GetMappedModelName(modelName, meta.ModelMapping)
