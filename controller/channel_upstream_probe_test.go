@@ -753,11 +753,18 @@ func TestFilterByProbeVerdicts(t *testing.T) {
 		{verdictNotFound, probeScenePendingAdd, false},
 		{verdictInconclusive, probeScenePendingAdd, false},
 		{verdictSkipped, probeScenePendingAdd, true},
+		{verdictRateLimited, probeScenePendingAdd, false},
+		{verdictUnavailable, probeScenePendingAdd, false},
 
 		{verdictAlive, probeScenePendingRemove, false},
 		{verdictNotFound, probeScenePendingRemove, true},
 		{verdictInconclusive, probeScenePendingRemove, false},
 		{verdictSkipped, probeScenePendingRemove, true},
+		// 429 说明模型可用，绝不能删
+		{verdictRateLimited, probeScenePendingRemove, false},
+		// 503 说明该模型无可用后端；能进 pendingRemove 意味着上游 /v1/models
+		// 也已不返回它，两个独立信号都指向「这个模型没了」→ 准删
+		{verdictUnavailable, probeScenePendingRemove, true},
 	}
 	for _, c := range cells {
 		t.Run(string(c.verdict)+"/"+c.scene, func(t *testing.T) {

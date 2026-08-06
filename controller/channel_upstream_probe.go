@@ -53,7 +53,9 @@ const (
 	//
 	// 是模型级信号而非渠道级：渠道本身正常，只是这个模型此刻服务不了，
 	// 因此不触发渠道中止，继续探其他模型。
-	// 两个场景都不动：可能是暂时的，因一次 503 就删掉已有模型是过度反应。
+	//
+	// pendingRemove 场景准予删除 —— 能进 pendingRemove 说明上游 /v1/models
+	// 已不返回它，503 构成第二个独立证据。留着只会让请求路由到它然后失败。
 	verdictUnavailable probeVerdict = "unavailable"
 	// verdictInconclusive 本次探测无结论（默认归类）
 	verdictInconclusive probeVerdict = "inconclusive"
@@ -193,17 +195,18 @@ func classifyProbeError(statusCode int, apiErr *relaymodel.Error, bodyParsed boo
 //
 // 处置规则（scene 决定同一结论的动作）：
 //
-//	                alive  not_found  rate_limited  unavailable  inconclusive  skipped
-//	pending_add      批准     暂缓        暂缓          暂缓          暂缓        批准
-//	pending_remove   暂缓     批准        暂缓          暂缓          暂缓        批准
+//	                alive  not_found  unavailable  rate_limited  inconclusive  skipped
+//	pending_add      批准     暂缓        暂缓         暂缓          暂缓        批准
+//	pending_remove   暂缓     批准        批准         暂缓          暂缓        批准
 //
 // 三条原则：
-//   - inconclusive / rate_limited / unavailable 一律暂缓（保持现状最安全；
-//     下轮 diff 从零重算会自然重试）
+//   - inconclusive / rate_limited 一律暂缓（保持现状最安全；下轮 diff 从零
+//     重算会自然重试）
 //   - skipped 一律批准（探针对这类模型无能力，维持「信任上游」的现有行为，
 //     上线不引入回归）
-//   - 429 与 503 虽然处置上同为「不动」，但保留独立 verdict —— 日志里
-//     「限流 45 个」与「无结论 45 个」的运维含义完全不同
+//   - not_found 与 unavailable 处置相同（准删），但保留独立 verdict ——
+//     「模型下架了」和「模型还在但后端全挂了」的运维含义不同，后者通常意味着
+//     需要联系上游，日志里必须能区分
 //
 // verdicts 里缺失的模型按 inconclusive 处理 —— 探测被预算中止时会出现，必须保守。
 func filterByProbeVerdicts(models []string, verdicts map[string]probeVerdict, scene string) (approved, held []string) {
@@ -232,12 +235,23 @@ func probeVerdictApproves(v probeVerdict, scene string) bool {
 		return scene == probeScenePendingAdd
 	case verdictNotFound:
 		return scene == probeScenePendingRemove
-	case verdictRateLimited, verdictUnavailable:
-		// 429/503 两个方向都不动：
-		//   pendingRemove —— 模型可用（429）或只是暂时不可用（503），删了是误伤
-		//   pendingAdd    —— 429 可能来自模型路由之前的限流检查，加了可能是假的；
-		//                    503 说明当前用不了，加进去也是坏的
+	case verdictRateLimited:
+		// 429 两个方向都不动：
+		//   pendingRemove —— 上游能限流说明模型可用，删了是误伤
+		//   pendingAdd    —— 限流检查可能发生在模型路由之前，对不存在的模型
+		//                    也会返回 429，加了可能是假的；不加只延迟一轮
 		return false
+	case verdictUnavailable:
+		// 503 该模型当前无可用后端：
+		//   pendingRemove —— 批准删除。能进 pendingRemove 说明上游 /v1/models
+		//                    也已不返回它，503 是第二个独立证据，两个信号都指向
+		//                    「这个模型没了」。留着只会让请求路由到它然后失败，
+		//                    删掉后路由能找到其他仍提供该模型的渠道。
+		//                    （若只是临时抖动，models 接口通常还列着它，
+		//                     根本不会进 pendingRemove，探针也不会被触发。）
+		//   pendingAdd    —— 不加。当前就用不了，加进去只会让用户请求失败，
+		//                    等恢复后下一轮 diff 会重新尝试。
+		return scene == probeScenePendingRemove
 	default: // verdictInconclusive 及任何未知值
 		return false
 	}
