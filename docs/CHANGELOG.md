@@ -8,6 +8,16 @@
 
 ## 2026-08-06
 
+### fix(upstream): 探针改为套用 model_mapping，与真实请求路径对齐
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_probe.go`, `docs/plans/2026-08-05-上游模型同步真实请求探针.md`
+- **说明**: 探针原本刻意跳过 `util.GetMappedModelName`，用上游原名请求。这是设计上的错误 —— 它只回答了「上游有没有这个名字」，而探针真正要回答的是「**这个模型加进本地列表后，用户请求它能不能成功**」。用户请求走的就是映射后的名字，探针不走同一条链路，就可能出现「探针报 alive、用户实际调用失败」，比不探更糟。另一层理由：管理员显式配置 `model_mapping` 已经表达了「该模型要用映射名调上游」，这个显式意图应优先于 `/v1/models` 的自动发现结果。现与 `testChannel`（`channel-test.go:325-327`）保持一致。
+- **不会双重映射**: `GetRelayMeta`（`relay_meta.go:164-170`）内部也会应用映射，但它基于 `meta.OriginModelName`，而探针给 `SetupContextForSelectedChannel` 传的是空字符串，那里是空转。已确认。
+- **日志新增映射信息**: `probeResult` 加 `MappedModel` 字段，仅在与原名不同时写入日志 `映射后=xxx`。否则排查时会困惑「我探的是 gpt-4，为什么错误里说 gpt-4-turbo 不存在」。
+- **计费口径不变**: `calcProbeQuota` 仍用原名而非映射名，与 `recordChannelTestConsumeLog`（`channel-test.go:361` 传的也是原名）的既有惯例一致 —— 按请求的模型名计费，而非上游实际用的名字。
+- **验证**: `go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/ ./model/` 全绿。映射逻辑复用 `util.GetMappedModelName`（对不在映射表中的模型是恒等变换），未新增单测。
+
 ### fix(model): AddAbilities 对 models / groups 去重，从源头消除主键冲突
 - **分支**: `upstream-model-probe`
 - **类型**: 修复

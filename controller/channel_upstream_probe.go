@@ -338,15 +338,19 @@ func (b *probeBudget) note429(is429 bool) {
 
 // probeResult 是单次探测的完整结果，用于写日志
 type probeResult struct {
-	Model      string
-	Verdict    probeVerdict
-	StatusCode int
-	ErrCode    string
-	ErrType    string
-	Message    string
-	Duration   float64
-	Usage      *relaymodel.Usage
-	SkipReason string
+	Model string
+	// MappedModel 是套用 model_mapping 后实际发给上游的模型名。
+	// 与 Model 不同时必须记进日志，否则排查会困惑：
+	// 「我探的是 gpt-4，为什么错误信息里说 gpt-4-turbo 不存在」
+	MappedModel string
+	Verdict     probeVerdict
+	StatusCode  int
+	ErrCode     string
+	ErrType     string
+	Message     string
+	Duration    float64
+	Usage       *relaymodel.Usage
+	SkipReason  string
 }
 
 const probeMessageMaxLen = 500
@@ -384,14 +388,14 @@ func probeUnsupportedReason(channel *model.Channel, modelName string) string {
 
 // doProbeChannelModel 对单个 channel×model 发一次真实的最小 chat 请求。
 //
-// 骨架复制自 testChannel（channel-test.go:251-352），四处关键差异：
+// 骨架复制自 testChannel（channel-test.go:251-352），三处关键差异：
 //  1. 不做 strings.Contains(channel.Models, model) 白名单检查 —— pendingAdd 的
 //     模型本就不在 channel.Models 里，该检查会让探测必然失败
-//  2. 不做 util.GetMappedModelName —— pendingAdd 是上游真名（映射会反向搞错），
-//     pendingRemove 已排除 redirect source（映射对它是恒等变换），两者用原名都对
-//  3. 设置 MaxTokens 压到最小，且强制非流式
-//  4. 自己读 resp.Body 并用 parseProbeUpstreamError 解析，不经过
+//  2. 设置 MaxTokens 压到最小，且强制非流式
+//  3. 自己读 resp.Body 并用 parseProbeUpstreamError 解析，不经过
 //     util.RelayErrorHandler（它会编造兜底文案，详见 classifyProbeError 注释）
+//
+// model_mapping 与 testChannel 保持一致（都套用），理由见下方赋值处的注释。
 func doProbeChannelModel(channel *model.Channel, modelName string) probeResult {
 	res := probeResult{Model: modelName, Verdict: verdictInconclusive}
 	start := time.Now()
@@ -450,12 +454,26 @@ func doProbeChannelModel(channel *model.Channel, modelName string) probeResult {
 	adaptor.Init(meta)
 
 	request := buildTestRequest()
-	request.Model = modelName
 	request.Stream = false
 	request.MaxTokens = config.UpstreamModelProbeMaxTokens
-	// 刻意不套 model_mapping，见函数注释第 2 点
+	// 套用 model_mapping，与 testChannel 及真实请求路径保持一致。
+	//
+	// 探针要回答的不是「上游有没有这个名字」，而是「这个模型加进本地列表后，
+	// 用户请求它能不能成功」—— 而用户请求走的就是映射后的名字。不套映射会让
+	// 探针验证的链路与真实调用链路不同，探针说 alive 而用户实际调用失败，
+	// 比不探更糟。
+	//
+	// 另一层理由：管理员显式配置 model_mapping，本身就表达了「这个模型要用
+	// 映射后的名字调上游」，这个显式意图应当优先于 /v1/models 的自动发现结果。
+	//
+	// GetRelayMeta 内部（relay_meta.go:164-170）只对 meta.OriginModelName 应用
+	// 映射，而上面传给 SetupContextForSelectedChannel 的 modelName 是空字符串，
+	// 那里是空转，不会与此处产生双重映射。
 	meta.OriginModelName = modelName
-	meta.ActualModelName = modelName
+	mappedModel, _ := util.GetMappedModelName(modelName, meta.ModelMapping)
+	request.Model = mappedModel
+	meta.ActualModelName = mappedModel
+	res.MappedModel = mappedModel
 
 	convertedRequest, err := adaptor.ConvertRequest(c, constant.RelayModeChatCompletions, request)
 	if err != nil {
@@ -638,6 +656,9 @@ func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
 	}
 
 	detail := fmt.Sprintf("探针结论=%s 场景=%s", res.Verdict, scene)
+	if res.MappedModel != "" && res.MappedModel != res.Model {
+		detail += fmt.Sprintf(" 映射后=%s", res.MappedModel)
+	}
 	if res.StatusCode > 0 {
 		detail += fmt.Sprintf(" 状态码=%d", res.StatusCode)
 	}
