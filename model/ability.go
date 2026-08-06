@@ -77,6 +77,11 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 }
 
 func (channel *Channel) AddAbilities() error {
+	return channel.addAbilitiesTx(DB)
+}
+
+// addAbilitiesTx 在给定句柄（DB 或事务）上创建该渠道的 abilities
+func (channel *Channel) addAbilitiesTx(tx *gorm.DB) error {
 	models_ := strings.Split(channel.Models, ",")
 	groups_ := strings.Split(channel.Group, ",")
 	abilities := make([]Ability, 0, len(models_)*len(groups_))
@@ -111,7 +116,7 @@ func (channel *Channel) AddAbilities() error {
 			end = len(abilities)
 		}
 		batch := abilities[i:end]
-		if err := DB.Create(&batch).Error; err != nil {
+		if err := tx.Create(&batch).Error; err != nil {
 			return err
 		}
 	}
@@ -119,24 +124,28 @@ func (channel *Channel) AddAbilities() error {
 }
 
 func (channel *Channel) DeleteAbilities() error {
-	return DB.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
+	return channel.deleteAbilitiesTx(DB)
+}
+
+// deleteAbilitiesTx 在给定句柄（DB 或事务）上删除该渠道的全部 abilities
+func (channel *Channel) deleteAbilitiesTx(tx *gorm.DB) error {
+	return tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error
 }
 
 // UpdateAbilities updates abilities of this channel.
 // Make sure the channel is completed before calling this function.
+//
+// 先 DELETE 后 INSERT 必须在同一个事务内：否则 INSERT 失败时 DELETE 已经提交，
+// 该渠道的 abilities 会变成空 —— 等价于「所有模型不可路由」，且不会有任何报错
+// 提示模型已经消失。真实的触发路径：channel.Models 含重复模型名时，
+// addAbilitiesTx 会构造出主键 (group, model, channel_id) 相同的记录导致插入失败。
 func (channel *Channel) UpdateAbilities() error {
-	// A quick and dirty way to update abilities
-	// First delete all abilities of this channel
-	err := channel.DeleteAbilities()
-	if err != nil {
-		return err
-	}
-	// Then add new abilities
-	err = channel.AddAbilities()
-	if err != nil {
-		return err
-	}
-	return nil
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := channel.deleteAbilitiesTx(tx); err != nil {
+			return err
+		}
+		return channel.addAbilitiesTx(tx)
+	})
 }
 
 // UpdateAbilityStatus 已废弃：请使用 UpdateChannelStatusById 确保数据一致性
