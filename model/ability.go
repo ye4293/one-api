@@ -76,25 +76,42 @@ func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
 	return nil, errors.New("unable to select a channel based on weight")
 }
 
+// normalizeAbilityKeys 把逗号分隔的 models / group 字段拆成规范化列表：
+// 去首尾空白、丢弃空项、保序去重。
+//
+// 去重是必需的而非锦上添花：abilities 的主键是 (group, model, channel_id)，
+// 重复项会构造出主键相同的记录导致整批插入失败。而管理员从 UI 手工编辑模型
+// 列表时没有任何去重保护，一旦写重就会让该渠道的 abilities 无法重建
+// （事务保证已有数据不被损坏，但这次更新会整体失败）。
+func normalizeAbilityKeys(raw string) []string {
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
 func (channel *Channel) AddAbilities() error {
 	return channel.addAbilitiesTx(DB)
 }
 
 // addAbilitiesTx 在给定句柄（DB 或事务）上创建该渠道的 abilities
 func (channel *Channel) addAbilitiesTx(tx *gorm.DB) error {
-	models_ := strings.Split(channel.Models, ",")
-	groups_ := strings.Split(channel.Group, ",")
+	models_ := normalizeAbilityKeys(channel.Models)
+	groups_ := normalizeAbilityKeys(channel.Group)
 	abilities := make([]Ability, 0, len(models_)*len(groups_))
 	for _, model := range models_ {
-		model = strings.TrimSpace(model) // 去除空格
-		if model == "" {
-			continue // 跳过空模型
-		}
 		for _, group := range groups_ {
-			group = strings.TrimSpace(group) // 去除空格
-			if group == "" {
-				continue // 跳过空组
-			}
 			ability := Ability{
 				Group:     group,
 				Model:     model,

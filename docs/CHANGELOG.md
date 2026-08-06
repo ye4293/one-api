@@ -8,6 +8,17 @@
 
 ## 2026-08-06
 
+### fix(model): AddAbilities 对 models / groups 去重，从源头消除主键冲突
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `model/ability.go`, `model/ability_test.go`
+- **说明**: 新增 `normalizeAbilityKeys`（trim + 丢空项 + 保序去重），`addAbilitiesTx` 改为先规范化再做笛卡尔积。此前 `AddAbilities` 直接 `strings.Split` 后逐项 trim，重复模型名会构造出主键 `(group, model, channel_id)` 相同的记录，导致整批插入失败。管理员从 UI 手工编辑模型列表时没有任何去重保护，一次手滑就会让该渠道的 abilities 无法重建。
+- **与上一条的关系是互补而非重复**: 事务保证「失败时不损坏已有数据」，去重保证「不失败」。两者都要 —— 事务是安全网，去重是治本。
+- **行为变更**: 重复输入从「报主键冲突错误」变为「静默去重后正常工作」。这与上游同步路径（`upstreamNormalizeModelNames` 早就在去重）的行为一致，也比报错对管理员更友好。副作用是 UI 上填重复模型名不再有任何提示，保存后列表里仍是原样字符串、只有 abilities 被去重。
+- **顺带简化**: 内层循环不再需要 trim 和空值判断，规范化统一在入口完成。
+- **测试改造**: 去重后「重复模型名」不再是有效的插入失败源，上一条的事务回归测试会失效。改用 SQLite 触发器（`RAISE(ABORT)`）制造插入失败 —— 这样回归测试只验证「INSERT 失败就回滚」这一个属性，不再耦合任何具体失败原因。注意 SQLite 触发器体内不允许绑定变量（`trigger cannot use variables`），只能拼字符串。
+- **验证**: 新增 `TestAddAbilitiesDeduplicates`（7 组：模型重复/带空格重复/分组重复/两者都重复/混入空项/无重复不受影响）与 `TestNormalizeAbilityKeys`（7 组含保序、空串、全分隔符）。改造后重新验证事务回归测试仍然有效：临时去掉事务 → 立刻 FAIL 并报 `失败前 3 条 ability，失败后 0 条`。`model` 包 **24 个用例全绿**，`go build ./...`、`go vet ./...`（退出码 0）通过。
+
 ### fix(model): UpdateAbilities 的先删后插改为事务，防止渠道模型被静默清空
 - **分支**: `upstream-model-probe`
 - **类型**: 修复
@@ -16,7 +27,7 @@
 - **影响面比看起来大**: `UpdateAbilities` 在**任何** `channel.Update()` 时都会执行 —— 管理员在 UI 编辑渠道（哪怕只改个备注）、批量导入 Key、上游同步 apply，全都走这条路。
 - **触发条件在生产中很可能已经发生过**: `AddAbilities` 对 `channel.Models` **不做去重**，重复模型名会构造出主键 `(group, model, channel_id)` 相同的记录导致插入失败。而管理员从 UI 手工编辑模型列表时没有任何去重保护。表现为「编辑渠道后该渠道所有模型突然不可用」，排查时只会看到一条主键冲突报错。
 - **验证**: 新增 `model` 包的**第一个测试文件**（此前该包零测试），用 SQLite 内存库。核心用例 `TestUpdateAbilitiesRollsBackOnInsertFailure` 用重复模型名触发真实的插入失败。**实测有效性**：临时去掉事务后该测试立刻 FAIL，且报出 `失败前 3 条 ability，失败后 0 条` —— 直接复现了"所有模型不可路由"。另有跨渠道隔离、Enabled 跟随渠道状态、清空模型列表三组用例。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./model/ ./controller/` 全绿。
-- **未做（待确认）**: `AddAbilities` 仍不对 models/groups 去重。事务只保证「失败时不损坏数据」，去重才能保证「不失败」，两者互补。加去重会改变行为（静默接受重复输入 vs 报错），需单独确认。
+- **未做（待确认）**: ~~`AddAbilities` 仍不对 models/groups 去重~~ → 已在下一条补上。
 
 ### chore(upstream): 探针单次超时默认值 20s → 10s
 - **分支**: `upstream-model-probe`
