@@ -448,8 +448,12 @@ func probeUnsupportedReason(channel *model.Channel, modelName string) string {
 //     util.RelayErrorHandler（它会编造兜底文案，详见 classifyProbeError 注释）
 //
 // model_mapping 与 testChannel 保持一致（都套用），理由见下方赋值处的注释。
-func doProbeChannelModel(channel *model.Channel, modelName string) probeResult {
-	res := probeResult{Model: modelName, Verdict: verdictInconclusive}
+//
+// 返回值必须命名：下面的 defer 要写回 res.Duration。用无名返回值时，
+// `return res` 先把值拷进返回槽、defer 之后才执行，改的是已废弃的局部副本，
+// Duration 恒为 0（回归测试见 TestDoProbeChannelModelRecordsDuration）。
+func doProbeChannelModel(channel *model.Channel, modelName string) (res probeResult) {
+	res = probeResult{Model: modelName, Verdict: verdictInconclusive}
 	start := time.Now()
 	defer func() {
 		res.Duration = time.Since(start).Seconds()

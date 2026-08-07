@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-07
+
+### fix(upstream): 探针耗时恒为 0 —— defer 写入了无名返回值
+- **分支**: `upstream-model-probe`
+- **类型**: 修复
+- **涉及文件**: `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_duration_test.go`
+- **说明**: `doProbeChannelModel` 用 `defer func(){ res.Duration = time.Since(start).Seconds() }()` 记录耗时，但函数签名是无名返回值 `probeResult`。Go 的求值顺序是 **`return res` 先把值拷进返回槽、之后才执行 defer** —— defer 改的是已无人使用的局部副本，写入完全丢失。除超时分支（`probeChannelModel:635` 显式设 `Duration: timeout.Seconds()`）外，**所有探针日志的耗时字段恒为 0**。修法：签名改为命名返回值 `(res probeResult)`。
+- **影响**: `Duration` 是判断「是否需要调大 `UpstreamModelProbeTimeoutSeconds`」的唯一依据（灰度验证清单里明确要观察的指标之一），此前完全失效。不影响任何判定逻辑与增删行为。
+- **🔴 这个 bug 是测试环境实测暴露的，单元测试抓不到** —— 已有 216 个用例都在纯函数层（分类器 / 预算 / 处置表），不覆盖 `doProbeChannelModel` 的 IO 路径。教训：**纯函数测试覆盖率再高，也不能替代一次真实链路的端到端跑通**。
+- **验证**: 新增 `TestDoProbeChannelModelRecordsDuration`，走 `skipped` 分支断言（在 `probeUnsupportedReason` 处即 return，不发网络请求、无外部依赖，但同样经过那个 defer）。**先确认 FAIL**（报 `Duration = 0`）再修，修后 PASS。`go build ./...`、`go vet ./...`（退出码 0）、`go test ./controller/... ./model/...` 全绿。
+
+### 测试环境端到端验证记录（无代码变更，仅记录结论与遗留）
+- **环境**: `test2.ezlinkai.com`，渠道 57 `test-auto-sync`，上游 `api.ezlinkai.com`
+- **已验证通过**: 探针实际执行并写日志（`type=LogTypeSystem`、`token_name=model-probe`、`user_id=0`、`quota=0`）；`skipped` 分支正确且**同样写 DB 日志**（`:747` 的 `!= verdictSkipped` 只控制 SysLog，不控制 DB 日志）；`unavailable`(503) 在 pendingRemove 场景准予删除；比例保护按约束 C 在本地模型数 < `UpstreamRemoveGuardMinLocalModels` 时正确地不启用。
+- **🔴 遗留待决策 —— 级联 one-api 时 503 的语义盲区**: 上游 `api.ezlinkai.com` 本身是 one-api 实例，探测不存在的模型返回的不是 404 `model_not_found`，而是 `503 There are no channels available for model X under the current group Lv1`。这条 503 有两种成因：(a) 模型压根不存在 → 该删；(b) **模型存在但上游该分组下所有渠道临时全挂 / 被 `AutoDisableChannelById` 禁用 → 不该删**。而 (b) 在级联拓扑下是常态（上游渠道自动禁用后还会自动恢复），会导致本地批量误删；误删后需靠 pendingAdd 加回，若 `auto_sync_enabled=false` 则**加不回来**。可选收紧：503 的 Message 命中 `no channels available` 时降级为 `inconclusive` —— 但这会削弱既定的「503 准删」决策，**未擅自改动，待决策**。
+- **🔴 `alive` 分支仍零验证**: 它是防误删真实可用模型的最重要防线，本轮未覆盖 —— 测试用的 `gpt-4o-mini` / `text-embedding-3-small` 上游都存在、属于 covered，压根不进 diff。要验证只能走 pendingAdd 方向（开 `auto_sync_enabled`）。
+- **测试用例设计的教训**: 首次设计的用例（用 `text-embedding-3-small` 验证 `skipped` 分支）是无效的 —— 该模型上游存在，是 covered，探针根本不会看它。**要让模型进 pendingRemove，本地填的名字必须是上游没有的**。设计探针测试用例前必须先核对上游真实列表。
+- **顺带发现的信息泄露点（未修）**: `PUT /api/channel/` 的响应体回显完整渠道 key 明文（`controller/channel.go:574` `UpdateChannel`）。仅 admin 可调，但会留痕于浏览器 devtools / 代理 / 日志。建议单独立项。
+
+---
+
 ## 2026-08-06
 
 ### fix(test/probe): GPT 与 Claude 的新旧模型 max_tokens 兼容
