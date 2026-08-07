@@ -163,33 +163,37 @@ func upstreamNormalizeChannelModelMapping(channel *model.Channel) map[string]str
 // 从上游获取模型 ID 列表
 // ──────────────────────────────────────────
 
-// fetchChannelUpstreamModelList 复用已有的 buildModelsURL / getAuthHeader / fetchModelsFromURL
+// fetchChannelUpstreamModelList 获取渠道上游模型列表，根据渠道类型走不同路径。
 func fetchChannelUpstreamModelList(channel *model.Channel) ([]string, error) {
-	// 选取第一个可用 Key（兼容单 Key、多 Key 及旧式 \n 分隔格式）
-	key := channel.Key
-	if keys := channel.ParseKeys(); len(keys) > 0 {
-		selected := ""
-		for i, k := range keys {
-			if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
-				selected = k
-				break
-			}
+	// AWS Bedrock 和 Vertex AI 走专有 SDK/API 路径
+	if channelTypeNeedsSpecialFetch(channel.Type) {
+		switch channel.Type {
+		case common.ChannelTypeAwsClaude:
+			return fetchBedrockModelList(channel)
+		case common.ChannelTypeVertexAI:
+			return fetchVertexAIModelList(channel)
 		}
-		if selected == "" {
-			selected = keys[0] // 所有 Key 均被禁用时回退到第一个
-		}
-		key = selected
 	}
-	key = strings.TrimSpace(key)
+
+	baseURL := channel.GetBaseURL()
+
+	key := selectChannelKey(channel)
 	if key == "" {
 		return nil, fmt.Errorf("渠道密钥为空")
 	}
 
-	baseURL := channel.GetBaseURL()
 	url := buildModelsURL(channel.Type, baseURL)
 	headers := getAuthHeader(channel.Type, key)
 
-	return fetchModelsFromURL(url, headers)
+	models, err := fetchModelsFromURL(url, headers)
+	if err != nil && channel.Type == common.ChannelTypeAnthropic {
+		fallbackHeaders := make(http.Header)
+		fallbackHeaders.Set("Authorization", "Bearer "+key)
+		if m, e := fetchModelsFromURL(url, fallbackHeaders); e == nil {
+			return m, nil
+		}
+	}
+	return models, err
 }
 
 // ──────────────────────────────────────────
