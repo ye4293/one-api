@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/model"
 )
@@ -19,13 +20,14 @@ func equalModelSets(got, want []string) bool {
 
 func TestUpstreamCollectPendingChangesFromModels(t *testing.T) {
 	tests := []struct {
-		name       string
-		local      []string
-		upstream   []string
-		ignored    []string
-		mapping    map[string]string
-		wantAdd    []string
-		wantRemove []string
+		name        string
+		channelType int
+		local       []string
+		upstream    []string
+		ignored     []string
+		mapping     map[string]string
+		wantAdd     []string
+		wantRemove  []string
 	}{
 		{
 			name:       "基础 diff",
@@ -142,12 +144,175 @@ func TestUpstreamCollectPendingChangesFromModels(t *testing.T) {
 			wantAdd:    []string{},
 			wantRemove: []string{"gpt-3.5-turbo"},
 		},
+
+		// ── AWS Bedrock 模型名归一化 ──
+		{
+			name:        "AWS: 短名与 Bedrock ID 视为同一模型",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 新增上报本地短名",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1", "anthropic.claude-sonnet-4-6"},
+			wantAdd:     []string{"claude-sonnet-4-6"},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 表外 Bedrock ID 回落裸 ID",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1", "anthropic.claude-nonexistent-9-v1:0"},
+			wantAdd:     []string{"anthropic.claude-nonexistent-9-v1:0"},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 跨区域前缀视为同一模型",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"us.anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 裸 ID 与区域前缀 ID 只上报一次",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{},
+			upstream:    []string{"anthropic.claude-sonnet-4-6", "us.anthropic.claude-sonnet-4-6", "apac.anthropic.claude-sonnet-4-6"},
+			wantAdd:     []string{"claude-sonnet-4-6"},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: thinking 变体被上游基础 ID 保护",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6", "claude-opus-4-6-thinking"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 仅有 thinking 变体也算已覆盖",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6-thinking"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 本地同时存在短名与裸 ID 都不被删",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6", "anthropic.claude-opus-4-6-v1"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 上游确实缺失时按原始本地名上报待删",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6", "anthropic.claude-opus-4-8"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{},
+			wantRemove:  []string{"anthropic.claude-opus-4-8"},
+		},
+		{
+			name:        "AWS: 忽略列表写短名可拦住 Bedrock ID 新增",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{},
+			upstream:    []string{"anthropic.claude-sonnet-4-6"},
+			ignored:     []string{"claude-sonnet-4-6"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: 忽略列表写 Bedrock ID 亦可拦住",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{},
+			upstream:    []string{"anthropic.claude-sonnet-4-6"},
+			ignored:     []string{"anthropic.claude-sonnet-4-6"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: regex 忽略规则命中展示名",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{},
+			upstream:    []string{"anthropic.claude-sonnet-4-6"},
+			ignored:     []string{"regex:^claude-sonnet"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: redirect target 为 Bedrock ID 抑制新增",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"my-alias"},
+			upstream:    []string{"anthropic.claude-sonnet-4-6"},
+			mapping:     map[string]string{"my-alias": "anthropic.claude-sonnet-4-6"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: redirect target 为短名亦抑制新增",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"my-alias"},
+			upstream:    []string{"anthropic.claude-sonnet-4-6"},
+			mapping:     map[string]string{"my-alias": "claude-sonnet-4-6"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "AWS: claude-v2 与 claude-v2:1 是不同模型",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-2.0"},
+			upstream:    []string{"anthropic.claude-v2:1"},
+			wantAdd:     []string{"claude-2.1"},
+			wantRemove:  []string{"claude-2.0"},
+		},
+		{
+			name:        "AWS: 复现线上 channel 59",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-8"},
+			wantAdd:     []string{"claude-opus-4-7", "claude-opus-4-8"},
+			wantRemove:  []string{},
+		},
+
+		// ── Vertex AI 渠道兜底 ──
+		{
+			name:        "Vertex: claude 模型豁免待删",
+			channelType: common.ChannelTypeVertexAI,
+			local:       []string{"claude-opus-4-6", "gemini-2.5-pro"},
+			upstream:    []string{"gemini-2.5-pro"},
+			wantAdd:     []string{},
+			wantRemove:  []string{},
+		},
+		{
+			name:        "Vertex: 非 claude 模型仍可待删",
+			channelType: common.ChannelTypeVertexAI,
+			local:       []string{"gemini-1.5-pro"},
+			upstream:    []string{"gemini-2.5-pro"},
+			wantAdd:     []string{"gemini-2.5-pro"},
+			wantRemove:  []string{"gemini-1.5-pro"},
+		},
+
+		// ── 对照组 ──
+		{
+			name:        "非 AWS 渠道不做归一（对照组）",
+			channelType: common.ChannelTypeAnthropic,
+			local:       []string{"claude-opus-4-6"},
+			upstream:    []string{"anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{"anthropic.claude-opus-4-6-v1"},
+			wantRemove:  []string{"claude-opus-4-6"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotAdd, gotRemove := upstreamCollectPendingChangesFromModels(
-				tt.local, tt.upstream, tt.ignored, tt.mapping,
+				tt.channelType, tt.local, tt.upstream, tt.ignored, tt.mapping,
 			)
 			if !equalModelSets(gotAdd, tt.wantAdd) {
 				t.Errorf("pendingAdd = %v, want %v", gotAdd, tt.wantAdd)
