@@ -1599,15 +1599,7 @@ func buildModelsURL(channelType int, baseURL string) string {
 // getAuthHeader 根据渠道类型构建认证头
 func getAuthHeader(channelType int, key string) http.Header {
 	headers := make(http.Header)
-
-	switch channelType {
-	case common.ChannelTypeAnthropic:
-		headers.Set("x-api-key", key)
-		headers.Set("anthropic-version", "2023-06-01")
-	default:
-		headers.Set("Authorization", "Bearer "+key)
-	}
-
+	headers.Set("Authorization", "Bearer "+key)
 	return headers
 }
 
@@ -1736,19 +1728,15 @@ func fetchModelsFromURL(url string, headers http.Header) ([]string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-
-	// 设置请求头
 	for key, values := range headers {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -1764,7 +1752,6 @@ func fetchModelsFromURL(url string, headers http.Header) ([]string, error) {
 		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}
 
-	// 提取模型ID并去重
 	modelSet := make(map[string]bool)
 	var models []string
 	for _, m := range result.Data {
