@@ -21,6 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	"golang.org/x/sync/errgroup"
 )
 
 // ──────────────────────────────────────────
@@ -387,6 +388,20 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 		_ = saveChannelUpstreamSettings(channel, *settings, false)
 		return false, 0, true, fetchErr
 	}
+	// ── 手动探针避让：该渠道正被管理员手动探测时，定时任务本轮完全不自动应用 ──
+	// 关键：必须把 allowAutoApply 整个置 false，而不是只跳过探针 ——
+	// 只跳过探针的话，approvedAdd/approvedRemove 会等于原始 pending（:405 初值），
+	// 结果是「不经探针直接自动增删」，比不避让更危险。同时两边同时打同一个 key
+	// 会互相触发 429，让管理员那边结论大面积退化成 rate_limited。
+	if allowAutoApply {
+		if uid, ok := manualProbeActive(channel.Id); ok {
+			upstreamInfo(fmt.Sprintf(
+				"upstream update: channel_id=%d 有活跃手动探测(user_id=%d)，本轮不自动应用",
+				channel.Id, uid))
+			allowAutoApply = false
+		}
+	}
+
 	// ── 真实请求探针：只在自动巡检路径（allowAutoApply=true）生效 ──
 	// 手动 apply 不走探针，管理员保留最终决定权 —— 否则渠道持续限流时
 	// 探测全是 inconclusive，管理员会被探针锁死、什么也改不了。
@@ -533,6 +548,48 @@ func queryUpstreamChannelBatch(lastID int) ([]*model.Channel, error) {
 // 后台定时巡检任务
 // ──────────────────────────────────────────
 
+// upstreamRoundAgg 汇总一轮巡检的统计。跨渠道并行后，多个 worker goroutine 会
+// 并发累加，故所有字段的读写都在 mu 保护下。
+type upstreamRoundAgg struct {
+	mu                                  sync.Mutex
+	checked, failed, changed            int
+	addedTotal, removedTotal, autoTotal int
+	refreshNeeded                       bool
+}
+
+func (a *upstreamRoundAgg) record(modelsChanged, ran bool, err error, settings *config.ChannelOtherSettings, autoAdded int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// 先于 error check 设置，确保 DB 已写入时即使 UpdateAbilities 失败也能刷新缓存
+	if modelsChanged {
+		a.refreshNeeded = true
+	}
+	// 已实际执行检测（非冷却跳过）时计入 checked，无论后续是否报错
+	if ran {
+		a.checked++
+	}
+	if err != nil {
+		a.failed++
+		return
+	}
+	if ran {
+		add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
+		remove := len(settings.UpstreamModelUpdateLastRemovedModels)
+		a.addedTotal += add
+		a.removedTotal += remove
+		a.autoTotal += autoAdded
+		if add > 0 || remove > 0 {
+			a.changed++
+		}
+	}
+}
+
+func (a *upstreamRoundAgg) recordPanic() {
+	a.mu.Lock()
+	a.failed++
+	a.mu.Unlock()
+}
+
 func runUpstreamUpdateTaskOnce() {
 	if !upstreamUpdateTaskRunning.CompareAndSwap(false, true) {
 		return
@@ -543,9 +600,29 @@ func runUpstreamUpdateTaskOnce() {
 	// 因此包级预算变量无需额外加锁。
 	resetProbeRoundBudget()
 
-	checked, failed, changed := 0, 0, 0
-	addedTotal, removedTotal, autoTotal := 0, 0, 0
-	refreshNeeded := false
+	agg := &upstreamRoundAgg{}
+
+	// 跨渠道并发度：不同渠道=不同 key/端点，并发探测互不影响。
+	concurrency := config.UpstreamModelUpdateChannelConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	// processChannel 处理单个渠道，panic 不外泄（记为 failed，不崩整轮）。
+	processChannel := func(ch *model.Channel) {
+		defer func() {
+			if r := recover(); r != nil {
+				upstreamError(fmt.Sprintf("upstream update panic channel_id=%d: %v", ch.Id, r))
+				agg.recordPanic()
+			}
+		}()
+		settings := ch.GetOtherSettings()
+		if !settings.UpstreamModelUpdateCheckEnabled {
+			return
+		}
+		modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
+		agg.record(modelsChanged, ran, err, &settings, autoAdded)
+	}
 
 	lastID := 0
 	for {
@@ -559,46 +636,34 @@ func runUpstreamUpdateTaskOnce() {
 		}
 		lastID = channels[len(channels)-1].Id
 
+		g := new(errgroup.Group)
+		g.SetLimit(concurrency)
 		for _, ch := range channels {
+			ch := ch
 			if ch == nil {
 				continue
 			}
-			settings := ch.GetOtherSettings()
-			if !settings.UpstreamModelUpdateCheckEnabled {
-				continue
-			}
-			modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
-			// 先于 error check 设置，确保 DB 已写入时即使 UpdateAbilities 失败也能刷新缓存
-			if modelsChanged {
-				refreshNeeded = true
-			}
-			// 已实际执行检测（非冷却跳过）时计入 checked，无论后续是否报错
-			if ran {
-				checked++
-			}
-			if err != nil {
-				failed++
-				continue
-			}
-			// 成功执行时累计变更指标
-			if ran {
-				add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
-				remove := len(settings.UpstreamModelUpdateLastRemovedModels)
-				addedTotal += add
-				removedTotal += remove
-				autoTotal += autoAdded
-				if add > 0 || remove > 0 {
-					changed++
+			g.Go(func() error {
+				processChannel(ch)
+				// 逐渠道节流仅在单并发时保留（向后兼容）；并发模式下 sleep 无意义。
+				if concurrency == 1 && config.RequestInterval > 0 {
+					time.Sleep(config.RequestInterval)
 				}
-			}
-			if config.RequestInterval > 0 {
-				time.Sleep(config.RequestInterval)
-			}
+				return nil
+			})
 		}
+		_ = g.Wait()
+
 		if len(channels) < upstreamUpdateBatchSize {
 			break
 		}
 	}
+
+	agg.mu.Lock()
+	checked, failed, changed := agg.checked, agg.failed, agg.changed
+	addedTotal, removedTotal, autoTotal := agg.addedTotal, agg.removedTotal, agg.autoTotal
+	refreshNeeded := agg.refreshNeeded
+	agg.mu.Unlock()
 
 	if refreshNeeded {
 		upstreamRefreshCache()
@@ -611,9 +676,9 @@ func runUpstreamUpdateTaskOnce() {
 		if config.UpstreamModelProbeEnabled {
 			upstreamInfo(fmt.Sprintf(
 				"upstream probe round done: alive=%d not_found=%d rate_limited=%d unavailable=%d inconclusive=%d skipped=%d round_budget_left=%d",
-				probeStatAlive.Load(), probeStatNotFound.Load(),
-				probeStatRateLimited.Load(), probeStatUnavailable.Load(),
-				probeStatInconclusive.Load(), probeStatSkipped.Load(),
+				taskProbeStats.alive.Load(), taskProbeStats.notFound.Load(),
+				taskProbeStats.rateLimited.Load(), taskProbeStats.unavailable.Load(),
+				taskProbeStats.inconclusive.Load(), taskProbeStats.skipped.Load(),
 				upstreamProbeRoundBudget.Load(),
 			))
 		}

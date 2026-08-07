@@ -155,6 +155,13 @@ var UpstreamModelProbeMaxPerChannel = 30      // 单渠道单轮探测次数上�
 var UpstreamModelProbeMaxPerRound = 200       // 全局单轮探测次数上限
 var UpstreamModelProbeTimeoutSeconds = 10     // 单次探测 wall-clock 超时（秒）
 var UpstreamModelProbeChannelBudgetSecs = 120 // 单渠道探测总时长预算（秒）
+
+// 上游巡检并行度。上游为高并发聚合站时可调大以缩短整轮巡检耗时。
+// ChannelConcurrency：同时巡检的渠道数（不同渠道=不同 key/端点，无互相限流）。
+// ProbeModelConcurrency：单渠道内同时探测的模型数（同一 key 并发，上游承受力弱时应设 1）。
+// 两者最小有效值为 1；配 0 或非法值时代码使用处兜底为 1。
+var UpstreamModelUpdateChannelConcurrency = 5
+var UpstreamModelProbeModelConcurrency = 5
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
