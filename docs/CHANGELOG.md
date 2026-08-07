@@ -8,6 +8,35 @@
 
 ## 2026-08-07
 
+### perf(upstream): 上游巡检并行化（跨渠道 + 渠道内模型）
+- **分支**: `upstream-model-probe`
+- **类型**: 性能
+- **涉及文件**: `controller/channel_upstream_update.go`, `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_manual.go`, `controller/channel_upstream_probe_manual_test.go`, `common/config/config.go`, `model/option.go`, `go.mod`；前端 `~/code/ezlinkai-web/sections/setting/view/settingPage.tsx`
+- **关联计划**: `docs/plans/2026-08-07-手动模型探针入口.md`（并行化在同分支延续）
+- **说明**: 定时巡检 `runUpstreamUpdateTaskOnce` 原为三层全串行（跨渠道、渠道内模型、单次探测阻塞），渠道多+模型多时一轮耗时以十分钟计。改为两级可配置并行。
+- **两个并发配置项（默认 5，开箱即用）**: `UpstreamModelUpdateChannelConcurrency`（同时巡检的渠道数）、`UpstreamModelProbeModelConcurrency`（单渠道内同时探测的模型数，含手动探针）。可在系统设置「上游模型巡检」卡片调整；设为 1 即退回串行。
+- **跨渠道并行**: 批内 `errgroup.SetLimit(N)`，游标分页不变；6 个统计 int + refreshNeeded 收进 `upstreamRoundAgg`（mutex 保护）；worker `recover()` 防单渠道 panic 崩整轮；`RequestInterval` 节流仅在并发=1 时保留。
+- **渠道内模型并行**: `probeChannelModels` 改 `errgroup.SetLimit(N)`，`probeRunOptions` 加 `modelConcurrency`。
+- **🔴 修 data race**: 渠道内并行暴露了 `probeBudget.channelRemaining--` / `manualBudget.remaining--` 的并发写竞争，两个 budget 各加 `sync.Mutex`，`take()` 全程持锁。`results` map 写入加锁；`taskProbeStats` 与全局 `upstreamProbeRoundBudget` 本就是 atomic，安全。
+- **推翻的原设计**: `channel_upstream_probe.go` 原注释「刻意串行防同 key 429」—— 因用户明确上游为亿级并发聚合站、可承受，改为可配置并发并更新注释；上游承受力弱的部署把 `UpstreamModelProbeModelConcurrency` 设 1 即恢复旧行为。
+- **影响**: 默认 5×5 → 一轮最多 25 个并发上游请求。DB 连接池需容纳并发 worker（`SQL_MAX_OPEN_CONNS` 默认足够）。`go.mod` 的 `golang.org/x/sync` 从 indirect 转 direct。
+- **验证**: 新增 `-race` 并发测试 `TestManualBudgetConcurrentTake` / `TestProbeBudgetConcurrentTake`（300 goroutine 抢，断言成功次数恰好=额度，不超发不丢失）。`go build`、`go vet`、`go test -race ./controller/... ./model/...` 全绿；前端 `tsc` 无新增错误。
+
+### feat(upstream): 渠道列表新增手动模型探针入口
+- **分支**: `upstream-model-probe`
+- **类型**: 新功能
+- **涉及文件**: `controller/channel_upstream_probe.go`, `controller/channel_upstream_probe_manual.go`(新增), `controller/channel_upstream_probe_manual_test.go`(新增), `controller/channel_upstream_update.go`, `router/api-router.go`；前端 `~/code/ezlinkai-web`：`sections/channel/tables/probe-modal.tsx`(新增)、`cell-action.tsx`、`app/api/channel/upstream_updates/probe/route.ts`(新增)
+- **关联计划**: `docs/plans/2026-08-07-手动模型探针入口.md`
+- **说明**: 渠道列表 Actions 菜单 View Models 下方新增「模型探针」入口。管理员可对上游差异模型（pendingAdd ∪ pendingRemove）发起真实请求做只读诊断，弹框内勾选后走现有 apply 接口应用增删。新增 `POST /api/channel/upstream_updates/probe`。
+- **三个产品决策**（用户确认）: 只探上游 diff（不探渠道全部 models）；弹框内可直接勾选应用；**不受全局 `UpstreamModelProbeEnabled` 与渠道级 `UpstreamModelProbeDisabled` 控制**（手动=显式管理员意图）。
+- **🔴 修掉设计审查发现的最危险 bug（E）**: `probeUnsupportedReason` 第一个判断是渠道级 `isUnsupportedTestChannel`，而 skipped 分支在 `budget.take()` **之前** continue、不消耗预算、无停止机制，叠加 `probeVerdictApproves(skipped,*)=true` → 不支持的渠道类型（Midjourney/Flux/Replicate 等 8 种）会把全部模型标成「建议应用」而一次请求都没发。抽出渠道级判定 `probeChannelUnsupportedReason`，handler 入口短路返回 `{supported:false}`。
+- **成本/注入安全边界（G）**: `req.Models` 与 settings 里 pending 列表**求交**（`splitManualProbeTargets`），交集外一律 `rejected` 不探；外加单请求 50 个硬上限。防止「以管理员身份向上游发任意模型名付费请求」。
+- **预算/统计解耦（A/B）**: 手动探针用独立 `manualBudget`（纯本次请求计数），绝不触碰定时任务的全局每轮余额 `upstreamProbeRoundBudget`；6 个包级统计计数器收进 `probeStatSink`，手动路径传 nil 不污染定时任务轮末统计。`probeChannelModels` 签名改为接收 `probeRunOptions{scene,source,budget,stats,ctx}`、返回 `map[string]probeResult`。定时任务路径行为完全不变（现有 216 用例全绿 + `TestProbeBudgetTouchesRoundBudget` 回归保护）。
+- **定时任务避让（I）**: 渠道有活跃手动探测（Redis 标记）时，定时任务把 `allowAutoApply` 整个置 false，而非只跳过探针 —— 后者会导致「不经探针直接自动增删」，更危险。用现成 `common/redis.go` 的 `RedisSet/RedisGet` 做 90s 软租约标记，任意节点可处理、抗重启；Redis 未启用时降级为不阻塞。
+- **只读**: handler 绝不调 `saveChannelUpstreamSettings`，避免与定时任务抢写同一 settings JSON blob（lost-update）。
+- **前端**: 关弹框即重来（不做服务端 session 续跑，用户确认）；`AbortController` 中止在途请求；结果表默认勾选用 `shouldPreselect` —— 比后端 `probeVerdictApproves` 更严格，skipped/rate_limited/inconclusive 一律不勾；503 文案中性化为「上游不可服务(503)」避免误导；apply 后与提交值做差集，pending 被定时任务改动导致的静默丢弃会 toast 告警。
+- **验证**: 新增 6 组纯函数单测（split 注入防线 / manualBudget 不碰 round budget / probeBudget 仍碰 round budget 回归 / statSink nil 安全 / buildProbeLogOther 的 source 标记 / 渠道级短路）。`go build`、`go vet`、`go test ./controller/... ./model/...` 全绿；前端 `tsc --noEmit` 探针文件零错误。**端到端需重新部署后端镜像**（新接口尚未上线）后在 test2 渠道 57 实测。
+
 ### fix(upstream): 探针耗时恒为 0 —— defer 写入了无名返回值
 - **分支**: `upstream-model-probe`
 - **类型**: 修复

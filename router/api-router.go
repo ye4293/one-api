@@ -75,7 +75,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.POST("/batchdelete", controller.BatchDelteUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
 				adminRoute.GET("/topup", controller.GetUserTopUps)
-			    adminRoute.POST("/topup/complete", controller.CompleteTopUp)
+				adminRoute.POST("/topup/complete", controller.CompleteTopUp)
 			}
 		}
 		optionRoute := apiRouter.Group("/option")
@@ -95,9 +95,9 @@ func SetApiRouter(router *gin.Engine) {
 		pricingRoute := apiRouter.Group("/pricing")
 		pricingRoute.Use(middleware.AdminAuth())
 		{
-			pricingRoute.GET("/models", controller.GetModelPrices)           // 获取所有模型价格信息
-			pricingRoute.GET("/unset", controller.GetUnsetRatioModels)       // 获取未设置倍率的模型
-			pricingRoute.PUT("/model", controller.UpdateModelRatio)          // 更新单个模型倍率
+			pricingRoute.GET("/models", controller.GetModelPrices)              // 获取所有模型价格信息
+			pricingRoute.GET("/unset", controller.GetUnsetRatioModels)          // 获取未设置倍率的模型
+			pricingRoute.PUT("/model", controller.UpdateModelRatio)             // 更新单个模型倍率
 			pricingRoute.PUT("/models/batch", controller.BatchUpdateModelRatio) // 批量更新模型倍率
 		}
 
@@ -161,6 +161,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/apply", controller.ApplyChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/apply_all", controller.ApplyAllChannelUpstreamModelUpdates)
+			channelRoute.POST("/upstream_updates/probe", controller.ProbeChannelUpstreamModels)
 		}
 		affinityRoute := apiRouter.Group("/affinity")
 		affinityRoute.Use(middleware.AdminAuth())

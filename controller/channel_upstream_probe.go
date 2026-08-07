@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
+	"golang.org/x/sync/errgroup"
 )
 
 // ──────────────────────────────────────────
@@ -324,15 +327,95 @@ func parseProbeUpstreamError(body []byte) (*relaymodel.Error, bool) {
 // upstreamProbeRoundBudget 是全局每轮探测次数余额。
 // 包级变量安全的前提：upstreamUpdateTaskRunning 的 atomic.Bool CAS 已保证
 // 同一时刻只有一轮巡检在跑。每轮开头由 resetProbeRoundBudget 重置。
-var (
-	upstreamProbeRoundBudget atomic.Int64
-	probeStatAlive           atomic.Int64
-	probeStatNotFound        atomic.Int64
-	probeStatInconclusive    atomic.Int64
-	probeStatSkipped         atomic.Int64
-	probeStatRateLimited     atomic.Int64
-	probeStatUnavailable     atomic.Int64
+//
+// 注意：这个全局余额只属于**定时任务**。手动探针（channel_upstream_probe_manual.go）
+// 用独立的 manualBudget，绝不触碰它，否则会抽干定时任务本轮的额度，
+// 导致后续渠道的自动同步/删除静默失效。
+var upstreamProbeRoundBudget atomic.Int64
+
+// probeStatSink 汇总一轮探测的六态计数。定时任务用包级 taskProbeStats；
+// 手动探针传 nil（record/reset 均 nil 安全），不污染定时任务的轮末统计。
+type probeStatSink struct {
+	alive        atomic.Int64
+	notFound     atomic.Int64
+	inconclusive atomic.Int64
+	skipped      atomic.Int64
+	rateLimited  atomic.Int64
+	unavailable  atomic.Int64
+}
+
+func (s *probeStatSink) record(v probeVerdict) {
+	if s == nil {
+		return
+	}
+	switch v {
+	case verdictAlive:
+		s.alive.Add(1)
+	case verdictNotFound:
+		s.notFound.Add(1)
+	case verdictSkipped:
+		s.skipped.Add(1)
+	case verdictRateLimited:
+		s.rateLimited.Add(1)
+	case verdictUnavailable:
+		s.unavailable.Add(1)
+	default:
+		s.inconclusive.Add(1)
+	}
+}
+
+func (s *probeStatSink) reset() {
+	if s == nil {
+		return
+	}
+	s.alive.Store(0)
+	s.notFound.Store(0)
+	s.inconclusive.Store(0)
+	s.skipped.Store(0)
+	s.rateLimited.Store(0)
+	s.unavailable.Store(0)
+}
+
+// taskProbeStats 是定时任务专用的六态计数，每轮开头由 resetProbeRoundBudget 重置。
+var taskProbeStats probeStatSink
+
+// probeTaker 抽象「是否允许再探一次」的预算判定。
+// 定时任务用 *probeBudget（含全局每轮余额），手动探针用 *manualBudget（纯本次请求计数）。
+type probeTaker interface {
+	take() bool
+}
+
+// probeRunOptions 承载一批探测的运行时上下文，把预算/统计/来源/取消从包级状态里解耦出来。
+type probeRunOptions struct {
+	scene            string
+	source           string          // probeSourceTask | probeSourceManual
+	budget           probeTaker      // 预算判定
+	stats            *probeStatSink  // nil = 不统计（手动路径）
+	ctx              context.Context // nil = 不响应取消（定时任务）；手动路径传 c.Request.Context()
+	modelConcurrency int             // 渠道内模型探测并发数，<1 兜底为 1
+}
+
+const (
+	probeSourceTask   = "task"
+	probeSourceManual = "manual"
 )
+
+// manualBudget 是手动探针的单次请求预算：只按本批模型数计数，不触碰任何全局状态。
+// mu 保护 remaining：渠道内并行探测时多个 goroutine 会并发 take()。
+type manualBudget struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func (b *manualBudget) take() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining <= 0 {
+		return false
+	}
+	b.remaining--
+	return true
+}
 
 // probeBudget 是单渠道的探测预算。
 //
@@ -349,19 +432,18 @@ var (
 // （ChannelBudgetSecs）、全局每轮次数（MaxPerRound）。
 // 极端情况下 key 整体失效的渠道会吃掉 30 次全局配额，但这些请求立即返回、
 // 不占用时长，代价可接受。
+//
+// mu 保护 channelRemaining：渠道内模型探测并行后（ProbeModelConcurrency>1），
+// 多个 goroutine 会并发调 take()，channelRemaining-- 是 data race。
 type probeBudget struct {
+	mu               sync.Mutex
 	channelRemaining int
 	channelDeadline  time.Time
 }
 
 func resetProbeRoundBudget() {
 	upstreamProbeRoundBudget.Store(int64(config.UpstreamModelProbeMaxPerRound))
-	probeStatAlive.Store(0)
-	probeStatNotFound.Store(0)
-	probeStatInconclusive.Store(0)
-	probeStatSkipped.Store(0)
-	probeStatRateLimited.Store(0)
-	probeStatUnavailable.Store(0)
+	taskProbeStats.reset()
 }
 
 func newProbeBudget() *probeBudget {
@@ -373,6 +455,8 @@ func newProbeBudget() *probeBudget {
 
 // take 尝试为一次探测扣减预算。返回 false 表示应停止探测（剩余按 inconclusive 处理）。
 func (b *probeBudget) take() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.channelRemaining <= 0 || time.Now().After(b.channelDeadline) {
 		return false
 	}
@@ -416,15 +500,29 @@ func truncateProbeMessage(msg string) string {
 	return string(runes[:probeMessageMaxLen]) + "...(truncated)"
 }
 
-// probeUnsupportedReason 返回该渠道/模型无法用 chat-completions 探测的原因，
-// 空字符串表示可以探测。
-func probeUnsupportedReason(channel *model.Channel, modelName string) string {
+// probeChannelUnsupportedReason 只做**渠道级**判定：整个渠道类型是否无法用
+// chat-completions 探测。空字符串表示渠道类型本身可探。
+//
+// 抽出来单独用是因为：手动探针 handler 必须在进入任何逐模型循环**之前**做这个判定。
+// 否则渠道类型不支持时，循环里每个模型都在 budget.take() 之前判 skipped、
+// 不消耗预算也无停止机制，会把整批模型全标成 skipped（而 skipped 在处置表里
+// 视为「信任上游=批准」），UI 上呈现为「全部建议应用」，实际一次请求都没发。
+func probeChannelUnsupportedReason(channel *model.Channel) string {
 	if isUnsupportedTestChannel(channel.Type) {
 		name, ok := common.ChannelTypeToProvider[channel.Type]
 		if !ok {
 			name = fmt.Sprintf("type=%d", channel.Type)
 		}
 		return fmt.Sprintf("渠道类型 %s 不支持 chat-completions 探测", name)
+	}
+	return ""
+}
+
+// probeUnsupportedReason 返回该渠道/模型无法用 chat-completions 探测的原因，
+// 空字符串表示可以探测。
+func probeUnsupportedReason(channel *model.Channel, modelName string) string {
+	if reason := probeChannelUnsupportedReason(channel); reason != "" {
+		return reason
 	}
 	if isUnsupportedTestModel(modelName) {
 		return "非聊天类模型，不支持 chat-completions 探测"
@@ -645,53 +743,89 @@ func probeChannelModel(channel *model.Channel, modelName string, timeout time.Du
 // 批量探测
 // ──────────────────────────────────────────
 
-// probeChannelModels 串行探测一批模型，返回 model → verdict。
+// probeChannelModels 探测一批模型，返回 model → 完整结果。
 //
-// 刻意保持串行不引入渠道内并发：同一个 key 并发打上游更容易触发 429，
-// 而 429 恰恰是中止条件，并发只会让探测更快失效。
+// 渠道内并发度由 opts.modelConcurrency 控制（源自 UpstreamModelProbeModelConcurrency）。
+// 早期版本刻意串行以防「同一 key 并发触发 429」，现改为可配置并发 —— 上游承受力
+// 弱时把该配置设为 1 即退回串行。budget.take() 已加锁，并发安全。
 //
-// 预算耗尽或连续 429 中止后，剩余模型不出现在返回值里 ——
-// filterByProbeVerdicts 会把缺失的键按 inconclusive 处理（保守）。
-func probeChannelModels(channel *model.Channel, models []string, scene string, budget *probeBudget) map[string]probeVerdict {
-	verdicts := make(map[string]probeVerdict, len(models))
+// 预算耗尽或 opts.ctx 取消后，未探的模型不出现在返回值里 —— filterByProbeVerdicts
+// 会把缺失的键按 inconclusive 处理（保守）。
+func probeChannelModels(channel *model.Channel, models []string, opts probeRunOptions) map[string]probeResult {
+	results := make(map[string]probeResult, len(models))
+	var mu sync.Mutex
+	var budgetDenied atomic.Bool
 	timeout := time.Duration(config.UpstreamModelProbeTimeoutSeconds) * time.Second
 
-	for _, modelName := range models {
-		// skipped 不消耗预算：它不发请求
-		if reason := probeUnsupportedReason(channel, modelName); reason != "" {
-			verdicts[modelName] = verdictSkipped
-			probeStatSkipped.Add(1)
-			recordProbeLog(channel, probeResult{
-				Model: modelName, Verdict: verdictSkipped, SkipReason: reason,
-			}, scene)
-			continue
-		}
-		if !budget.take() {
-			upstreamInfo(fmt.Sprintf(
-				"upstream probe: budget exhausted channel_id=%d scene=%s stopped_at=%s remaining_treated_as_inconclusive=true",
-				channel.Id, scene, modelName))
-			break
-		}
-
-		res := probeChannelModel(channel, modelName, timeout)
-		verdicts[modelName] = res.Verdict
-		switch res.Verdict {
-		case verdictAlive:
-			probeStatAlive.Add(1)
-		case verdictNotFound:
-			probeStatNotFound.Add(1)
-		case verdictSkipped:
-			probeStatSkipped.Add(1)
-		case verdictRateLimited:
-			probeStatRateLimited.Add(1)
-		case verdictUnavailable:
-			probeStatUnavailable.Add(1)
-		default:
-			probeStatInconclusive.Add(1)
-		}
-		recordProbeLog(channel, res, scene)
+	concurrency := opts.modelConcurrency
+	if concurrency < 1 {
+		concurrency = 1
 	}
-	return verdicts
+	g := new(errgroup.Group)
+	g.SetLimit(concurrency)
+
+	// store 汇总一次探测结果：results 写入加锁，stats 是 atomic、DB 写入并发安全。
+	store := func(res probeResult) {
+		mu.Lock()
+		results[res.Model] = res
+		mu.Unlock()
+		opts.stats.record(res.Verdict)
+		recordProbeLog(channel, res, opts.scene, opts.source)
+	}
+
+	ctxDone := func() bool {
+		if opts.ctx == nil {
+			return false
+		}
+		select {
+		case <-opts.ctx.Done():
+			return true
+		default:
+			return false
+		}
+	}
+
+submitLoop:
+	for _, modelName := range models {
+		modelName := modelName
+		if ctxDone() {
+			upstreamInfo(fmt.Sprintf(
+				"upstream probe: cancelled channel_id=%d scene=%s stopped_at=%s",
+				channel.Id, opts.scene, modelName))
+			break submitLoop
+		}
+		g.Go(func() error {
+			// skipped 不消耗预算：它不发请求
+			if reason := probeUnsupportedReason(channel, modelName); reason != "" {
+				store(probeResult{Model: modelName, Verdict: verdictSkipped, SkipReason: reason})
+				return nil
+			}
+			// 提交后到执行前可能已被取消
+			if ctxDone() {
+				return nil
+			}
+			if !opts.budget.take() {
+				budgetDenied.Store(true) // 预算耗尽：不探，缺键 → inconclusive
+				return nil
+			}
+			store(probeChannelModel(channel, modelName, timeout))
+			return nil
+		})
+	}
+	_ = g.Wait()
+	if budgetDenied.Load() {
+		upstreamInfo(fmt.Sprintf(
+			"upstream probe: budget exhausted channel_id=%d scene=%s remaining_treated_as_inconclusive=true",
+			channel.Id, opts.scene))
+	}
+	return results
+}
+
+// buildProbeLogOther 拼装 logs 表的 Other 字段（结构化，便于 grep）。
+// 抽成纯函数以便单测；probe_source 区分定时任务(task)与手动(manual)。
+func buildProbeLogOther(res probeResult, scene, source string) string {
+	return fmt.Sprintf("probe_verdict:%s;probe_scene:%s;probe_status:%d;probe_source:%s",
+		res.Verdict, scene, res.StatusCode, source)
 }
 
 // recordProbeLog 把一次探测写入 logs 表（Type=LogTypeSystem）与 SysLog 摘要。
@@ -699,7 +833,7 @@ func probeChannelModels(channel *model.Channel, models []string, scene string, b
 // 复用 logs 表而非新建探针表：ChannelId / ModelName / TokenName / Type 都有索引，
 // 前端现有日志页筛「类型=系统」+「令牌名称=model-probe」即可按渠道/模型检索，
 // 零前端改动。
-func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
+func recordProbeLog(channel *model.Channel, res probeResult, scene, source string) {
 	var quota int64
 	var promptTokens, completionTokens int
 	ratioNote := ""
@@ -709,7 +843,7 @@ func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
 		quota, ratioNote = calcProbeQuota(res.Model, promptTokens, completionTokens)
 	}
 
-	detail := fmt.Sprintf("探针结论=%s 场景=%s", res.Verdict, scene)
+	detail := fmt.Sprintf("探针结论=%s 场景=%s 来源=%s", res.Verdict, scene, source)
 	if res.MappedModel != "" && res.MappedModel != res.Model {
 		detail += fmt.Sprintf(" 映射后=%s", res.MappedModel)
 	}
@@ -732,8 +866,7 @@ func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
 		detail += " " + ratioNote
 	}
 
-	other := fmt.Sprintf("probe_verdict:%s;probe_scene:%s;probe_status:%d",
-		res.Verdict, scene, res.StatusCode)
+	other := buildProbeLogOther(res, scene, source)
 
 	model.RecordModelProbeLog(
 		channel.Id,
@@ -750,8 +883,8 @@ func recordProbeLog(channel *model.Channel, res probeResult, scene string) {
 	// 只有产生了实际判决（非 skipped）才打 SysLog，避免刷屏
 	if res.Verdict != verdictSkipped {
 		upstreamInfo(fmt.Sprintf(
-			"upstream probe: channel_id=%d channel_name=%s model=%s scene=%s verdict=%s status=%d duration=%.2fs",
-			channel.Id, channel.Name, res.Model, scene, res.Verdict, res.StatusCode, res.Duration))
+			"upstream probe: channel_id=%d channel_name=%s model=%s scene=%s source=%s verdict=%s status=%d duration=%.2fs",
+			channel.Id, channel.Name, res.Model, scene, source, res.Verdict, res.StatusCode, res.Duration))
 	}
 }
 
@@ -789,10 +922,27 @@ func upstreamProbeEnabledFor(settings *config.ChannelOtherSettings) bool {
 
 // probeFilterPendingModels 用真实请求过滤 pending 列表，返回批准执行的模型。
 // held 为被暂缓的模型，调用方应把它们留在 settings 里供管理员在 UI 上处置。
+//
+// 这是**定时任务专用**路径：用 *probeBudget（含全局每轮余额）+ taskProbeStats 统计。
 func probeFilterPendingModels(channel *model.Channel, models []string, scene string, budget *probeBudget) (approved, held []string) {
 	if len(models) == 0 {
 		return models, nil
 	}
-	verdicts := probeChannelModels(channel, models, scene, budget)
-	return filterByProbeVerdicts(models, verdicts, scene)
+	results := probeChannelModels(channel, models, probeRunOptions{
+		scene:            scene,
+		source:           probeSourceTask,
+		budget:           budget,
+		stats:            &taskProbeStats,
+		modelConcurrency: config.UpstreamModelProbeModelConcurrency,
+	})
+	return filterByProbeVerdicts(models, projectVerdicts(results), scene)
+}
+
+// projectVerdicts 把探测结果投影成 model → verdict，喂给纯函数 filterByProbeVerdicts。
+func projectVerdicts(results map[string]probeResult) map[string]probeVerdict {
+	verdicts := make(map[string]probeVerdict, len(results))
+	for m, r := range results {
+		verdicts[m] = r.Verdict
+	}
+	return verdicts
 }
