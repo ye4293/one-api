@@ -52,6 +52,10 @@ var AwsModelIDMap = map[string]string{
 	"claude-sonnet-4-6":          "anthropic.claude-sonnet-4-6",
 	"claude-opus-4-7":            "anthropic.claude-opus-4-7",
 	"claude-opus-4-8":            "anthropic.claude-opus-4-8",
+	// Claude 5 / Fable models
+	"claude-opus-5":   "anthropic.claude-opus-5",
+	"claude-sonnet-5": "anthropic.claude-sonnet-5",
+	"claude-fable-5":  "anthropic.claude-fable-5",
 
 	// Claude models with thinking (extended thinking) - 使用相同的模型ID，通过请求参数启用思考模式
 	"claude-3-7-sonnet-20250219-thinking": "anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -65,6 +69,9 @@ var AwsModelIDMap = map[string]string{
 	"claude-sonnet-4-6-thinking":          "anthropic.claude-sonnet-4-6",
 	"claude-opus-4-7-thinking":            "anthropic.claude-opus-4-7",
 	"claude-opus-4-8-thinking":            "anthropic.claude-opus-4-8",
+	"claude-opus-5-thinking":   "anthropic.claude-opus-5",
+	"claude-sonnet-5-thinking": "anthropic.claude-sonnet-5",
+	"claude-fable-5-thinking":  "anthropic.claude-fable-5",
 }
 
 // GetAwsModelID 获取 AWS 模型ID，如果没有映射则返回原始模型名
