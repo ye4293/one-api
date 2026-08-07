@@ -307,6 +307,17 @@ func TestUpstreamCollectPendingChangesFromModels(t *testing.T) {
 			wantAdd:     []string{"anthropic.claude-opus-4-6-v1"},
 			wantRemove:  []string{"claude-opus-4-6"},
 		},
+
+		// ── model_mapping 只是翻译规则 ──
+		{
+			name:        "AWS: mapping source 不在 local 时 target 不纳入覆盖",
+			channelType: common.ChannelTypeAwsClaude,
+			local:       []string{"claude-opus-5"},
+			upstream:    []string{"anthropic.claude-opus-5", "anthropic.claude-opus-4-6-v1"},
+			mapping:     map[string]string{"claude-opus-5": "global.anthropic.claude-opus-5", "claude-opus-4-6": "global.anthropic.claude-opus-4-6-v1"},
+			wantAdd:     []string{"claude-opus-4-6"},
+			wantRemove:  []string{},
+		},
 	}
 
 	for _, tt := range tests {

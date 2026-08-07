@@ -242,14 +242,18 @@ func upstreamCollectPendingChangesFromModels(
 
 	canonical, display := upstreamModelCanonicalizers(channelType)
 
-	covered := make(map[string]struct{}, len(localModels)+len(modelMapping))
+	covered := make(map[string]struct{}, len(localModels))
+	localLiteralSet := make(map[string]struct{}, len(localModels))
 	for _, m := range localModels {
 		covered[canonical(m)] = struct{}{}
+		localLiteralSet[m] = struct{}{}
 	}
 	redirectSrcSet := make(map[string]struct{}, len(modelMapping))
 	for src, tgt := range modelMapping {
 		redirectSrcSet[src] = struct{}{}
-		covered[canonical(tgt)] = struct{}{}
+		if _, isLocal := localLiteralSet[src]; isLocal {
+			covered[canonical(tgt)] = struct{}{}
+		}
 	}
 
 	upstreamCanonicalSet := make(map[string]struct{}, len(upstreamModels))
