@@ -8,6 +8,13 @@
 
 ## 2026-08-07
 
+### fix(upstream): Bedrock 渠道 diff 归一化，消除短名与原生 ID 的虚假增删配对
+- **分支**: `upstream-model-probe`
+- **类型**: Bug 修复
+- **涉及文件**: `relay/channel/aws/claude/canonical.go`(新增), `relay/channel/aws/claude/canonical_test.go`(新增), `controller/channel_upstream_update.go`, `controller/channel_upstream_update_test.go`
+- **关联计划**: `docs/plans/2026-08-07-bedrock-model-name-canonicalization.md`
+- **说明**: ListFoundationModels 返回 Bedrock 原生 ID（如 `anthropic.claude-opus-4-6-v1`），本地用短名（`claude-opus-4-6`）。diff 做裸字符串比较导致同一模型同时标新增和待删。通过 AwsModelIDMap 正/反向表归一化到同一比较域；pendingAdd 用本地短名上报；附带修复 Vertex AI 渠道 claude-* 模型误删风险（上游只拉 Google 发布者）。
+
 ### perf(upstream): 上游巡检并行化（跨渠道 + 渠道内模型）
 - **分支**: `upstream-model-probe`
 - **类型**: 性能

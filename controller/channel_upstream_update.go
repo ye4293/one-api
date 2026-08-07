@@ -21,6 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	awsclaude "github.com/songquanpeng/one-api/relay/channel/aws/claude"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -200,41 +201,64 @@ func fetchChannelUpstreamModelList(channel *model.Channel) ([]string, error) {
 // 差异计算
 // ──────────────────────────────────────────
 
+// upstreamModelCanonicalizers 返回渠道类型对应的 (归一化, 展示名) 函数对。
+// AWS Bedrock 渠道的上游 ListFoundationModels 返回 Bedrock 原生 ID
+// （anthropic.claude-opus-4-6-v1），而本地模型列表用短名（claude-opus-4-6），
+// 二者由 relay 层的 AwsModelIDMap 在请求时翻译。diff 必须走同一张表，
+// 否则同一个模型会同时出现在 新增 和 待删 两侧。
+// 其他渠道一律返回 identity —— 行为与改动前逐字节一致。
+//
+// 注意：-thinking 本地模型会抑制基础短名的新增。local 只有
+// claude-opus-4-6-thinking、upstream 有 anthropic.claude-opus-4-6-v1 时不会提示
+// 新增 claude-opus-4-6。这是「canonical 域是模型而非模型名」的必然结果；
+// diff 的职责是可用性而非命名齐全度。要改需引入第二维度（thinking/非 thinking
+// 视为不同变体参与覆盖判定），目前不做。
+func upstreamModelCanonicalizers(channelType int) (canonical, display func(string) string) {
+	if channelType == common.ChannelTypeAwsClaude {
+		return awsclaude.CanonicalAwsModelID, awsclaude.AwsDisplayModelName
+	}
+	identity := func(m string) string { return m }
+	return identity, identity
+}
+
+// upstreamRemovalProtected 报告该本地模型是否应豁免「上游缺失即待删」的判定。
+// Vertex AI 渠道只从 publishers/google/models 拉取模型列表，不含 Anthropic
+// 发布者，因此上游列表天然无法证实任何 claude-* 模型的存在。若不豁免，这些模型
+// 每轮巡检都会被判待删，开了自动删除且探针关闭时会被清空。
+func upstreamRemovalProtected(channelType int, localModel string) bool {
+	if channelType == common.ChannelTypeVertexAI && strings.HasPrefix(localModel, "claude-") {
+		return true
+	}
+	return false
+}
+
 func upstreamCollectPendingChangesFromModels(
+	channelType int,
 	localModels, upstreamModels, ignoredModels []string,
 	modelMapping map[string]string,
 ) (pendingAdd, pendingRemove []string) {
 	localModels = upstreamNormalizeModelNames(localModels)
 	upstreamModels = upstreamNormalizeModelNames(upstreamModels)
 
-	localSet := make(map[string]struct{}, len(localModels))
-	for _, m := range localModels {
-		localSet[m] = struct{}{}
-	}
-	upstreamSet := make(map[string]struct{}, len(upstreamModels))
-	for _, m := range upstreamModels {
-		upstreamSet[m] = struct{}{}
-	}
+	canonical, display := upstreamModelCanonicalizers(channelType)
 
+	covered := make(map[string]struct{}, len(localModels)+len(modelMapping))
+	for _, m := range localModels {
+		covered[canonical(m)] = struct{}{}
+	}
 	redirectSrcSet := make(map[string]struct{}, len(modelMapping))
-	redirectTgtSet := make(map[string]struct{}, len(modelMapping))
 	for src, tgt := range modelMapping {
 		redirectSrcSet[src] = struct{}{}
-		redirectTgtSet[tgt] = struct{}{}
+		covered[canonical(tgt)] = struct{}{}
 	}
 
-	// 已覆盖的上游模型 = 本地模型 ∪ redirect target
-	covered := make(map[string]struct{}, len(localSet)+len(redirectTgtSet))
-	for m := range localSet {
-		covered[m] = struct{}{}
-	}
-	for m := range redirectTgtSet {
-		covered[m] = struct{}{}
+	upstreamCanonicalSet := make(map[string]struct{}, len(upstreamModels))
+	for _, m := range upstreamModels {
+		upstreamCanonicalSet[canonical(m)] = struct{}{}
 	}
 
 	normalizedIgnored := upstreamNormalizeModelNames(ignoredModels)
 
-	// 预编译所有 regex: 前缀规则，避免在 per-model 循环中重复编译
 	type ignoreRule struct {
 		literal string
 		re      *regexp.Regexp
@@ -250,7 +274,7 @@ func upstreamCollectPendingChangesFromModels(
 		}
 	}
 
-	isIgnored := func(m string) bool {
+	matchesIgnore := func(m string) bool {
 		for _, r := range rules {
 			if r.re != nil {
 				if r.re.MatchString(m) {
@@ -263,24 +287,38 @@ func upstreamCollectPendingChangesFromModels(
 		return false
 	}
 
-	pendingAdd = lo.Filter(upstreamModels, func(m string, _ int) bool {
-		if _, ok := covered[m]; ok {
-			return false
+	isIgnored := func(m string) bool {
+		if matchesIgnore(m) {
+			return true
 		}
-		return !isIgnored(m)
-	})
+		if d := display(m); d != m && matchesIgnore(d) {
+			return true
+		}
+		return false
+	}
+
+	pendingAdd = make([]string, 0, len(upstreamModels))
+	for _, m := range upstreamModels {
+		if _, ok := covered[canonical(m)]; ok {
+			continue
+		}
+		if isIgnored(m) {
+			continue
+		}
+		pendingAdd = append(pendingAdd, display(m))
+	}
 
 	pendingRemove = lo.Filter(localModels, func(m string, _ int) bool {
 		if _, ok := redirectSrcSet[m]; ok {
-			return false // redirect source 不因上游缺失而删除
-		}
-		if isIgnored(m) {
-			// 忽略列表同时拦截自动删除：保护「上游 /v1/models 不暴露但实际可用」的
-			// 手工维护模型。此前忽略列表只作用于 pendingAdd，管理员把模型加进忽略
-			// 列表后仍会被 AutoDelete 删掉，与 "ignored" 的字面语义相悖。
 			return false
 		}
-		_, exists := upstreamSet[m]
+		if upstreamRemovalProtected(channelType, m) {
+			return false
+		}
+		if isIgnored(m) {
+			return false
+		}
+		_, exists := upstreamCanonicalSet[canonical(m)]
 		return !exists
 	})
 
@@ -297,6 +335,7 @@ func upstreamCollectPendingChanges(channel *model.Channel, settings config.Chann
 		return nil, nil, fmt.Errorf("上游返回模型列表为空，跳过本次同步")
 	}
 	add, remove := upstreamCollectPendingChangesFromModels(
+		channel.Type,
 		channel.GetModels(),
 		upstream,
 		settings.UpstreamModelUpdateIgnoredModels,
