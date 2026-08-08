@@ -141,13 +141,13 @@ func TestClassifyProbeError(t *testing.T) {
 			want:       verdictInconclusive,
 		},
 
-		// ── 关键词白名单的边界：这两条误命中会导致误删 ──
+		// ── 403 无权限视为 not_found（激进策略：权限不足等同于不可用）──
 		{
-			name:       "仅无权限不判 not_found",
+			name:       "403 无权限判 not_found",
 			statusCode: 403,
 			apiErr:     &relaymodel.Error{Message: "You do not have access to this model"},
 			bodyParsed: true,
-			want:       verdictInconclusive,
+			want:       verdictNotFound,
 		},
 		{
 			name:       "上下文超长不判 not_found",
@@ -189,11 +189,11 @@ func TestClassifyProbeError(t *testing.T) {
 			want:       verdictInconclusive,
 		},
 		{
-			name:       "403 无权限",
+			name:       "403 无权限（中文消息）",
 			statusCode: 403,
 			apiErr:     &relaymodel.Error{Message: "权限不足"},
 			bodyParsed: true,
-			want:       verdictInconclusive,
+			want:       verdictNotFound,
 		},
 		{
 			name:       "429 限流判为 rate_limited（模型可用的证据）",
