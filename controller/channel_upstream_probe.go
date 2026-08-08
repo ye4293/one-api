@@ -176,6 +176,9 @@ func classifyProbeError(statusCode int, apiErr *relaymodel.Error, bodyParsed boo
 	// 信号 1：404 且带有非空错误消息
 	case statusCode == 404 && strings.TrimSpace(apiErr.Message) != "":
 		notFound = true
+	// 信号 1.5：403 视为模型不可用（权限不足等同于不存在）
+	case statusCode == http.StatusForbidden && strings.TrimSpace(apiErr.Message) != "":
+		notFound = true
 	// 信号 2：error.code 或 error.type 命中封闭枚举
 	case modelNotFoundCodes[normalizeErrCode(apiErr.Code)],
 		modelNotFoundCodes[normalizeErrCode(apiErr.Type)]:
@@ -677,10 +680,11 @@ func doProbeChannelModel(channel *model.Channel, modelName string) (res probeRes
 
 	usage, respErr := adaptor.DoResponse(c, resp, meta)
 	if respErr != nil {
-		// 200 之后的解析错误。刻意传 bodyParsed=false：这条路径上的消息可能由
-		// adaptor 自己生成而非上游原话，保守处理只会漏删、不会误删。
 		res.StatusCode = respErr.StatusCode
-		res.Verdict = classifyProbeError(respErr.StatusCode, &respErr.Error, false, nil, channel.MultiKeyInfo.IsMultiKey)
+		// AWS SDK 渠道（DoRequest 返回 nil）的错误来自上游 API 真实响应，
+		// 不是 relay 编造的兜底文案，可以信任。
+		bodyParsed := resp == nil && respErr.Error.Type == "aws_error"
+		res.Verdict = classifyProbeError(respErr.StatusCode, &respErr.Error, bodyParsed, nil, channel.MultiKeyInfo.IsMultiKey)
 		res.ErrCode = normalizeErrCode(respErr.Error.Code)
 		res.ErrType = respErr.Error.Type
 		res.Message = truncateProbeMessage(respErr.Error.Message)
