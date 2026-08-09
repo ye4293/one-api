@@ -70,6 +70,7 @@ const (
 const (
 	probeScenePendingAdd    = "pending_add"
 	probeScenePendingRemove = "pending_remove"
+	probeSceneHealth        = "health"
 )
 
 // modelNotFoundCodes 是 error.code / error.type 中表示「模型不存在」的封闭枚举。
