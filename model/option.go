@@ -46,6 +46,10 @@ func InitOptionMap() {
 	config.OptionMap["UpstreamModelProbeChannelBudgetSecs"] = strconv.Itoa(config.UpstreamModelProbeChannelBudgetSecs)
 	config.OptionMap["UpstreamModelUpdateChannelConcurrency"] = strconv.Itoa(config.UpstreamModelUpdateChannelConcurrency)
 	config.OptionMap["UpstreamModelProbeModelConcurrency"] = strconv.Itoa(config.UpstreamModelProbeModelConcurrency)
+	config.OptionMap["UpstreamModelHealthProbeEnabled"] = strconv.FormatBool(config.UpstreamModelHealthProbeEnabled)
+	config.OptionMap["UpstreamModelHealthProbeFastIntervalMinutes"] = strconv.Itoa(config.UpstreamModelHealthProbeFastIntervalMinutes)
+	config.OptionMap["UpstreamModelHealthProbeSteadyIntervalMinutes"] = strconv.Itoa(config.UpstreamModelHealthProbeSteadyIntervalMinutes)
+	config.OptionMap["UpstreamModelHealthProbeFailThreshold"] = strconv.Itoa(config.UpstreamModelHealthProbeFailThreshold)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -521,6 +525,14 @@ func updateOptionMap(key string, value string) (err error) {
 		setPositiveIntOption(&config.UpstreamModelUpdateChannelConcurrency, value)
 	case "UpstreamModelProbeModelConcurrency":
 		setPositiveIntOption(&config.UpstreamModelProbeModelConcurrency, value)
+	case "UpstreamModelHealthProbeEnabled":
+		config.UpstreamModelHealthProbeEnabled = value == "true"
+	case "UpstreamModelHealthProbeFastIntervalMinutes":
+		setPositiveIntOption(&config.UpstreamModelHealthProbeFastIntervalMinutes, value)
+	case "UpstreamModelHealthProbeSteadyIntervalMinutes":
+		setPositiveIntOption(&config.UpstreamModelHealthProbeSteadyIntervalMinutes, value)
+	case "UpstreamModelHealthProbeFailThreshold":
+		setPositiveIntOption(&config.UpstreamModelHealthProbeFailThreshold, value)
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

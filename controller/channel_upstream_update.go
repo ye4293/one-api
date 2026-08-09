@@ -455,8 +455,10 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 	//
 	// 只在「该方向真的会被自动应用」时才探：结果只进人工队列的话探测是白花钱。
 	approvedAdd, approvedRemove := pendingAdd, pendingRemove
-	if allowAutoApply && upstreamProbeEnabledFor(settings) {
-		budget := newProbeBudget()
+	var budget *probeBudget
+	probeOn := allowAutoApply && upstreamProbeEnabledFor(settings)
+	if probeOn {
+		budget = newProbeBudget()
 		if settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
 			approvedAdd, _ = probeFilterPendingModels(channel, pendingAdd, probeScenePendingAdd, budget)
 		}
@@ -468,6 +470,19 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 				channel.Id, channel.Name,
 				len(approvedAdd), len(pendingAdd), len(approvedRemove), len(pendingRemove)))
 		}
+	}
+
+	// ── 健康巡检：对已在本地 models 列表里的模型做周期性可达性探测 ──
+	var healthRemove []string
+	var healthChannelFault bool
+	if probeOn && config.UpstreamModelHealthProbeEnabled &&
+		channel.Status == common.ChannelStatusEnabled {
+		healthRemove, healthChannelFault = runHealthProbe(
+			channel, settings, localModels, pendingAdd, pendingRemove, budget)
+	}
+	// 全军覆没时不走删除路径（已在 runHealthProbe 中禁用渠道）
+	if !healthChannelFault && len(healthRemove) > 0 {
+		approvedRemove = upstreamMergeModelNames(approvedRemove, healthRemove)
 	}
 
 	// 自动同步新增模型

@@ -162,6 +162,14 @@ var UpstreamModelProbeChannelBudgetSecs = 120 // 单渠道探测总时长预算�
 // 两者最小有效值为 1；配 0 或非法值时代码使用处兜底为 1。
 var UpstreamModelUpdateChannelConcurrency = 5
 var UpstreamModelProbeModelConcurrency = 5
+
+// 健康巡检：对已在本地 models 列表里的模型做周期性可达性探测。
+// 连续失败 N 次后自动删除该模型；全部模型都失败时禁用渠道。
+// 默认关闭（opt-in）—— 会对每个启用渠道的每个模型定期发真实付费请求。
+var UpstreamModelHealthProbeEnabled = false
+var UpstreamModelHealthProbeFastIntervalMinutes = 10  // 未定型 / 有失败嫌疑时的探测间隔
+var UpstreamModelHealthProbeSteadyIntervalMinutes = 60 // 连续 3 次成功后的固定间隔
+var UpstreamModelHealthProbeFailThreshold = 3          // 连续失败几次触发删除
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
