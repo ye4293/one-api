@@ -8,6 +8,13 @@
 
 ## 2026-08-10
 
+### fix(aws-claude): 修复 Bedrock 4.7+ 模型 `temperature is deprecated` 400，并将 no-sampling 判定规则化
+- **分支**: `main`
+- **类型**: Bug 修复
+- **涉及文件**: `relay/channel/anthropic/constants.go`, `relay/channel/anthropic/constants_test.go`(新增), `relay/channel/aws/claude/main.go`, `relay/channel/aws/claude/sampling_test.go`(新增)
+- **说明**: 探针/测试请求探测 AWS Bedrock 上的 Claude 4.7+ 模型（如 opus-4-8）时报 400 `temperature is deprecated for this model`。根因：OpenAI 格式请求走 `Handler`/`StreamHandler` 的 copier 指针路径，`anthropic.Request.Temperature`（值类型 `float64`，零值靠 omitempty 省略）经 `copier.Copy` 复制到 `aws Request.Temperature`（`*float64`）时，零值被复活成非 nil 指针，omitempty 失效，`"temperature":0` 被发出。仅 4.7+ 会 400（其他模型接受 temperature 故无害），故报错只出现在探测 4.7+ 时。修复：①`IsNoSamplingModel` 从硬编码 map 改为版本解析规则（解析 `(major,minor)`，`major>4 || (major==4 && minor>=7)` 即 no-sampling，覆盖所有系列及未来 5.x）；正确处理整数比较（4-10>4-7）、8 位日期段冒充 minor（`claude-opus-4-20250514`=4.0）、旧格式 `claude-3-7-sonnet`（major=3 排除）、AWS 原生 ID / 区域前缀 / -thinking 后缀。②AWS 指针路径抽出 `stripNoSamplingParams`，copier 后对 no-sampling 模型显式清 `Temperature=nil`、`TopP=0`、`TopK=0`。
+- **备注**: 既有失败测试 `TestFilterBetaFlags/vertex_allows_files-api` 与本次改动无关（干净 HEAD 上已失败）。
+
 ### fix(migration): logs 表移出 AutoMigrate，消除启动期大表 rebuild 锁全库的死循环
 - **分支**: `main`
 - **类型**: Bug 修复

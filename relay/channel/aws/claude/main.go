@@ -226,6 +226,22 @@ func buildNativeClaudeRequestBody(c *gin.Context) ([]byte, error) {
 	return requestBody, nil
 }
 
+// stripNoSamplingParams 对 no-sampling 模型（Claude 4.7+，所有系列）清除
+// temperature/top_p/top_k —— Bedrock 对这些参数返回 400 "... is deprecated for this model"。
+//
+// 关键：上游 anthropic.Request.Temperature 是值类型 float64，零值靠 omitempty 省略；
+// 但 copier.Copy 到本结构的 *float64 会把零值复活成非 nil 指针，omitempty 失效，
+// 于是 "temperature":0 被发出。探针/测试请求本不带 temperature，正是这样触发 400。
+// 因此必须显式把 Temperature 清 nil；top_p/top_k 是值类型，置 0 即被 omitempty 省略。
+func stripNoSamplingParams(req *Request, modelName string) {
+	if !anthropic.IsNoSamplingModel(modelName) {
+		return
+	}
+	req.Temperature = nil
+	req.TopP = 0
+	req.TopK = 0
+}
+
 func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta) (*relaymodel.ErrorWithStatusCode, *relaymodel.Usage) {
 	awsModelId, err := getAwsModelIdWithRegion(c, c.GetString(ctxkey.RequestModel))
 	if err != nil {
@@ -266,6 +282,9 @@ func Handler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.RelayMeta
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}
+
+		// no-sampling 模型（Claude 4.7+）需清除 sampling 参数，详见 stripNoSamplingParams。
+		stripNoSamplingParams(awsClaudeReq, c.GetString(ctxkey.RequestModel))
 
 		// 直接序列化请求，let omitempty handle zero values
 		requestBody, err = json.Marshal(awsClaudeReq)
@@ -346,6 +365,9 @@ func StreamHandler(c *gin.Context, awsCli *bedrockruntime.Client, meta *util.Rel
 			temperatureOne := 1.0
 			awsClaudeReq.Temperature = &temperatureOne
 		}
+
+		// no-sampling 模型（Claude 4.7+）需清除 sampling 参数，详见 stripNoSamplingParams。
+		stripNoSamplingParams(awsClaudeReq, c.GetString(ctxkey.RequestModel))
 
 		// 直接序列化请求，let omitempty handle zero values
 		requestBody, err = json.Marshal(awsClaudeReq)
