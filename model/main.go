@@ -138,10 +138,13 @@ func InitDB(envName string) (db *gorm.DB, err error) {
 		if err != nil {
 			return nil, err
 		}
-		err = db.AutoMigrate(&Log{})
-		if err != nil {
-			return nil, err
-		}
+		// 注意：logs 表（约 7400 万行）已移出 AutoMigrate。
+		// 原因：GORM 对该表列定义存在幂等误判（如 is_stream 的 nullable：DB 允许 NULL，
+		// 而非指针 bool 期望 NOT NULL），每次启动都会触发 rebuild 级 MODIFY COLUMN。
+		// 在共享 PolarDB 上，该操作长时间持有表级 MDL 锁，阻塞全集群对 logs 的写入，
+		// 并因抢不到锁超时（Error 8007）失败 → fatal 退出 → 重启 → 再次迁移的死循环。
+		// 新增/变更 Log 字段必须走人工在线 DDL（gh-ost / pt-osc / ALGORITHM=INPLACE,LOCK=NONE），
+		// 禁止依赖自动迁移。
 		err = db.AutoMigrate(&Order{})
 		if err != nil {
 			return nil, err

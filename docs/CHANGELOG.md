@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-10
+
+### fix(migration): logs 表移出 AutoMigrate，消除启动期大表 rebuild 锁全库的死循环
+- **分支**: `main`
+- **类型**: Bug 修复
+- **涉及文件**: `model/main.go`
+- **说明**: 线上 logs 表约 7400 万行。GORM 对该表列定义存在幂等误判（如 `is_stream`：DB 列允许 NULL，而非指针 `bool` 期望 `NOT NULL`），每次容器启动都触发 rebuild 级 `MODIFY COLUMN`。在共享 PolarDB 上该操作长时间持有表级 MDL 锁（实测约 266 秒），阻塞全集群对 logs 的写入（每个 API 请求都要写日志），并因抢不到锁超时（Error 8007）失败 → `FatalLog` 退出 → 容器重启 → 再次迁移的死循环，最终拖垮整个 API。删除 `db.AutoMigrate(&Log{})` 一段，其余 15 张表照常自动迁移。列与数据均已存在，摘除无 `Unknown column` 风险。
+- **遗留**: 未根治。（1）其他表若长到千万级会重演同一机制；（2）迁移失败仍是 `FatalLog` 而非降级告警；（3）无 `MIGRATE_ON_START` 开关。后续应将大表 DDL 与容器启动解耦。logs 表今后新增/变更字段须走人工在线 DDL，禁止依赖自动迁移。
+
 ## 2026-08-07
 
 ### fix(upstream): Bedrock 渠道 diff 归一化，消除短名与原生 ID 的虚假增删配对
