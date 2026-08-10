@@ -1596,10 +1596,9 @@ func buildModelsURL(channelType int, baseURL string) string {
 	}
 }
 
-// getAuthHeader 根据渠道类型构建认证头
+// getAuthHeader 根据渠道类型构建模型列表拉取的认证头
 func getAuthHeader(channelType int, key string) http.Header {
 	headers := make(http.Header)
-
 	switch channelType {
 	case common.ChannelTypeAnthropic:
 		headers.Set("x-api-key", key)
@@ -1607,8 +1606,16 @@ func getAuthHeader(channelType int, key string) http.Header {
 	default:
 		headers.Set("Authorization", "Bearer "+key)
 	}
-
 	return headers
+}
+
+// channelTypeNeedsSpecialFetch 返回该渠道类型是否需要走专有路径拉取模型列表（非 /v1/models）。
+func channelTypeNeedsSpecialFetch(channelType int) bool {
+	switch channelType {
+	case common.ChannelTypeAwsClaude, common.ChannelTypeVertexAI:
+		return true
+	}
+	return false
 }
 
 // FetchModels 获取上游API的模型列表（用于新建渠道）
@@ -1617,6 +1624,7 @@ func FetchModels(c *gin.Context) {
 		BaseURL string `json:"base_url"`
 		Type    int    `json:"type"`
 		Key     string `json:"key"`
+		Config  string `json:"config"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1641,6 +1649,39 @@ func FetchModels(c *gin.Context) {
 	if strings.Contains(key, "\n") {
 		key = strings.Split(key, "\n")[0]
 		key = strings.TrimSpace(key)
+	}
+
+	// AWS Bedrock / Vertex AI 需要走专有路径
+	if channelTypeNeedsSpecialFetch(req.Type) {
+		tmpChannel := &model.Channel{
+			Type:   req.Type,
+			Key:    key,
+			Config: req.Config,
+		}
+		if req.BaseURL != "" {
+			tmpChannel.BaseURL = &req.BaseURL
+		}
+		var models []string
+		var fetchErr error
+		switch req.Type {
+		case common.ChannelTypeAwsClaude:
+			models, fetchErr = fetchBedrockModelList(tmpChannel)
+		case common.ChannelTypeVertexAI:
+			models, fetchErr = fetchVertexAIModelList(tmpChannel)
+		}
+		if fetchErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "获取模型列表失败: " + fetchErr.Error(),
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    models,
+		})
+		return
 	}
 
 	url := buildModelsURL(req.Type, req.BaseURL)
@@ -1682,23 +1723,33 @@ func FetchUpstreamModels(c *gin.Context) {
 		return
 	}
 
-	// 获取可用的密钥：始终解析 Key，兼容单 Key、多 Key 及旧式换行分隔格式
-	key := channel.Key
-	if keys := channel.ParseKeys(); len(keys) > 0 {
-		selected := ""
-		for i, k := range keys {
-			if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
-				selected = k
-				break
-			}
+	// AWS Bedrock / Vertex AI 走专有路径
+	if channelTypeNeedsSpecialFetch(channel.Type) {
+		var models []string
+		var fetchErr error
+		switch channel.Type {
+		case common.ChannelTypeAwsClaude:
+			models, fetchErr = fetchBedrockModelList(channel)
+		case common.ChannelTypeVertexAI:
+			models, fetchErr = fetchVertexAIModelList(channel)
 		}
-		if selected == "" {
-			selected = keys[0] // 所有 Key 均被禁用时回退到第一个
+		if fetchErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "获取模型列表失败: " + fetchErr.Error(),
+			})
+			return
 		}
-		key = selected
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    models,
+		})
+		return
 	}
 
-	key = strings.TrimSpace(key)
+	// 通用 /v1/models 路径
+	key := selectChannelKey(channel)
 	if key == "" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1716,6 +1767,13 @@ func FetchUpstreamModels(c *gin.Context) {
 	headers := getAuthHeader(channel.Type, key)
 
 	models, err := fetchModelsFromURL(url, headers)
+	if err != nil && channel.Type == common.ChannelTypeAnthropic {
+		fallbackHeaders := make(http.Header)
+		fallbackHeaders.Set("Authorization", "Bearer "+key)
+		if m, e := fetchModelsFromURL(url, fallbackHeaders); e == nil {
+			models, err = m, nil
+		}
+	}
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1736,19 +1794,15 @@ func fetchModelsFromURL(url string, headers http.Header) ([]string, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-
-	// 设置请求头
 	for key, values := range headers {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -1764,7 +1818,6 @@ func fetchModelsFromURL(url string, headers http.Header) ([]string, error) {
 		return nil, fmt.Errorf("解析响应失败: %w", err)
 	}
 
-	// 提取模型ID并去重
 	modelSet := make(map[string]bool)
 	var models []string
 	for _, m := range result.Data {

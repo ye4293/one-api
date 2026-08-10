@@ -21,6 +21,8 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
+	awsclaude "github.com/songquanpeng/one-api/relay/channel/aws/claude"
+	"golang.org/x/sync/errgroup"
 )
 
 // ──────────────────────────────────────────
@@ -132,7 +134,6 @@ func upstreamApplySelectedModelChanges(origin, addModels, removeModels []string)
 	return upstreamSubtractModelNames(upstreamMergeModelNames(origin, normalizedAdd), normalizedRemove)
 }
 
-
 // upstreamNormalizeChannelModelMapping 解析 channel.ModelMapping JSON
 func upstreamNormalizeChannelModelMapping(channel *model.Channel) map[string]string {
 	if channel.ModelMapping == nil {
@@ -163,74 +164,105 @@ func upstreamNormalizeChannelModelMapping(channel *model.Channel) map[string]str
 // 从上游获取模型 ID 列表
 // ──────────────────────────────────────────
 
-// fetchChannelUpstreamModelList 复用已有的 buildModelsURL / getAuthHeader / fetchModelsFromURL
+// fetchChannelUpstreamModelList 获取渠道上游模型列表，根据渠道类型走不同路径。
 func fetchChannelUpstreamModelList(channel *model.Channel) ([]string, error) {
-	// 选取第一个可用 Key（兼容单 Key、多 Key 及旧式 \n 分隔格式）
-	key := channel.Key
-	if keys := channel.ParseKeys(); len(keys) > 0 {
-		selected := ""
-		for i, k := range keys {
-			if channel.GetKeyStatus(i) == common.ChannelStatusEnabled {
-				selected = k
-				break
-			}
+	// AWS Bedrock 和 Vertex AI 走专有 SDK/API 路径
+	if channelTypeNeedsSpecialFetch(channel.Type) {
+		switch channel.Type {
+		case common.ChannelTypeAwsClaude:
+			return fetchBedrockModelList(channel)
+		case common.ChannelTypeVertexAI:
+			return fetchVertexAIModelList(channel)
 		}
-		if selected == "" {
-			selected = keys[0] // 所有 Key 均被禁用时回退到第一个
-		}
-		key = selected
 	}
-	key = strings.TrimSpace(key)
+
+	baseURL := channel.GetBaseURL()
+
+	key := selectChannelKey(channel)
 	if key == "" {
 		return nil, fmt.Errorf("渠道密钥为空")
 	}
 
-	baseURL := channel.GetBaseURL()
 	url := buildModelsURL(channel.Type, baseURL)
 	headers := getAuthHeader(channel.Type, key)
 
-	return fetchModelsFromURL(url, headers)
+	models, err := fetchModelsFromURL(url, headers)
+	if err != nil && channel.Type == common.ChannelTypeAnthropic {
+		fallbackHeaders := make(http.Header)
+		fallbackHeaders.Set("Authorization", "Bearer "+key)
+		if m, e := fetchModelsFromURL(url, fallbackHeaders); e == nil {
+			return m, nil
+		}
+	}
+	return models, err
 }
 
 // ──────────────────────────────────────────
 // 差异计算
 // ──────────────────────────────────────────
 
+// upstreamModelCanonicalizers 返回渠道类型对应的 (归一化, 展示名) 函数对。
+// AWS Bedrock 渠道的上游 ListFoundationModels 返回 Bedrock 原生 ID
+// （anthropic.claude-opus-4-6-v1），而本地模型列表用短名（claude-opus-4-6），
+// 二者由 relay 层的 AwsModelIDMap 在请求时翻译。diff 必须走同一张表，
+// 否则同一个模型会同时出现在 新增 和 待删 两侧。
+// 其他渠道一律返回 identity —— 行为与改动前逐字节一致。
+//
+// 注意：-thinking 本地模型会抑制基础短名的新增。local 只有
+// claude-opus-4-6-thinking、upstream 有 anthropic.claude-opus-4-6-v1 时不会提示
+// 新增 claude-opus-4-6。这是「canonical 域是模型而非模型名」的必然结果；
+// diff 的职责是可用性而非命名齐全度。要改需引入第二维度（thinking/非 thinking
+// 视为不同变体参与覆盖判定），目前不做。
+func upstreamModelCanonicalizers(channelType int) (canonical, display func(string) string) {
+	if channelType == common.ChannelTypeAwsClaude {
+		return awsclaude.CanonicalAwsModelID, awsclaude.AwsDisplayModelName
+	}
+	identity := func(m string) string { return m }
+	return identity, identity
+}
+
+// upstreamRemovalProtected 报告该本地模型是否应豁免「上游缺失即待删」的判定。
+// Vertex AI 渠道只从 publishers/google/models 拉取模型列表，不含 Anthropic
+// 发布者，因此上游列表天然无法证实任何 claude-* 模型的存在。若不豁免，这些模型
+// 每轮巡检都会被判待删，开了自动删除且探针关闭时会被清空。
+func upstreamRemovalProtected(channelType int, localModel string) bool {
+	if channelType == common.ChannelTypeVertexAI && strings.HasPrefix(localModel, "claude-") {
+		return true
+	}
+	return false
+}
+
 func upstreamCollectPendingChangesFromModels(
+	channelType int,
 	localModels, upstreamModels, ignoredModels []string,
 	modelMapping map[string]string,
 ) (pendingAdd, pendingRemove []string) {
 	localModels = upstreamNormalizeModelNames(localModels)
 	upstreamModels = upstreamNormalizeModelNames(upstreamModels)
 
-	localSet := make(map[string]struct{}, len(localModels))
-	for _, m := range localModels {
-		localSet[m] = struct{}{}
-	}
-	upstreamSet := make(map[string]struct{}, len(upstreamModels))
-	for _, m := range upstreamModels {
-		upstreamSet[m] = struct{}{}
-	}
+	canonical, display := upstreamModelCanonicalizers(channelType)
 
+	covered := make(map[string]struct{}, len(localModels))
+	localLiteralSet := make(map[string]struct{}, len(localModels))
+	for _, m := range localModels {
+		covered[canonical(m)] = struct{}{}
+		localLiteralSet[m] = struct{}{}
+	}
 	redirectSrcSet := make(map[string]struct{}, len(modelMapping))
-	redirectTgtSet := make(map[string]struct{}, len(modelMapping))
 	for src, tgt := range modelMapping {
 		redirectSrcSet[src] = struct{}{}
-		redirectTgtSet[tgt] = struct{}{}
+		if _, isLocal := localLiteralSet[src]; isLocal {
+			covered[canonical(tgt)] = struct{}{}
+		}
 	}
 
-	// 已覆盖的上游模型 = 本地模型 ∪ redirect target
-	covered := make(map[string]struct{}, len(localSet)+len(redirectTgtSet))
-	for m := range localSet {
-		covered[m] = struct{}{}
-	}
-	for m := range redirectTgtSet {
-		covered[m] = struct{}{}
+	upstreamCanonicalSet := make(map[string]struct{}, len(upstreamModels))
+	for _, m := range upstreamModels {
+		upstreamCanonicalSet[canonical(m)] = struct{}{}
 	}
 
 	normalizedIgnored := upstreamNormalizeModelNames(ignoredModels)
 
-	// 预编译所有 regex: 前缀规则，避免在 per-model 循环中重复编译
 	type ignoreRule struct {
 		literal string
 		re      *regexp.Regexp
@@ -246,7 +278,7 @@ func upstreamCollectPendingChangesFromModels(
 		}
 	}
 
-	isIgnored := func(m string) bool {
+	matchesIgnore := func(m string) bool {
 		for _, r := range rules {
 			if r.re != nil {
 				if r.re.MatchString(m) {
@@ -259,18 +291,38 @@ func upstreamCollectPendingChangesFromModels(
 		return false
 	}
 
-	pendingAdd = lo.Filter(upstreamModels, func(m string, _ int) bool {
-		if _, ok := covered[m]; ok {
-			return false
+	isIgnored := func(m string) bool {
+		if matchesIgnore(m) {
+			return true
 		}
-		return !isIgnored(m)
-	})
+		if d := display(m); d != m && matchesIgnore(d) {
+			return true
+		}
+		return false
+	}
+
+	pendingAdd = make([]string, 0, len(upstreamModels))
+	for _, m := range upstreamModels {
+		if _, ok := covered[canonical(m)]; ok {
+			continue
+		}
+		if isIgnored(m) {
+			continue
+		}
+		pendingAdd = append(pendingAdd, display(m))
+	}
 
 	pendingRemove = lo.Filter(localModels, func(m string, _ int) bool {
 		if _, ok := redirectSrcSet[m]; ok {
-			return false // redirect source 不因上游缺失而删除
+			return false
 		}
-		_, exists := upstreamSet[m]
+		if upstreamRemovalProtected(channelType, m) {
+			return false
+		}
+		if isIgnored(m) {
+			return false
+		}
+		_, exists := upstreamCanonicalSet[canonical(m)]
 		return !exists
 	})
 
@@ -287,12 +339,36 @@ func upstreamCollectPendingChanges(channel *model.Channel, settings config.Chann
 		return nil, nil, fmt.Errorf("上游返回模型列表为空，跳过本次同步")
 	}
 	add, remove := upstreamCollectPendingChangesFromModels(
+		channel.Type,
 		channel.GetModels(),
 		upstream,
 		settings.UpstreamModelUpdateIgnoredModels,
 		upstreamNormalizeChannelModelMapping(channel),
 	)
 	return add, remove, nil
+}
+
+// shouldBlockBulkRemove 判断本轮自动删除是否应被比例保护拦下。
+//
+// 防的场景：上游返回了一份不相干的模型列表（换了 API 版本、返回空壳列表如
+// {"data":[{"id":"default"}]}），此时 upstreamCollectPendingChanges 的
+// "上游返回空列表则拒绝"挡不住（len==1 不为 0），本地全部模型会被判为
+// pendingRemove 一轮删光，进而触发 allModelsRemoved → 整个渠道被自动禁用。
+//
+// localCount 为 0 时一律放行：没有本地模型就谈不上删除比例。
+// localCount 低于 UpstreamRemoveGuardMinLocalModels 时也放行 —— 只有 1-3 个
+// 模型的渠道任何删除都 ≥50%，若一并拦下会把"模型全删 → 自动禁用渠道"这条
+// 现有链路永久关掉。
+func shouldBlockBulkRemove(localCount, removeCount int) bool {
+	percent := config.UpstreamRemoveGuardPercent
+	if percent <= 0 || removeCount <= 0 || localCount <= 0 {
+		return false
+	}
+	if localCount < config.UpstreamRemoveGuardMinLocalModels {
+		return false
+	}
+	// 用乘法避免浮点误差：removeCount/localCount > percent/100
+	return removeCount*100 > localCount*percent
 }
 
 // ──────────────────────────────────────────
@@ -359,10 +435,60 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 		_ = saveChannelUpstreamSettings(channel, *settings, false)
 		return false, 0, true, fetchErr
 	}
+	// ── 手动探针避让：该渠道正被管理员手动探测时，定时任务本轮完全不自动应用 ──
+	// 关键：必须把 allowAutoApply 整个置 false，而不是只跳过探针 ——
+	// 只跳过探针的话，approvedAdd/approvedRemove 会等于原始 pending（:405 初值），
+	// 结果是「不经探针直接自动增删」，比不避让更危险。同时两边同时打同一个 key
+	// 会互相触发 429，让管理员那边结论大面积退化成 rate_limited。
+	if allowAutoApply {
+		if uid, ok := manualProbeActive(channel.Id); ok {
+			upstreamInfo(fmt.Sprintf(
+				"upstream update: channel_id=%d 有活跃手动探测(user_id=%d)，本轮不自动应用",
+				channel.Id, uid))
+			allowAutoApply = false
+		}
+	}
+
+	// ── 真实请求探针：只在自动巡检路径（allowAutoApply=true）生效 ──
+	// 手动 apply 不走探针，管理员保留最终决定权 —— 否则渠道持续限流时
+	// 探测全是 inconclusive，管理员会被探针锁死、什么也改不了。
+	//
+	// 只在「该方向真的会被自动应用」时才探：结果只进人工队列的话探测是白花钱。
+	approvedAdd, approvedRemove := pendingAdd, pendingRemove
+	var budget *probeBudget
+	probeOn := allowAutoApply && upstreamProbeEnabledFor(settings)
+	if probeOn {
+		budget = newProbeBudget()
+		if settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
+			approvedAdd, _ = probeFilterPendingModels(channel, pendingAdd, probeScenePendingAdd, budget)
+		}
+		if settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+			approvedRemove, _ = probeFilterPendingModels(channel, pendingRemove, probeScenePendingRemove, budget)
+		}
+		if len(pendingAdd) > 0 || len(pendingRemove) > 0 {
+			upstreamInfo(fmt.Sprintf("upstream probe: channel_id=%d channel_name=%s add_approved=%d/%d remove_approved=%d/%d",
+				channel.Id, channel.Name,
+				len(approvedAdd), len(pendingAdd), len(approvedRemove), len(pendingRemove)))
+		}
+	}
+
+	// ── 健康巡检：对已在本地 models 列表里的模型做周期性可达性探测 ──
+	var healthRemove []string
+	var healthChannelFault bool
+	if probeOn && config.UpstreamModelHealthProbeEnabled &&
+		channel.Status == common.ChannelStatusEnabled {
+		healthRemove, healthChannelFault = runHealthProbe(
+			channel, settings, localModels, pendingAdd, pendingRemove, budget)
+	}
+	// 全军覆没时不走删除路径（已在 runHealthProbe 中禁用渠道）
+	if !healthChannelFault && len(healthRemove) > 0 {
+		approvedRemove = upstreamMergeModelNames(approvedRemove, healthRemove)
+	}
+
 	// 自动同步新增模型
 	var autoReenabled bool
-	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAdd) > 0 {
-		merged := upstreamMergeModelNames(localModels, pendingAdd)
+	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(approvedAdd) > 0 {
+		merged := upstreamMergeModelNames(localModels, approvedAdd)
 		if len(merged) > len(localModels) {
 			channel.Models = strings.Join(merged, ",")
 			autoAdded = len(merged) - len(localModels)
@@ -372,21 +498,36 @@ func checkAndPersistUpstreamChanges(channel *model.Channel, settings *config.Cha
 				autoReenabled = true
 			}
 		}
-		settings.UpstreamModelUpdateLastDetectedModels = []string{}
+		// 以原始 pendingAdd 为基准回填：被探针暂缓的模型必须留在 settings 里，
+		// 管理员才能在 UI 上看到并手动决策。approved == pending 时等价于清空，
+		// 与探针关闭前的行为一致。
+		settings.UpstreamModelUpdateLastDetectedModels = upstreamSubtractModelNames(pendingAdd, approvedAdd)
 	} else {
 		settings.UpstreamModelUpdateLastDetectedModels = pendingAdd
 	}
 
 	// 自动删除上游已移除的模型
 	var allModelsRemoved bool
-	if allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(pendingRemove) > 0 {
+	autoDeleteAllowed := allowAutoApply && settings.UpstreamModelUpdateAutoDeleteEnabled && len(approvedRemove) > 0
+	// 比例保护：删除量占本地模型比例过高时不自动删，转人工审核。
+	// 只在真的会走自动删除时才判定与告警，避免手动 detect（allowAutoApply=false）
+	// 打出误导性的 error 日志。
+	if autoDeleteAllowed && shouldBlockBulkRemove(len(localModels), len(approvedRemove)) {
+		upstreamError(fmt.Sprintf("upstream sync: bulk remove blocked by guard channel_id=%d channel_name=%s remove=%d local=%d percent_limit=%d min_local=%d",
+			channel.Id, channel.Name, len(approvedRemove), len(localModels),
+			config.UpstreamRemoveGuardPercent, config.UpstreamRemoveGuardMinLocalModels))
+		autoDeleteAllowed = false
+	}
+	if autoDeleteAllowed {
 		current := upstreamNormalizeModelNames(channel.GetModels())
-		updated := upstreamSubtractModelNames(current, pendingRemove)
+		updated := upstreamSubtractModelNames(current, approvedRemove)
 		if len(updated) < len(current) {
 			channel.Models = strings.Join(updated, ",")
 			modelsChanged = true
 			allModelsRemoved = len(updated) == 0
-			settings.UpstreamModelUpdateLastRemovedModels = []string{} // 已删除，清空待删列表
+			// 以原始 pendingRemove 为基准回填：被探针暂缓（alive / inconclusive）的
+			// 模型必须留在 settings 里供管理员审核，不能因为「删过了」就清空。
+			settings.UpstreamModelUpdateLastRemovedModels = upstreamSubtractModelNames(pendingRemove, approvedRemove)
 		} else {
 			settings.UpstreamModelUpdateLastRemovedModels = pendingRemove // 未能删除，保留供手动审核
 		}
@@ -469,15 +610,81 @@ func queryUpstreamChannelBatch(lastID int) ([]*model.Channel, error) {
 // 后台定时巡检任务
 // ──────────────────────────────────────────
 
+// upstreamRoundAgg 汇总一轮巡检的统计。跨渠道并行后，多个 worker goroutine 会
+// 并发累加，故所有字段的读写都在 mu 保护下。
+type upstreamRoundAgg struct {
+	mu                                  sync.Mutex
+	checked, failed, changed            int
+	addedTotal, removedTotal, autoTotal int
+	refreshNeeded                       bool
+}
+
+func (a *upstreamRoundAgg) record(modelsChanged, ran bool, err error, settings *config.ChannelOtherSettings, autoAdded int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// 先于 error check 设置，确保 DB 已写入时即使 UpdateAbilities 失败也能刷新缓存
+	if modelsChanged {
+		a.refreshNeeded = true
+	}
+	// 已实际执行检测（非冷却跳过）时计入 checked，无论后续是否报错
+	if ran {
+		a.checked++
+	}
+	if err != nil {
+		a.failed++
+		return
+	}
+	if ran {
+		add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
+		remove := len(settings.UpstreamModelUpdateLastRemovedModels)
+		a.addedTotal += add
+		a.removedTotal += remove
+		a.autoTotal += autoAdded
+		if add > 0 || remove > 0 {
+			a.changed++
+		}
+	}
+}
+
+func (a *upstreamRoundAgg) recordPanic() {
+	a.mu.Lock()
+	a.failed++
+	a.mu.Unlock()
+}
+
 func runUpstreamUpdateTaskOnce() {
 	if !upstreamUpdateTaskRunning.CompareAndSwap(false, true) {
 		return
 	}
 	defer upstreamUpdateTaskRunning.Store(false)
 
-	checked, failed, changed := 0, 0, 0
-	addedTotal, removedTotal, autoTotal := 0, 0, 0
-	refreshNeeded := false
+	// 重置本轮全局探测预算与统计。放在 CAS 之后：CAS 已保证同一时刻只有一轮在跑，
+	// 因此包级预算变量无需额外加锁。
+	resetProbeRoundBudget()
+
+	agg := &upstreamRoundAgg{}
+
+	// 跨渠道并发度：不同渠道=不同 key/端点，并发探测互不影响。
+	concurrency := config.UpstreamModelUpdateChannelConcurrency
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	// processChannel 处理单个渠道，panic 不外泄（记为 failed，不崩整轮）。
+	processChannel := func(ch *model.Channel) {
+		defer func() {
+			if r := recover(); r != nil {
+				upstreamError(fmt.Sprintf("upstream update panic channel_id=%d: %v", ch.Id, r))
+				agg.recordPanic()
+			}
+		}()
+		settings := ch.GetOtherSettings()
+		if !settings.UpstreamModelUpdateCheckEnabled {
+			return
+		}
+		modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
+		agg.record(modelsChanged, ran, err, &settings, autoAdded)
+	}
 
 	lastID := 0
 	for {
@@ -491,46 +698,34 @@ func runUpstreamUpdateTaskOnce() {
 		}
 		lastID = channels[len(channels)-1].Id
 
+		g := new(errgroup.Group)
+		g.SetLimit(concurrency)
 		for _, ch := range channels {
+			ch := ch
 			if ch == nil {
 				continue
 			}
-			settings := ch.GetOtherSettings()
-			if !settings.UpstreamModelUpdateCheckEnabled {
-				continue
-			}
-			modelsChanged, autoAdded, ran, err := checkAndPersistUpstreamChanges(ch, &settings, false, true)
-			// 先于 error check 设置，确保 DB 已写入时即使 UpdateAbilities 失败也能刷新缓存
-			if modelsChanged {
-				refreshNeeded = true
-			}
-			// 已实际执行检测（非冷却跳过）时计入 checked，无论后续是否报错
-			if ran {
-				checked++
-			}
-			if err != nil {
-				failed++
-				continue
-			}
-			// 成功执行时累计变更指标
-			if ran {
-				add := len(settings.UpstreamModelUpdateLastDetectedModels) + autoAdded
-				remove := len(settings.UpstreamModelUpdateLastRemovedModels)
-				addedTotal += add
-				removedTotal += remove
-				autoTotal += autoAdded
-				if add > 0 || remove > 0 {
-					changed++
+			g.Go(func() error {
+				processChannel(ch)
+				// 逐渠道节流仅在单并发时保留（向后兼容）；并发模式下 sleep 无意义。
+				if concurrency == 1 && config.RequestInterval > 0 {
+					time.Sleep(config.RequestInterval)
 				}
-			}
-			if config.RequestInterval > 0 {
-				time.Sleep(config.RequestInterval)
-			}
+				return nil
+			})
 		}
+		_ = g.Wait()
+
 		if len(channels) < upstreamUpdateBatchSize {
 			break
 		}
 	}
+
+	agg.mu.Lock()
+	checked, failed, changed := agg.checked, agg.failed, agg.changed
+	addedTotal, removedTotal, autoTotal := agg.addedTotal, agg.removedTotal, agg.autoTotal
+	refreshNeeded := agg.refreshNeeded
+	agg.mu.Unlock()
 
 	if refreshNeeded {
 		upstreamRefreshCache()
@@ -540,6 +735,15 @@ func runUpstreamUpdateTaskOnce() {
 			"upstream update task done: checked=%d changed=%d add=%d remove=%d failed=%d auto_added=%d",
 			checked, changed, addedTotal, removedTotal, failed, autoTotal,
 		))
+		if config.UpstreamModelProbeEnabled {
+			upstreamInfo(fmt.Sprintf(
+				"upstream probe round done: alive=%d not_found=%d rate_limited=%d unavailable=%d inconclusive=%d skipped=%d round_budget_left=%d",
+				taskProbeStats.alive.Load(), taskProbeStats.notFound.Load(),
+				taskProbeStats.rateLimited.Load(), taskProbeStats.unavailable.Load(),
+				taskProbeStats.inconclusive.Load(), taskProbeStats.skipped.Load(),
+				upstreamProbeRoundBudget.Load(),
+			))
+		}
 	}
 }
 

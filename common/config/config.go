@@ -135,6 +135,41 @@ var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
 var AutoTestChannelFrequency = 0           // 自动测试渠道的频率（分钟），0 表示禁用
 var UpstreamModelUpdateIntervalMinutes = 0 // 上游模型巡检间隔（分钟），0 表示使用默认值（5 分钟 / 300 秒）
+
+// 上游模型巡检的批量删除比例保护：单轮待删模型数占本地模型总数的比例超过
+// UpstreamRemoveGuardPercent 时，不自动删除，转为待人工审核。
+// 防的是上游返回了一份不相干的模型列表（换 API 版本、空壳列表等）—— 现有的
+// "上游返回空列表则拒绝"只挡得住 len==0，挡不住"返回 1 个无关模型"。
+//
+// MinLocalModels 是必需的下限：本地只有 1-3 个模型时任何删除都 ≥50%，
+// 无下限会把"模型全删 → 自动禁用渠道"那条链路永久拦掉（见
+// channel_upstream_update.go 的 allModelsRemoved 分支）。
+var UpstreamRemoveGuardPercent = 50       // 0 表示关闭比例保护
+var UpstreamRemoveGuardMinLocalModels = 5 // 本地模型数低于此值时不启用比例保护
+
+// 上游模型同步的真实请求探针：对 diff 出的 pendingAdd / pendingRemove 逐个发一次
+// 最小 chat 请求验证，只有上游明确说「模型不存在」才允许删除，探测通过才允许新增。
+// 默认关闭（opt-in）—— 探针会产生真实上游请求与真实 token 成本。
+var UpstreamModelProbeEnabled = false
+var UpstreamModelProbeMaxPerChannel = 30      // 单渠道单轮探测次数上限
+var UpstreamModelProbeMaxPerRound = 200       // 全局单轮探测次数上限
+var UpstreamModelProbeTimeoutSeconds = 10     // 单次探测 wall-clock 超时（秒）
+var UpstreamModelProbeChannelBudgetSecs = 120 // 单渠道探测总时长预算（秒）
+
+// 上游巡检并行度。上游为高并发聚合站时可调大以缩短整轮巡检耗时。
+// ChannelConcurrency：同时巡检的渠道数（不同渠道=不同 key/端点，无互相限流）。
+// ProbeModelConcurrency：单渠道内同时探测的模型数（同一 key 并发，上游承受力弱时应设 1）。
+// 两者最小有效值为 1；配 0 或非法值时代码使用处兜底为 1。
+var UpstreamModelUpdateChannelConcurrency = 5
+var UpstreamModelProbeModelConcurrency = 5
+
+// 健康巡检：对已在本地 models 列表里的模型做周期性可达性探测。
+// 连续失败 N 次后自动删除该模型；全部模型都失败时禁用渠道。
+// 默认关闭（opt-in）—— 会对每个启用渠道的每个模型定期发真实付费请求。
+var UpstreamModelHealthProbeEnabled = false
+var UpstreamModelHealthProbeFastIntervalMinutes = 10  // 未定型 / 有失败嫌疑时的探测间隔
+var UpstreamModelHealthProbeSteadyIntervalMinutes = 60 // 连续 3 次成功后的固定间隔
+var UpstreamModelHealthProbeFailThreshold = 3          // 连续失败几次触发删除
 var FeishuWebhookUrls = ""
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0

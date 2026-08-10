@@ -225,7 +225,7 @@ func Relay(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道
 		channelHistory = append(channelHistory, channel.Id)
@@ -1116,7 +1116,7 @@ func RelayVideoGenerate(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道
 		channelHistory = append(channelHistory, channel.Id)
@@ -1938,7 +1938,7 @@ func RelayRunway(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道
 		channelHistory = append(channelHistory, channel.Id)
@@ -2219,7 +2219,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		channelHistory = append(channelHistory, channel.Id)
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
@@ -2412,7 +2412,7 @@ func RelaySoraCharacter(c *gin.Context) {
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
 			retryTimes-i+1, retryTimes, isMultiKey, userId, requestID)
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		middleware.SetupContextForSelectedChannel(c, channel, modelName)
 		requestBody, err := common.GetRequestBody(c)
@@ -2627,7 +2627,7 @@ func RelaySoraVideo(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, modelName, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道
 		channelHistory = append(channelHistory, channel.Id)
@@ -3008,7 +3008,7 @@ func RelayGemini(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
 		if historyInterface, exists := c.Get("admin_channel_history"); exists {
@@ -3172,7 +3172,7 @@ func RelayClaude(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
 		if historyInterface, exists := c.Get("admin_channel_history"); exists {
@@ -3339,7 +3339,7 @@ func RelayResponse(c *gin.Context) {
 			channel.Id, channel.Name, newKeyIndex, originalModel, retryReason,
 			currentAttempt, retryTimes, isMultiKey, userId, requestID)
 
-		logger.Infof(ctx, retryLog)
+		logger.Info(ctx, retryLog)
 
 		// 记录重试使用的渠道，更新上下文中的 channelHistory（在实际调用前追加）
 		if historyInterface, exists := c.Get("admin_channel_history"); exists {
