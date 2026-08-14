@@ -171,6 +171,22 @@ var UpstreamModelHealthProbeFastIntervalMinutes = 10  // 未定型 / 有失败�
 var UpstreamModelHealthProbeSteadyIntervalMinutes = 60 // 连续 3 次成功后的固定间隔
 var UpstreamModelHealthProbeFailThreshold = 3          // 连续失败几次触发删除
 var FeishuWebhookUrls = ""
+
+// 动态优先级评分：基于实时窗口指标（成功率/延迟/价格）为同 model 下的多个渠道
+// 计算 dynamic_priority，供选渠道热路径做偏好排序。慢变调度信号（默认 5 分钟级），
+// 不承担故障转移——故障隔离由「模型级禁用」负责，被禁用的 Ability 不参与评分。
+// 算法实现见 common/dynamicprio。默认关闭（opt-in）。
+var DynamicPriorityEnabled = false
+// DynamicPriorityApplyEnabled 控制选渠道热路径是否真正切换到动态优先级排序。
+// 与 DynamicPriorityEnabled 解耦：可只开计算落库（Enabled=true, Apply=false）做旁路观察，
+// 在 Model 页确认分数合理后再开 Apply 切换分发。默认关闭。
+var DynamicPriorityApplyEnabled = false
+var DynamicPriorityWeightSuccess = 50.0 // 成功率权重（0-100）
+var DynamicPriorityWeightLatency = 30.0 // 延迟权重（0-100）
+var DynamicPriorityWeightPrice = 20.0   // 价格权重（0-100）
+var DynamicPriorityCalcIntervalMinutes = 5 // Master 节点评分计算周期（分钟）
+var DynamicPriorityTopThreshold = 10       // 选渠道时同档阈值（%）：top X% 视为同档加权随机
+var DynamicPriorityWindowMinutes = 10      // 滑动窗口长度（分钟），评分只看该窗口内数据
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
 

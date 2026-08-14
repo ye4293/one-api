@@ -50,6 +50,14 @@ func InitOptionMap() {
 	config.OptionMap["UpstreamModelHealthProbeFastIntervalMinutes"] = strconv.Itoa(config.UpstreamModelHealthProbeFastIntervalMinutes)
 	config.OptionMap["UpstreamModelHealthProbeSteadyIntervalMinutes"] = strconv.Itoa(config.UpstreamModelHealthProbeSteadyIntervalMinutes)
 	config.OptionMap["UpstreamModelHealthProbeFailThreshold"] = strconv.Itoa(config.UpstreamModelHealthProbeFailThreshold)
+	config.OptionMap["DynamicPriorityEnabled"] = strconv.FormatBool(config.DynamicPriorityEnabled)
+	config.OptionMap["DynamicPriorityApplyEnabled"] = strconv.FormatBool(config.DynamicPriorityApplyEnabled)
+	config.OptionMap["DynamicPriorityWeightSuccess"] = strconv.FormatFloat(config.DynamicPriorityWeightSuccess, 'f', -1, 64)
+	config.OptionMap["DynamicPriorityWeightLatency"] = strconv.FormatFloat(config.DynamicPriorityWeightLatency, 'f', -1, 64)
+	config.OptionMap["DynamicPriorityWeightPrice"] = strconv.FormatFloat(config.DynamicPriorityWeightPrice, 'f', -1, 64)
+	config.OptionMap["DynamicPriorityCalcIntervalMinutes"] = strconv.Itoa(config.DynamicPriorityCalcIntervalMinutes)
+	config.OptionMap["DynamicPriorityTopThreshold"] = strconv.Itoa(config.DynamicPriorityTopThreshold)
+	config.OptionMap["DynamicPriorityWindowMinutes"] = strconv.Itoa(config.DynamicPriorityWindowMinutes)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -533,6 +541,28 @@ func updateOptionMap(key string, value string) (err error) {
 		setPositiveIntOption(&config.UpstreamModelHealthProbeSteadyIntervalMinutes, value)
 	case "UpstreamModelHealthProbeFailThreshold":
 		setPositiveIntOption(&config.UpstreamModelHealthProbeFailThreshold, value)
+	case "DynamicPriorityEnabled":
+		config.DynamicPriorityEnabled = value == "true"
+	case "DynamicPriorityApplyEnabled":
+		config.DynamicPriorityApplyEnabled = value == "true"
+	case "DynamicPriorityWeightSuccess":
+		if v, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && v >= 0 {
+			config.DynamicPriorityWeightSuccess = v
+		}
+	case "DynamicPriorityWeightLatency":
+		if v, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && v >= 0 {
+			config.DynamicPriorityWeightLatency = v
+		}
+	case "DynamicPriorityWeightPrice":
+		if v, parseErr := strconv.ParseFloat(value, 64); parseErr == nil && v >= 0 {
+			config.DynamicPriorityWeightPrice = v
+		}
+	case "DynamicPriorityCalcIntervalMinutes":
+		setPositiveIntOption(&config.DynamicPriorityCalcIntervalMinutes, value)
+	case "DynamicPriorityTopThreshold":
+		setPositiveIntOption(&config.DynamicPriorityTopThreshold, value)
+	case "DynamicPriorityWindowMinutes":
+		setPositiveIntOption(&config.DynamicPriorityWindowMinutes, value)
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

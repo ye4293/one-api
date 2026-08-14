@@ -6,6 +6,73 @@
 
 ---
 
+## 2026-08-13
+
+### refactor(dynamic-priority): 旁路观察模式——拆分「计算落库」与「切换分发」开关 + 修并发安全
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 重构 / 安全
+- **涉及文件（后端）**:
+  - `common/config/config.go` — 新增 `DynamicPriorityApplyEnabled`（控制是否切换选渠道分发），与 `DynamicPriorityEnabled`（控制计算落库）解耦
+  - `model/option.go` — 注册并 apply `DynamicPriorityApplyEnabled`
+  - `model/cache.go` — 选渠道热路径改用 `DynamicPriorityApplyEnabled`（主函数 + WithCapability 两处）
+  - `common/metrics/ability_window.go` — member 编码加进程级唯一标识（pid+启动纳秒戳），修复多 worker 节点 member 冲突导致 ZSet 覆盖丢数据
+  - `controller/dynamic_priority.go` — 计算器加 Redis 分布式锁，防多 Master 重复计算
+- **涉及文件（前端）**:
+  - `sections/setting/view/dynamic-priority-setting.tsx` — 新增「切换分发」开关（橙色警示），Apply 开关在计算未开时禁用；说明旁路观察用法
+- **说明**: 代码审计发现原 `DynamicPriorityEnabled` 单开关同时控制计算与分发，无法旁路观察。拆成两开关后可先开计算在 Model 页观察分数，确认可行后再开切换。同时修复两个并发安全问题：多进程 member 冲突、多 Master 重复计算。默认两开关都关。
+- **审计结论**: 打点 modelName 与 abilities.model 一致（均为映射前）；延迟只统计成功样本；索引命中正确；无数据全链路降级。详见对话审计过程。
+- **关联计划**: `docs/plans/2026-08-13-model-level-disable-and-dynamic-priority.md`
+
+### feat(model-view): Model 菜单页——模型→渠道挂载视图 + 动态优先级实时展示 + 表结构索引评估
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件（后端）**:
+  - `model/ability.go` — `Model` 字段加 `idx_ability_model` 单列索引（修复主键以 group 打头导致 model 前缀筛选全表扫描的问题）
+  - `controller/dynamic_priority_view.go`(新增) — `ListModelChannels` API：abilities JOIN channels，按 model 前缀 + 渠道类型筛选，返回 dynamic_priority/weight/status/unit_price，组内按有效分 DESC 排序
+  - `router/api-router.go` — 注册 `GET /api/channel/model_channels`（AdminAuth）
+- **涉及文件（前端 ezlinkai-web）**:
+  - `components/icons.tsx` — 新增 `Boxes` 图标作为 Model 菜单 icon
+  - `constants/data.ts` — navItems 新增 Model 菜单项（管理员可见）
+  - `app/dashboard/model/page.tsx`(新增) — Model 页面入口
+  - `sections/model/model-view.tsx`(新增) — 客户端组件：模型前缀筛选 + 渠道类型下拉 + 自动刷新（30s），模型分组折叠，展开看渠道表（动态优先级/权重/状态/单价）
+  - `app/api/channel/model_channels/route.ts`(新增) — API 代理 route
+  - `sections/setting/view/dynamic-priority-setting.tsx`(新增) — 设置页动态优先级配置 Card（开关/权重/周期/阈值/窗口，自包含保存）
+  - `sections/setting/view/settingPage.tsx` — 插入动态优先级配置 Card
+- **说明**: 实现计划文档要求的 Model 视图 + 动态优先级配置 UI。表结构评估结论：abilities 主键 (group,model,channel_id) 以 group 打头，跨 group 的 model 筛选走不到主键最左前缀，故新增 model 单列索引，前缀筛选从全表扫描变索引范围扫。前端用客户端组件 + 30s 自动刷新保证动态优先级实时性。
+- **关联计划**: `docs/plans/2026-08-13-model-level-disable-and-dynamic-priority.md`
+
+### feat(dynamic-priority): 动态优先级评分——基于实时成功率/延迟/价格自动优化渠道选择
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件**:
+  - `common/dynamicprio/score.go`(新增)、`score_test.go`(新增) — 纯评分函数（成功率绝对值+最小样本门槛、延迟中位数+MAD 分位数归一化、价格绝对比例固定偏置），区分流式/非流式延迟
+  - `common/metrics/ability_window.go`(新增)、`ability_window_test.go`(新增) — Redis 滑动窗口数据源（ZADD 写入 / ZRANGEBYSCORE 读取聚合 / ZREMRANGEBYSCORE 清理），失败样本不计延迟
+  - `controller/dynamic_priority.go`(新增) — Master 节点定时计算器（SCAN 候选→按 model 分组→聚合→评分→落库）
+  - `model/ability.go` — 新增 `DynamicPriority` 字段 + `BatchUpdateDynamicPriority`
+  - `model/channel.go` — 新增 `UnitPrice` 字段
+  - `model/cache.go` — `CacheGetRandomSatisfiedChannel` / `WithCapability` 加 `DynamicPriorityEnabled` 分支，按 dynamic_priority DESC + top X% 同档加权随机
+  - `model/log.go`、`controller/relay.go` — 请求完成（成功/失败）打点 `RecordAbilityMetric`
+  - `common/config/config.go`、`model/option.go` — 注册 `DynamicPriority*` 配置项
+  - `controller/channel.go`、`main.go` — UnitPrice 透传、定时任务启动
+- **说明**: 实现计划文档特性二。算法用线上 logs 真实数据验证过反抖动、小样本门槛、流式首字延迟等关键行为。默认关闭（opt-in），开启后完全替代静态 priority 体系；无 Redis/无数据时退回默认优先级，不影响选渠道。
+- **关联计划**: `docs/plans/2026-08-13-model-level-disable-and-dynamic-priority.md`
+
+## 2026-08-10
+
+### fix(aws-claude): 修复 Bedrock 4.7+ 模型 `temperature is deprecated` 400，并将 no-sampling 判定规则化
+- **分支**: `main`
+- **类型**: Bug 修复
+- **涉及文件**: `relay/channel/anthropic/constants.go`, `relay/channel/anthropic/constants_test.go`(新增), `relay/channel/aws/claude/main.go`, `relay/channel/aws/claude/sampling_test.go`(新增)
+- **说明**: 探针/测试请求探测 AWS Bedrock 上的 Claude 4.7+ 模型（如 opus-4-8）时报 400 `temperature is deprecated for this model`。根因：OpenAI 格式请求走 `Handler`/`StreamHandler` 的 copier 指针路径，`anthropic.Request.Temperature`（值类型 `float64`，零值靠 omitempty 省略）经 `copier.Copy` 复制到 `aws Request.Temperature`（`*float64`）时，零值被复活成非 nil 指针，omitempty 失效，`"temperature":0` 被发出。仅 4.7+ 会 400（其他模型接受 temperature 故无害），故报错只出现在探测 4.7+ 时。修复：①`IsNoSamplingModel` 从硬编码 map 改为版本解析规则（解析 `(major,minor)`，`major>4 || (major==4 && minor>=7)` 即 no-sampling，覆盖所有系列及未来 5.x）；正确处理整数比较（4-10>4-7）、8 位日期段冒充 minor（`claude-opus-4-20250514`=4.0）、旧格式 `claude-3-7-sonnet`（major=3 排除）、AWS 原生 ID / 区域前缀 / -thinking 后缀。②AWS 指针路径抽出 `stripNoSamplingParams`，copier 后对 no-sampling 模型显式清 `Temperature=nil`、`TopP=0`、`TopK=0`。
+- **备注**: 既有失败测试 `TestFilterBetaFlags/vertex_allows_files-api` 与本次改动无关（干净 HEAD 上已失败）。
+
+### fix(migration): logs 表移出 AutoMigrate，消除启动期大表 rebuild 锁全库的死循环
+- **分支**: `main`
+- **类型**: Bug 修复
+- **涉及文件**: `model/main.go`
+- **说明**: 线上 logs 表约 7400 万行。GORM 对该表列定义存在幂等误判（如 `is_stream`：DB 列允许 NULL，而非指针 `bool` 期望 `NOT NULL`），每次容器启动都触发 rebuild 级 `MODIFY COLUMN`。在共享 PolarDB 上该操作长时间持有表级 MDL 锁（实测约 266 秒），阻塞全集群对 logs 的写入（每个 API 请求都要写日志），并因抢不到锁超时（Error 8007）失败 → `FatalLog` 退出 → 容器重启 → 再次迁移的死循环，最终拖垮整个 API。删除 `db.AutoMigrate(&Log{})` 一段，其余 15 张表照常自动迁移。列与数据均已存在，摘除无 `Unknown column` 风险。
+- **遗留**: 未根治。（1）其他表若长到千万级会重演同一机制；（2）迁移失败仍是 `FatalLog` 而非降级告警；（3）无 `MIGRATE_ON_START` 开关。后续应将大表 DDL 与容器启动解耦。logs 表今后新增/变更字段须走人工在线 DDL，禁止依赖自动迁移。
+
 ## 2026-08-07
 
 ### fix(upstream): Bedrock 渠道 diff 归一化，消除短名与原生 ID 的虚假增删配对

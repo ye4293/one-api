@@ -14,10 +14,15 @@ import (
 
 type Ability struct {
 	Group     string `json:"group" gorm:"type:varchar(32);primaryKey;autoIncrement:false"`
-	Model     string `json:"model" gorm:"primaryKey;autoIncrement:false"`
+	Model     string `json:"model" gorm:"primaryKey;autoIncrement:false;index:idx_ability_model"`
 	ChannelId int    `json:"channel_id" gorm:"primaryKey;autoIncrement:false;index"`
 	Enabled   bool   `json:"enabled"`
 	Priority  *int64 `json:"priority" gorm:"bigint;default:0;index"`
+
+	// DynamicPriority 由 Master 节点定时计算写入（common/dynamicprio 评分）。
+	// 选渠道热路径在 DynamicPriorityEnabled 时按本字段 DESC 排序替代静态 Priority。
+	// 0 表示未计算/无数据，选渠道时回退到 Priority。允许 NULL，AutoMigrate 后存量行 NULL。
+	DynamicPriority *int64 `json:"dynamic_priority" gorm:"bigint;default:0;index"`
 }
 
 func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
@@ -267,4 +272,36 @@ func FindEnabledModelsByGroup(group string) ([]string, error) {
 	}
 
 	return models, nil
+}
+
+// DynamicPriorityUpdate 是单个 Ability 的动态优先级更新项。
+// 主键三元组 (ChannelId, Model, Group) 唯一定位一行。
+type DynamicPriorityUpdate struct {
+	ChannelId       int
+	Model           string
+	Group           string
+	DynamicPriority int64
+}
+
+// BatchUpdateDynamicPriority 批量写入动态优先级分数。
+//
+// 用逐行 Updates(map) 而非批量 OnConflict：abilities 主键是 (group, model, channel_id)，
+// 三列联合主键的 ON CONFLICT/ON DUPLICATE 语法在 SQLite/MySQL/PG 间不一致；逐行写虽慢，
+// 但一次评分周期落库量 = 渠道数 × 模型数，通常几百到几千行，5 分钟一次完全可接受。
+//
+// 用 map 强制写零值：Updates(struct) 会忽略 0，导致「该周期无数据应回退 0 分」的渠道
+// 无法把上一轮的高分覆盖掉，分数会卡在历史值不下降。
+func BatchUpdateDynamicPriority(updates []DynamicPriorityUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	for _, u := range updates {
+		err := DB.Model(&Ability{}).
+			Where("channel_id = ? AND model = ? AND `group` = ?", u.ChannelId, u.Model, u.Group).
+			Update("dynamic_priority", u.DynamicPriority).Error
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

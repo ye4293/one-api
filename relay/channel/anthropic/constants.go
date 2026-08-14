@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/songquanpeng/one-api/relay/model"
@@ -37,19 +39,55 @@ func IsAdaptiveThinkingModel(modelName string) bool {
 	return adaptiveThinkingModels[baseName]
 }
 
-// noSamplingModels 不接受 temperature/top_p/top_k 的模型集合（仅 4.7+）
-// 官方文档：Opus 4.7 起 sampling 参数全部移除，传任何一个都会 400。
-// 4.6 adaptive 仍然接受 temperature，不要把 4.6 加进来。
-var noSamplingModels = map[string]bool{
-	"claude-opus-4-8": true,
-	"claude-opus-4-7": true,
+// noSamplingModels 是显式覆盖表：命名不规则、或需强制视为 no-sampling 的特例。
+// 常规判定由 IsNoSamplingModel 的版本规则（4.7+ 所有系列）完成，出新版本
+// （4.9 / 5.x）无需改代码。这里留给规则覆盖不到的边角情况兜底，正常为空。
+var noSamplingModels = map[string]bool{}
+
+// claudeNewFmtVersionRe 解析 Claude 4+ 新命名（family 在前、版本在后）的版本段：
+//
+//	claude-<family>-<major>[-<minor>] ...
+//
+// family 是字母（opus/sonnet/haiku），major/minor 是数字段。用非锚定的
+// FindStringSubmatch 以兼容前后缀：anthropic.claude-opus-4-8-v1、
+// us.anthropic.claude-...、...-thinking 均能命中。
+//
+// 旧格式 claude-3-7-sonnet-...（版本在 family 前，claude- 后紧跟数字）不匹配本
+// 正则，天然返回 ok=false —— 而它们 major=3、本就 <4.7 应排除，语义一致。
+var claudeNewFmtVersionRe = regexp.MustCompile(`claude-[a-z]+-(\d+)(?:-(\d+))?`)
+
+// parseClaudeMajorMinor 从模型名解析 (major, minor)，仅识别 Claude 4+ 新格式。
+// minor 段若缺失、或为 >=5 位数字（8 位日期 YYYYMMDD 冒充 minor，如
+// claude-opus-4-20250514 实为 4.0），一律记 minor=0。
+func parseClaudeMajorMinor(modelName string) (major, minor int, ok bool) {
+	m := claudeNewFmtVersionRe.FindStringSubmatch(strings.ToLower(modelName))
+	if m == nil {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	if m[2] != "" && len(m[2]) < 5 { // 排除 8 位日期段冒充 minor
+		minor, _ = strconv.Atoi(m[2])
+	}
+	return major, minor, true
 }
 
-// IsNoSamplingModel 判断模型是否完全不接受 temperature/top_p/top_k
-// 传入的 modelName 可以包含或不包含 -thinking 后缀
+// IsNoSamplingModel 判断模型是否完全不接受 temperature/top_p/top_k。
+// 规则：Claude 4.7 及以上（所有系列，含未来 5.x）。官方文档：Opus 4.7 起 sampling
+// 参数全部移除，传任何一个都会 400；4.6 及更早仍接受 temperature，必须排除。
+// 传入名可含/不含 -thinking 后缀，也可为 AWS Bedrock 原生 ID / 区域前缀形式。
 func IsNoSamplingModel(modelName string) bool {
 	baseName := GetBaseModelName(modelName)
-	return noSamplingModels[baseName]
+	if noSamplingModels[baseName] {
+		return true
+	}
+	major, minor, ok := parseClaudeMajorMinor(baseName)
+	if !ok {
+		return false
+	}
+	return major > 4 || (major == 4 && minor >= 7)
 }
 
 // MapReasoningEffortToOutputEffort 将 OpenAI reasoning_effort 映射到 Claude output_config.effort
