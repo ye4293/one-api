@@ -179,6 +179,7 @@ func main() {
 
 	go controller.AutomaticallyTestChannels()
 	controller.StartChannelUpstreamModelUpdateTask()
+	controller.StartDynamicPriorityTask()
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {
 		config.BatchUpdateEnabled = true
 		logger.SysLog("batch update enabled with interval " + strconv.Itoa(config.BatchUpdateInterval) + "s")

@@ -80,6 +80,10 @@ type Channel struct {
 	TestModel string `json:"test_model" gorm:"type:varchar(255)"`
 	// 渠道扩展设置（JSON），含上游模型巡检相关配置，存储在 settings 列
 	OtherSettings string `json:"other_settings" gorm:"column:settings;type:text"`
+	// 渠道收购单价（每百万 token 或按业务约定的计价单位），用于动态优先级评分的价格维度。
+	// 默认 1：让未单独配价的渠道有统一基准价，价格维度按相对比例生效；越便宜分越高。
+	// 仅 DynamicPriorityEnabled 时使用。
+	UnitPrice float64 `json:"unit_price" gorm:"type:decimal(10,6);default:1"`
 }
 
 // 多Key聚合信息结构

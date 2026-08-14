@@ -437,6 +437,10 @@ func updateChannelFields(target *model.Channel, source *model.Channel, rawBody m
 	if _, exists := rawBody["discount"]; exists {
 		target.Discount = source.Discount
 	}
+	// 收购单价：允许设 0（未配置），用 rawBody 存在性判断而非零值，否则无法清空
+	if _, exists := rawBody["unit_price"]; exists {
+		target.UnitPrice = source.UnitPrice
+	}
 
 	// 特殊处理布尔字段
 	if autoDisabledValue, exists := rawBody["auto_disabled"]; exists {

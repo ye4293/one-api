@@ -444,6 +444,15 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 		}
 	}
 
+	// 动态优先级分支：完全替代静态 priority 体系。
+	// 开启时忽略 abilities.priority，按 abilities.dynamic_priority DESC 排序所有 enabled 渠道，
+	// 取 top X%（DynamicPriorityTopThreshold）作为同档，档内按 weight 加权随机。
+	// skipPriorityLevels 在此模式下语义为「跳过 N 个 dynamic_priority 档」，重试时传 0 + excludeIds
+	// 仍从最高分档开始并排除已失败渠道，行为与静态模式一致。
+	if config.DynamicPriorityApplyEnabled {
+		return selectByDynamicPriority(ctx, group, model, groupCol, trueVal, skipPriorityLevels, excludeIds, nil)
+	}
+
 	// 查询所有优先级。这里不能应用排除条件，否则 skipPriorityLevels 会按"剩余优先级"错位。
 	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
 	if err != nil {
@@ -550,6 +559,120 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 	return nil, -1, errors.New("unable to select a channel based on weight")
 }
 
+// selectByDynamicPriority 动态优先级选渠道（DynamicPriorityEnabled 时使用）。
+//
+// 与静态模式的区别：
+//   - 不按 abilities.priority 分档，改按 abilities.dynamic_priority DESC 排序
+//   - top X%（DynamicPriorityTopThreshold）视为同档，档内 weight 加权随机
+//   - dynamic_priority 为 0/NULL 的渠道视为「无评分数据」，回退到静态 priority 参与排序，
+//     避免评分未跑或无数据渠道被完全饿死
+//
+// skipPriorityLevels：跳过 N 个 distinct dynamic_priority 档。重试传 0 从最高分档开始，
+// 配合 excludeIds 排除已失败渠道。
+//
+// capabilityFilter 非 nil 时（用于 count_tokens 等能力筛选请求），在分档前先过滤掉
+// 不支持该能力的渠道，保证 WithCapability 链路与主选渠道一致走动态优先级。
+func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVal string, skipPriorityLevels int, excludeIds []int, capabilityFilter ChannelCapabilityFilter) (*Channel, int, error) {
+	// 取所有 enabled 渠道，按 dynamic_priority DESC 排序。
+	// COALESCE 把 NULL/0 的 dynamic_priority 替换为静态 priority，让无评分渠道仍能参与，
+	// 但排在有评分的高分渠道之后（除非静态 priority 本身很高）。
+	var channels []Channel
+	q := DB.Table("channels").
+		Joins("JOIN abilities ON channels.id = abilities.channel_id").
+		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?",
+			group, model, trueVal, common.ChannelStatusEnabled).
+		Order("COALESCE(NULLIF(abilities.dynamic_priority, 0), abilities.priority) DESC")
+	if len(excludeIds) > 0 {
+		q = q.Where("channels.id NOT IN ?", excludeIds)
+	}
+	if err := q.Find(&channels).Error; err != nil {
+		return nil, -1, fmt.Errorf("dynamic priority: fetch channels: %w", err)
+	}
+
+	// 能力过滤：在排序结果上原地过滤，保留 dynamic_priority 的相对顺序。
+	// 不能下推到 SQL——LoadConfig 解析 JSON，DB 做不了。
+	if capabilityFilter != nil {
+		filtered := make([]Channel, 0, len(channels))
+		for i := range channels {
+			cfg, err := channels[i].LoadConfig()
+			if err != nil {
+				continue
+			}
+			if capabilityFilter(&channels[i], cfg) {
+				filtered = append(filtered, channels[i])
+			}
+		}
+		channels = filtered
+	}
+
+	if len(channels) == 0 {
+		return nil, -1, errors.New("no channels available (dynamic priority)")
+	}
+
+	// channels 已按 COALESCE(NULLIF(dynamic_priority,0), priority) DESC 排序。
+	// 用「排名位置」定义同档而非分值阈值：取前 X% 渠道作为 top 档，更鲁棒——
+	// 不依赖 dynamic_priority 绝对值，避免「全部 90 分」时阈值失效。
+	thresholdPct := config.DynamicPriorityTopThreshold
+	if thresholdPct <= 0 {
+		thresholdPct = 10
+	}
+	if thresholdPct > 100 {
+		thresholdPct = 100
+	}
+
+	// skipPriorityLevels：重试场景通常传 0（从最高分档开始）+ excludeIds 排除已失败渠道。
+	// 非零时按渠道数线性跳过——动态模式下没有「档」的离散概念，线性跳过是 skipPriorityLevels
+	// 语义的合理近似，且与 excludeIds 配合不会重复选已失败渠道。
+	skip := skipPriorityLevels
+	if skip < 0 {
+		skip = 0
+	}
+	if skip >= len(channels) {
+		skip = len(channels) - 1
+	}
+	pool := channels[skip:]
+
+	// top X% 同档
+	topCount := len(pool) * thresholdPct / 100
+	if topCount < 1 {
+		topCount = 1
+	}
+	if topCount > len(pool) {
+		topCount = len(pool)
+	}
+	tier := pool[:topCount]
+
+	// 档内 weight 加权随机
+	totalWeight := 0
+	weights := make([]int, len(tier))
+	for i, t := range tier {
+		w := 1
+		if t.Weight != nil && int(*t.Weight) > 0 {
+			w = int(*t.Weight)
+		}
+		weights[i] = w
+		totalWeight += w
+	}
+	if totalWeight == 0 {
+		// 兜底：全 0 权重时取档内第一个
+		ch := tier[0]
+		return &ch, -1, nil
+	}
+
+	randSource := rand.NewSource(time.Now().UnixNano() + int64(rand.Intn(10000)))
+	randGen := rand.New(randSource)
+	threshold := randGen.Intn(totalWeight) + 1
+	cur := 0
+	for i, t := range tier {
+		cur += weights[i]
+		if cur >= threshold {
+			return &t, -1, nil
+		}
+	}
+	ch := tier[0]
+	return &ch, -1, nil
+}
+
 // ChannelCapabilityFilter 渠道能力过滤器类型
 type ChannelCapabilityFilter func(channel *Channel, config ChannelConfig) bool
 
@@ -580,6 +703,12 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 	var excludeIds []int
 	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
 		excludeIds = excludeChannelIds[0]
+	}
+
+	// 动态优先级分支：与主选渠道逻辑保持一致，按 dynamic_priority DESC 排序后做能力过滤。
+	if config.DynamicPriorityApplyEnabled {
+		ch, _, err := selectByDynamicPriority(ctx, group, model, groupCol, trueVal, skipPriorityLevels, excludeIds, capabilityFilter)
+		return ch, err
 	}
 
 	// 获取完整优先级列表，保持 skipPriorityLevels 与原始优先级层级一致。
