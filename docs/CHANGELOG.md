@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-08-14
+
+### refactor(model-view): Model 页改为渠道列表样式——模型列表分页 + 模型详情页
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 重构
+- **涉及文件（后端）**:
+  - `controller/dynamic_priority_view.go` — 拆 API：`ListModelsOverview`（模型汇总分页，按 model GROUP BY 聚合渠道数/启用数/最高动态优先级）+ `ListModelChannels`（单模型渠道详情，跨 group 扁平列表）
+  - `router/api-router.go` — 新增 `GET /api/channel/models_overview`
+- **涉及文件（前端 ezlinkai-web）**:
+  - `app/dashboard/model/page.tsx` — 改为壳页面，渲染 ModelOverviewTable
+  - `app/dashboard/model/[model]/page.tsx`(新增) — 模型详情页路由
+  - `sections/model/model-overview-table.tsx`(新增) — 模型列表表格（DataTable + nuqs 分页/筛选），一行一模型，点击进入详情
+  - `sections/model/model-channels-table.tsx`(新增) — 模型详情渠道表格（扁平，含动态优先级/权重/状态/单价）
+  - `sections/model/types.ts`(新增) — 共享类型
+  - `app/api/channel/models_overview/route.ts`(新增) — API 代理
+  - 删除 `sections/model/model-view.tsx`（旧手风琴折叠实现）
+- **说明**: Model 页从手风琴分组改为渠道列表样式：列表页一行一模型（model 唯一），展示挂载渠道数/启用数/最高动态优先级，支持模型前缀 + 渠道类型筛选 + 分页；点击模型进入详情页看该模型下所有渠道（跨 group）。模型↔渠道一对多关系复用 abilities 表，不新建表。同时修复前端响应解析 bug（clientFetch 拦截器改响应结构，改用原生 fetch）。
+- **关联计划**: `docs/plans/2026-08-13-model-level-disable-and-dynamic-priority.md`
+
 ## 2026-08-13
 
 ### refactor(dynamic-priority): 旁路观察模式——拆分「计算落库」与「切换分发」开关 + 修并发安全
