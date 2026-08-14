@@ -17,6 +17,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/metrics"
+	"github.com/songquanpeng/one-api/common/shipper"
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
@@ -151,6 +152,14 @@ func main() {
 	// 启动审计模块（依赖 options 表中的配置，关闭时为空操作，初始化失败自动降级）
 	audit.Start(context.Background())
 	defer audit.Shutdown()
+
+	// 启动计费投递（billship → SQS）；未启用/初始化失败自动降级，不影响业务
+	shipper.Init()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shipper.Shutdown(ctx)
+	}()
 
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
 	if common.RedisEnabled {
