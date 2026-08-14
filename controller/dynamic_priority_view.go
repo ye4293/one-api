@@ -178,11 +178,18 @@ func ListModelChannels(c *gin.Context) {
 		groupsExpr = "STRING_AGG(a." + groupCol + ", ',')"
 	}
 
+	// groups 是 MySQL 保留字（GROUPS 窗口函数），作列别名必须加引号标识符，
+	// 否则 MySQL 报 1064 语法错误。MySQL/SQLite 用反引号，PostgreSQL 用双引号。
+	groupsAlias := "`groups`"
+	if common.UsingPostgreSQL {
+		groupsAlias = `"groups"`
+	}
+
 	query := model.DB.Table("abilities a").
 		Joins("JOIN channels c ON a.channel_id = c.id").
 		Select(
 			"a.channel_id AS channel_id, c.name AS channel_name, "+
-				"c.type AS channel_type, "+groupsExpr+" AS groups, "+
+				"c.type AS channel_type, "+groupsExpr+" AS "+groupsAlias+", "+
 				"COUNT(*) AS group_count, "+
 				"MAX(a.enabled) AS enabled, "+
 				"c.status AS channel_status, "+
