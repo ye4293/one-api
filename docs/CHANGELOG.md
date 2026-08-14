@@ -8,6 +8,19 @@
 
 ## 2026-08-14
 
+### feat(model-view): 模型详情页按渠道聚合 + 优先级同步编辑
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件（后端）**:
+  - `controller/dynamic_priority_view.go` — `ListModelChannels` 改为按 channel 聚合（GROUP BY channel_id，GROUP_CONCAT 合并 groups），同渠道不同 group 合并为一行；新增 `UpdateModelChannelPriority` 同步更新某渠道某模型所有 group 行的 priority
+  - `model/option.go`(无) / `router/api-router.go` — 注册 `PUT /api/channel/model_channel_priority`
+- **涉及文件（前端 ezlinkai-web）**:
+  - `sections/model/types.ts` — `ModelChannelItem.group` → `groups: string[]` + `group_count`
+  - `sections/model/model-channels-table.tsx` — 分组列改为 Badge 列表展示聚合 groups；静态优先级列改为 inline 可编辑（点击编辑，回车提交，调 PUT 同步所有分组）
+  - `app/api/channel/model_channel_priority/route.ts`(新增) — API 代理
+- **说明**: 详情页从「每 group 一行」改为「每渠道一行」聚合展示，分组用 Badge 列表。业务约束：渠道+模型是逻辑实体，priority/enabled 对各 group 同步——编辑优先级一次性 UPDATE 该 (channel_id,model) 全部行。不改 abilities 表结构（保持 (group,model,channel_id) 主键），聚合在查询层完成。注意 abilities.priority 是 (channel,model) 级副本，编辑渠道重建 abilities 时会被 channel.priority 覆盖（既有特性）。
+- **关联计划**: `docs/plans/2026-08-13-model-level-disable-and-dynamic-priority.md`
+
 ### refactor(model-view): Model 页改为渠道列表样式——模型列表分页 + 模型详情页
 - **分支**: `feat/model-level-disable-dynamic-priority`
 - **类型**: 重构

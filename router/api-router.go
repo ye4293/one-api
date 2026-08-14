@@ -130,6 +130,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/model/details", controller.ListModelDetails)
 			channelRoute.GET("/models_overview", controller.ListModelsOverview)
 			channelRoute.GET("/model_channels", controller.ListModelChannels)
+			channelRoute.PUT("/model_channel_priority", controller.UpdateModelChannelPriority)
 			// 获取上游模型列表（必须在 /:id 之前注册）
 			channelRoute.GET("/fetch_models/:id", controller.FetchUpstreamModels)
 			channelRoute.POST("/fetch_models", controller.FetchModels)

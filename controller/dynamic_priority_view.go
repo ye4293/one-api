@@ -31,18 +31,23 @@ type ModelOverviewItem struct {
 	TopDynamicPriority int64 `json:"top_dynamic_priority"`
 }
 
-// ModelChannelItem 是某 model 下单个渠道的视图项。
+// ModelChannelItem 是某 model 下单个渠道的视图项（按渠道聚合，跨 group 合并为一行）。
+//
+// 设计：同一渠道挂同一模型时，不同 group 在 abilities 表是独立行，但业务上
+// 「渠道+模型」才是逻辑实体——priority/dynamic_priority/enabled 对所有 group 同步。
+// 故详情页按 channel 聚合，groups 列出该渠道该模型挂载的所有分组。
 type ModelChannelItem struct {
-	ChannelId       int     `json:"channel_id"`
-	ChannelName     string  `json:"channel_name"`
-	ChannelType     int     `json:"channel_type"`
-	Group           string  `json:"group"`
-	Enabled         bool    `json:"enabled"`
-	ChannelStatus   int     `json:"channel_status"`
-	Priority        int64   `json:"priority"`
-	DynamicPriority int64   `json:"dynamic_priority"`
-	Weight          int     `json:"weight"`
-	UnitPrice       float64 `json:"unit_price"`
+	ChannelId       int      `json:"channel_id"`
+	ChannelName     string   `json:"channel_name"`
+	ChannelType     int      `json:"channel_type"`
+	Groups          []string `json:"groups"`           // 该渠道该模型挂载的所有 group
+	GroupCount      int      `json:"group_count"`      // group 数量
+	Enabled         bool     `json:"enabled"`          // 该渠道该模型是否启用（所有 group 同步）
+	ChannelStatus   int      `json:"channel_status"`   // 渠道状态（来自 channels 表）
+	Priority        int64    `json:"priority"`         // 静态优先级（所有 group 同步）
+	DynamicPriority int64    `json:"dynamic_priority"` // 动态优先级（所有 group 同步）
+	Weight          int      `json:"weight"`
+	UnitPrice       float64  `json:"unit_price"`
 }
 
 // ListModelsOverview 模型汇总分页列表。
@@ -167,28 +172,38 @@ func ListModelChannels(c *gin.Context) {
 		groupCol = `"group"`
 	}
 
+	// groups 聚合函数：MySQL/SQLite 用 GROUP_CONCAT，PostgreSQL 用 string_agg
+	groupsExpr := "GROUP_CONCAT(a." + groupCol + ")"
+	if common.UsingPostgreSQL {
+		groupsExpr = "STRING_AGG(a." + groupCol + ", ',')"
+	}
+
 	query := model.DB.Table("abilities a").
 		Joins("JOIN channels c ON a.channel_id = c.id").
 		Select(
-			"a.model AS model, a.channel_id AS channel_id, c.name AS channel_name, "+
-				"c.type AS channel_type, a."+groupCol+" AS `group`, a.enabled AS enabled, "+
-				"c.status AS channel_status, COALESCE(a.priority, 0) AS priority, "+
-				"COALESCE(a.dynamic_priority, 0) AS dynamic_priority, "+
-				"COALESCE(c.weight, 0) AS weight, COALESCE(c.unit_price, 0) AS unit_price",
+			"a.channel_id AS channel_id, c.name AS channel_name, "+
+				"c.type AS channel_type, "+groupsExpr+" AS groups, "+
+				"COUNT(*) AS group_count, "+
+				"MAX(a.enabled) AS enabled, "+
+				"c.status AS channel_status, "+
+				"MAX(COALESCE(a.priority, 0)) AS priority, "+
+				"MAX(COALESCE(a.dynamic_priority, 0)) AS dynamic_priority, "+
+				"MAX(COALESCE(c.weight, 0)) AS weight, MAX(COALESCE(c.unit_price, 0)) AS unit_price",
 		).
 		Where("a.model = ?", modelName).
-		Order("COALESCE(NULLIF(a.dynamic_priority, 0), COALESCE(a.priority, 0)) DESC, COALESCE(a.priority, 0) DESC, a.channel_id ASC")
+		Group("a.channel_id, c.name, c.type, c.status").
+		Order("MAX(COALESCE(NULLIF(a.dynamic_priority, 0), COALESCE(a.priority, 0))) DESC, MAX(COALESCE(a.priority, 0)) DESC, a.channel_id ASC")
 
 	if ct := parseIntSafe(channelTypeStr); ct > 0 {
 		query = query.Where("c.type = ?", ct)
 	}
 
 	type row struct {
-		Model           string  `gorm:"column:model"`
 		ChannelId       int     `gorm:"column:channel_id"`
 		ChannelName     string  `gorm:"column:channel_name"`
 		ChannelType     int     `gorm:"column:channel_type"`
-		Group           string  `gorm:"column:group"`
+		Groups          string  `gorm:"column:groups"`
+		GroupCount      int     `gorm:"column:group_count"`
 		Enabled         bool    `gorm:"column:enabled"`
 		ChannelStatus   int     `gorm:"column:channel_status"`
 		Priority        int64   `gorm:"column:priority"`
@@ -211,7 +226,8 @@ func ListModelChannels(c *gin.Context) {
 			ChannelId:       r.ChannelId,
 			ChannelName:     r.ChannelName,
 			ChannelType:     r.ChannelType,
-			Group:           r.Group,
+			Groups:          splitGroups(r.Groups),
+			GroupCount:      r.GroupCount,
 			Enabled:         r.Enabled,
 			ChannelStatus:   r.ChannelStatus,
 			Priority:        r.Priority,
@@ -225,6 +241,57 @@ func ListModelChannels(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    items,
+	})
+}
+
+// splitGroups 把 GROUP_CONCAT 的逗号分隔结果拆成切片，去空白去空。
+func splitGroups(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// UpdateModelChannelPriority 同步更新某渠道某模型下所有 group 行的静态优先级。
+//
+// 「所有 group 同步」是业务约束：渠道+模型是逻辑实体，priority 对各 group 一致。
+// 一次 UPDATE 覆盖该 (channel_id, model) 的全部行，天然同步。
+//
+// 注意：abilities.priority 是 (channel,model) 级副本，与 channel.priority（渠道级单值）
+// 不同。编辑渠道（UpdateChannel→UpdateAbilities 重建）会用 channel.priority 覆盖本值——
+// 这是 abilities 作为副本的固有特性，非本次引入。若需根治需改数据模型，见计划文档。
+func UpdateModelChannelPriority(c *gin.Context) {
+	var req struct {
+		ChannelId int    `json:"channel_id" binding:"required"`
+		Model     string `json:"model" binding:"required"`
+		Priority  int64  `json:"priority"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误: " + err.Error()})
+		return
+	}
+
+	// 同步更新该渠道该模型所有 group 行
+	result := model.DB.Model(&model.Ability{}).
+		Where("channel_id = ? AND model = ?", req.ChannelId, req.Model).
+		Update("priority", req.Priority)
+	if result.Error != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "更新失败: " + result.Error.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"message":  "",
+		"affected": result.RowsAffected,
 	})
 }
 
