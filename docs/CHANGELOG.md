@@ -6,6 +6,15 @@
 
 ---
 
+## 2026-08-14
+
+### feat(billship): 消费日志异步投递到 AWS SQS
+- **分支**: `billship-sqs`
+- **类型**: 新功能
+- **涉及文件**: `go.mod`、`common/config/config.go`、`common/shipper/shipper.go`(新)、`common/shipper/shipper_test.go`(新)、`model/log.go`、`main.go`
+- **说明**: 新增 `common/shipper` 适配层封装 billship SDK；消费/视频日志写库成功后把该行 JSON 非阻塞投递到 SQS。默认关闭（`BILL_SHIP_ENABLED`），多站点靠 `BILL_SHIP_SITE_ID` 区分。占位依赖 `github.com/ezlinkai/billship` 待发布后替换。
+- **关联计划**: `docs/plans/2026-08-14-sqs-shipper-integration.md`、`docs/superpowers/plans/2026-08-14-sqs-shipper-integration.md`
+
 ## 2026-08-10
 
 ### fix(aws-claude): 修复 Bedrock 4.7+ 模型 `temperature is deprecated` 400，并将 no-sampling 判定规则化
