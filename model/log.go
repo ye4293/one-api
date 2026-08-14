@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/metrics"
+	"github.com/songquanpeng/one-api/common/shipper"
 
 	"gorm.io/gorm"
 )
@@ -174,6 +176,9 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	err := LOG_DB.Create(log).Error
 	if err != nil {
 		logger.Error(ctx, "failed to record log: "+err.Error())
+	} else if body, mErr := json.Marshal(log); mErr == nil {
+		// 写库成功后把该行 JSON 非阻塞投递到 SQS（billship 内部攒批异步发，不阻塞热路径）
+		shipper.Ship(int64(log.Id), log.CreatedAt, log.ModelName, body)
 	}
 
 	// 增量更新直方图（用于 P50/P95/P99 计算，零 DB 查询）
@@ -688,6 +693,8 @@ func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 	err := LOG_DB.Create(log).Error
 	if err != nil {
 		logger.Error(ctx, "failed to record video log: "+err.Error())
+	} else if body, mErr := json.Marshal(log); mErr == nil {
+		shipper.Ship(int64(log.Id), log.CreatedAt, log.ModelName, body)
 	}
 }
 
