@@ -10,6 +10,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/logger"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Ability struct {
@@ -285,23 +286,40 @@ type DynamicPriorityUpdate struct {
 
 // BatchUpdateDynamicPriority 批量写入动态优先级分数。
 //
-// 用逐行 Updates(map) 而非批量 OnConflict：abilities 主键是 (group, model, channel_id)，
-// 三列联合主键的 ON CONFLICT/ON DUPLICATE 语法在 SQLite/MySQL/PG 间不一致；逐行写虽慢，
-// 但一次评分周期落库量 = 渠道数 × 模型数，通常几百到几千行，5 分钟一次完全可接受。
+// 单条批量 UPSERT（ON CONFLICT / ON DUPLICATE KEY UPDATE），一次性提交。
+// abilities 主键是 (group, model, channel_id)，GORM 的 clause.OnConflict 会按 dialect
+// 翻译成对应语法（MySQL: ON DUPLICATE KEY UPDATE；PG/SQLite: ON CONFLICT DO UPDATE），
+// 与 model_metrics.UpsertModelMetrics 同一模式。
 //
-// 用 map 强制写零值：Updates(struct) 会忽略 0，导致「该周期无数据应回退 0 分」的渠道
-// 无法把上一轮的高分覆盖掉，分数会卡在历史值不下降。
+// 为什么不用逐行 Updates(map)：
+//   - 逐行 UPDATE 每行一次 commit + 一次 dynamic_priority 索引维护，N 行 = N 次锁竞争，
+//     落库期间会阻塞 abilities 的聚合读查询（模型视图页 GROUP BY），线上表现为页面卡顿。
+//   - 批量 UPSERT 把 N 次 commit 压成 1 次，锁持有时间从「N × 单行」降到「单批」，
+//     读查询被阻塞的概率与时长大幅下降。
+//
+// 用 OnConflict + DoUpdates 强制写零值：Create(struct) 本身会写入传入的 0 值字段，
+// 冲突分支通过 AssignmentColumns 也覆盖 dynamic_priority，保证「该周期无数据应回退 0 分」
+// 的渠道能把上一轮的高分覆盖掉，不会卡在历史值不下降。
 func BatchUpdateDynamicPriority(updates []DynamicPriorityUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
+	abilities := make([]Ability, 0, len(updates))
 	for _, u := range updates {
-		err := DB.Model(&Ability{}).
-			Where("channel_id = ? AND model = ? AND `group` = ?", u.ChannelId, u.Model, u.Group).
-			Update("dynamic_priority", u.DynamicPriority).Error
-		if err != nil {
-			return err
-		}
+		dp := u.DynamicPriority
+		abilities = append(abilities, Ability{
+			Group:           u.Group,
+			Model:           u.Model,
+			ChannelId:       u.ChannelId,
+			DynamicPriority: &dp,
+		})
 	}
-	return nil
+	return DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "group"},
+			{Name: "model"},
+			{Name: "channel_id"},
+		},
+		DoUpdates: clause.AssignmentColumns([]string{"dynamic_priority"}),
+	}).Create(&abilities).Error
 }
