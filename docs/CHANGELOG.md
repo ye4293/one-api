@@ -11,8 +11,8 @@
 ### feat(billship): 消费日志异步投递到 AWS SQS
 - **分支**: `billship-sqs`
 - **类型**: 新功能
-- **涉及文件**: `go.mod`、`common/config/config.go`、`common/shipper/shipper.go`(新)、`common/shipper/shipper_test.go`(新)、`model/log.go`、`main.go`
-- **说明**: 新增 `common/shipper` 适配层封装 billship SDK；消费/视频日志写库成功后把该行 JSON 非阻塞投递到 SQS。默认关闭（`BILL_SHIP_ENABLED`），多站点靠 `BILL_SHIP_SITE_ID` 区分。占位依赖 `github.com/ezlinkai/billship` 待发布后替换。
+- **涉及文件**: `go.mod`、`go.sum`、`Dockerfile`、`.dockerignore`、`third_party/charge-shipper-v0.1.0`、`docker-compose.yml`、`docs/billship-production-deployment.md`、`common/config/config.go`、`common/shipper/shipper.go`(新)、`common/shipper/shipper_test.go`(新)、`model/log.go`、`main.go`
+- **说明**: 新增 `common/shipper` 适配层封装 billship SDK；消费/视频日志写库成功后把该行 JSON 非阻塞投递到 SQS。默认关闭（`BILL_SHIP_ENABLED`），多站点靠 `BILL_SHIP_SITE_ID` 区分。生产构建固定 `require github.com/changshiaos/charge/server/shipper v0.1.0` 并 `replace` 到仓库内 `third_party/charge-shipper-v0.1.0` 快照，仅 shipper 随源码保存，其他依赖仍由 Go Modules 下载；CI 不再需要 charge 私库 Token。buffer、批量、等待、并发、超时和重试参数均可通过 `BILL_SHIP_*` 环境变量配置并在启动时严格校验。
 - **关联计划**: `docs/plans/2026-08-14-sqs-shipper-integration.md`、`docs/superpowers/plans/2026-08-14-sqs-shipper-integration.md`
 
 ## 2026-08-10

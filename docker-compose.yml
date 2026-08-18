@@ -33,6 +33,22 @@ services:
       # 与 one-api-logging/.env 的 METRICS_TOKEN 必须完全一致；为空时 /metrics 只允许 loopback，
       # 跨容器抓取会 401。生产请用 openssl rand -hex 24 重新生成，勿复用他处泄露过的值。
       - METRICS_TOKEN=31578f6d9eda31169322a2c8b4253e17e37ffb7c3d89c9fd
+      # ── 计费日志投递（同一镜像按部署实例配置）──
+      - BILL_SHIP_ENABLED=${BILL_SHIP_ENABLED:-false}
+      - BILL_SHIP_QUEUE_URL=${BILL_SHIP_QUEUE_URL:-}
+      - BILL_SHIP_REGION=${BILL_SHIP_REGION:-}
+      - BILL_SHIP_SITE_ID=${BILL_SHIP_SITE_ID:-}
+      - BILL_SHIP_LOG_FAILED_BODY=${BILL_SHIP_LOG_FAILED_BODY:-false}
+      - BILL_SHIP_BUFFER_SIZE=${BILL_SHIP_BUFFER_SIZE:-10000}
+      - BILL_SHIP_BATCH_SIZE=${BILL_SHIP_BATCH_SIZE:-10}
+      - BILL_SHIP_BATCH_WAIT_MS=${BILL_SHIP_BATCH_WAIT_MS:-200}
+      - BILL_SHIP_SEND_CONCURRENCY=${BILL_SHIP_SEND_CONCURRENCY:-8}
+      - BILL_SHIP_SEND_TIMEOUT_SECONDS=${BILL_SHIP_SEND_TIMEOUT_SECONDS:-3}
+      - BILL_SHIP_MAX_RETRIES=${BILL_SHIP_MAX_RETRIES:-3}
+      # 优先使用实例 IAM Role；非 AWS 主机才通过部署机 .env 注入以下凭证。
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
     healthcheck:
       test: [ "CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' | awk -F: '{print $2}'" ]
       interval: 30s

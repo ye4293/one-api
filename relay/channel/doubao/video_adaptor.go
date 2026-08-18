@@ -112,9 +112,10 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	}
 
 	return &relaychannel.VideoTaskResult{
-		TaskId:     doubaoResponse.ID,
-		TaskStatus: "succeed",
-		Quota:      quota,
+		TaskId:           doubaoResponse.ID,
+		TaskStatus:       "succeed",
+		Quota:            quota,
+		DeferLogShipping: true,
 	}, nil
 }
 

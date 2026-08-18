@@ -349,6 +349,12 @@ var BillShipQueueURL = env.String("BILL_SHIP_QUEUE_URL", "")
 var BillShipRegion = env.String("BILL_SHIP_REGION", "")
 var BillShipSiteID = env.String("BILL_SHIP_SITE_ID", "")
 var BillShipLogFailedBody = env.Bool("BILL_SHIP_LOG_FAILED_BODY", false)
+var BillShipBufferSize = env.Int("BILL_SHIP_BUFFER_SIZE", 10000)
+var BillShipBatchSize = env.Int("BILL_SHIP_BATCH_SIZE", 10)
+var BillShipBatchWaitMS = env.Int("BILL_SHIP_BATCH_WAIT_MS", 200)
+var BillShipSendConcurrency = env.Int("BILL_SHIP_SEND_CONCURRENCY", 8)
+var BillShipSendTimeoutSeconds = env.Int("BILL_SHIP_SEND_TIMEOUT_SECONDS", 3)
+var BillShipMaxRetries = env.Int("BILL_SHIP_MAX_RETRIES", 3)
 
 func getHostname() string {
 	hostname, err := os.Hostname()

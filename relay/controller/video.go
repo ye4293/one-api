@@ -692,8 +692,13 @@ func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duratio
 	return quota
 }
 
-// 新增带quota参数的成功响应处理函数，支持可选的videoTaskId参数
-func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string, quota int64, videoTaskId ...string) *model.ErrorWithStatusCode {
+// 处理成功响应并记录消费日志；视频任务可选择在异步结算后再投递日志。
+type videoConsumeLogOptions struct {
+	TaskID           string
+	DeferLogShipping bool
+}
+
+func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta *util.RelayMeta, modelName string, mode string, duration string, quota int64, options ...videoConsumeLogOptions) *model.ErrorWithStatusCode {
 	referer := c.Request.Header.Get("HTTP-Referer")
 	title := c.Request.Header.Get("X-Title")
 
@@ -723,8 +728,16 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
 
 		// 如果提供了videoTaskId，使用RecordVideoConsumeLog，否则使用普通的RecordConsumeLogWithRequestID
-		if len(videoTaskId) > 0 && videoTaskId[0] != "" {
-			dbmodel.RecordVideoConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, videoTaskId[0])
+		var logOptions videoConsumeLogOptions
+		if len(options) > 0 {
+			logOptions = options[0]
+		}
+		if logOptions.TaskID != "" {
+			if logOptions.DeferLogShipping {
+				dbmodel.RecordVideoConsumeLogDeferred(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, logOptions.TaskID)
+			} else {
+				dbmodel.RecordVideoConsumeLog(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, logOptions.TaskID)
+			}
 		} else {
 			dbmodel.RecordConsumeLogWithRequestID(ctx, meta.UserId, meta.ChannelId, 0, 0, modelName, tokenName, quota, logContent, 0, title, referer, false, 0.0, xRequestID)
 		}
@@ -777,7 +790,10 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 
 	return handleSuccessfulResponseWithQuota(c, ctx, meta,
 		meta.ActualModelName, taskResult.Mode, taskResult.Duration,
-		taskResult.Quota, taskResult.TaskId)
+		taskResult.Quota, videoConsumeLogOptions{
+			TaskID:           taskResult.TaskId,
+			DeferLogShipping: taskResult.DeferLogShipping,
+		})
 }
 
 // invokeVideoAdaptorResult 通过 VideoAdaptor 接口查询视频任务结果

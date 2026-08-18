@@ -1,0 +1,11 @@
+.git
+.github
+.env
+.env.*
+data
+logs
+mysql-data
+*.db
+*.sqlite
+*.sqlite3
+one-api
