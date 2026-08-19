@@ -155,6 +155,8 @@ func ListModelsOverview(c *gin.Context) {
 // ListModelChannels 单个模型下挂载的所有渠道（跨 group），扁平列表。
 //
 // 用于模型详情页。model 参数必填（精确匹配），channel_type 可选筛选。
+// status_filter 可选筛选状态：1=启用, 2=手动禁用, 3=自动禁用, 0=全部
+// 分页参数：page（默认1）、page_size（默认10，最大100）。
 // 渠道按有效分 DESC 排序（与选渠道热路径一致）。
 func ListModelChannels(c *gin.Context) {
 	modelName := strings.TrimSpace(c.Query("model"))
@@ -166,6 +168,16 @@ func ListModelChannels(c *gin.Context) {
 		return
 	}
 	channelTypeStr := strings.TrimSpace(c.Query("channel_type"))
+	statusFilterStr := strings.TrimSpace(c.Query("status_filter"))
+
+	page := parseIntSafeDefault(c.Query("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := parseIntSafeDefault(c.Query("page_size"), 10)
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 
 	groupCol := "`group`"
 	if common.UsingPostgreSQL {
@@ -205,6 +217,20 @@ func ListModelChannels(c *gin.Context) {
 		query = query.Where("c.type = ?", ct)
 	}
 
+	// 状态筛选：1=启用(status=1且enabled=true), 2=手动禁用(status=2), 3=自动禁用(status=3)
+	// 注意：这里过滤的是 channels.status，因为 status 字段存储的是禁用原因
+	// enabled=true 时需要 status=1，enabled=false 时 status=2或3
+	if sf := parseIntSafe(statusFilterStr); sf > 0 {
+		switch sf {
+		case 1: // 启用
+			query = query.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
+		case 2: // 手动禁用
+			query = query.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
+		case 3: // 自动禁用
+			query = query.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		}
+	}
+
 	type row struct {
 		ChannelId       int     `gorm:"column:channel_id"`
 		ChannelName     string  `gorm:"column:channel_name"`
@@ -218,8 +244,35 @@ func ListModelChannels(c *gin.Context) {
 		Weight          int     `gorm:"column:weight"`
 		UnitPrice       float64 `gorm:"column:unit_price"`
 	}
+
+	// 先获取总数（分页用）
+	var total int64
+	countQuery := model.DB.Table("abilities a").
+		Joins("JOIN channels c ON a.channel_id = c.id").
+		Where("a.model = ?", modelName)
+	if ct := parseIntSafe(channelTypeStr); ct > 0 {
+		countQuery = countQuery.Where("c.type = ?", ct)
+	}
+	if sf := parseIntSafe(statusFilterStr); sf > 0 {
+		switch sf {
+		case 1: // 启用
+			countQuery = countQuery.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
+		case 2: // 手动禁用
+			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
+		case 3: // 自动禁用
+			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		}
+	}
+	if err := countQuery.Count(&total).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "failed to count model channels: " + err.Error(),
+		})
+		return
+	}
+
 	var rows []row
-	if err := query.Scan(&rows).Error; err != nil {
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error; err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "failed to list model channels: " + err.Error(),
@@ -247,7 +300,12 @@ func ListModelChannels(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    items,
+		"data": gin.H{
+			"list":     items,
+			"total":    total,
+			"page":     page,
+			"pageSize": pageSize,
+		},
 	})
 }
 
