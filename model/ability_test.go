@@ -293,3 +293,65 @@ func TestUpdateAbilitiesWithEmptyModels(t *testing.T) {
 		t.Errorf("清空后仍有 %d 条 ability", got)
 	}
 }
+
+// seedAbility 直接插入一条启用中的 ability，供模型级禁用/恢复测试使用。
+func seedAbility(t *testing.T, channelId int, group, modelName string) {
+	t.Helper()
+	pri := int64(0)
+	a := Ability{Group: group, Model: modelName, ChannelId: channelId, Enabled: true, Priority: &pri}
+	if err := DB.Create(&a).Error; err != nil {
+		t.Fatalf("插入 ability 失败: %v", err)
+	}
+}
+
+func TestAutoDisableModelOnChannel(t *testing.T) {
+	setupAbilityTestDB(t)
+
+	// 渠道 1：两个模型，各一个 group
+	seedAbility(t, 1, "default", "gpt-4")
+	seedAbility(t, 1, "default", "gpt-4o")
+
+	// 禁用第一个模型：渠道不应被判定为全禁
+	channelDisabled, err := AutoDisableModelOnChannel(1, "gpt-4", "test reason")
+	if err != nil {
+		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
+	}
+	if channelDisabled {
+		t.Fatalf("仅禁 1 个模型不应判定渠道全禁")
+	}
+
+	var g4 Ability
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4").First(&g4).Error; err != nil {
+		t.Fatal(err)
+	}
+	if g4.Enabled || !g4.AutoDisabled || g4.AutoDisabledTime == 0 {
+		t.Fatalf("gpt-4 应 enabled=false auto_disabled=true time>0，实际 %+v", g4)
+	}
+	var g4o Ability
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4o").First(&g4o).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !g4o.Enabled || g4o.AutoDisabled {
+		t.Fatalf("gpt-4o 应保持启用未禁用，实际 %+v", g4o)
+	}
+
+	// 禁用最后一个模型：应判定渠道全禁
+	channelDisabled, err = AutoDisableModelOnChannel(1, "gpt-4o", "test reason")
+	if err != nil {
+		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
+	}
+	if !channelDisabled {
+		t.Fatalf("最后一个模型被禁后应判定渠道全禁")
+	}
+
+	// 模型级恢复：清标记并重新启用
+	if err := EnableModelOnChannel(1, "gpt-4"); err != nil {
+		t.Fatalf("EnableModelOnChannel 失败: %v", err)
+	}
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4").First(&g4).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !g4.Enabled || g4.AutoDisabled || g4.AutoDisabledTime != 0 {
+		t.Fatalf("恢复后 gpt-4 应 enabled=true auto_disabled=false time=0，实际 %+v", g4)
+	}
+}

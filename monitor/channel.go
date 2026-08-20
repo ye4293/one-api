@@ -120,6 +120,39 @@ func disableChannelInternalWithStatusCode(channel *model.Channel, channelId int,
 	notifyRootUserWithoutFeishu(subject, content)
 }
 
+// DisableModelOnChannelWithStatusCode 模型级自动禁用：只禁用该渠道上的该模型；
+// 当该渠道所有模型都被禁用时，回落到整渠道禁用（走完整通知）。仅用于单 Key 渠道。
+func DisableModelOnChannelWithStatusCode(channelId int, channelName string, reason string, modelName string, statusCode int) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	if !channel.AutoDisabled {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) model %s should be disabled but auto-disable is turned off, reason: %s", channelId, channelName, modelName, reason))
+		return
+	}
+
+	// 多 Key 渠道不做模型级禁用，交由既有 key 级逻辑处理（理论上调用方已过滤）
+	if channel.MultiKeyInfo.IsMultiKey {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) is multi-key, skip model-scope disable for model %s", channelId, channelName, modelName))
+		return
+	}
+
+	channelDisabled, err := model.AutoDisableModelOnChannel(channelId, modelName, reason)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to model-scope disable channel %d model %s: %s", channelId, modelName, err.Error()))
+		return
+	}
+
+	if channelDisabled {
+		// 该渠道已无任何启用中的模型 —— 禁用整个渠道并发送完整通知
+		disableChannelInternalWithStatusCode(channel, channelId, channelName, reason, modelName, statusCode)
+	}
+	// 仅禁用单模型时不额外发送告警（避免告警风暴），model 层已记录日志
+}
+
 // DisableChannel disable & notify
 func DisableChannel(channelId int, channelName string, reason string, modelName string) {
 	DisableChannelWithStatusCode(channelId, channelName, reason, modelName, 0)

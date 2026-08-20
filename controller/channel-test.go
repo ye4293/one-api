@@ -626,6 +626,71 @@ func TestChannels(c *gin.Context) {
 	return
 }
 
+var recoverModelsLock sync.Mutex
+var recoverModelsRunning bool
+
+// recoverAutoDisabledModels 模型级恢复：测试被模型级禁用、且渠道仍启用的模型，成功则重新启用该模型。
+// 与渠道级恢复正交——渠道级恢复只处理 status=auto_disabled 的整渠道。
+// 受 config.AutomaticEnableChannelEnabled 与单渠道 AutoEnabled 约束，仅主节点调用。
+func recoverAutoDisabledModels() {
+	if !config.AutomaticEnableChannelEnabled {
+		return
+	}
+	recoverModelsLock.Lock()
+	if recoverModelsRunning {
+		recoverModelsLock.Unlock()
+		return
+	}
+	recoverModelsRunning = true
+	recoverModelsLock.Unlock()
+	defer func() {
+		recoverModelsLock.Lock()
+		recoverModelsRunning = false
+		recoverModelsLock.Unlock()
+	}()
+
+	items, err := model.GetAutoDisabledAbilities()
+	if err != nil {
+		logger.SysError(fmt.Sprintf("failed to load auto-disabled abilities for recovery: %s", err.Error()))
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+
+	// 按渠道缓存，避免同渠道多模型重复取库
+	channelCache := make(map[int]*model.Channel)
+	for _, it := range items {
+		channel, ok := channelCache[it.ChannelId]
+		if !ok {
+			channel, err = model.GetChannelById(it.ChannelId, true)
+			if err != nil {
+				logger.SysError(fmt.Sprintf("model recovery: failed to get channel %d: %s", it.ChannelId, err.Error()))
+				channelCache[it.ChannelId] = nil
+				continue
+			}
+			channelCache[it.ChannelId] = channel
+		}
+		if channel == nil {
+			continue
+		}
+		// 渠道关闭自动启用则跳过其模型级恢复
+		if !channel.AutoEnabled {
+			continue
+		}
+
+		testErr, openaiErr, _, _ := testChannel(channel, it.Model, true)
+		if util.ShouldEnableChannel(testErr, openaiErr) {
+			if e := model.EnableModelOnChannel(it.ChannelId, it.Model); e != nil {
+				logger.SysError(fmt.Sprintf("model recovery: failed to enable channel %d model %s: %s", it.ChannelId, it.Model, e.Error()))
+			} else {
+				logger.SysLog(fmt.Sprintf("model recovery: channel #%d model %s re-enabled", it.ChannelId, it.Model))
+			}
+		}
+		time.Sleep(config.RequestInterval)
+	}
+}
+
 // AutomaticallyTestChannels 仅主节点执行：周期性测试并自动启用符合条件的渠道
 // 频率读取自 config.AutoTestChannelFrequency（分钟），<=0 表示未启用
 func AutomaticallyTestChannels() {
@@ -639,6 +704,7 @@ func AutomaticallyTestChannels() {
 		if err := testChannels(false, "auto_disabled"); err != nil {
 			logger.SysLog(fmt.Sprintf("startup auto-test skipped: %s", err.Error()))
 		}
+		recoverAutoDisabledModels()
 	}
 	for {
 		frequency := config.AutoTestChannelFrequency
@@ -657,6 +723,7 @@ func AutomaticallyTestChannels() {
 		if err := testChannels(false, "auto_disabled"); err != nil {
 			logger.SysLog(fmt.Sprintf("auto-test skipped (previous run still in progress): %s", err.Error()))
 		}
+		recoverAutoDisabledModels()
 		logger.SysLog("automatically channel test finished")
 	}
 }

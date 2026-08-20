@@ -43,6 +43,7 @@ type ModelChannelItem struct {
 	Groups          []string `json:"groups"`           // 该渠道该模型挂载的所有 group
 	GroupCount      int      `json:"group_count"`      // group 数量
 	Enabled         bool     `json:"enabled"`          // 该渠道该模型是否启用（所有 group 同步）
+	AutoDisabled    bool     `json:"auto_disabled"`    // 该渠道该模型是否被模型级自动禁用（渠道仍启用）
 	ChannelStatus   int      `json:"channel_status"`   // 渠道状态（来自 channels 表）
 	Priority        int64    `json:"priority"`         // 静态优先级（所有 group 同步）
 	DynamicPriority int64    `json:"dynamic_priority"` // 动态优先级（所有 group 同步）
@@ -204,6 +205,7 @@ func ListModelChannels(c *gin.Context) {
 				"c.type AS channel_type, "+groupsExpr+" AS "+groupsAlias+", "+
 				"COUNT(*) AS group_count, "+
 				"MAX(a.enabled) AS enabled, "+
+				"MAX(a.auto_disabled) AS auto_disabled, "+
 				"c.status AS channel_status, "+
 				"MAX(COALESCE(a.priority, 0)) AS priority, "+
 				"MAX(COALESCE(a.dynamic_priority, 0)) AS dynamic_priority, "+
@@ -226,8 +228,10 @@ func ListModelChannels(c *gin.Context) {
 			query = query.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
 		case 2: // 手动禁用
 			query = query.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
-		case 3: // 自动禁用
+		case 3: // 渠道自动禁用
 			query = query.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			query = query.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
 		}
 	}
 
@@ -238,6 +242,7 @@ func ListModelChannels(c *gin.Context) {
 		Groups          string  `gorm:"column:groups"`
 		GroupCount      int     `gorm:"column:group_count"`
 		Enabled         bool    `gorm:"column:enabled"`
+		AutoDisabled    bool    `gorm:"column:auto_disabled"`
 		ChannelStatus   int     `gorm:"column:channel_status"`
 		Priority        int64   `gorm:"column:priority"`
 		DynamicPriority int64   `gorm:"column:dynamic_priority"`
@@ -259,8 +264,10 @@ func ListModelChannels(c *gin.Context) {
 			countQuery = countQuery.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
 		case 2: // 手动禁用
 			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
-		case 3: // 自动禁用
+		case 3: // 渠道自动禁用
 			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			countQuery = countQuery.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
 		}
 	}
 	if err := countQuery.Count(&total).Error; err != nil {
@@ -289,6 +296,7 @@ func ListModelChannels(c *gin.Context) {
 			Groups:          splitGroups(r.Groups),
 			GroupCount:      r.GroupCount,
 			Enabled:         r.Enabled,
+			AutoDisabled:    r.AutoDisabled,
 			ChannelStatus:   r.ChannelStatus,
 			Priority:        r.Priority,
 			DynamicPriority: r.DynamicPriority,

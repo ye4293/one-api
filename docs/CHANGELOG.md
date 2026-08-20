@@ -6,6 +6,34 @@
 
 ---
 
+## 2026-08-20
+
+### feat(model-view): 模型详情页展示「模型自动禁用」状态
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件（后端）**:
+  - `controller/dynamic_priority_view.go` — `ListModelChannels` 聚合新增 `MAX(a.auto_disabled) AS auto_disabled`，`ModelChannelItem`/row 加 `AutoDisabled` 字段；`status_filter` 新增 `4=模型级自动禁用`（`c.status=启用 AND a.auto_disabled=true`）
+- **涉及文件（前端 ezlinkai-web）**:
+  - `sections/model/types.ts` — `ModelChannelItem` 加 `auto_disabled: boolean`
+  - `sections/model/model-channels-table.tsx` — `statusBadge` 新增「模型自动禁用」徽章（琥珀色，区别于整渠道禁用）；状态筛选下拉加「模型自动禁用」，并把 `3` 文案改为「渠道自动禁用」
+- **说明**: 配合模型级自动禁用后端改动，详情页可直观区分「渠道启用但该模型被自动禁用」与「整渠道禁用」，并支持按模型级禁用状态筛选。
+
+### feat(auto-disable): 自动禁用改为模型级，全模型禁用才禁渠道
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件**:
+  - `common/config/config.go` — 新增灰度开关 `ModelScopeAutoDisableEnabled`（默认 true），false 回退旧的整渠道禁用
+  - `model/ability.go` — `Ability` 加 `AutoDisabled`/`AutoDisabledTime` 两列；新增 `AutoDisableModelOnChannel`（禁模型 + 统计剩余）、`GetAutoDisabledAbilities`、`EnableModelOnChannel`；按新不变式 `enabled=(渠道启用)AND(NOT auto_disabled)` 重写 `CheckDataConsistency`、`SyncChannelAbilities`
+  - `model/channel.go` — `UpdateChannelStatusById`/`BatchUpdateChannelStatus`：渠道启用时乐观清零 `auto_disabled`，禁用时保留
+  - `monitor/channel.go` — 新增 `DisableModelOnChannelWithStatusCode`：仅禁单模型，全模型禁用时回落 `disableChannelInternalWithStatusCode` 走完整通知
+  - `controller/relay.go` — 单 Key 渠道失败路径受开关切换到模型级禁用
+  - `controller/channel-test.go` — 新增 `recoverAutoDisabledModels` 并接入 `AutomaticallyTestChannels` 周期，测试被禁模型成功则重新启用
+  - `model/ability_test.go` — 新增 `TestAutoDisableModelOnChannel` 覆盖禁用/全禁判定/恢复
+- **说明**: 原自动禁用命中关键词/401 就禁整渠道，会连累同渠道正常模型。改为只禁「该渠道上的该模型」（abilities 行 `auto_disabled=true`），渠道保持启用；某渠道所有模型都被禁时才禁整渠道。配套模型级自动恢复测试。仅作用于单 Key 渠道，多 Key 维持既有 key 级逻辑。核心不变式 `enabled=(渠道启用)AND(NOT auto_disabled)` 贯穿一致性检查与状态联动，避免模型级禁用被静默撤销。
+- **关联计划**: `docs/plans/2026-08-20-model-scope-auto-disable.md`
+
+---
+
 ## 2026-08-14
 
 ### feat(model-view): 模型详情页按渠道聚合 + 优先级同步编辑
