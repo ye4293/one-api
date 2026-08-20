@@ -4,7 +4,7 @@ package controller
 //
 // 流程（仅 Master 节点，每 DynamicPriorityCalcIntervalMinutes 分钟一次）：
 //   1. 查所有 enabled 的 (channel_id, model, group) 去重三元组
-//   2. 按 model 分组；同 model 内对每个渠道 ScanAbilityWindow 聚合窗口指标 + 读 UnitPrice
+//   2. 按 model 分组；同 model 内一次 pipeline 批量聚合各渠道窗口指标（按 channelId 去重）+ 读 UnitPrice
 //   3. 调 dynamicprio.ScoreChannels 算分
 //   4. BatchUpdateDynamicPriority 批量落库
 //
@@ -163,15 +163,24 @@ func buildStatsForModel(modelName string, cands []abilityCandidate, window time.
 	candIdx := make([]int, 0, len(cands))
 	anyData := false
 
+	// 批量读窗口：一次 pipeline 拿到该 model 下所有 channel 的样本，内部按 channelId 去重。
+	// 消除「同 channel 多 group 各扫一次」的重复，并把 N×2 次串行 RTT 降到 2 次。
+	channelIds := make([]int, 0, len(cands))
+	for _, c := range cands {
+		channelIds = append(channelIds, c.ChannelId)
+	}
+	samples, err := metrics.ScanAbilityWindowBatch(channelIds, modelName, window)
+	if err != nil {
+		// 整体读失败：本 model 全部按无数据处理，返回 nil 让调用方跳过（保留旧分，回退静态优先级）
+		logger.SysError(fmt.Sprintf("dynamic priority: batch scan window model=%s: %s", modelName, err.Error()))
+		return nil, nil
+	}
+
 	// UnitPrice 按 channelId 去重读取，避免同渠道多 group 重复查
 	priceCache := make(map[int]float64)
 
 	for i, c := range cands {
-		sample, err := metrics.ScanAbilityWindow(c.ChannelId, modelName, window)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("dynamic priority: scan window ch=%d model=%s: %s", c.ChannelId, modelName, err.Error()))
-			continue
-		}
+		sample := samples[c.ChannelId] // 缺失 = 零值，等价无数据
 
 		total := sample.SuccessCount + sample.FailureCount
 		if total > 0 {

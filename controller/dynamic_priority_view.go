@@ -43,6 +43,7 @@ type ModelChannelItem struct {
 	Groups          []string `json:"groups"`           // 该渠道该模型挂载的所有 group
 	GroupCount      int      `json:"group_count"`      // group 数量
 	Enabled         bool     `json:"enabled"`          // 该渠道该模型是否启用（所有 group 同步）
+	AutoDisabled    bool     `json:"auto_disabled"`    // 该渠道该模型是否被模型级自动禁用（渠道仍启用）
 	ChannelStatus   int      `json:"channel_status"`   // 渠道状态（来自 channels 表）
 	Priority        int64    `json:"priority"`         // 静态优先级（所有 group 同步）
 	DynamicPriority int64    `json:"dynamic_priority"` // 动态优先级（所有 group 同步）
@@ -204,13 +205,16 @@ func ListModelChannels(c *gin.Context) {
 				"c.type AS channel_type, "+groupsExpr+" AS "+groupsAlias+", "+
 				"COUNT(*) AS group_count, "+
 				"MAX(a.enabled) AS enabled, "+
+				"MAX(a.auto_disabled) AS auto_disabled, "+
 				"c.status AS channel_status, "+
 				"MAX(COALESCE(a.priority, 0)) AS priority, "+
 				"MAX(COALESCE(a.dynamic_priority, 0)) AS dynamic_priority, "+
-				"MAX(COALESCE(c.weight, 0)) AS weight, MAX(COALESCE(c.unit_price, 0)) AS unit_price",
+				"c.weight AS weight, c.unit_price AS unit_price",
 		).
 		Where("a.model = ?", modelName).
-		Group("a.channel_id, c.name, c.type, c.status").
+		// GROUP BY 只需 channel_id + channel 侧展示列。c.weight/c.unit_price 由 channel_id 唯一决定，
+		// 严格 SQL 模式下加入 GROUP BY 而非 MAX 聚合，避免不必要的聚合计算。
+		Group("a.channel_id, c.name, c.type, c.status, c.weight, c.unit_price").
 		Order("MAX(COALESCE(NULLIF(a.dynamic_priority, 0), COALESCE(a.priority, 0))) DESC, MAX(COALESCE(a.priority, 0)) DESC, a.channel_id ASC")
 
 	if ct := parseIntSafe(channelTypeStr); ct > 0 {
@@ -226,8 +230,10 @@ func ListModelChannels(c *gin.Context) {
 			query = query.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
 		case 2: // 手动禁用
 			query = query.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
-		case 3: // 自动禁用
+		case 3: // 渠道自动禁用
 			query = query.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			query = query.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
 		}
 	}
 
@@ -238,6 +244,7 @@ func ListModelChannels(c *gin.Context) {
 		Groups          string  `gorm:"column:groups"`
 		GroupCount      int     `gorm:"column:group_count"`
 		Enabled         bool    `gorm:"column:enabled"`
+		AutoDisabled    bool    `gorm:"column:auto_disabled"`
 		ChannelStatus   int     `gorm:"column:channel_status"`
 		Priority        int64   `gorm:"column:priority"`
 		DynamicPriority int64   `gorm:"column:dynamic_priority"`
@@ -259,11 +266,17 @@ func ListModelChannels(c *gin.Context) {
 			countQuery = countQuery.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
 		case 2: // 手动禁用
 			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
-		case 3: // 自动禁用
+		case 3: // 渠道自动禁用
 			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			countQuery = countQuery.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
 		}
 	}
-	if err := countQuery.Count(&total).Error; err != nil {
+	// COUNT(DISTINCT a.channel_id)：list 是按 channel 聚合的（一渠道多 group 合并成一行），
+	// 因此 total 也必须以渠道为单位。若用 COUNT(*)，会数出 channel × group 的 ability 行数
+	// （单渠道多 group 时被 5× 放大），前端分页组件按此算出的页数会远超实际数据页，
+	// 翻到后面页出现空白，视感上像卡顿。
+	if err := countQuery.Distinct("a.channel_id").Count(&total).Error; err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "failed to count model channels: " + err.Error(),
@@ -289,6 +302,7 @@ func ListModelChannels(c *gin.Context) {
 			Groups:          splitGroups(r.Groups),
 			GroupCount:      r.GroupCount,
 			Enabled:         r.Enabled,
+			AutoDisabled:    r.AutoDisabled,
 			ChannelStatus:   r.ChannelStatus,
 			Priority:        r.Priority,
 			DynamicPriority: r.DynamicPriority,
@@ -357,6 +371,52 @@ func UpdateModelChannelPriority(c *gin.Context) {
 		"success":  true,
 		"message":  "",
 		"affected": result.RowsAffected,
+	})
+}
+
+// BatchEnableModelChannel 批量启用被模型级禁用的 (channel, model)。
+//
+// 方案 A 下 image/embedding/video 等不可 chat 探测的模型只能靠人工兜底，配合前端「模型自动禁用」
+// 筛选与多选提供批量启用入口。每项调 EnableModelOnChannel 复用同一事务与锁语义——顺带把
+// 因该模型全禁而进入 auto_disabled 的渠道 status 提升回 enabled。
+//
+// 失败项不阻塞整体：返回 affected/failed 明细供前端展示。
+func BatchEnableModelChannel(c *gin.Context) {
+	var req struct {
+		Items []struct {
+			ChannelId int    `json:"channel_id" binding:"required"`
+			Model     string `json:"model" binding:"required"`
+		} `json:"items" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误: " + err.Error()})
+		return
+	}
+	if len(req.Items) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "items 不能为空"})
+		return
+	}
+
+	type failedItem struct {
+		ChannelId int    `json:"channel_id"`
+		Model     string `json:"model"`
+		Error     string `json:"error"`
+	}
+	affected := 0
+	failed := make([]failedItem, 0)
+	for _, it := range req.Items {
+		if err := model.EnableModelOnChannel(it.ChannelId, it.Model); err != nil {
+			failed = append(failed, failedItem{ChannelId: it.ChannelId, Model: it.Model, Error: err.Error()})
+			continue
+		}
+		affected++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"message":  "",
+		"affected": affected,
+		"failed":   failed,
 	})
 }
 

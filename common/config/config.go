@@ -133,6 +133,12 @@ var QuotaForInvitee int64 = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
+
+// ModelScopeAutoDisableEnabled 为 true 时，自动禁用只禁「该渠道上的该模型」（abilities 行），
+// 渠道保持启用；当渠道所有模型都被禁用时才禁用整个渠道。
+// 为 false 时回退到旧行为：命中禁用条件直接禁用整个渠道（线上快速回滚开关）。
+// 仅作用于单 Key 渠道，多 Key 渠道维持既有 key 级禁用逻辑。
+var ModelScopeAutoDisableEnabled = true
 var AutoTestChannelFrequency = 0           // 自动测试渠道的频率（分钟），0 表示禁用
 var UpstreamModelUpdateIntervalMinutes = 0 // 上游模型巡检间隔（分钟），0 表示使用默认值（5 分钟 / 300 秒）
 

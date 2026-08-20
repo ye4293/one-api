@@ -23,6 +23,10 @@ func setupAbilityTestDB(t *testing.T) {
 	if err := db.AutoMigrate(&Ability{}); err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
+	// EnableModelOnChannel 会读写 channels 表用于 status 提升，测试环境也需要建表
+	if err := db.AutoMigrate(&Channel{}); err != nil {
+		t.Fatalf("建 channels 表失败: %v", err)
+	}
 	orig := DB
 	DB = db
 	t.Cleanup(func() {
@@ -291,5 +295,126 @@ func TestUpdateAbilitiesWithEmptyModels(t *testing.T) {
 	}
 	if got := countAbilities(t, 9); got != 0 {
 		t.Errorf("清空后仍有 %d 条 ability", got)
+	}
+}
+
+// seedAbility 直接插入一条启用中的 ability，供模型级禁用/恢复测试使用。
+func seedAbility(t *testing.T, channelId int, group, modelName string) {
+	t.Helper()
+	pri := int64(0)
+	a := Ability{Group: group, Model: modelName, ChannelId: channelId, Enabled: true, Priority: &pri}
+	if err := DB.Create(&a).Error; err != nil {
+		t.Fatalf("插入 ability 失败: %v", err)
+	}
+}
+
+func TestAutoDisableModelOnChannel(t *testing.T) {
+	setupAbilityTestDB(t)
+
+	// 渠道 1：两个模型，各一个 group
+	seedAbility(t, 1, "default", "gpt-4")
+	seedAbility(t, 1, "default", "gpt-4o")
+
+	// 禁用第一个模型：渠道不应被判定为全禁
+	channelDisabled, err := AutoDisableModelOnChannel(1, "gpt-4", "test reason")
+	if err != nil {
+		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
+	}
+	if channelDisabled {
+		t.Fatalf("仅禁 1 个模型不应判定渠道全禁")
+	}
+
+	var g4 Ability
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4").First(&g4).Error; err != nil {
+		t.Fatal(err)
+	}
+	if g4.Enabled || !g4.AutoDisabled || g4.AutoDisabledTime == 0 {
+		t.Fatalf("gpt-4 应 enabled=false auto_disabled=true time>0，实际 %+v", g4)
+	}
+	var g4o Ability
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4o").First(&g4o).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !g4o.Enabled || g4o.AutoDisabled {
+		t.Fatalf("gpt-4o 应保持启用未禁用，实际 %+v", g4o)
+	}
+
+	// 禁用最后一个模型：应判定渠道全禁
+	channelDisabled, err = AutoDisableModelOnChannel(1, "gpt-4o", "test reason")
+	if err != nil {
+		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
+	}
+	if !channelDisabled {
+		t.Fatalf("最后一个模型被禁后应判定渠道全禁")
+	}
+
+	// 模型级恢复：清标记并重新启用
+	if err := EnableModelOnChannel(1, "gpt-4"); err != nil {
+		t.Fatalf("EnableModelOnChannel 失败: %v", err)
+	}
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4").First(&g4).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !g4.Enabled || g4.AutoDisabled || g4.AutoDisabledTime != 0 {
+		t.Fatalf("恢复后 gpt-4 应 enabled=true auto_disabled=false time=0，实际 %+v", g4)
+	}
+}
+
+// seedChannel 直接插入渠道行，供 EnableModelOnChannel 的 status 提升测试使用。
+func seedChannel(t *testing.T, id int, status int) {
+	t.Helper()
+	ch := Channel{Id: id, Status: status, Name: "test"}
+	if err := DB.Create(&ch).Error; err != nil {
+		t.Fatalf("插入 channel 失败: %v", err)
+	}
+}
+
+func TestEnableModelOnChannel_PromotesAutoDisabledStatus(t *testing.T) {
+	setupAbilityTestDB(t)
+	seedChannel(t, 1, common.ChannelStatusAutoDisabled)
+	seedAbility(t, 1, "default", "gpt-4")
+	// 手动置该 ability 为模型级禁用
+	if _, err := AutoDisableModelOnChannel(1, "gpt-4", "seed"); err != nil {
+		t.Fatalf("seed 失败: %v", err)
+	}
+
+	if err := EnableModelOnChannel(1, "gpt-4"); err != nil {
+		t.Fatalf("EnableModelOnChannel 失败: %v", err)
+	}
+
+	var a Ability
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4").First(&a).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !a.Enabled || a.AutoDisabled {
+		t.Fatalf("ability 恢复失败: %+v", a)
+	}
+	var ch Channel
+	if err := DB.First(&ch, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ch.Status != common.ChannelStatusEnabled {
+		t.Fatalf("渠道 status 应从 auto_disabled 提升到 enabled，实际 %d", ch.Status)
+	}
+}
+
+func TestEnableModelOnChannel_DoesNotPromoteManuallyDisabled(t *testing.T) {
+	setupAbilityTestDB(t)
+	seedChannel(t, 2, common.ChannelStatusManuallyDisabled)
+	seedAbility(t, 2, "default", "gpt-4")
+	if _, err := AutoDisableModelOnChannel(2, "gpt-4", "seed"); err != nil {
+		t.Fatalf("seed 失败: %v", err)
+	}
+
+	if err := EnableModelOnChannel(2, "gpt-4"); err != nil {
+		t.Fatalf("EnableModelOnChannel 失败: %v", err)
+	}
+
+	var ch Channel
+	if err := DB.First(&ch, 2).Error; err != nil {
+		t.Fatal(err)
+	}
+	if ch.Status != common.ChannelStatusManuallyDisabled {
+		t.Fatalf("手动禁用的渠道 status 不应被自动提升，实际 %d", ch.Status)
 	}
 }

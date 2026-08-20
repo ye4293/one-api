@@ -140,6 +140,76 @@ func ScanAbilityWindow(channelId int, model string, window time.Duration) (Abili
 	return sample, nil
 }
 
+// ScanAbilityWindowBatch 批量读取多个 channel 在同一 model、同一 window 内的窗口数据。
+//
+// 相比逐个调用 ScanAbilityWindow，本函数解决动态优先级评分的两个瓶颈：
+//  1. 去重：channelIds 内部去重，同一 channel 只扫一次（调用方按 group 展开的重复由此消除）。
+//  2. Pipeline：所有 ZRANGEBYSCORE 合并为一次往返，清理（ZREMRANGEBYSCORE）再合并为一次，
+//     把「N×2 次串行 RTT」降到「2 次 RTT」，remote Redis 下收益尤其明显。
+//
+// 返回 map[channelId]sample；无数据/缺失 key 对应零值 sample。整体 Redis 出错时返回已聚合的
+// 部分结果与 error，由调用方决定降级（评分链路会退回静态 Priority）。
+func ScanAbilityWindowBatch(channelIds []int, model string, window time.Duration) (map[int]AbilityMetricSample, error) {
+	result := make(map[int]AbilityMetricSample, len(channelIds))
+	if !common.RedisEnabled || common.RDB == nil || model == "" || len(channelIds) == 0 {
+		return result, nil
+	}
+
+	now := time.Now().Unix()
+	minScore := float64(now) - window.Seconds()
+	minStr := strconv.FormatFloat(minScore, 'f', -1, 64)
+	maxStr := strconv.FormatFloat(float64(now), 'f', -1, 64)
+	ctx := context.Background()
+
+	// 去重 channelId：调用方按 (channel, group) 展开，同 channel 会重复出现
+	uniq := make([]int, 0, len(channelIds))
+	seen := make(map[int]struct{}, len(channelIds))
+	for _, id := range channelIds {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return result, nil
+	}
+
+	// 一次 pipeline 批量读窗口
+	readPipe := common.RDB.Pipeline()
+	cmds := make(map[int]*redis.StringSliceCmd, len(uniq))
+	for _, id := range uniq {
+		key := AbilityMetricKeyPrefix + strconv.Itoa(id) + ":" + model
+		cmds[id] = readPipe.ZRangeByScore(ctx, key, &redis.ZRangeBy{Min: minStr, Max: maxStr})
+	}
+	if _, err := readPipe.Exec(ctx); err != nil && err != redis.Nil {
+		return result, fmt.Errorf("pipeline ZRANGEBYSCORE model=%s: %w", model, err)
+	}
+	for id, cmd := range cmds {
+		vals, err := cmd.Result()
+		if err != nil && err != redis.Nil {
+			logger.SysError(fmt.Sprintf("ability metric batch read ch=%d model=%s: %s", id, model, err.Error()))
+			continue
+		}
+		result[id] = aggregateSamples(vals)
+	}
+
+	// 一次 pipeline 批量清理过期成员；失败不影响本次评分，下轮再清
+	cleanPipe := common.RDB.Pipeline()
+	for _, id := range uniq {
+		key := AbilityMetricKeyPrefix + strconv.Itoa(id) + ":" + model
+		cleanPipe.ZRemRangeByScore(ctx, key, "-inf", minStr)
+	}
+	if _, err := cleanPipe.Exec(ctx); err != nil && err != redis.Nil {
+		logger.SysError("ability metric batch ZRemRangeByScore error: " + err.Error())
+	}
+
+	return result, nil
+}
+
 // DeleteAbilityMetrics 删除某渠道某模型的全部窗口数据。
 // 用于渠道/模型被删除时清理残留，避免向已删除渠道聚合数据。
 func DeleteAbilityMetrics(channelId int, model string) {

@@ -718,8 +718,17 @@ func UpdateChannelStatusById(id int, status int) error {
 	}
 
 	// 更新Ability状态
+	// 渠道启用时只 enable 未被模型级禁用的行（auto_disabled=false），保留坏模型的禁用状态；
+	// 渠道禁用时仅置 enabled=false，保留 auto_disabled，等待模型级恢复或人工干预。
 	enabled := status == common.ChannelStatusEnabled
-	abilityResult := tx.Model(&Ability{}).Where("channel_id = ?", id).Update("enabled", enabled)
+	var abilityResult *gorm.DB
+	if enabled {
+		abilityResult = tx.Model(&Ability{}).
+			Where("channel_id = ? AND auto_disabled = ?", id, false).
+			Update("enabled", true)
+	} else {
+		abilityResult = tx.Model(&Ability{}).Where("channel_id = ?", id).Update("enabled", false)
+	}
 	if abilityResult.Error != nil {
 		tx.Rollback()
 		logger.SysError(fmt.Sprintf("failed to update ability status for channel %d: %s", id, abilityResult.Error.Error()))
@@ -855,9 +864,16 @@ func BatchUpdateChannelStatus(ids []int, status int) error {
 		}
 	}()
 
-	// 批量更新Ability状态
+	// 批量更新Ability状态（启用时只 enable auto_disabled=false 的行，禁用时保留 auto_disabled）
 	enabled := status == common.ChannelStatusEnabled
-	abilityResult := tx.Model(&Ability{}).Where("channel_id IN (?)", ids).Update("enabled", enabled)
+	var abilityResult *gorm.DB
+	if enabled {
+		abilityResult = tx.Model(&Ability{}).
+			Where("channel_id IN (?) AND auto_disabled = ?", ids, false).
+			Update("enabled", true)
+	} else {
+		abilityResult = tx.Model(&Ability{}).Where("channel_id IN (?)", ids).Update("enabled", false)
+	}
 	if abilityResult.Error != nil {
 		tx.Rollback()
 		logger.SysError(fmt.Sprintf("failed to batch update ability status: %s", abilityResult.Error.Error()))

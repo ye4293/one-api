@@ -794,7 +794,12 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 
 		if util.ShouldDisableChannel(&err.Error, err.StatusCode) {
 			if channel.AutoDisabled {
-				monitor.DisableChannelWithStatusCode(channelId, channelName, err.Error.Message, modelName, err.StatusCode)
+				if config.ModelScopeAutoDisableEnabled {
+					// 模型级禁用：只禁该渠道上的该模型；全模型禁用时回落整渠道禁用
+					monitor.DisableModelOnChannelWithStatusCode(channelId, channelName, err.Error.Message, modelName, err.StatusCode)
+				} else {
+					monitor.DisableChannelWithStatusCode(channelId, channelName, err.Error.Message, modelName, err.StatusCode)
+				}
 			} else {
 				logger.Infof(ctx, "channel #%d (%s) should be disabled but auto-disable is turned off", channelId, channelName)
 				monitor.Emit(channelId, false)

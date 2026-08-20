@@ -24,6 +24,13 @@ type Ability struct {
 	// 选渠道热路径在 DynamicPriorityEnabled 时按本字段 DESC 排序替代静态 Priority。
 	// 0 表示未计算/无数据，选渠道时回退到 Priority。允许 NULL，AutoMigrate 后存量行 NULL。
 	DynamicPriority *int64 `json:"dynamic_priority" gorm:"bigint;default:0;index"`
+
+	// AutoDisabled 标记该 (group, model, channel_id) 行是否因「该模型自身故障」被模型级自动禁用，
+	// 用于与「因整渠道禁用而 enabled=false」区分。核心不变式：
+	//   enabled = (channel.status == enabled) AND (auto_disabled == false)
+	// 存量行 AutoMigrate 后为 false，语义等价旧行为。
+	AutoDisabled     bool  `json:"auto_disabled" gorm:"default:false;index"`
+	AutoDisabledTime int64 `json:"auto_disabled_time" gorm:"default:0"`
 }
 
 func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
@@ -179,12 +186,17 @@ func UpdateAbilityStatus(channelId int, status bool) error {
 }
 
 // CheckDataConsistency 检查并修复 channels 和 abilities 表的数据一致性
+//
+// 不变式：enabled = (channel.status == enabled) AND (auto_disabled == false)
+// 因此「渠道启用但某模型被模型级自动禁用（auto_disabled=1）」时，该行 enabled 应保持 0，
+// 不能被强制恢复——否则会静默撤销模型级禁用。
 func CheckDataConsistency() error {
 	// 先检查不一致的数量
 	var inconsistentCount int64
 	err := DB.Table("abilities a").
 		Joins("JOIN channels c ON a.channel_id = c.id").
-		Where("(c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)", common.ChannelStatusEnabled, common.ChannelStatusEnabled).
+		Where("(c.status = ? AND a.auto_disabled = 0 AND a.enabled = 0) OR (c.status = ? AND a.auto_disabled = 1 AND a.enabled = 1) OR (c.status != ? AND a.enabled = 1)",
+			common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled).
 		Count(&inconsistentCount).Error
 
 	if err != nil {
@@ -202,26 +214,32 @@ func CheckDataConsistency() error {
 			result = DB.Exec(`
 				UPDATE abilities a
 				JOIN channels c ON a.channel_id = c.id
-				SET a.enabled = CASE 
-					WHEN c.status = ? THEN 1
+				SET a.enabled = CASE
+					WHEN c.status = ? AND a.auto_disabled = 0 THEN 1
 					ELSE 0
 				END
-				WHERE (c.status = ? AND a.enabled = 0) OR (c.status != ? AND a.enabled = 1)
-			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+				WHERE (c.status = ? AND a.auto_disabled = 0 AND a.enabled = 0)
+				   OR (c.status = ? AND a.auto_disabled = 1 AND a.enabled = 1)
+				   OR (c.status != ? AND a.enabled = 1)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
 		} else {
 			// SQLite: 使用子查询语法
 			result = DB.Exec(`
-				UPDATE abilities 
-				SET enabled = CASE 
-					WHEN (SELECT status FROM channels WHERE channels.id = abilities.channel_id) = ? THEN 1
+				UPDATE abilities
+				SET enabled = CASE
+					WHEN (SELECT status FROM channels WHERE channels.id = abilities.channel_id) = ? AND abilities.auto_disabled = 0 THEN 1
 					ELSE 0
 				END
 				WHERE EXISTS (
-					SELECT 1 FROM channels 
-					WHERE channels.id = abilities.channel_id 
-					AND ((channels.status = ? AND abilities.enabled = 0) OR (channels.status != ? AND abilities.enabled = 1))
+					SELECT 1 FROM channels
+					WHERE channels.id = abilities.channel_id
+					AND (
+						(channels.status = ? AND abilities.auto_disabled = 0 AND abilities.enabled = 0)
+						OR (channels.status = ? AND abilities.auto_disabled = 1 AND abilities.enabled = 1)
+						OR (channels.status != ? AND abilities.enabled = 1)
+					)
 				)
-			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
+			`, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled, common.ChannelStatusEnabled)
 		}
 
 		if result.Error != nil {
@@ -238,6 +256,9 @@ func CheckDataConsistency() error {
 }
 
 // SyncChannelAbilities 同步指定渠道的 abilities 状态
+//
+// 按不变式 enabled = (channel.status==enabled) AND (auto_disabled==false) 设置：
+// 渠道启用时，模型级已禁用（auto_disabled=true）的行仍保持 enabled=false，不被误恢复。
 func SyncChannelAbilities(channelId int) error {
 	var channel Channel
 	err := DB.First(&channel, channelId).Error
@@ -245,16 +266,134 @@ func SyncChannelAbilities(channelId int) error {
 		return fmt.Errorf("channel not found: %w", err)
 	}
 
-	enabled := channel.Status == common.ChannelStatusEnabled
-	result := DB.Model(&Ability{}).Where("channel_id = ?", channelId).Update("enabled", enabled)
+	var result *gorm.DB
+	if channel.Status == common.ChannelStatusEnabled {
+		// 渠道启用：仅未被模型级禁用的行 enabled=true，其余保持 false
+		result = DB.Model(&Ability{}).
+			Where("channel_id = ? AND auto_disabled = ?", channelId, false).
+			Update("enabled", true)
+		if result.Error == nil {
+			if e := DB.Model(&Ability{}).
+				Where("channel_id = ? AND auto_disabled = ?", channelId, true).
+				Update("enabled", false).Error; e != nil {
+				logger.SysError(fmt.Sprintf("Failed to sync disabled abilities for channel %d: %s", channelId, e.Error()))
+				return e
+			}
+		}
+	} else {
+		// 渠道未启用：全部 enabled=false（auto_disabled 不动）
+		result = DB.Model(&Ability{}).Where("channel_id = ?", channelId).Update("enabled", false)
+	}
 
 	if result.Error != nil {
 		logger.SysError(fmt.Sprintf("Failed to sync abilities for channel %d: %s", channelId, result.Error.Error()))
 		return result.Error
 	}
 
-	logger.SysLog(fmt.Sprintf("Synced %d abilities for channel %d (enabled=%v)", result.RowsAffected, channelId, enabled))
+	logger.SysLog(fmt.Sprintf("Synced abilities for channel %d (channel enabled=%v)", channelId, channel.Status == common.ChannelStatusEnabled))
 	return nil
+}
+
+// AutoDisableModelOnChannel 模型级自动禁用：把某渠道上某模型的所有 (group) 行标记禁用，
+// 并返回该渠道是否已无任何启用中的模型（用于调用方决定是否禁用整个渠道）。
+//
+// 复用 getChannelStatusLock 保证「禁模型 + 统计剩余」原子，避免并发下多个模型同时被禁时
+// 对「是否全禁」的判断产生竞态。不在此函数内直接禁渠道，避免与 AutoDisableChannelById
+// 的同一把锁重入死锁——由 monitor 层拿到 channelDisabled 后再单独调用。
+func AutoDisableModelOnChannel(channelId int, modelName, reason string) (channelDisabled bool, err error) {
+	lock := getChannelStatusLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+
+	currentTime := time.Now().Unix()
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		// 幂等：仅更新当前仍启用的行，已禁用的不重复写时间戳
+		if e := tx.Model(&Ability{}).
+			Where("channel_id = ? AND model = ? AND enabled = ?", channelId, modelName, true).
+			Updates(map[string]interface{}{
+				"enabled":            false,
+				"auto_disabled":      true,
+				"auto_disabled_time": currentTime,
+			}).Error; e != nil {
+			return e
+		}
+
+		var remaining int64
+		if e := tx.Model(&Ability{}).
+			Where("channel_id = ? AND enabled = ?", channelId, true).
+			Count(&remaining).Error; e != nil {
+			return e
+		}
+		channelDisabled = remaining == 0
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+
+	logger.SysLog(fmt.Sprintf("model-scope auto-disable: channel #%d model %s disabled, reason: %s (channel now fully disabled: %v)",
+		channelId, modelName, reason, channelDisabled))
+	return channelDisabled, nil
+}
+
+// AutoDisabledAbility 是待恢复扫描的最小定位信息。
+type AutoDisabledAbility struct {
+	ChannelId        int    `gorm:"column:channel_id"`
+	Model            string `gorm:"column:model"`
+	AutoDisabledTime int64  `gorm:"column:auto_disabled_time"`
+}
+
+// GetAutoDisabledAbilities 返回所有被模型级禁用、且渠道非「手动禁用」的 (channel_id, model)。
+//
+// 覆盖两类：
+//   - 渠道 status=enabled 且该模型 auto_disabled=true：常规模型级恢复目标。
+//   - 渠道 status=auto_disabled（全模型都被禁）：模型级恢复接管，测通任一模型后由
+//     EnableModelOnChannel 顺带把 status 提升回 enabled。
+//
+// 排除 manually_disabled：手动禁用是运维明确决策，不做自动测试恢复。
+// 按 auto_disabled_time 升序：优先恢复最久的，也是最可能已经自愈的。
+func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
+	var items []AutoDisabledAbility
+	err := DB.Table("abilities a").
+		Select("DISTINCT a.channel_id, a.model, MIN(a.auto_disabled_time) as auto_disabled_time").
+		Joins("JOIN channels c ON c.id = a.channel_id").
+		Where("a.auto_disabled = ? AND c.status != ?", true, common.ChannelStatusManuallyDisabled).
+		Group("a.channel_id, a.model").
+		Order("auto_disabled_time ASC").
+		Scan(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// EnableModelOnChannel 模型级恢复：清 (channel_id, model) 所有行的 auto_disabled 标记并 enable。
+//
+// 若渠道当前 status=auto_disabled（因该 model 被禁而连带禁用），一并提升 status=enabled；
+// manually_disabled 的渠道不主动提升——尊重人工决策。
+//
+// 复用 channelStatusLock 与 AutoDisableChannelById/AutoDisableModelOnChannel 串行，避免
+// 「刚恢复模型就被并发禁用整渠道再清零」这类竞态。
+func EnableModelOnChannel(channelId int, modelName string) error {
+	lock := getChannelStatusLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Ability{}).
+			Where("channel_id = ? AND model = ?", channelId, modelName).
+			Updates(map[string]interface{}{
+				"enabled":            true,
+				"auto_disabled":      false,
+				"auto_disabled_time": 0,
+			}).Error; err != nil {
+			return err
+		}
+		// 条件 UPDATE：仅从 auto_disabled 提升，manually_disabled 保持不动
+		return tx.Model(&Channel{}).
+			Where("id = ? AND status = ?", channelId, common.ChannelStatusAutoDisabled).
+			Update("status", common.ChannelStatusEnabled).Error
+	})
 }
 
 func FindEnabledModelsByGroup(group string) ([]string, error) {
