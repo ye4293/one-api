@@ -8,6 +8,14 @@
 
 ## 2026-08-20
 
+### perf(dynamic-priority): 评分窗口读取去重 + pipeline，缓解多渠道模型瓶颈
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 性能优化
+- **涉及文件**:
+  - `common/metrics/ability_window.go` — 新增 `ScanAbilityWindowBatch`：channelId 去重 + 一次 pipeline 批量 ZRANGEBYSCORE、一次 pipeline 批量 ZREMRANGEBYSCORE
+  - `controller/dynamic_priority.go` — `buildStatsForModel` 改用批量扫描替代 per-(channel,group) 逐个 `ScanAbilityWindow`
+- **说明**: 原评分对每个 `(channel, model, group)` 候选各调一次 `ScanAbilityWindow`，而窗口数据只与 `(channel, model)` 有关——N 个 group 就是 N× 重复 Redis 往返，且全程串行。改为按 model 内 unique channel 去重、pipeline 合并往返，把「三元组数×2 次串行 RTT」降到「2 次 RTT」，remote Redis 下收益显著。纯性能优化，评分结果与落库语义不变。
+
 ### feat(model-view): 模型详情页展示「模型自动禁用」状态
 - **分支**: `feat/model-level-disable-dynamic-priority`
 - **类型**: 新功能
