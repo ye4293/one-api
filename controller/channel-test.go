@@ -570,26 +570,9 @@ func testChannels(notify bool, scope string) error {
 			if isChannelEnabled && util.ShouldDisableChannel(openaiErr, -1) {
 				monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", -1)
 			}
-			// 仅自动禁用的渠道才自动恢复，仅主节点执行
-			// 若响应时间超过阈值，也跳过自动启用（避免把响应过慢的渠道误恢复）
-			// 若渠道关闭了自动启用（auto_enabled=false），同样跳过
-			// 若渠道模型列表为空，跳过自动启用（防止 zombie 状态：enabled 但无可服务模型）
-			if !isChannelEnabled && util.ShouldEnableChannel(err, openaiErr) {
-				if milliseconds > disableThreshold {
-					logger.SysLog(fmt.Sprintf(
-						"skip auto-enable channel #%d (%s): response time %.2fs exceeds threshold %.2fs",
-						channel.Id, channel.Name,
-						float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0,
-					))
-				} else if channel.Models == "" {
-					logger.SysLog(fmt.Sprintf(
-						"skip auto-enable channel #%d (%s): model list is empty, waiting for upstream sync to restore models",
-						channel.Id, channel.Name,
-					))
-				} else {
-					monitor.EnableChannel(channel.Id, channel.Name)
-				}
-			}
+			// 方案 A：不再由渠道级测通触发"整渠道恢复"（原逻辑会连带清零 auto_disabled 洗白坏模型）。
+			// 被自动禁用的渠道统一由 recoverAutoDisabledModels 逐模型恢复：测通哪个模型就恢复哪个，
+			// 单模型恢复内联提升渠道 status；不可探测的模型只能通过前端「模型自动禁用」批量启用救火。
 			channel.UpdateResponseTime(milliseconds)
 			time.Sleep(config.RequestInterval)
 		}
@@ -629,8 +612,20 @@ func TestChannels(c *gin.Context) {
 var recoverModelsLock sync.Mutex
 var recoverModelsRunning bool
 
-// recoverAutoDisabledModels 模型级恢复：测试被模型级禁用、且渠道仍启用的模型，成功则重新启用该模型。
-// 与渠道级恢复正交——渠道级恢复只处理 status=auto_disabled 的整渠道。
+// recoverModelsMaxPerRound 每轮模型级恢复处理的最大 (channel, model) 数。
+// 生产环境可能出现单模型挂几百渠道、每渠道又累积多个被禁模型的场景，
+// 无上限时一轮会发几百次真实付费请求且串行 sleep，占满整个恢复周期。
+// 100 是经验值：按 RequestInterval~500ms 估算，一轮上限约 50s，与 5min 周期相容。
+const recoverModelsMaxPerRound = 100
+
+// recoverAutoDisabledModels 模型级恢复：测试被模型级禁用的模型，成功则重新启用该 (channel, model)。
+//
+// 与方案 A 匹配的语义：
+//   - 覆盖 channel.status ∈ {enabled, auto_disabled} 两类渠道；manually_disabled 不动。
+//   - 恢复动作走 EnableModelOnChannel，内联把 auto_disabled 渠道 status 提升回 enabled。
+//   - 按 auto_disabled_time 升序（优先恢复最久的），每轮上限 recoverModelsMaxPerRound。
+//   - 不可 chat 探测的模型/渠道类型（image/embedding/video 等）在发请求前跳过，只能靠前端人工批量启用。
+//
 // 受 config.AutomaticEnableChannelEnabled 与单渠道 AutoEnabled 约束，仅主节点调用。
 func recoverAutoDisabledModels() {
 	if !config.AutomaticEnableChannelEnabled {
@@ -657,9 +652,15 @@ func recoverAutoDisabledModels() {
 	if len(items) == 0 {
 		return
 	}
+	if len(items) > recoverModelsMaxPerRound {
+		logger.SysLog(fmt.Sprintf("model recovery: %d candidates found, processing first %d (by auto_disabled_time ASC); rest defer to next round",
+			len(items), recoverModelsMaxPerRound))
+		items = items[:recoverModelsMaxPerRound]
+	}
 
 	// 按渠道缓存，避免同渠道多模型重复取库
 	channelCache := make(map[int]*model.Channel)
+	processed, recovered, skipped := 0, 0, 0
 	for _, it := range items {
 		channel, ok := channelCache[it.ChannelId]
 		if !ok {
@@ -676,19 +677,30 @@ func recoverAutoDisabledModels() {
 		}
 		// 渠道关闭自动启用则跳过其模型级恢复
 		if !channel.AutoEnabled {
+			skipped++
+			continue
+		}
+		// 预过滤：不可 chat 探测的渠道类型 / 模型名，直接跳过避免浪费真实 API 调用。
+		// 这类模型只能通过前端「模型自动禁用」批量启用手工恢复。
+		if isUnsupportedTestChannel(channel.Type) || isUnsupportedTestModel(it.Model) {
+			skipped++
 			continue
 		}
 
+		processed++
 		testErr, openaiErr, _, _ := testChannel(channel, it.Model, true)
 		if util.ShouldEnableChannel(testErr, openaiErr) {
 			if e := model.EnableModelOnChannel(it.ChannelId, it.Model); e != nil {
 				logger.SysError(fmt.Sprintf("model recovery: failed to enable channel %d model %s: %s", it.ChannelId, it.Model, e.Error()))
 			} else {
+				recovered++
 				logger.SysLog(fmt.Sprintf("model recovery: channel #%d model %s re-enabled", it.ChannelId, it.Model))
 			}
 		}
 		time.Sleep(config.RequestInterval)
 	}
+	logger.SysLog(fmt.Sprintf("model recovery round done: candidates=%d processed=%d recovered=%d skipped=%d",
+		len(items), processed, recovered, skipped))
 }
 
 // AutomaticallyTestChannels 仅主节点执行：周期性测试并自动启用符合条件的渠道

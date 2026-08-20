@@ -338,18 +338,28 @@ func AutoDisableModelOnChannel(channelId int, modelName, reason string) (channel
 
 // AutoDisabledAbility 是待恢复扫描的最小定位信息。
 type AutoDisabledAbility struct {
-	ChannelId int    `gorm:"column:channel_id"`
-	Model     string `gorm:"column:model"`
+	ChannelId        int    `gorm:"column:channel_id"`
+	Model            string `gorm:"column:model"`
+	AutoDisabledTime int64  `gorm:"column:auto_disabled_time"`
 }
 
-// GetAutoDisabledAbilities 返回所有被模型级禁用、且所在渠道仍处于启用状态的 (channel_id, model)。
-// 渠道整体处于禁用状态时由渠道级恢复逻辑负责，不在此列。
+// GetAutoDisabledAbilities 返回所有被模型级禁用、且渠道非「手动禁用」的 (channel_id, model)。
+//
+// 覆盖两类：
+//   - 渠道 status=enabled 且该模型 auto_disabled=true：常规模型级恢复目标。
+//   - 渠道 status=auto_disabled（全模型都被禁）：模型级恢复接管，测通任一模型后由
+//     EnableModelOnChannel 顺带把 status 提升回 enabled。
+//
+// 排除 manually_disabled：手动禁用是运维明确决策，不做自动测试恢复。
+// 按 auto_disabled_time 升序：优先恢复最久的，也是最可能已经自愈的。
 func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
 	var items []AutoDisabledAbility
 	err := DB.Table("abilities a").
-		Select("DISTINCT a.channel_id, a.model").
+		Select("DISTINCT a.channel_id, a.model, MIN(a.auto_disabled_time) as auto_disabled_time").
 		Joins("JOIN channels c ON c.id = a.channel_id").
-		Where("a.auto_disabled = ? AND c.status = ?", true, common.ChannelStatusEnabled).
+		Where("a.auto_disabled = ? AND c.status != ?", true, common.ChannelStatusManuallyDisabled).
+		Group("a.channel_id, a.model").
+		Order("auto_disabled_time ASC").
 		Scan(&items).Error
 	if err != nil {
 		return nil, err
@@ -357,15 +367,33 @@ func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
 	return items, nil
 }
 
-// EnableModelOnChannel 模型级恢复：清除某渠道上某模型的禁用标记并重新启用（仅应在渠道启用时调用）。
+// EnableModelOnChannel 模型级恢复：清 (channel_id, model) 所有行的 auto_disabled 标记并 enable。
+//
+// 若渠道当前 status=auto_disabled（因该 model 被禁而连带禁用），一并提升 status=enabled；
+// manually_disabled 的渠道不主动提升——尊重人工决策。
+//
+// 复用 channelStatusLock 与 AutoDisableChannelById/AutoDisableModelOnChannel 串行，避免
+// 「刚恢复模型就被并发禁用整渠道再清零」这类竞态。
 func EnableModelOnChannel(channelId int, modelName string) error {
-	return DB.Model(&Ability{}).
-		Where("channel_id = ? AND model = ?", channelId, modelName).
-		Updates(map[string]interface{}{
-			"enabled":            true,
-			"auto_disabled":      false,
-			"auto_disabled_time": 0,
-		}).Error
+	lock := getChannelStatusLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&Ability{}).
+			Where("channel_id = ? AND model = ?", channelId, modelName).
+			Updates(map[string]interface{}{
+				"enabled":            true,
+				"auto_disabled":      false,
+				"auto_disabled_time": 0,
+			}).Error; err != nil {
+			return err
+		}
+		// 条件 UPDATE：仅从 auto_disabled 提升，manually_disabled 保持不动
+		return tx.Model(&Channel{}).
+			Where("id = ? AND status = ?", channelId, common.ChannelStatusAutoDisabled).
+			Update("status", common.ChannelStatusEnabled).Error
+	})
 }
 
 func FindEnabledModelsByGroup(group string) ([]string, error) {

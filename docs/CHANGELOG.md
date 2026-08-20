@@ -8,6 +8,27 @@
 
 ## 2026-08-20
 
+### feat(recovery): 恢复链路统一 · 方案 A（纯测试恢复 + 人工兜底）
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能 + 行为破坏性变更
+- **涉及文件（后端）**:
+  - `model/channel.go` — `UpdateChannelStatusById`/`BatchUpdateChannelStatus` 启用分支：`WHERE auto_disabled=false` 才 enable，不再乐观清零 auto_disabled
+  - `model/ability.go` — `EnableModelOnChannel` 改为事务 + `channelStatusLock`，事务内：enable 模型的所有 group 行 + 若渠道 `status=auto_disabled` 则条件 UPDATE 提升为 enabled（manually_disabled 不动）；`GetAutoDisabledAbilities` 放宽范围为 `status != manually_disabled`，加 `ORDER BY MIN(auto_disabled_time) ASC` 优先恢复最久的
+  - `controller/channel-test.go` — 删除 `testChannels("auto_disabled")` 中的 `monitor.EnableChannel` 分支（不再"测通洗全部"）；`recoverAutoDisabledModels` 加每轮上限 100（`recoverModelsMaxPerRound`）+ 预过滤 `isUnsupportedTestChannel/isUnsupportedTestModel`（image/embedding/video 等在发请求前跳过，只能人工恢复）+ 结果日志
+  - `controller/dynamic_priority_view.go` — 新增 `BatchEnableModelChannel`：`POST /api/channel/model_channel_enable`，批量走 `EnableModelOnChannel`，返回 affected/failed
+  - `router/api-router.go` — 注册 `POST /api/channel/model_channel_enable`
+  - `model/ability_test.go` — 新增 `TestEnableModelOnChannel_PromotesAutoDisabledStatus` 与 `TestEnableModelOnChannel_DoesNotPromoteManuallyDisabled`；`setupAbilityTestDB` 增建 channels 表
+- **涉及文件（前端 ezlinkai-web）**:
+  - `sections/model/model-channels-table.tsx` — 新增多选列（仅 auto_disabled 行可勾）+ "批量启用 (N)" 按钮 + 当前页可选行数提示
+  - `app/api/channel/model_channel_enable/route.ts`（新增）— API 代理
+- **说明**: 上一次方案里"渠道级恢复测通即整渠道洗白"会连带清零 `auto_disabled`，导致永久坏模型被反复复活抖动。本次统一：所有恢复都走模型级 `EnableModelOnChannel`（单模型粒度 + 顺带提升渠道 status），删除渠道级"测一个洗全部"。不可 chat 探测的模型（image/embedding/video）改为通过前端「模型自动禁用」筛选 + 批量启用手工救火。核心不变式仍是 `enabled=(渠道启用)AND(NOT auto_disabled)`，恢复只在测通/人工确认后单点生效。
+- **⚠️ 行为破坏性变更（不可回滚）**: `ModelScopeAutoDisableEnabled=false` 只回退禁用侧；恢复侧的老"洗全部"逻辑一旦删除需 revert commit。运维需知悉：image/embedding/video 类模型被模型级禁用后**不会**自动恢复。
+- **关联计划**: `docs/plans/2026-08-20-unified-recovery.md`
+
+---
+
+## 2026-08-20
+
 ### perf(dynamic-priority): 评分窗口读取去重 + pipeline，缓解多渠道模型瓶颈
 - **分支**: `feat/model-level-disable-dynamic-priority`
 - **类型**: 性能优化
