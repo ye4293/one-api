@@ -101,3 +101,26 @@ git worktree remove /tmp/dev-test    # 用完清理
 2. **方案设计**：改哪些文件、核心逻辑
 3. **影响范围**：是否影响现有功能、是否需要数据迁移
 4. **验证方式**：如何确认改动正确
+
+## 上游 Usage / Prompt Cache 结论
+
+OpenAI Responses 对应字段为：`input_tokens`（输入总量 `P`）、`input_tokens_details.cached_tokens`（缓存读 `R`）、`input_tokens_details.cache_write_tokens`（缓存写 `W`）、`output_tokens`（输出 `C`）。Chat Completions 的同义字段分别是 `prompt_tokens`、`prompt_tokens_details.cached_tokens`、`prompt_tokens_details.cache_write_tokens`、`completion_tokens`。
+
+当上游 Usage/定价文档确认缓存读、写为输入的互斥分桶时：
+
+```text
+普通输入 N = P - R - W
+总输入 P = N + R + W
+总费用 = N×input_price + R×cached_input_price + W×cached_write_price + C×output_price
+```
+
+每笔请求须断言 `R >= 0`、`W >= 0`、`R + W <= P`。违反时不得静默钳制普通输入为 0；记录脱敏 usage、渠道、模型、request ID 并核验上游口径。
+
+结论：`input_tokens` / `prompt_tokens` 已包含缓存读、写；`cached_tokens` 和 `cache_write_tokens` 是输入总量内不同的计费分桶。普通输入计费必须同时扣除两者。若同一响应同时返回读、写，仍以 `R+W<=P` 做硬校验；违反时应核查上游字段口径，不能继续按缓存分项计费。
+
+佐证：三个 `gpt-5.6` 模型结果一致。
+
+| 场景 | `P=input_tokens` | `R=cached_tokens` | `W=cache_write_tokens` | `N=P-R-W` |
+|---|---:|---:|---:|---:|
+| 首次请求（建缓存） | 2717 | 0 | 2714 | 3 |
+| 相同前缀再次请求（读缓存） | 2717 | 2714 | 0 | 3 |
