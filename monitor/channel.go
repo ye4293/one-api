@@ -140,17 +140,33 @@ func DisableModelOnChannelWithStatusCode(channelId int, channelName string, reas
 		return
 	}
 
-	channelDisabled, err := model.AutoDisableModelOnChannel(channelId, modelName, reason)
-	if err != nil {
+	if err := model.AutoDisableModelOnChannel(channelId, modelName, reason); err != nil {
 		logger.SysError(fmt.Sprintf("Failed to model-scope disable channel %d model %s: %s", channelId, modelName, err.Error()))
 		return
 	}
+	// 「是否禁整个渠道」由统一恢复链路 recoverAutoDisabledModels 尾部按
+	// 「最近使用的模型全部被自动禁用且超过抖动窗口」判定并触发 DisableChannelByRecentUsage，
+	// 不再由此处的模型级禁用同步触发。这样避免瞬时抖动引发误禁，也让「渠道配了 60 个模型
+	// 但只有 5 个真实使用」的场景能正确禁掉。
+	// 参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md
+}
 
-	if channelDisabled {
-		// 该渠道已无任何启用中的模型 —— 禁用整个渠道并发送完整通知
-		disableChannelInternalWithStatusCode(channel, channelId, channelName, reason, modelName, statusCode)
+// DisableChannelByRecentUsage 由统一恢复链路在判定「最近使用的模型全部被自动禁用」后调用。
+// 与 DisableChannelSafelyWithStatusCode 的区别：不由单次上游请求错误驱动，
+// statusCode 传 0，modelName 传空字符串，reason 描述使用中的模型数。
+func DisableChannelByRecentUsage(channelId int, usedModels int) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d for usage-based disable: %s", channelId, err.Error()))
+		return
 	}
-	// 仅禁用单模型时不额外发送告警（避免告警风暴），model 层已记录日志
+	if channel.MultiKeyInfo.IsMultiKey {
+		// 多 Key 渠道不由本判定禁用，与 DisableChannelSafelyWithStatusCode 语义一致。
+		logger.SysLog(fmt.Sprintf("multi-key channel #%d (%s) not auto-disabled by usage-based rule", channelId, channel.Name))
+		return
+	}
+	reason := fmt.Sprintf("最近使用中的 %d 个模型全部被自动禁用", usedModels)
+	disableChannelInternalWithStatusCode(channel, channelId, channel.Name, reason, "", 0)
 }
 
 // DisableChannel disable & notify

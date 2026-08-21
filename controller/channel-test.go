@@ -701,6 +701,29 @@ func recoverAutoDisabledModels() {
 	}
 	logger.SysLog(fmt.Sprintf("model recovery round done: candidates=%d processed=%d recovered=%d skipped=%d",
 		len(items), processed, recovered, skipped))
+
+	// 收尾：对本轮涉及的渠道去重，按「最近使用的模型全部被自动禁用且超过抖动窗口」判定是否禁整个渠道。
+	// 判定放在本轮探测之后而非模型级禁用的同步链路里，是为了：
+	//   - 给恢复探针至少一个完整周期尝试把瞬时抖动导致的禁用模型救回来
+	//   - 让「渠道配了大量模型但只有少数被真实使用」的场景能按实际流量判禁
+	// 参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md
+	evaluated := make(map[int]struct{}, len(items))
+	for _, it := range items {
+		if _, done := evaluated[it.ChannelId]; done {
+			continue
+		}
+		evaluated[it.ChannelId] = struct{}{}
+		should, used, disabled, jerr := model.ShouldDisableChannelByRecentUsage(it.ChannelId)
+		if jerr != nil {
+			logger.SysError(fmt.Sprintf("channel #%d usage-based disable judge failed: %s", it.ChannelId, jerr.Error()))
+			continue
+		}
+		if !should {
+			continue
+		}
+		logger.SysLog(fmt.Sprintf("channel #%d usage-based disable triggered: used=%d disabled=%d", it.ChannelId, used, disabled))
+		monitor.DisableChannelByRecentUsage(it.ChannelId, used)
+	}
 }
 
 // AutomaticallyTestChannels 仅主节点执行：周期性测试并自动启用符合条件的渠道

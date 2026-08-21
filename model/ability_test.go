@@ -315,13 +315,9 @@ func TestAutoDisableModelOnChannel(t *testing.T) {
 	seedAbility(t, 1, "default", "gpt-4")
 	seedAbility(t, 1, "default", "gpt-4o")
 
-	// 禁用第一个模型：渠道不应被判定为全禁
-	channelDisabled, err := AutoDisableModelOnChannel(1, "gpt-4", "test reason")
-	if err != nil {
+	// 禁用第一个模型
+	if err := AutoDisableModelOnChannel(1, "gpt-4", "test reason"); err != nil {
 		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
-	}
-	if channelDisabled {
-		t.Fatalf("仅禁 1 个模型不应判定渠道全禁")
 	}
 
 	var g4 Ability
@@ -339,13 +335,16 @@ func TestAutoDisableModelOnChannel(t *testing.T) {
 		t.Fatalf("gpt-4o 应保持启用未禁用，实际 %+v", g4o)
 	}
 
-	// 禁用最后一个模型：应判定渠道全禁
-	channelDisabled, err = AutoDisableModelOnChannel(1, "gpt-4o", "test reason")
-	if err != nil {
+	// 禁用最后一个模型：函数本身不再返回「是否全禁」，由 ShouldDisableChannelByRecentUsage 判定
+	if err := AutoDisableModelOnChannel(1, "gpt-4o", "test reason"); err != nil {
 		t.Fatalf("AutoDisableModelOnChannel 失败: %v", err)
 	}
-	if !channelDisabled {
-		t.Fatalf("最后一个模型被禁后应判定渠道全禁")
+	// 校验两个模型都被禁
+	if err := DB.Where("channel_id = ? AND model = ?", 1, "gpt-4o").First(&g4o).Error; err != nil {
+		t.Fatal(err)
+	}
+	if g4o.Enabled || !g4o.AutoDisabled {
+		t.Fatalf("gpt-4o 应被禁，实际 %+v", g4o)
 	}
 
 	// 模型级恢复：清标记并重新启用
@@ -374,7 +373,7 @@ func TestEnableModelOnChannel_PromotesAutoDisabledStatus(t *testing.T) {
 	seedChannel(t, 1, common.ChannelStatusAutoDisabled)
 	seedAbility(t, 1, "default", "gpt-4")
 	// 手动置该 ability 为模型级禁用
-	if _, err := AutoDisableModelOnChannel(1, "gpt-4", "seed"); err != nil {
+	if err := AutoDisableModelOnChannel(1, "gpt-4", "seed"); err != nil {
 		t.Fatalf("seed 失败: %v", err)
 	}
 
@@ -402,7 +401,7 @@ func TestEnableModelOnChannel_DoesNotPromoteManuallyDisabled(t *testing.T) {
 	setupAbilityTestDB(t)
 	seedChannel(t, 2, common.ChannelStatusManuallyDisabled)
 	seedAbility(t, 2, "default", "gpt-4")
-	if _, err := AutoDisableModelOnChannel(2, "gpt-4", "seed"); err != nil {
+	if err := AutoDisableModelOnChannel(2, "gpt-4", "seed"); err != nil {
 		t.Fatalf("seed 失败: %v", err)
 	}
 
