@@ -34,7 +34,11 @@ require (
 	gorm.io/gorm v1.25.7
 )
 
+// shipper 随 one-api 仓库保存固定版本快照；其余依赖仍由 Go Modules 正常下载。
+replace github.com/changshiaos/charge/server/shipper => ./third_party/charge-shipper-v0.1.0
+
 require (
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -77,6 +81,7 @@ require (
 	github.com/bytedance/gopkg v0.1.2
 	github.com/bytedance/sonic v1.11.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/changshiaos/charge/server/shipper v0.1.0
 	github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
