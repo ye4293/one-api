@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-08-21
+
+### feat(auto-disable): 渠道级自动禁用改按「最近使用模型集」判定
+
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能 + API 签名变更
+- **涉及文件**:
+  - `model/channel_disable_by_usage.go`（新增）— `ShouldDisableChannelByRecentUsage(channelId)`：读 `model_metrics`（最近 1 天 `total_requests>0`）拿使用模型集，再读 `abilities`（`auto_disabled=1` 且 `auto_disabled_time` 超过 `2 × AutoTestChannelFrequency` 分钟抖动窗口）判定禁用数，全禁触发。分两次查询避免 `LOG_DB`/`DB` 分库时跨库 JOIN。
+  - `model/channel_disable_by_usage_test.go`(新增)— 8 个子测试覆盖：无流量 / 有流量无禁用 / 抖动窗口内 / 超窗口全禁 / 部分禁用 / 多 group 同模型 / 窗口外流量 / 跨渠道隔离。
+  - `model/ability.go` — `AutoDisableModelOnChannel` 签名从 `(bool, error)` 简化为 `error`，移除内部 `remaining==0` 判定和事务（改单次 UPDATE）。「是否禁整个渠道」的决策权交给统一恢复链路。
+  - `model/ability_test.go` — 更新 `TestAutoDisableModelOnChannel` 及 `TestEnableModelOnChannel_*` 测试的调用点适配新签名。
+  - `monitor/channel.go` — `DisableModelOnChannelWithStatusCode` 去掉「拿 channelDisabled 就 disableChannelInternal」的分支；新增导出函数 `DisableChannelByRecentUsage(channelId, usedModels)` 供恢复链路调用（复用 `disableChannelInternalWithStatusCode` 骨架，reason 描述使用中模型数、statusCode=0）。
+  - `controller/channel-test.go` — `recoverAutoDisabledModels()` 收尾对本轮涉及的 `channel_id` 去重后逐个调 `ShouldDisableChannelByRecentUsage`，命中则调 `monitor.DisableChannelByRecentUsage`。
+- **说明**: 原判定分母是「渠道 abilities 表中所有 enabled=true 的行」——渠道配 60 个模型只用 5 个时，`remaining>0` 永远达不到禁渠道条件，观感上「渠道已废但系统仍在派单」。新判定分母改为「最近 1 天真实调用过的模型集」，且引入 2 倍探针周期的抖动窗口，避免瞬时上游抖动误禁。判定挂到恢复链路 tick 末尾，天然带过恢复窗口——这一轮能救回来的模型不算分子。
+- **⚠️ API 签名变更**: `model.AutoDisableModelOnChannel` 现返回 `error`；`monitor.DisableModelOnChannelWithStatusCode` 内部行为变化但签名不变（`statusCode` 参数保留以兼容 relay 层调用点）。
+- **关联计划**: `docs/plans/2026-08-21-channel-disable-by-recent-usage.md`
+
+---
+
 ## 2026-08-20
 
 ### feat(recovery): 恢复链路统一 · 方案 A（纯测试恢复 + 人工兜底）

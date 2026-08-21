@@ -294,46 +294,35 @@ func SyncChannelAbilities(channelId int) error {
 	return nil
 }
 
-// AutoDisableModelOnChannel 模型级自动禁用：把某渠道上某模型的所有 (group) 行标记禁用，
-// 并返回该渠道是否已无任何启用中的模型（用于调用方决定是否禁用整个渠道）。
+// AutoDisableModelOnChannel 模型级自动禁用：把某渠道上某模型的所有 (group) 行标记禁用。
 //
-// 复用 getChannelStatusLock 保证「禁模型 + 统计剩余」原子，避免并发下多个模型同时被禁时
-// 对「是否全禁」的判断产生竞态。不在此函数内直接禁渠道，避免与 AutoDisableChannelById
-// 的同一把锁重入死锁——由 monitor 层拿到 channelDisabled 后再单独调用。
-func AutoDisableModelOnChannel(channelId int, modelName, reason string) (channelDisabled bool, err error) {
+// 复用 getChannelStatusLock 保证禁用的原子性，避免并发下同一 (channel, model) 被
+// 并发禁用产生竞态。不在此函数内直接禁渠道，避免与 AutoDisableChannelById
+// 的同一把锁重入死锁。
+//
+// 「是否要禁整个渠道」不再由本函数返回：改由统一恢复链路 recoverAutoDisabledModels
+// 每轮探测收尾时，用 ShouldDisableChannelByRecentUsage 按「最近使用的模型全部被
+// 自动禁用且超过抖动窗口」判定并触发。参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md。
+func AutoDisableModelOnChannel(channelId int, modelName, reason string) error {
 	lock := getChannelStatusLock(channelId)
 	lock.Lock()
 	defer lock.Unlock()
 
 	currentTime := time.Now().Unix()
-	err = DB.Transaction(func(tx *gorm.DB) error {
-		// 幂等：仅更新当前仍启用的行，已禁用的不重复写时间戳
-		if e := tx.Model(&Ability{}).
-			Where("channel_id = ? AND model = ? AND enabled = ?", channelId, modelName, true).
-			Updates(map[string]interface{}{
-				"enabled":            false,
-				"auto_disabled":      true,
-				"auto_disabled_time": currentTime,
-			}).Error; e != nil {
-			return e
-		}
-
-		var remaining int64
-		if e := tx.Model(&Ability{}).
-			Where("channel_id = ? AND enabled = ?", channelId, true).
-			Count(&remaining).Error; e != nil {
-			return e
-		}
-		channelDisabled = remaining == 0
-		return nil
-	})
+	err := DB.Model(&Ability{}).
+		Where("channel_id = ? AND model = ? AND enabled = ?", channelId, modelName, true).
+		Updates(map[string]interface{}{
+			"enabled":            false,
+			"auto_disabled":      true,
+			"auto_disabled_time": currentTime,
+		}).Error
 	if err != nil {
-		return false, err
+		return err
 	}
 
-	logger.SysLog(fmt.Sprintf("model-scope auto-disable: channel #%d model %s disabled, reason: %s (channel now fully disabled: %v)",
-		channelId, modelName, reason, channelDisabled))
-	return channelDisabled, nil
+	logger.SysLog(fmt.Sprintf("model-scope auto-disable: channel #%d model %s disabled, reason: %s",
+		channelId, modelName, reason))
+	return nil
 }
 
 // AutoDisabledAbility 是待恢复扫描的最小定位信息。
