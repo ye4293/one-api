@@ -209,3 +209,42 @@ func TestShouldDisableChannelByRecentUsage(t *testing.T) {
 		}
 	})
 }
+
+// TestShouldDisableChannelByRecentUsage_StabilizeFloor 覆盖低 AutoTestChannelFrequency
+// 场景下抖动窗口地板值保护：freq=1 分钟时 2×freq=120s 太短，实际窗口应被抬到
+// channelDisableStabilizeFloorSeconds（10 分钟）。
+func TestShouldDisableChannelByRecentUsage_StabilizeFloor(t *testing.T) {
+	origFreq := config.AutoTestChannelFrequency
+	config.AutoTestChannelFrequency = 1 // 2*freq=120s，被地板值 600s 覆盖
+	t.Cleanup(func() { config.AutoTestChannelFrequency = origFreq })
+
+	now := time.Now().Unix()
+	recentHour := (now - 3600) / 3600 * 3600
+
+	t.Run("禁用_300s前_地板窗口内不禁", func(t *testing.T) {
+		setupUsageJudgeDB(t)
+		seedUsedModel(t, 1, "gpt-4", recentHour, 10)
+		// 300s 前禁用：超过 2×freq(120s) 但小于地板值 600s，应仍在抖动窗口内
+		seedAutoDisabled(t, 1, "default", "gpt-4", 300)
+		should, _, disabled, err := ShouldDisableChannelByRecentUsage(1)
+		if err != nil {
+			t.Fatalf("判定失败: %v", err)
+		}
+		if should || disabled != 0 {
+			t.Fatalf("300s 前禁用未过地板窗口(600s)，不应触发；实际 should=%v disabled=%d", should, disabled)
+		}
+	})
+
+	t.Run("禁用_700s前_超地板窗口应禁", func(t *testing.T) {
+		setupUsageJudgeDB(t)
+		seedUsedModel(t, 1, "gpt-4", recentHour, 10)
+		seedAutoDisabled(t, 1, "default", "gpt-4", 700)
+		should, _, disabled, err := ShouldDisableChannelByRecentUsage(1)
+		if err != nil {
+			t.Fatalf("判定失败: %v", err)
+		}
+		if !should || disabled != 1 {
+			t.Fatalf("700s 前禁用已过地板窗口，应触发；实际 should=%v disabled=%d", should, disabled)
+		}
+	})
+}

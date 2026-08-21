@@ -8,6 +8,16 @@
 
 ## 2026-08-21
 
+### fix(auto-disable): 抖动窗口加 10 分钟地板值，防低 freq 下退化
+
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: Bug 修复（审计发现）
+- **涉及文件**:
+  - `model/channel_disable_by_usage.go` — 新增常量 `channelDisableStabilizeFloorSeconds = 10*60`，`stabilizeSeconds = max(2*freq*60, 600)`
+  - `model/channel_disable_by_usage_test.go` — 新增 `TestShouldDisableChannelByRecentUsage_StabilizeFloor`：freq=1 分钟时验证 300s/700s 两侧行为
+- **说明**: 上一 commit 引入的 `2 × AutoTestChannelFrequency` 抖动窗口在 `AutoTestChannelFrequency=1` 时退化为 120s——比恢复探针跑完一整轮还快，等于「上游 2 分钟抖动就禁整渠道」。加地板值确保任何 freq 配置下都至少给 10 分钟恢复窗口。
+- **关联审计**: `docs/plans/2026-08-21-channel-disable-by-recent-usage.md` 后置审计 B1
+
 ### feat(auto-disable): 渠道级自动禁用改按「最近使用模型集」判定
 
 - **分支**: `feat/model-level-disable-dynamic-priority`

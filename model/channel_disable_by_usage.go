@@ -20,6 +20,14 @@ const channelDisableUsageWindowSeconds int64 = 24 * 3600
 // 与探针周期挂钩而非硬编码「10 分钟」，是为了自动适应 AutoTestChannelFrequency 的变更。
 const channelDisableStabilizeProbeCycles = 2
 
+// channelDisableStabilizeFloorSeconds 抖动窗口的地板值（秒）。
+//
+// 保护低 AutoTestChannelFrequency 场景：如果运维把探针频率设成 1 分钟，仅靠
+// 2×freq 会得到 120 秒窗口——比恢复探针跑完一整轮（受 recoverModelsMaxPerRound
+// 与 RequestInterval 影响，可能几十秒）还快，禁完就没机会救回来。
+// 强制至少 10 分钟兜底，跟 AutoTestChannelFrequency=5min 时的窗口一致。
+const channelDisableStabilizeFloorSeconds int64 = 10 * 60
+
 // channelDisableDefaultProbeFreqMinutes 探针未配置时的兜底周期（分钟）。
 // AutoTestChannelFrequency<=0 时代表未启用自动探针，理论上不会走到本判定；
 // 保守起见给一个合理默认值，避免 stabilizeCutoff 退化为 now 造成误禁。
@@ -48,7 +56,11 @@ func ShouldDisableChannelByRecentUsage(channelId int) (should bool, used, disabl
 	if freq <= 0 {
 		freq = channelDisableDefaultProbeFreqMinutes
 	}
-	stabilizeCutoff := now - int64(channelDisableStabilizeProbeCycles*freq*60)
+	stabilizeSeconds := int64(channelDisableStabilizeProbeCycles * freq * 60)
+	if stabilizeSeconds < channelDisableStabilizeFloorSeconds {
+		stabilizeSeconds = channelDisableStabilizeFloorSeconds
+	}
+	stabilizeCutoff := now - stabilizeSeconds
 
 	var usedModels []string
 	if err = LOG_DB.Model(&ModelMetrics{}).
