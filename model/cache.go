@@ -561,88 +561,175 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 
 // selectByDynamicPriority 动态优先级选渠道（DynamicPriorityEnabled 时使用）。
 //
-// 与静态模式的区别：
-//   - 不按 abilities.priority 分档，改按 abilities.dynamic_priority DESC 排序
-//   - top X%（DynamicPriorityTopThreshold）视为同档，档内 weight 加权随机
-//   - dynamic_priority 为 0/NULL 的渠道视为「无评分数据」，回退到静态 priority 参与排序，
-//     避免评分未跑或无数据渠道被完全饿死
+// 排序逻辑（修法 A + 探索位）：
+//  1. 主键：有评分（dp>0）永远排在未评分（dp=0）之前 —— 修法 A，防止 static priority=100
+//     兜底把评分低但真实的渠道挤到未评分之后。
+//  2. 有评分池内按 dp DESC 排序，取 top X%（DynamicPriorityTopThreshold）作为主档。
+//  3. 未评分池内按 created_time DESC 排序（TTL 内的新加渠道优先），
+//     前 K 个（DynamicPriorityExploreSlots）作为探索位塞进 top 档。
+//  4. 档内按 weight 加权随机。
 //
-// skipPriorityLevels：跳过 N 个 distinct dynamic_priority 档。重试传 0 从最高分档开始，
-// 配合 excludeIds 排除已失败渠道。
+// skipPriorityLevels（重试链）：线性跳过 skip 个 scored 渠道；重试时（skip>0）
+// 关闭探索位，避免继续冒险；scored 全部跳完后从 unscored 池兜底。
 //
-// capabilityFilter 非 nil 时（用于 count_tokens 等能力筛选请求），在分档前先过滤掉
-// 不支持该能力的渠道，保证 WithCapability 链路与主选渠道一致走动态优先级。
+// capabilityFilter 非 nil 时用于 count_tokens 等能力筛选，在分档前先过滤。
 func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVal string, skipPriorityLevels int, excludeIds []int, capabilityFilter ChannelCapabilityFilter) (*Channel, int, error) {
-	// 取所有 enabled 渠道，按 dynamic_priority DESC 排序。
-	// COALESCE 把 NULL/0 的 dynamic_priority 替换为静态 priority，让无评分渠道仍能参与，
-	// 但排在有评分的高分渠道之后（除非静态 priority 本身很高）。
-	var channels []Channel
+	// 新加渠道享受探索位优待的 TTL 阈值（Unix 秒）
+	ttlHours := config.DynamicPriorityExplorationTTLHours
+	if ttlHours <= 0 {
+		ttlHours = 24
+	}
+	ttlThreshold := time.Now().Unix() - int64(ttlHours)*3600
+
+	// SQL 层拿回 Channel 全字段 + abilities.dynamic_priority（拆池要用）。
+	// ORDER BY 编码了修法 A（scored 优先） + 未评分池内新加渠道优先。
+	// ttlThreshold 是内部计算的 int64 常量，用 Sprintf 内嵌安全，不构成注入面。
+	//
+	// 关键：`abilities.dynamic_priority` 字段是 *int64（可 NULL）。ORDER BY 必须用
+	// `COALESCE(abilities.dynamic_priority, 0)` —— 否则 PostgreSQL 的 DESC 语义会把
+	// NULL 排在数值之前，让老 NULL 渠道错误地被拉到 unscored 池最前抢占探索位。
+	// SELECT 里的别名 dp 已经 COALESCE 过（供 Go 层拆池用），但 ORDER BY 表达式
+	// 独立求值，不复用 SELECT 别名的 COALESCE，必须每处显式写。
+	type channelWithDp struct {
+		Channel
+		Dp int64 `gorm:"column:dp"`
+	}
+	orderClause := fmt.Sprintf(
+		"(CASE WHEN COALESCE(abilities.dynamic_priority, 0) > 0 THEN 1 ELSE 0 END) DESC, "+
+			"COALESCE(abilities.dynamic_priority, 0) DESC, "+
+			"(CASE WHEN COALESCE(abilities.dynamic_priority, 0) = 0 AND channels.created_time > %d THEN 1 ELSE 0 END) DESC, "+
+			"channels.created_time DESC, "+
+			"abilities.priority DESC",
+		ttlThreshold,
+	)
 	q := DB.Table("channels").
+		Select("channels.*, COALESCE(abilities.dynamic_priority, 0) AS dp").
 		Joins("JOIN abilities ON channels.id = abilities.channel_id").
 		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?",
 			group, model, trueVal, common.ChannelStatusEnabled).
-		Order("COALESCE(NULLIF(abilities.dynamic_priority, 0), abilities.priority) DESC")
+		Order(orderClause)
 	if len(excludeIds) > 0 {
 		q = q.Where("channels.id NOT IN ?", excludeIds)
 	}
-	if err := q.Find(&channels).Error; err != nil {
+	var rows []channelWithDp
+	if err := q.Find(&rows).Error; err != nil {
 		return nil, -1, fmt.Errorf("dynamic priority: fetch channels: %w", err)
 	}
 
-	// 能力过滤：在排序结果上原地过滤，保留 dynamic_priority 的相对顺序。
-	// 不能下推到 SQL——LoadConfig 解析 JSON，DB 做不了。
+	// 能力过滤（如 count_tokens）：在排序结果上原地过滤，保留 dp 相对顺序。
+	// 不能下推 SQL —— LoadConfig 解析 JSON，DB 做不了。
 	if capabilityFilter != nil {
-		filtered := make([]Channel, 0, len(channels))
-		for i := range channels {
-			cfg, err := channels[i].LoadConfig()
+		filtered := make([]channelWithDp, 0, len(rows))
+		for i := range rows {
+			cfg, err := rows[i].Channel.LoadConfig()
 			if err != nil {
 				continue
 			}
-			if capabilityFilter(&channels[i], cfg) {
-				filtered = append(filtered, channels[i])
+			if capabilityFilter(&rows[i].Channel, cfg) {
+				filtered = append(filtered, rows[i])
 			}
 		}
-		channels = filtered
+		rows = filtered
 	}
 
-	if len(channels) == 0 {
+	if len(rows) == 0 {
 		return nil, -1, errors.New("no channels available (dynamic priority)")
 	}
 
-	// channels 已按 COALESCE(NULLIF(dynamic_priority,0), priority) DESC 排序。
-	// 用「排名位置」定义同档而非分值阈值：取前 X% 渠道作为 top 档，更鲁棒——
-	// 不依赖 dynamic_priority 绝对值，避免「全部 90 分」时阈值失效。
+	// 拆池：rows 已按 dp>0 优先排序，前 N 个 dp>0 的是 scored，其余 dp=0 是 unscored。
+	scoredEnd := 0
+	for scoredEnd < len(rows) && rows[scoredEnd].Dp > 0 {
+		scoredEnd++
+	}
+	scored := rows[:scoredEnd]
+	unscored := rows[scoredEnd:]
+
 	thresholdPct := config.DynamicPriorityTopThreshold
 	if thresholdPct <= 0 {
 		thresholdPct = 10
-	}
-	if thresholdPct > 100 {
+	} else if thresholdPct > 100 {
 		thresholdPct = 100
 	}
 
-	// skipPriorityLevels：重试场景通常传 0（从最高分档开始）+ excludeIds 排除已失败渠道。
-	// 非零时按渠道数线性跳过——动态模式下没有「档」的离散概念，线性跳过是 skipPriorityLevels
-	// 语义的合理近似，且与 excludeIds 配合不会重复选已失败渠道。
 	skip := skipPriorityLevels
 	if skip < 0 {
 		skip = 0
 	}
-	if skip >= len(channels) {
-		skip = len(channels) - 1
-	}
-	pool := channels[skip:]
 
-	// top X% 同档
-	topCount := len(pool) * thresholdPct / 100
-	if topCount < 1 {
-		topCount = 1
+	// 主档：从 scored 里跳 skip 后取 top X%
+	var mainTier []channelWithDp
+	if skip < len(scored) {
+		pool := scored[skip:]
+		topCount := len(pool) * thresholdPct / 100
+		if topCount < 1 {
+			topCount = 1
+		}
+		if topCount > len(pool) {
+			topCount = len(pool)
+		}
+		mainTier = pool[:topCount]
 	}
-	if topCount > len(pool) {
-		topCount = len(pool)
-	}
-	tier := pool[:topCount]
 
-	// 档内 weight 加权随机
+	// 探索位：仅**真正的首选**（无累计失败渠道）时加 K 个 unscored 探索位；重试关闭。
+	//
+	// 判定用 `len(excludeIds) == 0` 而非 `skip == 0`：项目里 retry_policy.go 的重试链
+	// 始终传 skip=0（依靠 excludeIds 排除失败渠道），若用 skip 判定会导致每次重试
+	// 都重新塞入探索位，把探索池当重试预算消费，违背"首选保 SLO、重试纯恢复"的设计。
+	//
+	// 关键：探索位**只从 TTL 内新加的渠道**里选（freshUnscored）。SQL 层的 ORDER BY
+	// 只保证了"新加的排前面"，但未过滤"超过 TTL 的老渠道"—— 若 unscored 池里没有
+	// 任何 TTL 内新渠道，`unscored[:K]` 会误取老 dp=0 渠道，让它们长期占用探索位，
+	// 违背 plan 里"超过 TTL 抽不到 K 位"的语义。
+	//
+	// 语义：一个渠道 24h 内没被拿到过评分（新加/或历史评分被清零），值得优待；
+	// 24h+ 还没评上分的，说明该模型没流量或渠道长期无请求，硬塞给它流量意义不大。
+	freshUnscored := make([]channelWithDp, 0, len(unscored))
+	for i := range unscored {
+		if unscored[i].CreatedTime > ttlThreshold {
+			freshUnscored = append(freshUnscored, unscored[i])
+		}
+	}
+	exploreCount := 0
+	if len(excludeIds) == 0 && skip == 0 && len(freshUnscored) > 0 {
+		exploreCount = config.DynamicPriorityExploreSlots
+		if exploreCount < 0 {
+			exploreCount = 0
+		}
+		if exploreCount > len(freshUnscored) {
+			exploreCount = len(freshUnscored)
+		}
+	}
+	exploreTier := freshUnscored[:exploreCount]
+
+	tier := make([]channelWithDp, 0, len(mainTier)+len(exploreTier))
+	tier = append(tier, mainTier...)
+	tier = append(tier, exploreTier...)
+
+	// 兜底：重试把 scored 池全部跳完（skip >= len(scored)）时主档为空，
+	// 改从 unscored 池按剩余 skip 偏移取档；unscored 也没有则报错。
+	if len(tier) == 0 {
+		if len(unscored) == 0 {
+			return nil, -1, errors.New("no channels available (dynamic priority, retry exhausted)")
+		}
+		offsetInUnscored := skip - len(scored)
+		if offsetInUnscored < 0 {
+			offsetInUnscored = 0
+		}
+		if offsetInUnscored >= len(unscored) {
+			offsetInUnscored = len(unscored) - 1
+		}
+		pool := unscored[offsetInUnscored:]
+		topCount := len(pool) * thresholdPct / 100
+		if topCount < 1 {
+			topCount = 1
+		}
+		if topCount > len(pool) {
+			topCount = len(pool)
+		}
+		tier = pool[:topCount]
+	}
+
+	// 档内 weight 加权随机（原逻辑）
 	totalWeight := 0
 	weights := make([]int, len(tier))
 	for i, t := range tier {
@@ -654,8 +741,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		totalWeight += w
 	}
 	if totalWeight == 0 {
-		// 兜底：全 0 权重时取档内第一个
-		ch := tier[0]
+		ch := tier[0].Channel
 		return &ch, -1, nil
 	}
 
@@ -666,10 +752,11 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	for i, t := range tier {
 		cur += weights[i]
 		if cur >= threshold {
-			return &t, -1, nil
+			ch := t.Channel
+			return &ch, -1, nil
 		}
 	}
-	ch := tier[0]
+	ch := tier[0].Channel
 	return &ch, -1, nil
 }
 

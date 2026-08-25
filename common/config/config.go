@@ -190,9 +190,11 @@ var DynamicPriorityApplyEnabled = false
 var DynamicPriorityWeightSuccess = 50.0 // 成功率权重（0-100）
 var DynamicPriorityWeightLatency = 30.0 // 延迟权重（0-100）
 var DynamicPriorityWeightPrice = 20.0   // 价格权重（0-100）
-var DynamicPriorityCalcIntervalMinutes = 5 // Master 节点评分计算周期（分钟）
-var DynamicPriorityTopThreshold = 10       // 选渠道时同档阈值（%）：top X% 视为同档加权随机
-var DynamicPriorityWindowMinutes = 10      // 滑动窗口长度（分钟），评分只看该窗口内数据
+var DynamicPriorityCalcIntervalMinutes = 5  // Master 节点评分计算周期（分钟）
+var DynamicPriorityTopThreshold = 10        // 选渠道时同档阈值（%）：top X% 视为同档加权随机
+var DynamicPriorityWindowMinutes = 10       // 滑动窗口长度（分钟），评分只看该窗口内数据
+var DynamicPriorityExploreSlots = 2         // top 档预留几个未评分探索位（首选生效，重试关闭）
+var DynamicPriorityExplorationTTLHours = 24 // 新加渠道享受探索位优待的时长（小时）
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
 

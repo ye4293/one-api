@@ -8,6 +8,28 @@
 
 ## 2026-08-25
 
+### fix(dynamic-priority): 修复选渠道信号反向 + 加探索位 + 成功率 Beta-Binomial 平滑
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复 + 新功能（三个改动合并落地）
+- **涉及文件**:
+  - `common/config/config.go` — 新增 `DynamicPriorityExploreSlots`（默认 2）、`DynamicPriorityExplorationTTLHours`（默认 24）两个配置项
+  - `model/option.go` — OptionMap 注册 + `LoadOption` 分支加载两个新配置
+  - `model/cache.go` — `selectByDynamicPriority` 重写：修 SQL 兜底方向（修法 A）+ 拆 scored/unscored 池 + 加 K 个探索位 + 新加渠道优待
+  - `common/dynamicprio/score.go` — `scoreSuccess` 改用 Beta-Binomial 平滑（`priorAlpha=priorBeta=2.5`）；`hasEnoughData` 放宽（有任何样本即视为有信号）
+  - `common/dynamicprio/score_test.go` — 更新 `SmallSampleFallback` / `SingleChannel` 断言以匹配新平滑值；新增 3 个用例覆盖 Beta 边界行为
+- **修的 3 个问题**:
+  1. **Bug A（SQL 兜底方向反了）**：`COALESCE(NULLIF(dp,0), priority) DESC` 让 static priority=100 兜底压过所有真实评分。全库 735 条 dp>0 记录进入选渠道 top 10% 的 0 条（0.0%），评分对选渠道**完全无影响**。改成 `(dp>0) DESC, dp DESC, ...` 后，评分渠道永远优先。
+  2. **冷启动无探索机制**：修法 A 会让 dp=0 拿不到流量 → 永远评不上分。加 K 个探索位塞进 top 档，按 `channels.created_time DESC` 优先选新加的（24h TTL）。首选生效，重试关闭。
+  3. **Bug B（持续 429 但 dp=0）**：`hasEnoughData` 要求 20 样本 + 失败样本无 duration，导致 15 次全 429 的渠道判为无数据 → dp=0 → 兜底 100 → 又被首选 → 恶性循环。改用 Beta-Binomial 平滑后，0/5 全失败给 25 分，0/20 全失败给 10 分，纯负面信号可被识别。
+- **验证**:
+  - 生产 DB 抽样：全库 437 模型评分覆盖率 10.3%，735 条 dp>0 记录进 top 10% 的**为 0**；修复后模拟排序（纯 dp DESC）top 10% 里能有 611 个真评分渠道进入
+  - 单元测试全绿：`go test ./common/dynamicprio/...` + `go test ./model/...`
+  - `go build ./... && go vet ./...` 通过
+- **回滚**: 三改动都在应用层，无 schema 变动。探索位可通过 `DynamicPriorityExploreSlots=0` 关闭；其他改动 `git revert` 单独回滚。
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md`
+- **待实现（进 backlog）**: 重试链梯度参数化（可变 N 自适应扩档序列）—— 需要 controller 层配合传递 `(retryIndex, maxRetry)`，本次稳定后单独 PR
+
 ### fix(dynamic-priority): 修正 32dc1c4 —— 用 dbModelName 打点，不删 log.go 公共埋点
 
 - **分支**: `dynamic-priority`
