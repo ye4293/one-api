@@ -3,6 +3,9 @@ package metrics
 import (
 	"math"
 	"testing"
+	"time"
+
+	"github.com/songquanpeng/one-api/common/config"
 )
 
 func absf(v float64) float64 {
@@ -51,13 +54,13 @@ func TestParseMetricMember(t *testing.T) {
 // 聚合：成功/失败计数 + 流式/非流式延迟分别累计 + 失败样本不污染延迟。
 func TestAggregateSamples(t *testing.T) {
 	members := []string{
-		"1:12.000000:0.200000:1:1",  // 成功流式 dur=12 fw=0.2
-		"1:10.000000:0.400000:1:2",  // 成功流式 dur=10 fw=0.4
-		"1:2.000000:0.000000:0:3",   // 成功非流式 dur=2
-		"1:4.000000:0.000000:0:4",   // 成功非流式 dur=4
-		"0:0.500000:0.000000:0:5",   // 失败 dur=0.5 —— 不应进延迟
-		"0:1.000000:0.000000:0:6",   // 失败
-		"garbage",                   // 解析失败，跳过
+		"1:12.000000:0.200000:1:1", // 成功流式 dur=12 fw=0.2
+		"1:10.000000:0.400000:1:2", // 成功流式 dur=10 fw=0.4
+		"1:2.000000:0.000000:0:3",  // 成功非流式 dur=2
+		"1:4.000000:0.000000:0:4",  // 成功非流式 dur=4
+		"0:0.500000:0.000000:0:5",  // 失败 dur=0.5 —— 不应进延迟
+		"0:1.000000:0.000000:0:6",  // 失败
+		"garbage",                  // 解析失败，跳过
 	}
 	s := aggregateSamples(members)
 
@@ -110,5 +113,27 @@ func TestAggregateSamples_AllFailures(t *testing.T) {
 	}
 	if s.StreamCount != 0 || s.NonStreamCount != 0 {
 		t.Fatalf("全失败窗口不应有延迟样本: stream=%d nonstream=%d", s.StreamCount, s.NonStreamCount)
+	}
+}
+
+func TestAbilityMetricKeyTTL(t *testing.T) {
+	oldWindow := config.DynamicPriorityWindowMinutes
+	t.Cleanup(func() {
+		config.DynamicPriorityWindowMinutes = oldWindow
+	})
+
+	config.DynamicPriorityWindowMinutes = 10
+	if got := abilityMetricKeyTTL(); got != 30*time.Minute {
+		t.Fatalf("default ttl = %s, want 30m", got)
+	}
+
+	config.DynamicPriorityWindowMinutes = 60
+	if got := abilityMetricKeyTTL(); got != 70*time.Minute {
+		t.Fatalf("long-window ttl = %s, want 70m", got)
+	}
+
+	config.DynamicPriorityWindowMinutes = 0
+	if got := abilityMetricKeyTTL(); got != 30*time.Minute {
+		t.Fatalf("fallback ttl = %s, want 30m", got)
 	}
 }

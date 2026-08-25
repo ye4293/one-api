@@ -88,17 +88,18 @@ metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
 - **claude/gemini native 等入口**：传入的 `modelName = c.GetString("original_model")` 本身就是原始名；`other` 无 `origin_model_name:` 前缀 → `dbModelName == modelName == 原始名`
 - **无 model_mapping 的普通渠道**：`dbModelName == modelName == 原始名`（本来就一致）
 
-#### 2. `common/metrics/ability_window.go` — 加 ctx 首参数 + `ZAdd` 后 `EXPIRE 30min`
+#### 2. `common/metrics/ability_window.go` — 加 ctx 首参数 + `ZAdd` 后设置自适应 TTL
 
 四个导出函数（`RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics`）加 `ctx context.Context` 首参数，内部 `logger.SysError` 改为 `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`。
 
-`RecordAbilityMetric` 内部 `ZAdd` 改为 pipeline，追加 `EXPIRE key 30 * time.Minute`。
+`RecordAbilityMetric` 内部 `ZAdd` 改为 pipeline，追加 `EXPIRE key abilityMetricKeyTTL()`。
 
-**为什么 30 分钟**（详见代码内注释）：
+**为什么默认 30 分钟，但跟随长窗口配置**（详见代码内注释）：
 - 默认 `DynamicPriorityWindowMinutes=10`
 - 30 分钟远大于窗口，TTL 到期时 key 里所有 member 的 score 都在窗口外，不会误伤有效数据
+- 若运维把 `DynamicPriorityWindowMinutes` 调到 30 分钟以上，TTL 会变成 `窗口长度 + 10 分钟缓冲`，避免 key 在样本仍属于评分窗口时过期
 - 正常写入的 key 每次 ZADD 都刷新 TTL，永不过期
-- **作用**：停止写入的 key（历史脏数据、渠道下线、model 名字改动）会在 30 分钟后自动过期，无需运维手动 DEL
+- **作用**：停止写入的 key（历史脏数据、渠道下线、model 名字改动）会在超过评分窗口后自动过期，无需运维手动 DEL
 
 #### 3. `controller/dynamic_priority.go` + `controller/relay.go` — 调用点传 ctx
 
@@ -139,7 +140,7 @@ metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
 
 **盲点**：本次加的 `EXPIRE` 只对新 ZADD 时才生效。**部署前已存在的老 key 没有 TTL**，且映射后名脏 key 修复后不会再被 ZADD → **永远拿不到 TTL → 永远不会自动过期**。
 
-必须在部署后执行一次运维操作，给所有存量 `ability_metrics:*` 打上 30 分钟 TTL：
+必须在部署后执行一次运维操作，给所有存量 `ability_metrics:*` 打上 TTL。若保持默认 10 分钟窗口，用 30 分钟 TTL：
 
 ```bash
 # 通过 SSM 在能连 ElastiCache 的节点上执行
@@ -148,21 +149,23 @@ $RCLI --scan --pattern 'ability_metrics:*' | \
   $RCLI --pipe
 ```
 
+如果 `DynamicPriorityWindowMinutes > 20`，把 `1800` 改成 `(DynamicPriorityWindowMinutes + 10) * 60`，与代码里的 `abilityMetricKeyTTL()` 口径一致。
+
 执行后：
-- 所有 key 立即拿到 30 分钟 TTL
+- 所有 key 立即拿到与评分窗口匹配的 TTL
 - **正常被写入的 key**：新代码每次 ZADD 会刷新 TTL → 永不过期
-- **停止写入的 key**（映射后名脏数据、已下线渠道、model 改名过的历史遗留）：30 分钟后自动消失
-- **低频渠道**：30 分钟内无请求会被清理，但反正 key 里所有 member 的 score 都已在 10 分钟窗口外，评分本来就取不到有效数据，无损
+- **停止写入的 key**（映射后名脏数据、已下线渠道、model 改名过的历史遗留）：超过评分窗口后自动消失
+- **低频渠道**：TTL 内无请求会被清理，但此时 key 里所有 member 的 score 都已在评分窗口外，评分本来就取不到有效数据，无损
 
 **不做这一步的后果**：Redis 里的映射后名脏 key（`ability_metrics:*:global.anthropic.*` 等）永久驻留，仅增不减。
 
-### 未覆盖的入口
-本次只改主 chat 路径（`helper.go` 内的 `postConsumeQuota`）。其他 relay 入口（`relay/controller/{claude.go, gemini.go, audio.go, image.go, video.go, midjourney.go}`）**未添加打点**。
+### 覆盖边界
+本次最终修法落在 `model/log.go` 的公共消费日志入口，因此所有经过 `RecordConsumeLog*` / `RecordConsumeLogWithOtherAndRequestID` 的成功请求都会写动态优先级成功样本。
 
-判断依据：
-- 这些入口的流量远小于主 chat 路径
-- 从 Redis 现存 key 看，主 chat 路径已能产生 13252 条 ability_metrics key，覆盖了绝大多数活跃 (channel, model)
-- 若后续观察到这些入口下的渠道 dp 长期为 0，再各自补上 3 行 `RecordAbilityMetric` 即可
+对 model_mapping 场景，修复是否能拿到原始 model 名取决于调用方是否传入 `origin_model_name` 到 `other`：
+- 主 chat 路径、Claude native、Gemini native、OpenAI Responses、图片等已通过 `appendModelMappingInfo` 传入原始名
+- 无 model_mapping 的普通渠道不依赖 `other`，`dbModelName == modelName`
+- `RecordVideoConsumeLog` 是独立视频日志入口，不经过 `RecordConsumeLogWithOtherAndRequestID`，本次仍不写动态优先级成功样本；若要让异步视频任务参与动态优先级，需要单独设计成功样本语义
 
 ---
 
@@ -180,7 +183,7 @@ go build ./... && go vet ./...
 
 ### Redis 验证
 ```bash
-# 应该看到"映射后名 key"在 30 分钟内数量持续下降（TTL 过期）
+# 应该看到"映射后名 key"在 TTL 到期后数量持续下降
 redis-cli --scan --pattern 'ability_metrics:*:global.anthropic.*' | wc -l
 
 # 应该看到原始名 key 里成功样本出现（之前只有失败样本）

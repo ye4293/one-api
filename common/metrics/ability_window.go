@@ -27,12 +27,16 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 )
 
 // AbilityMetricKeyPrefix 是 Redis Sorted Set 的 key 前缀。
 // 完整 key = {prefix}{channelId}:{model}
 const AbilityMetricKeyPrefix = "ability_metrics:"
+
+const minAbilityMetricKeyTTL = 30 * time.Minute
+const abilityMetricKeyTTLBuffer = 10 * time.Minute
 
 // AbilityMetric 是单次请求完成时记录到窗口的指标。
 type AbilityMetric struct {
@@ -102,21 +106,32 @@ func RecordAbilityMetric(ctx context.Context, m AbilityMetric) {
 	key := AbilityMetricKeyPrefix + strconv.Itoa(m.ChannelId) + ":" + m.Model
 	// ZADD + EXPIRE 用 pipeline 一次 RTT。
 	//
-	// 关于 TTL：设 30 分钟远大于默认窗口 10 分钟（且大于运维可能配的最大窗口 20 分钟），
+	// 关于 TTL：至少 30 分钟；若动态优先级窗口被调大，则跟随窗口长度再加缓冲。
 	// 因此 TTL 到期时 key 里所有 member 的 score 都已在窗口外，不会误伤有效数据。
 	// 作用：**当某 (channel, model) 组合不再有请求写入**（例如渠道下线、model 名字改动、
-	// 或历史脏数据）时，其 key 会在 30 分钟后自动过期。否则会长期驻留 Redis
+	// 或历史脏数据）时，其 key 会在超过评分窗口后自动过期。否则会长期驻留 Redis
 	// ——因为清理机制（Master 的 ZRemRangeByScore）只处理 abilities 表里能匹配到的
 	// (channelId, model)，脏数据永远清不掉。
 	//
 	// 正常写入的 key 每次 ZADD 都刷新 TTL，永不过期。
-	const abilityMetricKeyTTL = 30 * time.Minute
 	pipe := common.RDB.Pipeline()
 	pipe.ZAdd(ctx, key, &redis.Z{Score: score, Member: member})
-	pipe.Expire(ctx, key, abilityMetricKeyTTL)
+	pipe.Expire(ctx, key, abilityMetricKeyTTL())
 	if _, err := pipe.Exec(ctx); err != nil {
 		logger.Error(ctx, "ability metric ZAdd/Expire error: "+err.Error())
 	}
+}
+
+func abilityMetricKeyTTL() time.Duration {
+	windowMin := config.DynamicPriorityWindowMinutes
+	if windowMin <= 0 {
+		windowMin = 10
+	}
+	ttl := time.Duration(windowMin)*time.Minute + abilityMetricKeyTTLBuffer
+	if ttl < minAbilityMetricKeyTTL {
+		return minAbilityMetricKeyTTL
+	}
+	return ttl
 }
 
 // ScanAbilityWindow 读取指定 channel+model 在最近 window 内的窗口数据并聚合。
