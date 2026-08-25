@@ -58,48 +58,66 @@
 
 ## 方案设计
 
+### 关键前提（首次实现时忽略、导致 32dc1c4 修错的事实）
+
+- **`relay/controller/text.go:50-52`** 早就把 `textRequest.Model` 从原始名覆写成映射后名：
+  ```go
+  meta.OriginModelName = textRequest.Model                                      // 原始名保存到 meta
+  textRequest.Model, _ = util.GetMappedModelName(textRequest.Model, meta.ModelMapping)   // 覆写！
+  meta.ActualModelName = textRequest.Model
+  ```
+- **`relay/controller/helper.go:324`** 已经在拼 `otherInfo` 时调 `appendModelMappingInfo`，塞入 `origin_model_name:{OriginModelName}`
+- **`model/log.go:97-113`** 早就有 `dbModelName` 逻辑，从 `other` 里 `origin_model_name:xxx` 前缀提取原始名（fallback 为 `modelName`）
+- **`middleware/metrics.go:47`** 的注释也提到了这套设计（"log.go 会在 other 含 origin_model_name 时回退成 origin"）
+
 ### 三个改动点
 
-#### 1. `relay/controller/helper.go`
-
-在成功路径显式打点，使用原始名 `textRequest.Model`，与 abilities.model 和失败路径对齐：
+#### 1. `model/log.go` — 把 `RecordAbilityMetric` 的 `Model` 从 `modelName` 改为 `dbModelName`
 
 ```go
-metrics.RecordAbilityMetric(metrics.AbilityMetric{
-    ChannelId:        meta.ChannelId,
-    Model:            textRequest.Model,   // 原始名
+metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
+    ChannelId:        channelId,
+    Model:            dbModelName,   // ← 原来是 modelName（可能映射后名），改为 dbModelName（一定原始名）
     Success:          true,
-    Duration:         duration,
-    FirstWordLatency: firstWordLatency,
-    IsStream:         meta.IsStream,
+    ...
 })
 ```
 
-新增 `github.com/songquanpeng/one-api/common/metrics` 包 import。
+**为什么 `dbModelName` 一定是原始名**（三条链路的证据）：
+- **chat 主路径**：helper.go 通过 `appendModelMappingInfo` 塞入 `origin_model_name:{OriginModelName}` → dbModelName = OriginModelName（原始名）
+- **claude/gemini native 等入口**：传入的 `modelName = c.GetString("original_model")` 本身就是原始名；`other` 无 `origin_model_name:` 前缀 → `dbModelName == modelName == 原始名`
+- **无 model_mapping 的普通渠道**：`dbModelName == modelName == 原始名`（本来就一致）
 
-**为什么放在这里而不是继续在 log.go**：
-- log.go 是通用日志函数，被 midjourney/audio/image/video/chat 等多入口调用
-- 各入口传入的 `modelName` 语义不一致（有的是映射后、有的是原始名、有的带箭头组合）
-- 打点应该跟"选渠道时用的 model 名"绑定，而 helper.go 是 chat 主路径且能直接访问 `textRequest.Model`（用户请求的原始名）
-- 未来其他入口若也支持 model_mapping，各自在入口处复制打点即可，无需改公共 log 函数签名
+#### 2. `common/metrics/ability_window.go` — 加 ctx 首参数 + `ZAdd` 后 `EXPIRE 30min`
 
-#### 2. `model/log.go`
+四个导出函数（`RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics`）加 `ctx context.Context` 首参数，内部 `logger.SysError` 改为 `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`。
 
-删除原来的 `RecordAbilityMetric` 调用及那段误导性注释（"用映射后的 modelName ... 与 abilities 表的 model 字段一致"——注释里的心智模型是错的，abilities 表存的是原始名）。
+`RecordAbilityMetric` 内部 `ZAdd` 改为 pipeline，追加 `EXPIRE key 30 * time.Minute`。
 
-保留 `metrics.ObserveConsume`（Prometheus 埋点用 `dbModelName`，独立于动态优先级）。
-
-#### 3. `common/metrics/ability_window.go`
-
-`ZAdd` 之后追加 `EXPIRE key 30min`（改用 pipeline 一次 RTT）。
-
-**为什么 30 分钟**：
+**为什么 30 分钟**（详见代码内注释）：
 - 默认 `DynamicPriorityWindowMinutes=10`
 - 30 分钟远大于窗口，TTL 到期时 key 里所有 member 的 score 都在窗口外，不会误伤有效数据
 - 正常写入的 key 每次 ZADD 都刷新 TTL，永不过期
-- **作用**：停止写入的 key（例如映射后名的历史脏数据、渠道下线、model 名字改动）会在 30 分钟后自动过期，无需运维手动 DEL
+- **作用**：停止写入的 key（历史脏数据、渠道下线、model 名字改动）会在 30 分钟后自动过期，无需运维手动 DEL
 
-**为什么之前作者刻意不设 TTL 的担忧不成立**：原注释担心"低频模型几小时才一次请求会被 TTL 提前删掉"——但**只要 TTL >= windowSize**，就没有"窗口内数据被误删"的情况：TTL 到期时，key 里所有 member 的 score 都比 now 早了 30 分钟 >= windowSize，本来就会被 `ZRemRangeByScore` 清理掉。
+#### 3. `controller/dynamic_priority.go` + `controller/relay.go` — 调用点传 ctx
+
+- `runDynamicPriorityCalcOnce` 内部 `ctx := context.Background()`（定时任务无请求 ctx）
+- `buildStatsForModel` 加 ctx 参数，透传给 `ScanAbilityWindowBatch`
+- `processChannelRelayError` 里 `RecordAbilityMetric(ctx, ...)` 补 ctx（该函数已有 ctx 入参）
+
+**helper.go 无需改动**——`appendModelMappingInfo` 早就塞好了 `origin_model_name`。
+
+---
+
+## 32dc1c4 里试过、但错的方案（存档说明）
+
+首次实现（commit `32dc1c4`）走的是"把打点从 log.go 挪到 helper.go 用 `textRequest.Model`"，两个致命错误：
+
+1. **`textRequest.Model` 在 `postConsumeQuota` 被调用时已被 `text.go:51` 覆写为映射后名**，跟 `BillingModelName()` 完全等价——dp=0 的根源没修
+2. **`log.go` 里的公共埋点被所有 `RecordConsumeLog*` 入口共用**（chat/claude/gemini/audio/image/midjourney/video），其中 chat 之外的入口本来就传原始名，本身是对的；32dc1c4 把公共埋点删掉、只在 helper.go 单点重加，等于把 6 类入口的成功打点全废
+
+代码审计发现后（未上线），后续 commit 采用"用 dbModelName + 保留 log.go 公共埋点"的最小修法（本文档第 2 版方案）。**教训**：字段名 ≠ 变量运行时状态，改动前必须 grep 中途赋值路径。
 
 ---
 

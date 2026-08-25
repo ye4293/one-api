@@ -8,6 +8,29 @@
 
 ## 2026-08-25
 
+### fix(dynamic-priority): 修正 32dc1c4 —— 用 dbModelName 打点，不删 log.go 公共埋点
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（前一 commit 的错误修正）
+- **涉及文件**:
+  - `model/log.go` — 恢复被 32dc1c4 误删的 `RecordAbilityMetric` 调用（在 `ObserveConsume` 之后），但把 `Model` 字段从原来的 `modelName` 改为 `dbModelName`；补充详细注释说明 dbModelName 的来源
+  - `relay/controller/helper.go` — 删掉 32dc1c4 加错的 `RecordAbilityMetric` 段（`textRequest.Model` 在 `relay/controller/text.go:51` 早已被 `GetMappedModelName` 覆写为映射后名，跟原 log.go 里的 `BillingModelName()` 完全等价，等于什么都没修）；同时删除只为该段而加的 `common/metrics` 包 import
+- **32dc1c4 的错误**（代码审计发现，未上线，本 commit 修复）:
+  1. **修错了地方**：以为 `textRequest.Model` 是原始名，实际它在 `text.go:51` 已被 `GetMappedModelName` 覆写为映射后名，跟 `BillingModelName()` 等价——dp=0 的根源根本没治
+  2. **误删公共埋点造成大面积回归**：`log.go` 里的 `RecordAbilityMetric` 被所有 `RecordConsumeLog*` 调用点覆盖，claude/gemini/audio/image/midjourney/video 等入口传入的 `modelName` 本来就是 `c.GetString("original_model")` 原始名，本来是对的；32dc1c4 把这段公共埋点删掉、只在 helper.go 单点重加，等于把 6 类入口的成功样本打点全废
+- **真正的修法（本 commit）**: 项目里已经有一整套 pattern:
+  - `helper.go:324` 早就在拼 `otherInfo` 时调 `appendModelMappingInfo` 塞 `origin_model_name:{OriginModelName}`
+  - `log.go:97-113` 解析 `other` 里的 `origin_model_name:` 前缀，把原始名赋给 `dbModelName`
+  - 只需把 `RecordAbilityMetric` 里那个 `modelName`（可能映射后）改成 `dbModelName`（一定是原始名，因为有兜底机制），全部对齐
+- **保留 32dc1c4 里正确的部分**（未回退）:
+  - `common/metrics/ability_window.go` ZAdd → pipeline + `EXPIRE 30min` 兜底
+  - `RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics` 加 ctx 首参数
+  - `logger.SysError` → `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`
+  - `controller/dynamic_priority.go` ctx 传递 + `context.Background()` 兜底
+  - `controller/relay.go` 失败路径 ctx 透传
+- **教训**: 未验证 `textRequest.Model` 在 `postConsumeQuota` 调用时的实际值，仅凭字段名直觉推断为"原始名"，是这次事故的根本原因。**字段名 ≠ 变量赋值状态，改动前必须 grep 中途赋值路径**
+- **关联计划**: `docs/plans/2026-08-25-fix-model-mapping-metric.md`（已同步更新方案描述）
+
 ### fix(dynamic-priority): 修复 model_mapping 渠道成功样本打点 model 名错配导致 dp=0
 
 - **分支**: `dynamic-priority`

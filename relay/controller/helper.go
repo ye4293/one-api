@@ -13,7 +13,6 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
-	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
@@ -377,19 +376,6 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if name := meta.BillingModelName(); name != "" {
 			logModelName = name
 		}
-		// 动态优先级滑动窗口打点：必须用原始 model 名（textRequest.Model），
-		// 与 abilities.model 字段和失败路径（processChannelRelayError→originalModel）保持一致。
-		// 之前放在 log.go 里用 BillingModelName（映射后名）打点，会导致 model_mapping 生效
-		// 的渠道（AWS Bedrock / Vertex 等）成功样本写到映射后 key，而评分读 abilities.model
-		// 用的是原始名 → 读不到样本 → dp=0。见 docs/plans/2026-08-25-fix-model-mapping-metric.md。
-		metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
-			ChannelId:        meta.ChannelId,
-			Model:            textRequest.Model,
-			Success:          true,
-			Duration:         duration,
-			FirstWordLatency: firstWordLatency,
-			IsStream:         meta.IsStream,
-		})
 		model.RecordConsumeLogWithOtherAndRequestID(ctx, meta.UserId, meta.ChannelId, promptTokens, completionTokens, logModelName, meta.TokenName, quota, logContent, duration, title, httpReferer, meta.IsStream, firstWordLatency, otherInfo, xRequestID, cachedTokens, xResponseID)
 		model.UpdateUserUsedQuotaAndRequestCount(meta.UserId, quota)
 		model.UpdateChannelUsedQuota(meta.ChannelId, quota)
