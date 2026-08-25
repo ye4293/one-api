@@ -766,7 +766,7 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 	// 动态优先级失败样本埋点。失败请求只贡献成功率维度的失败计数，
 	// duration/firstword 留 0——失败耗时不能代表渠道正常响应速度（见 ability_window.go）。
 	// isStream 此处拿不到，按 0 处理，不影响成功率维度（成功率不区分流式）。
-	metrics.RecordAbilityMetric(metrics.AbilityMetric{
+	metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
 		ChannelId: channelId,
 		Model:     modelName,
 		Success:   false,

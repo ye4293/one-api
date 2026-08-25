@@ -12,6 +12,7 @@ package controller
 // 选渠道热路径回退到静态 Priority。不会因评分失败影响正常服务。
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -74,6 +75,10 @@ const dynamicPriorityCalcLockTTL = 5 * time.Minute
 
 // runDynamicPriorityCalcOnce 执行一轮评分计算。
 func runDynamicPriorityCalcOnce() {
+	// 定时任务无请求 ctx；用 Background 只是给底层 log 接口一个非 nil ctx，
+	// 避免 log 里 ctx.Value(RequestID) 为 nil 打不到 request id 字段（此路径下本来就没有）。
+	ctx := context.Background()
+
 	// 分布式锁：仅一个 Master 节点执行本轮计算。拿不到锁直接跳过，下轮再来。
 	// Redis 未启用时 RedisLockAcquire 返回 "local"，等价于「拿到锁」（单机模式无并发问题）。
 	token := common.RedisLockAcquire(dynamicPriorityCalcLockKey, dynamicPriorityCalcLockTTL)
@@ -87,7 +92,7 @@ func runDynamicPriorityCalcOnce() {
 
 	candidates, err := loadAbilityCandidates()
 	if err != nil {
-		logger.SysError("dynamic priority: load candidates failed: " + err.Error())
+		logger.Error(ctx, "dynamic priority: load candidates failed: "+err.Error())
 		return
 	}
 	if len(candidates) == 0 {
@@ -114,7 +119,7 @@ func runDynamicPriorityCalcOnce() {
 	var channelsScored, channelsSkipped int
 
 	for modelName, groupCands := range byModel {
-		stats, candIdx := buildStatsForModel(modelName, groupCands, window)
+		stats, candIdx := buildStatsForModel(ctx, modelName, groupCands, window)
 		if len(stats) == 0 {
 			channelsSkipped += len(groupCands)
 			continue
@@ -144,7 +149,7 @@ func runDynamicPriorityCalcOnce() {
 	}
 
 	if err := model.BatchUpdateDynamicPriority(allUpdates); err != nil {
-		logger.SysError(fmt.Sprintf("dynamic priority: batch update failed (%d items): %s", len(allUpdates), err.Error()))
+		logger.Errorf(ctx, "dynamic priority: batch update failed (%d items): %s", len(allUpdates), err.Error())
 		return
 	}
 
@@ -158,7 +163,7 @@ func runDynamicPriorityCalcOnce() {
 // 返回 stats 和对应的 candidate 索引（candIdx[i] 是 stats[i] 对应的候选）。
 // 只返回有至少一个有效样本的渠道——纯无数据的渠道也要保留（写 0 分回退静态优先级），
 // 但若整组 Redis 全无数据则返回空，跳过该 model。
-func buildStatsForModel(modelName string, cands []abilityCandidate, window time.Duration) ([]dynamicprio.ChannelStat, []int) {
+func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCandidate, window time.Duration) ([]dynamicprio.ChannelStat, []int) {
 	stats := make([]dynamicprio.ChannelStat, 0, len(cands))
 	candIdx := make([]int, 0, len(cands))
 	anyData := false
@@ -169,10 +174,10 @@ func buildStatsForModel(modelName string, cands []abilityCandidate, window time.
 	for _, c := range cands {
 		channelIds = append(channelIds, c.ChannelId)
 	}
-	samples, err := metrics.ScanAbilityWindowBatch(channelIds, modelName, window)
+	samples, err := metrics.ScanAbilityWindowBatch(ctx, channelIds, modelName, window)
 	if err != nil {
 		// 整体读失败：本 model 全部按无数据处理，返回 nil 让调用方跳过（保留旧分，回退静态优先级）
-		logger.SysError(fmt.Sprintf("dynamic priority: batch scan window model=%s: %s", modelName, err.Error()))
+		logger.Errorf(ctx, "dynamic priority: batch scan window model=%s: %s", modelName, err.Error())
 		return nil, nil
 	}
 

@@ -6,6 +6,32 @@
 
 ---
 
+## 2026-08-25
+
+### fix(dynamic-priority): 修复 model_mapping 渠道成功样本打点 model 名错配导致 dp=0
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（生产观察发现）
+- **涉及文件**:
+  - `relay/controller/helper.go` — 在成功路径 `postConsumeQuota` 中显式调用 `metrics.RecordAbilityMetric`，`Model` 字段用 `textRequest.Model`（原始名），与 abilities.model 及失败路径 `originalModel` 对齐；新增 `common/metrics` 包 import
+  - `model/log.go` — 删除原来放在此处的 `RecordAbilityMetric` 调用及其误导性注释（原来传的 `modelName` 是 `helper.go` 里的 `logModelName` = `BillingModelName()` = 映射后名，与 abilities.model 存的原始名对不上）
+  - `common/metrics/ability_window.go` — `RecordAbilityMetric` 里 `ZAdd` 改为 pipeline，追加 `EXPIRE key 30min`，让停止写入的历史脏 key（如映射后名遗留数据）自动过期，无需手动 DEL；同时 `RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics` 全部新增 `ctx context.Context` 首参数，内部原有 `logger.SysError`（无 ctx 全局 log）改为 `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`，让打点异常日志能带上调用方 request-id 便于排查
+  - `controller/dynamic_priority.go` — `runDynamicPriorityCalcOnce` 内部创建 `ctx := context.Background()`（Master 定时任务无请求 ctx，用 Background 只是给 log 接口一个非 nil ctx）；`buildStatsForModel` 加 ctx 参数并传给 `ScanAbilityWindowBatch`；内部 `SysError` 改为 `Error(ctx, ...)` / `Errorf(ctx, ...)`
+  - `controller/relay.go` — `processChannelRelayError` 里 `RecordAbilityMetric` 调用补 ctx 参数（该函数本身已有 ctx 入参）
+- **说明**: AWS Bedrock/Vertex 等配置了 `model_mapping` 的渠道，成功路径打点用映射后名（如 `global.anthropic.claude-opus-4-7`），失败路径打点用原始名，abilities 表 + 评分链路用原始名——同一渠道成功/失败样本进不同 Redis key，评分只能读到失败样本或空，`HasData=false` → `dp=0`。生产 ElastiCache 实测确认了两套 key 并存的现象。修复后主 chat 路径的所有渠道 dp 应能正确算出。
+- **验证证据**: 
+  - Redis 实测：`79726` 同时有 `claude-opus-4-7` 和 `global.anthropic.claude-opus-4-7` 两个 key；`79866` 只有映射后名 key
+  - 代码证据：`model/ability.go:130` 存原始名，`relay/util/relay_meta.go:92-97` `BillingModelName` 返回映射后名
+- **影响范围**: 只覆盖主 chat 路径（helper.go 的 postConsumeQuota）。midjourney/audio/image/video/claude/gemini 等入口如果也有 model_mapping 场景可能同问题，本次未处理，观察后再决定是否补
+- **遗留脏数据（重要，需运维一次性处理）**: TTL 只对新 ZADD 生效，**部署前已存在的老 key 没有 TTL，不会自动消失**。需在部署后执行一次「给所有 ability_metrics:* 打 TTL」的运维操作（详见 plan doc）：
+  ```
+  $RCLI --scan --pattern 'ability_metrics:*' | awk '{print "EXPIRE", $0, 1800}' | $RCLI --pipe
+  ```
+  执行后：正常渠道下一次 ZADD 会自动刷新 TTL，不影响；映射后名脏 key 和已下线渠道 key 30 分钟后自动消失
+- **关联计划**: `docs/plans/2026-08-25-fix-model-mapping-metric.md`
+
+---
+
 ## 2026-08-21
 
 ### fix(auto-disable): 抖动窗口加 10 分钟地板值，防低 freq 下退化
