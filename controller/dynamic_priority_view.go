@@ -49,6 +49,7 @@ type ModelChannelItem struct {
 	DynamicPriority int64    `json:"dynamic_priority"` // 动态优先级（所有 group 同步）
 	Weight          int      `json:"weight"`
 	UnitPrice       float64  `json:"unit_price"`
+	CreatedTime     int64    `json:"created_time"` // 渠道创建时间（Unix 秒）；前端可结合 dp=0 判定"新加渠道探索位"
 }
 
 // ListModelsOverview 模型汇总分页列表。
@@ -209,13 +210,26 @@ func ListModelChannels(c *gin.Context) {
 				"c.status AS channel_status, "+
 				"MAX(COALESCE(a.priority, 0)) AS priority, "+
 				"MAX(COALESCE(a.dynamic_priority, 0)) AS dynamic_priority, "+
-				"c.weight AS weight, c.unit_price AS unit_price",
+				"c.weight AS weight, c.unit_price AS unit_price, "+
+				"c.created_time AS created_time",
 		).
 		Where("a.model = ?", modelName).
 		// GROUP BY 只需 channel_id + channel 侧展示列。c.weight/c.unit_price 由 channel_id 唯一决定，
 		// 严格 SQL 模式下加入 GROUP BY 而非 MAX 聚合，避免不必要的聚合计算。
-		Group("a.channel_id, c.name, c.type, c.status, c.weight, c.unit_price").
-		Order("MAX(COALESCE(NULLIF(a.dynamic_priority, 0), COALESCE(a.priority, 0))) DESC, MAX(COALESCE(a.priority, 0)) DESC, a.channel_id ASC")
+		Group("a.channel_id, c.name, c.type, c.status, c.weight, c.unit_price, c.created_time").
+		// 排序对齐 model/cache.go:selectByDynamicPriority 的主键：
+		//   1. 有评分（dp>0）永远排在未评分之前 —— 与选渠道热路径信号一致
+		//   2. 评分池内按 dp DESC
+		//   3. 未评分池内按 created_time DESC（对齐探索位选取偏好：新加渠道排前）
+		//   4. 兜底 static priority + channel_id
+		// 用 COALESCE(a.dynamic_priority, 0) 而非裸字段：PG DESC 下 NULL 排最前会错位。
+		Order(
+			"(CASE WHEN MAX(COALESCE(a.dynamic_priority, 0)) > 0 THEN 1 ELSE 0 END) DESC, " +
+				"MAX(COALESCE(a.dynamic_priority, 0)) DESC, " +
+				"c.created_time DESC, " +
+				"MAX(COALESCE(a.priority, 0)) DESC, " +
+				"a.channel_id ASC",
+		)
 
 	if ct := parseIntSafe(channelTypeStr); ct > 0 {
 		query = query.Where("c.type = ?", ct)
@@ -250,6 +264,7 @@ func ListModelChannels(c *gin.Context) {
 		DynamicPriority int64   `gorm:"column:dynamic_priority"`
 		Weight          int     `gorm:"column:weight"`
 		UnitPrice       float64 `gorm:"column:unit_price"`
+		CreatedTime     int64   `gorm:"column:created_time"`
 	}
 
 	// 先获取总数（分页用）
@@ -308,6 +323,7 @@ func ListModelChannels(c *gin.Context) {
 			DynamicPriority: r.DynamicPriority,
 			Weight:          r.Weight,
 			UnitPrice:       r.UnitPrice,
+			CreatedTime:     r.CreatedTime,
 		})
 	}
 

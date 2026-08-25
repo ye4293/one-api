@@ -8,6 +8,21 @@
 
 ## 2026-08-25
 
+### perf(dynamic-priority): 批量拉 UnitPrice + 展示层排序对齐选渠道
+
+- **分支**: `dynamic-priority`
+- **类型**: 性能修复 + 前后端一致性修复
+- **涉及文件**:
+  - `controller/dynamic_priority.go` — `runDynamicPriorityCalcOnce` 顶层一次批量 SELECT 全部 enabled 渠道的 UnitPrice；`buildStatsForModel` 签名新增 `priceCache map[int]float64` 参数，删掉内部 `GetChannelById` 调用
+  - `controller/dynamic_priority_view.go` — `ListModelChannels` ORDER BY 与 `selectByDynamicPriority` 对齐（COALESCE + `(dp>0) DESC` 分层）；SELECT 加 `c.created_time`；`ModelChannelItem` 新增 `CreatedTime` 字段
+  - `docs/plans/2026-08-25-dp-fixes.md` — 追加第九章"上线后性能与前后端一致性修复"
+- **修的两个问题**:
+  1. **priceCache 作用域错了**（性能坑）：`buildStatsForModel` 的 `priceCache` 是每个 model 建一份的局部变量，同一 channel 在 N 个 model 下会被 `GetChannelById` 单条 DB 查询 N 次。生产 62K 渠道 × 544 model × 平均 300 channel/model ≈ **163K 次单查询 × 2ms RTT ≈ 322s**，正是观察到的单轮耗时。改成一次批量 SELECT 后，预期单轮从 322s 降到 10~30s，1 分钟评分周期能真正生效。
+  2. **展示层 ORDER BY 与选渠道不一致**：`ListModelChannels` 用的还是 `COALESCE(NULLIF(dp,0), priority) DESC` —— 修法 A 修掉的那个 Bug 的孪生版。管理页面看到"A 排第一"，实际选渠道按 `(dp>0) DESC` 打给 B。ORDER BY 对齐后前后端一致。
+- **观测**: 上线后 `grep "dynamic priority calc done"` 观察 `cost=xxx`，稳态应 <30s
+- **兼容**: `ModelChannelItem` 新增 `created_time` JSON 字段，前端可选消费（不消费不影响现有页面）
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第九章
+
 ### fix(dynamic-priority): 修复选渠道信号反向 + 加探索位 + 成功率 Beta-Binomial 平滑
 
 - **分支**: `dynamic-priority`

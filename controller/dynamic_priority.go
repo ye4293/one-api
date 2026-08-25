@@ -118,8 +118,34 @@ func runDynamicPriorityCalcOnce() {
 	var allUpdates []model.DynamicPriorityUpdate
 	var channelsScored, channelsSkipped int
 
+	// 一次批量拉取所有 enabled 渠道的 UnitPrice，避免 buildStatsForModel 里对每个
+	// (model, channel) 组合发单条 GetChannelById 查询。
+	//
+	// 修复前的性能坑：`priceCache` 是 buildStatsForModel 的局部变量，每个 model 建一份空
+	// cache。同一 channel 出现在 N 个 model 下就会被 GetChannelById 查询 N 次。
+	// 生产 62K 渠道 × 544 model × 平均 ~300 channel/model → 十几万次单条 SELECT ×
+	// 2ms RTT ≈ 5 分钟。这里改成一次批量 SELECT，把 O(N_models × N_channels) 降到 O(1)。
+	//
+	// 读失败不中止本轮：priceCache 空时 buildStatsForModel 的价格维度回退到中位分，
+	// 只是本轮无价格偏好，成功率+延迟维度仍能评分。
+	priceCache := make(map[int]float64)
+	var priceRows []struct {
+		Id        int     `gorm:"column:id"`
+		UnitPrice float64 `gorm:"column:unit_price"`
+	}
+	if err := model.DB.Table("channels").
+		Where("status = ?", common.ChannelStatusEnabled).
+		Select("id, unit_price").
+		Find(&priceRows).Error; err != nil {
+		logger.Errorf(ctx, "dynamic priority: load unit prices failed (fallback to no price bias): %s", err.Error())
+	} else {
+		for _, p := range priceRows {
+			priceCache[p.Id] = p.UnitPrice
+		}
+	}
+
 	for modelName, groupCands := range byModel {
-		stats, candIdx := buildStatsForModel(ctx, modelName, groupCands, window)
+		stats, candIdx := buildStatsForModel(ctx, modelName, groupCands, window, priceCache)
 		if len(stats) == 0 {
 			channelsSkipped += len(groupCands)
 			continue
@@ -163,7 +189,12 @@ func runDynamicPriorityCalcOnce() {
 // 返回 stats 和对应的 candidate 索引（candIdx[i] 是 stats[i] 对应的候选）。
 // 只返回有至少一个有效样本的渠道——纯无数据的渠道也要保留（写 0 分回退静态优先级），
 // 但若整组 Redis 全无数据则返回空，跳过该 model。
-func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCandidate, window time.Duration) ([]dynamicprio.ChannelStat, []int) {
+//
+// priceCache 由调用方（runDynamicPriorityCalcOnce）一次批量拉取传入，避免此处对每个
+// channel 发单条 SQL —— 生产 60K+ 渠道 × 500+ model 场景下能把整轮耗时从数分钟压到秒级。
+// 缺失 key（例如渠道刚新建、批量拉取时间点之后）视为未配置价格 UnitPrice=0，
+// 价格维度自然回退到中位分。
+func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCandidate, window time.Duration, priceCache map[int]float64) ([]dynamicprio.ChannelStat, []int) {
 	stats := make([]dynamicprio.ChannelStat, 0, len(cands))
 	candIdx := make([]int, 0, len(cands))
 	anyData := false
@@ -180,9 +211,6 @@ func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCa
 		logger.Errorf(ctx, "dynamic priority: batch scan window model=%s: %s", modelName, err.Error())
 		return nil, nil
 	}
-
-	// UnitPrice 按 channelId 去重读取，避免同渠道多 group 重复查
-	priceCache := make(map[int]float64)
 
 	for i, c := range cands {
 		sample := samples[c.ChannelId] // 缺失 = 零值，等价无数据
@@ -210,15 +238,9 @@ func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCa
 			st.AvgLatencyMs = sample.NonStreamDurSum / float64(sample.NonStreamCount) * 1000
 		}
 
-		// 价格：同 channel 多 group 共享一个价格，缓存
+		// 价格：从调用方批量拉取的 priceCache 里读，缺失视为未配置（0）
 		if price, ok := priceCache[c.ChannelId]; ok {
 			st.UnitPrice = price
-		} else {
-			ch, perr := model.GetChannelById(c.ChannelId, false)
-			if perr == nil && ch != nil {
-				st.UnitPrice = ch.UnitPrice
-				priceCache[c.ChannelId] = ch.UnitPrice
-			}
 		}
 
 		stats = append(stats, st)
