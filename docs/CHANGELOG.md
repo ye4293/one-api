@@ -8,6 +8,29 @@
 
 ## 2026-08-26
 
+### fix(dynamic-priority): hotfix —— context 泄漏 + 同分排序 + 存量兜底探索
+
+- **分支**: `dynamic-priority`
+- **类型**: 生产 hotfix（上一轮 dp-fixes 部署后 Grafana + DB + Redis 交叉验证发现的三个问题）
+- **涉及文件**:
+  - `common/helper/context.go` — 新增。导出 `DetachCancel(ctx)`，返回 `context.WithoutCancel(ctx)`，用于异步 goroutine 断开 gin request 的 cancel 信号但保留 request-id 等 value
+  - `controller/relay.go` — imports 加 `common/helper`；30 处 `go processChannelRelayError(ctx, ...)` 统一改为 `go processChannelRelayError(helper.DetachCancel(ctx), ...)`
+  - `relay/controller/claude.go` — imports 加别名 `commonhelper`；`go recordClaudeConsumption(ctx, ...)` → `go recordClaudeConsumption(commonhelper.DetachCancel(ctx), ...)`
+  - `common/config/config.go` — `DynamicPriorityExplorationTTLHours` 默认 24 → 720（30 天）；新增 `DynamicPriorityExploreRatio = 5`（概率化兜底探索百分比，0 关闭）
+  - `model/option.go` — OptionMap 注册 + LoadOption case 分支 `DynamicPriorityExploreRatio`
+  - `model/cache.go` — `selectByDynamicPriority` mainTier 分支 topCount 切分后加"同分向后扫"逻辑；tier 组装完成后加 `ExploreRatio%` 概率**直接 return** unscored 渠道（bypass 加权与 tier 抽奖）
+- **修的三个问题**:
+  1. **context canceled 打点丢失**：`go recordClaudeConsumption(ctx, ...)` / `go processChannelRelayError(ctx, ...)` 用的是 `c.Request.Context()`，HTTP 响应后 gin cancel ctx → 异步 goroutine 内 `pipe.Exec(ctx)` 报 "context canceled" → Redis 打点失败。Grafana Loki 观察到大量 `ability metric ZAdd/Expire error: context canceled` 和 `record rate limit ZAdd/Expire error: context canceled`。改用 `context.WithoutCancel`（Go 1.21+）后异步链路不受主 request 生命周期影响。
+  2. **top X% 硬切分裂 dp 同分并列渠道**：Beta-Binomial 平滑后大量渠道同分（如生产 `claude-opus-4-8` 8 个 dp=25），`created_time DESC` 决胜负导致老 VIP 渠道被挤出 top 档。改为切分后向后扫，把与 boundary 同分的一起纳入 tier —— dp 平局全部保留，加权公式（normW × dp）自然让 VIP weight=100 拿到应有比例。
+  3. **存量 dp=0 老渠道死锁**：24h TTL + K 硬 slot 让部署前 >24h 的老 dp=0 渠道拿不到探索资格 → 无流量 → 无 metrics → dp 永远 0。生产观察部署后活跃 channel 从 108 → 73（-32%）。改为 TTL 默认拉到 30 天 + 加 5% 概率化探索：ExploreRatio% 概率**直接返回一个随机 unscored 渠道**（bypass tier 加权抽奖 —— 若走加权，dp=0 渠道 w=1~10 vs dp>0 渠道 w=25~1000，实际打到探索位仅 ~0.05%，达不到设计目标）。K slot 覆盖冷启动，概率化直接 return 覆盖存量兜底，两者互补。
+- **验证**:
+  - Grafana Loki：部署后 `{job="ezlinkai"} |= "context canceled"` 报错量应趋近 0
+  - Redis：`ability_metrics:79741:*` 从 ZCARD=0 → 有数据
+  - DB：活跃 channel 数 73 → 恢复到 90+
+  - `claude-opus-4-8` 上 14417 流量占比从 17% 恢复接近理论 58%
+- **回滚**: (c) 通过 option API 关闭：`DynamicPriorityExploreRatio=0` 或 `DynamicPriorityExplorationTTLHours=24`，无需重新部署；(a)(b) revert 相关文件
+- **关联计划**: `docs/plans/2026-08-26-dp-hotfix.md`
+
 ### refactor(dynamic-priority): 加权公式精细化 —— 归一化 weight × dp + 429 指数衰减
 
 - **分支**: `dynamic-priority`

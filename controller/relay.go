@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/middleware"
@@ -178,7 +179,7 @@ func Relay(c *gin.Context) {
 	// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, originalModel)
 
 	// 获取客户端传递的 X-Response-ID（用于 Claude 缓存）
 	lastChannel := getLastRetryFallbackChannel(channelId)
@@ -284,7 +285,7 @@ func Relay(c *gin.Context) {
 		if isXAIContentViolation(bizErr.StatusCode, bizErr.Error.Message) {
 			// xAI内容违规：记录扣费日志并立即停止重试
 			recordXAIContentViolationCharge(ctx, c, channelHistory, retryAttempts)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, originalModel)
 			// 跳出重试循环，直接返回错误
 			break
 		}
@@ -292,11 +293,11 @@ func Relay(c *gin.Context) {
 
 		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, originalModel)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, originalModel)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, originalModel)
 	}
 
 	// 如果所有尝试都失败
@@ -1088,7 +1089,7 @@ func RelayVideoGenerate(c *gin.Context) {
 	group := c.GetString("group")
 	keyIndex := c.GetInt("key_index")
 
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -1169,11 +1170,11 @@ func RelayVideoGenerate(c *gin.Context) {
 
 		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
 
 	// 所有重试都失败后的处理
@@ -1385,7 +1386,7 @@ func RelayRecraft(c *gin.Context) {
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -1446,11 +1447,11 @@ func RelayRecraft(c *gin.Context) {
 
 		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
 
 	// 所有重试都失败后的处理
@@ -1757,7 +1758,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 	channelName := c.GetString("channel_name")
 	group := c.GetString("group")
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
@@ -1818,11 +1819,11 @@ func RelayImageGenerateAsync(c *gin.Context) {
 
 		if !shouldRetry(c, bizErr.StatusCode, bizErr.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", bizErr.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, bizErr, modelName)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, bizErr, modelName)
 	}
 
 	// 所有重试都失败后的处理
@@ -1897,7 +1898,7 @@ func RelayRunway(c *gin.Context) {
 
 	// 使用空的错误对象调用 processChannelRelayError，让它自己处理
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: "Request failed"},
 	}, modelName)
@@ -1996,7 +1997,7 @@ func RelayRunway(c *gin.Context) {
 			currentAttempt, retryTimes, channelId, channelName, statusCode)
 
 		keyIndex := c.GetInt("key_index")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: "Retry failed"},
 		}, modelName)
@@ -2195,7 +2196,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 		endpoint, channelId, channelName, statusCode, truncateString(errorMessage, 100))
 
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: errorMessage},
 	}, modelName)
@@ -2271,7 +2272,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 			endpoint, currentAttempt, retryTimes, channelId, channelName, statusCode)
 
 		keyIndex = c.GetInt("key_index")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: errorMessage},
 		}, modelName)
@@ -2398,7 +2399,7 @@ func RelaySoraCharacter(c *gin.Context) {
 		userId, channelId, channelName, statusCode, errorMessage)
 
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: errorMessage},
 	}, modelName)
@@ -2461,7 +2462,7 @@ func RelaySoraCharacter(c *gin.Context) {
 			retryTimes-i+1, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
 
 		keyIndex := c.GetInt("key_index")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: retryErrorMessage},
 		}, modelName)
@@ -2587,7 +2588,7 @@ func RelaySoraVideo(c *gin.Context) {
 
 	// 使用具体的错误消息调用 processChannelRelayError
 	keyIndex := c.GetInt("key_index")
-	go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 		StatusCode: statusCode,
 		Error:      model.Error{Message: errorMessage},
 	}, modelName)
@@ -2685,7 +2686,7 @@ func RelaySoraVideo(c *gin.Context) {
 			currentAttempt, retryTimes, channelId, channelName, statusCode, retryErrorMessage)
 
 		keyIndex := c.GetInt("key_index")
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, &model.ErrorWithStatusCode{
 			StatusCode: statusCode,
 			Error:      model.Error{Message: retryErrorMessage},
 		}, modelName)
@@ -2991,7 +2992,7 @@ func RelayGemini(c *gin.Context) {
 	// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
-	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, geminiErr, originalModel)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, originalChannelId, originalChannelName, originalKeyIndex, geminiErr, originalModel)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
@@ -3081,11 +3082,11 @@ func RelayGemini(c *gin.Context) {
 
 		if !shouldRetry(c, geminiErr.StatusCode, geminiErr.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", geminiErr.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, geminiErr, originalModel)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, geminiErr, originalModel)
 	}
 
 	if geminiErr != nil {
@@ -3156,7 +3157,7 @@ func RelayClaude(c *gin.Context) {
 	// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
-	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
@@ -3246,11 +3247,11 @@ func RelayClaude(c *gin.Context) {
 
 		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
 
 	if relayError != nil {
@@ -3322,7 +3323,7 @@ func RelayResponse(c *gin.Context) {
 	// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
-	go processChannelRelayError(ctx, userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
@@ -3413,11 +3414,11 @@ func RelayResponse(c *gin.Context) {
 
 		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)
-			go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 			break
 		}
 
-		go processChannelRelayError(ctx, userId, channelId, channelName, keyIndex, relayError, originalModel)
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
 
 	if relayError != nil {

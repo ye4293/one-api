@@ -60,6 +60,7 @@ func InitOptionMap() {
 	config.OptionMap["DynamicPriorityWindowMinutes"] = strconv.Itoa(config.DynamicPriorityWindowMinutes)
 	config.OptionMap["DynamicPriorityExploreSlots"] = strconv.Itoa(config.DynamicPriorityExploreSlots)
 	config.OptionMap["DynamicPriorityExplorationTTLHours"] = strconv.Itoa(config.DynamicPriorityExplorationTTLHours)
+	config.OptionMap["DynamicPriorityExploreRatio"] = strconv.Itoa(config.DynamicPriorityExploreRatio)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -572,6 +573,11 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	case "DynamicPriorityExplorationTTLHours":
 		setPositiveIntOption(&config.DynamicPriorityExplorationTTLHours, value)
+	case "DynamicPriorityExploreRatio":
+		// 允许设为 0（关闭概率化探索）；上限 100
+		if v, parseErr := strconv.Atoi(value); parseErr == nil && v >= 0 && v <= 100 {
+			config.DynamicPriorityExploreRatio = v
+		}
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

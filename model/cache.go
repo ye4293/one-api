@@ -669,6 +669,20 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		if topCount > len(pool) {
 			topCount = len(pool)
 		}
+		// 保留 dp 同分并列：向后扫，把与 pool[topCount-1].Dp 相等的渠道也纳入 mainTier。
+		// 场景：Beta-Binomial 平滑后大量渠道会同分（如 8 个 dp=25），若硬切 top X%
+		// 会把并列第一切开，让 SQL ORDER BY 里的 created_time DESC 决出胜负，导致
+		// 老 VIP 渠道（weight=100）被挤出 top 档，只能靠重试链兜底 —— 生产观察到
+		// 14417 (dp=25, weight=100) 只拿 17% 流量，理论应有 58.8%。同分并列全部保留后，
+		// 加权公式（normW × dp）会自然让 VIP 拿到应有的比例。
+		boundaryDp := pool[topCount-1].Dp
+		for i := topCount; i < len(pool); i++ {
+			if pool[i].Dp == boundaryDp {
+				topCount++
+			} else {
+				break
+			}
+		}
 		mainTier = pool[:topCount]
 	}
 
@@ -707,6 +721,28 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	tier = append(tier, mainTier...)
 	tier = append(tier, exploreTier...)
 
+	// 概率化兜底探索：ExploreRatio% 概率**直接返回**一个随机 unscored 渠道，
+	// 完全 bypass tier 加权抽奖。目的是给"长期 dp=0 存量老渠道"兜底流量 ——
+	// K slot 只覆盖 TTL（默认 30 天）内新加渠道，超 TTL 的老 dp=0 渠道会陷入
+	// "无流量→无 metrics→无 dp→无流量"死循环。
+	//
+	// 为什么必须 bypass 加权：加权公式 dp=0 渠道 w=normW(1~10) vs dp>0 渠道
+	// w=normW×dp(25~1000)，塞进 tier 只有 ~1% 被选概率；5% 触发 × 1% 打中 =
+	// 0.05% 有效流量，达不到设计目标。直接 return 让 5% 请求真的打到探索渠道，
+	// 该渠道拿到样本后进入正常评分链路，逐步获得 dp。
+	//
+	// 只在真正首选（无 excludeIds、skip=0）触发；重试路径关闭。
+	// 副作用：绕过 429 秒级降权 —— 但只有 5% 概率，且是"故意采样"，可接受。
+	if len(excludeIds) == 0 && skip == 0 &&
+		config.DynamicPriorityExploreRatio > 0 &&
+		len(unscored) > 0 &&
+		rand.Intn(100) < config.DynamicPriorityExploreRatio {
+		picked := unscored[rand.Intn(len(unscored))]
+		logger.Infof(ctx, "dynamic priority: probabilistic exploration selected channel #%d (model=%s)", picked.Id, model)
+		ch := picked.Channel
+		return &ch, -1, nil
+	}
+
 	// 兜底：重试把 scored 池全部跳完（skip >= len(scored)）时主档为空，
 	// 改从 unscored 池按剩余 skip 偏移取档；unscored 也没有则报错。
 	if len(tier) == 0 {
@@ -728,6 +764,9 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		if topCount > len(pool) {
 			topCount = len(pool)
 		}
+		// 注意：这里 pool 是 unscored，dp 全为 0，**不能**做同分并列扩展 ——
+		// 若扩展会把整个 unscored 池全塞进 tier，破坏 "top X% 兜底" 的原语义。
+		// mainTier 分支的同分扩展只在 scored 池（dp>0）有意义。
 		tier = pool[:topCount]
 	}
 

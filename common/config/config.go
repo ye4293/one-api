@@ -193,8 +193,9 @@ var DynamicPriorityWeightPrice = 20.0   // 价格权重（0-100）
 var DynamicPriorityCalcIntervalMinutes = 5  // Master 节点评分计算周期（分钟）
 var DynamicPriorityTopThreshold = 10        // 选渠道时同档阈值（%）：top X% 视为同档加权随机
 var DynamicPriorityWindowMinutes = 10       // 滑动窗口长度（分钟），评分只看该窗口内数据
-var DynamicPriorityExploreSlots = 2         // top 档预留几个未评分探索位（首选生效，重试关闭）
-var DynamicPriorityExplorationTTLHours = 24 // 新加渠道享受探索位优待的时长（小时）
+var DynamicPriorityExploreSlots = 2          // top 档预留几个未评分探索位（首选生效，重试关闭）
+var DynamicPriorityExplorationTTLHours = 720 // 新加渠道享受"K slot 硬占位"探索优待的时长（小时）；默认 30 天，覆盖存量老 dp=0 渠道
+var DynamicPriorityExploreRatio = 5          // 概率化兜底探索：K slot 之外，X% 概率从整个 unscored 池随机替换 tier 末位（不看 TTL，覆盖长期 dp=0 存量渠道）；0 关闭
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
 
