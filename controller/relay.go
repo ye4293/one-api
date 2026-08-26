@@ -776,8 +776,11 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 	// "某渠道刚开始被打爆"。这里独立记录一份 60 秒短窗口的 429 计数，
 	// selectByDynamicPriority 会在选渠道时读一次，命中阈值的渠道降权。
 	// 60 秒后自动过期，无需人工重置。
+	//
+	// 按 (channel, model) 分维度记录：兼容"账号级全局限流"和"model 级独立配额"
+	// 两种上游语义，避免 A model 触发 429 时误伤同渠道的 B model。
 	if err.StatusCode == 429 {
-		metrics.RecordRateLimit(ctx, channelId)
+		metrics.RecordRateLimit(ctx, channelId, modelName)
 	}
 
 	// 获取渠道信息

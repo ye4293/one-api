@@ -734,11 +734,14 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	// 一次 Redis pipeline，命中阈值的渠道在下面权重计算里降到 1（几乎不选，
 	// 但保留在池中，60s 后自动恢复）。这是评分周期外的秒级降权机制，
 	// 解决"高分渠道被打爆但评分未更新"造成的间歇性 429。
+	//
+	// 按 (channel, model) 维度查询：与 RecordRateLimit 写入维度对齐，避免
+	// "A model 触发 429 但 B model 选渠道时误降权"。
 	tierChannelIds := make([]int, len(tier))
 	for i, t := range tier {
 		tierChannelIds[i] = t.Id
 	}
-	rateLimits := metrics.GetRecentRateLimits(ctx, tierChannelIds)
+	rateLimits := metrics.GetRecentRateLimits(ctx, tierChannelIds, model)
 
 	// 档内加权随机：权重 = channel.weight × dp（如有评分）
 	//
