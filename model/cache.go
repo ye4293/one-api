@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -743,35 +744,67 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	}
 	rateLimits := metrics.GetRecentRateLimits(ctx, tierChannelIds, model)
 
-	// 档内加权随机：权重 = channel.weight × dp（如有评分）
+	// 档内加权随机：normalize(weight) × dp × 429 惩罚
 	//
-	// 为什么把 dp 纳入权重：
-	//   - 旧实现档内只按 channel.weight 分流，档内所有渠道等概率参与选择
-	//   - 结果 top 档里最高分渠道被瞬时打满，其他 dp>0 但排名靠后的渠道拿不到流量
-	//   - 例如 top 30% 里 dp=90 和 dp=50 的渠道，本应流量比 1.8:1 递减，
-	//     旧实现是 1:1（甚至因 weight 相同变成均分），导致高分渠道过载 429
+	// 【归一化 weight】：把 tier 内 weight 映射到 [1, 10] 范围。
+	//   - 保留 weight 相对比例：VIP 渠道（高 weight）仍占主导
+	//   - 压平绝对差距：避免 weight=100 让 weight=1 渠道占比降到 1%，dp 信号被稀释
+	//   - weight 全等场景（大多数运维默认）：normW 全为 1，退化为纯 dp 加权
 	//
-	// 新实现让 dp 作为倍率参与权重：dp=90 拿到的流量是 dp=50 的 1.8 倍，
-	// 保持相对偏好但避免绝对垄断，天然分散负载。
+	// 【dp 参与权重】：dp>0 时 w = normW × dp，让评分识别的高分渠道拿更多流量
+	//   - dp=0 探索位保持基础 normW（不乘 dp），让新加渠道有机会攒样本
 	//
-	// 边界：dp=0 的探索位保持基础 channel.weight（不乘），避免刚上线未评分的
-	// 渠道因 dp=0 拿不到探索流量（探索位存在的意义就是给它们攒样本升级 dp）。
-	//
-	// 429 冷却：最近 60s 内 429 次数 ≥ rateLimitPenaltyThreshold 的渠道，
-	// 权重强制降到 1 —— 相当于短暂"冷却"，60s 后 rate limit 缓解自动恢复。
-	const rateLimitPenaltyThreshold = 3
-	totalWeight := 0
-	weights := make([]int, len(tier))
-	for i, t := range tier {
+	// 【429 指数衰减】：命中 rate limit 后 w × pow(0.7, N)
+	//   - 1 次: 0.7    偶发抖动只轻微惩罚
+	//   - 3 次: 0.343  明显 rate limit，降到 1/3
+	//   - 5 次: 0.168  边缘化
+	//   - 10 次: 0.028 几乎不选（长期问题交给 auto_disabled 熔断）
+	//   平滑衰减替代原来的"3 次断崖式降到 1"——避免高 QPS 场景下偶发 3 次 429
+	//   （错误率可能 <0.1%）就把主力渠道打成陪衬的过激反应。
+	minW := int(^uint(0) >> 1) // int max
+	maxW := 0
+	for _, t := range tier {
 		w := 1
 		if t.Weight != nil && int(*t.Weight) > 0 {
 			w = int(*t.Weight)
 		}
-		if t.Dp > 0 {
-			w = w * int(t.Dp)
+		if w < minW {
+			minW = w
 		}
-		if rl, ok := rateLimits[t.Id]; ok && rl >= rateLimitPenaltyThreshold {
-			w = 1 // 短暂冷却：保留在池中兜底，但被选中概率降到最低
+		if w > maxW {
+			maxW = w
+		}
+	}
+
+	const rateLimitPenaltyBase = 0.7 // 429 惩罚基数：每次 429 权重乘以 0.7
+
+	totalWeight := 0
+	weights := make([]int, len(tier))
+	for i, t := range tier {
+		baseW := 1
+		if t.Weight != nil && int(*t.Weight) > 0 {
+			baseW = int(*t.Weight)
+		}
+
+		// 归一化到 [1, 10]。weight 全等时 normW=1，差异化时按 min/max 线性映射
+		normW := 1.0
+		if maxW > minW {
+			normW = 1 + 9*float64(baseW-minW)/float64(maxW-minW)
+		}
+
+		wFloat := normW
+		if t.Dp > 0 {
+			wFloat = normW * float64(t.Dp)
+		}
+
+		// 429 惩罚
+		if rl, ok := rateLimits[t.Id]; ok && rl > 0 {
+			wFloat = wFloat * math.Pow(rateLimitPenaltyBase, float64(rl))
+		}
+
+		w := int(wFloat + 0.5) // 四舍五入
+		if w < 1 {
+			w = 1
 		}
 		weights[i] = w
 		totalWeight += w

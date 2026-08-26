@@ -8,6 +8,30 @@
 
 ## 2026-08-26
 
+### refactor(dynamic-priority): 加权公式精细化 —— 归一化 weight × dp + 429 指数衰减
+
+- **分支**: `dynamic-priority`
+- **类型**: 加权算法优化（code review 发现的两处过激设计）
+- **涉及文件**:
+  - `model/cache.go` — `selectByDynamicPriority` 档内加权计算重写；导入 `math`
+  - `docs/plans/2026-08-25-dp-fixes.md` — 第十章追加"加权公式精细化"段
+- **修的问题**:
+  1. **`weight × dp` 让 weight 稀释 dp**：weight 差 100x 会让 dp 差 2x 变成 w 差 50x，dp 信号被吞。改成先把 tier 内 weight 归一化到 [1, 10]，再乘 dp —— 保留 weight 相对比例（VIP 仍占主导），压平绝对差距（dp 有话语权）。weight 全等场景（运维默认）normW 全为 1，退化为纯 dp 加权，行为不变。
+  2. **3 次 429 断崖式降到 w=1 太极端**：高 QPS 场景偶发 3 次 429（错误率可能 <0.1%）就把主力秒变陪衬。改成指数衰减 `w × pow(0.7, N)`：1 次 429 降 30%，3 次降到 1/3，10 次降到 3%，无阈值断层，自然区分偶发/频发/严重。长期严重问题交给 `auto_disabled` 熔断。
+- **兼容**: weight 全等场景行为不变；weight 差异化场景下 dp 信号明显增强
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章"加权公式精细化"段
+
+### fix(dynamic-priority): 429 计数按 (channel, model) 分维度
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（code review 发现）
+- **涉及文件**:
+  - `common/metrics/rate_limit.go` — `RecordRateLimit` / `GetRecentRateLimits` 加 model 参数，key 从 `channel_recent_429:{id}` 改为 `channel_recent_429:{id}:{model}`；`model==""` 静默返回
+  - `controller/relay.go` — 打点时传 `modelName`
+  - `model/cache.go` — `selectByDynamicPriority` 已有 `model` 参数，透传给 `GetRecentRateLimits`
+- **修的问题**: 初版只按 channel 存储 429 计数，跨 model 误伤。上游 429 有两种语义：账号/key 级全局限流（多 model 共享）和 model 级独立配额（各 model 独立）。只按 channel 存储在 model 级限流场景下 A model 触发会误降权 B model。按 `(channel, model)` 复合 key 后，全局限流场景等价效果，model 级限流场景不误伤。
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章"审计修正"段
+
 ### feat(dynamic-priority): 档内 dp 加权随机 + 429 秒级降权
 
 - **分支**: `dynamic-priority`
