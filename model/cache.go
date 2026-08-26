@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -574,6 +575,11 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 // skipPriorityLevels（重试链）：线性跳过 skip 个 scored 渠道；重试时（skip>0）
 // 关闭探索位，避免继续冒险；scored 全部跳完后从 unscored 池兜底。
 //
+// exploreRRLocalCounter 是概率化探索的**本地降级** round-robin 游标 ——
+// Redis 不可用时使用（Redis 可用时用共享 counter 保证多节点游标同步）。
+// atomic 保证并发递增。
+var exploreRRLocalCounter atomic.Int64
+
 // capabilityFilter 非 nil 时用于 count_tokens 等能力筛选，在分档前先过滤。
 func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVal string, skipPriorityLevels int, excludeIds []int, capabilityFilter ChannelCapabilityFilter) (*Channel, int, error) {
 	// 新加渠道享受探索位优待的 TTL 阈值（Unix 秒）
@@ -721,7 +727,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	tier = append(tier, mainTier...)
 	tier = append(tier, exploreTier...)
 
-	// 概率化兜底探索：ExploreRatio% 概率**直接返回**一个随机 unscored 渠道，
+	// 概率化兜底探索：ExploreRatio% 概率**直接返回**一个 unscored 渠道，
 	// 完全 bypass tier 加权抽奖。目的是给"长期 dp=0 存量老渠道"兜底流量 ——
 	// K slot 只覆盖 TTL（默认 30 天）内新加渠道，超 TTL 的老 dp=0 渠道会陷入
 	// "无流量→无 metrics→无 dp→无流量"死循环。
@@ -731,14 +737,39 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	// 0.05% 有效流量，达不到设计目标。直接 return 让 5% 请求真的打到探索渠道，
 	// 该渠道拿到样本后进入正常评分链路，逐步获得 dp。
 	//
+	// 选渠道策略：**Round-robin over unscored，多节点共享游标**，保证每个
+	// unscored 渠道都能被公平覆盖（不像随机采样有 "运气差长期没被选中" 的方差风险）。
+	//   - 游标来自 Redis INCR `dp:explore_cursor:{model}`（多节点共享，24h TTL）
+	//   - Redis 不可用时降级到本地 atomic counter（单节点轮询，各节点独立）
+	//   - rank = (seq-1) % len(unscored)，从 unscored[0] 取（SQL 已按 created_time DESC，
+	//     即新渠道在前 —— 用户希望"新加渠道优先探索"）
+	//
 	// 只在真正首选（无 excludeIds、skip=0）触发；重试路径关闭。
-	// 副作用：绕过 429 秒级降权 —— 但只有 5% 概率，且是"故意采样"，可接受。
+	// 副作用：绕过 429 秒级降权 —— 但只有 5% 概率、且是"故意采样"，可接受。
 	if len(excludeIds) == 0 && skip == 0 &&
 		config.DynamicPriorityExploreRatio > 0 &&
 		len(unscored) > 0 &&
 		rand.Intn(100) < config.DynamicPriorityExploreRatio {
-		picked := unscored[rand.Intn(len(unscored))]
-		logger.Infof(ctx, "dynamic priority: probabilistic exploration selected channel #%d (model=%s)", picked.Id, model)
+		var seq int64
+		if common.RedisEnabled && common.RDB != nil {
+			cursorKey := "dp:explore_cursor:" + model
+			// pipeline: INCR + EXPIRE 一次 RTT。EXPIRE 每次刷新，避免 counter
+			// key TTL 到期消失后重启 —— 即使消失也不影响功能（rank 从 0 重开）。
+			pipe := common.RDB.Pipeline()
+			incrCmd := pipe.Incr(ctx, cursorKey)
+			pipe.Expire(ctx, cursorKey, 24*time.Hour)
+			if _, err := pipe.Exec(ctx); err == nil {
+				seq = incrCmd.Val()
+			} else {
+				logger.Warnf(ctx, "dp explore cursor Redis INCR failed, fallback to local: %v", err)
+				seq = exploreRRLocalCounter.Add(1)
+			}
+		} else {
+			seq = exploreRRLocalCounter.Add(1)
+		}
+		idx := int((seq - 1) % int64(len(unscored)))
+		picked := unscored[idx]
+		logger.Infof(ctx, "dynamic priority: probabilistic exploration selected channel #%d (model=%s, rank=%d/%d, seq=%d)", picked.Id, model, idx, len(unscored), seq)
 		ch := picked.Channel
 		return &ch, -1, nil
 	}
