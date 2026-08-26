@@ -6,6 +6,27 @@
 
 ---
 
+## 2026-08-26
+
+### feat(dynamic-priority): 档内 dp 加权随机 + 429 秒级降权
+
+- **分支**: `dynamic-priority`
+- **类型**: 负载均衡机制 + 秒级故障反馈
+- **涉及文件**:
+  - `common/metrics/rate_limit.go` — 新增。`RecordRateLimit` / `GetRecentRateLimits`（批量 pipeline）
+  - `controller/relay.go` — 失败路径 `err.StatusCode==429` 时调 `RecordRateLimit`
+  - `model/cache.go` — `selectByDynamicPriority` 档内加权公式改为 `weight × dp`（dp>0 时）；tier 组成后一次 pipeline 读所有渠道的最近 60s 429 计数，命中 ≥3 阈值时权重降到 1
+- **修的问题**:
+  1. **档内负载集中**（生产观察）：`top X%` 档内按 `channel.weight` 等权分流，高分渠道拿远超其容量的流量，被瞬时打满触发 429。改成 `weight × dp` 后，dp=90 vs dp=50 流量比 1.8:1 而不是 1:1，负载自然分散。
+  2. **429 反馈延迟**：dp 是 10 分钟窗口 + 每分钟评分的慢变信号，某渠道刚开始被打爆时评分要 1~2 分钟才反应，客户端体验间歇性 429。新增独立的 60 秒短窗口 Redis 计数，选渠道时一次 pipeline 批量读，命中阈值秒级降权。60s 后自动恢复。
+- **架构分工**：
+  - **动态优先级评分**：稳态健康度信号（10 分钟窗口）
+  - **档内 dp 加权**：稳态按分数比例分流，避免高分垄断
+  - **429 反馈层**：异常时秒级避让，dp 评分周期外的兜底
+- **性能开销**：选渠道热路径新增 1 次 Redis pipeline（batch ZCount），tier 通常 1~10 个渠道，单次 <2ms
+- **降级路径**：Redis 未启用/断开时 `GetRecentRateLimits` 返回空 map，等价关闭本机制，不影响选渠道
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章
+
 ## 2026-08-25
 
 ### perf(dynamic-priority): 批量拉 UnitPrice + 展示层排序对齐选渠道

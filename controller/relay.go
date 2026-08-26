@@ -772,6 +772,14 @@ func processChannelRelayError(ctx context.Context, userId int, channelId int, ch
 		Success:   false,
 	})
 
+	// 429 即时反馈：动态优先级评分是 10 分钟窗口的慢变信号，无法秒级反应
+	// "某渠道刚开始被打爆"。这里独立记录一份 60 秒短窗口的 429 计数，
+	// selectByDynamicPriority 会在选渠道时读一次，命中阈值的渠道降权。
+	// 60 秒后自动过期，无需人工重置。
+	if err.StatusCode == 429 {
+		metrics.RecordRateLimit(ctx, channelId)
+	}
+
 	// 获取渠道信息
 	channel, getErr := dbmodel.GetChannelById(channelId, true)
 	if getErr != nil {
