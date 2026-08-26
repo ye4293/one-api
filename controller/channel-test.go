@@ -680,6 +680,19 @@ func recoverAutoDisabledModels() {
 			skipped++
 			continue
 		}
+		// 24h 熔断退避：本渠道近期已触发过整渠道自动禁用，未过退避窗口就不再探测。
+		// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+		if channel.AutoDisableCount > 0 && channel.AutoDisabledTime != nil {
+			idx := channel.AutoDisableCount - 1
+			if idx >= len(common.ChannelAutoDisableProbeBackoff) {
+				idx = len(common.ChannelAutoDisableProbeBackoff) - 1
+			}
+			minWait := int64(common.ChannelAutoDisableProbeBackoff[idx].Seconds())
+			if time.Now().Unix()-*channel.AutoDisabledTime < minWait {
+				skipped++
+				continue
+			}
+		}
 		// 预过滤：不可 chat 探测的渠道类型 / 模型名，直接跳过避免浪费真实 API 调用。
 		// 这类模型只能通过前端「模型自动禁用」批量启用手工恢复。
 		if isUnsupportedTestChannel(channel.Type) || isUnsupportedTestModel(it.Model) {

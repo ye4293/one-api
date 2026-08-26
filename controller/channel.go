@@ -631,6 +631,35 @@ func UpdateChannel(c *gin.Context) {
 	logger.Info(c.Request.Context(), fmt.Sprintf("UpdateChannel: channel.Id=%d, IsMultiKey=%v", channel.Id, channel.MultiKeyInfo.IsMultiKey))
 	logger.Info(c.Request.Context(), fmt.Sprintf("UpdateChannel: Received batch_import_mode=%d from frontend", requestData.BatchImportMode))
 
+	// 防止 lost-update：existingChannel 是打开编辑页时读的快照，管理员在页面停留期间
+	// AutoDisableChannelById / 恢复探针可能已经改过 auto_disable_count / auto_enabled / auto_disabled_*
+	// 等内部管理字段。channel.Update() 内部通过 Updates(struct) 与 Select("auto_enabled").Updates(map)
+	// 强制写这些字段，若不重读会把陈旧值覆盖回去，静默回滚熔断锁死。
+	// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+	{
+		var fresh model.Channel
+		if reloadErr := model.DB.Select(
+			"auto_disable_count", "auto_disable_window_start",
+			"auto_disabled_reason", "auto_disabled_time", "auto_disabled_model",
+			"auto_enabled", "auto_disabled",
+		).First(&fresh, "id = ?", channel.Id).Error; reloadErr == nil {
+			channel.AutoDisableCount = fresh.AutoDisableCount
+			channel.AutoDisableWindowStart = fresh.AutoDisableWindowStart
+			channel.AutoDisabledReason = fresh.AutoDisabledReason
+			channel.AutoDisabledTime = fresh.AutoDisabledTime
+			channel.AutoDisabledModel = fresh.AutoDisabledModel
+			// auto_enabled / auto_disabled 是前端可显式编辑的字段：仅当 rawBody 未提供时才用 DB 最新值
+			if _, exists := rawBody["auto_enabled"]; !exists {
+				channel.AutoEnabled = fresh.AutoEnabled
+			}
+			if _, exists := rawBody["auto_disabled"]; !exists {
+				channel.AutoDisabled = fresh.AutoDisabled
+			}
+		} else {
+			logger.SysError(fmt.Sprintf("UpdateChannel: failed to reload internal fields for channel %d: %s", channel.Id, reloadErr.Error()))
+		}
+	}
+
 	// 处理多密钥渠道
 	if channel.MultiKeyInfo.IsMultiKey {
 		updateMultiKeyChannel(c.Request.Context(), &channel, existingChannel, &requestData)

@@ -66,6 +66,12 @@ type Channel struct {
 	AutoDisabled       bool    `json:"auto_disabled" gorm:"default:true"`
 	// 是否允许被自动启用（响应时间超阈值/错误失败时跳过自动启用）
 	AutoEnabled bool `json:"auto_enabled" gorm:"default:false"`
+	// 24h 熔断计数：滚动窗口内本渠道被整渠道自动禁用的次数。
+	// 达到 common.ChannelAutoDisableCircuitThreshold 时会自动把 AutoEnabled 置 false。
+	// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+	AutoDisableCount int `json:"auto_disable_count" gorm:"default:0"`
+	// 当前熔断计数窗口的起点（Unix 秒）。now - 该值 > 窗口长度视为过期，下次触发重置为 1。
+	AutoDisableWindowStart int64 `json:"auto_disable_window_start" gorm:"bigint;default:0"`
 	// 新增多Key聚合相关字段
 	MultiKeyInfo MultiKeyInfo `json:"multi_key_info" gorm:"type:json"`
 	// 新增自动禁用原因字段
@@ -736,7 +742,15 @@ func UpdateChannelStatusById(id int, status int) error {
 	}
 
 	// 更新Channel状态
-	channelResult := tx.Model(&Channel{}).Where("id = ?", id).Update("status", status)
+	// 手动启用时顺带清零 24h 熔断计数：方便管理员主动救回被误熔断的渠道。
+	// 注意：auto_enabled 不在这里恢复，锁死后必须在 UI 显式打开，避免手滑。
+	// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+	channelUpdates := map[string]interface{}{"status": status}
+	if enabled {
+		channelUpdates["auto_disable_count"] = 0
+		channelUpdates["auto_disable_window_start"] = 0
+	}
+	channelResult := tx.Model(&Channel{}).Where("id = ?", id).Updates(channelUpdates)
 	if channelResult.Error != nil {
 		tx.Rollback()
 		logger.SysError(fmt.Sprintf("failed to update channel status for channel %d: %s", id, channelResult.Error.Error()))
@@ -781,12 +795,18 @@ func AutoDisableChannelById(id int, reason string, modelName string) (bool, erro
 
 	currentTime := time.Now().Unix()
 	disabled := false
+	// 熔断信息：仅在本次 UPDATE 成功（首次禁用）后用于日志与是否锁死 auto_enabled 的二次写入
+	var (
+		newCount        int
+		prevAutoEnabled bool
+	)
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// SELECT：读取 AutoDisabled 与 IsMultiKey 标志，过早退出不符合条件的渠道。
+		// SELECT：读取禁用前置标志 + 熔断计数窗口与 auto_enabled 当前值。
 		// 注意：这里不用 SELECT FOR UPDATE —— 真正的幂等性由后面的条件 UPDATE 保证。
 		var channel Channel
-		if err := tx.Select("id", "status", "auto_disabled", "multi_key_info").
+		if err := tx.Select("id", "status", "auto_disabled", "multi_key_info",
+			"auto_disable_count", "auto_disable_window_start", "auto_enabled").
 			First(&channel, "id = ?", id).Error; err != nil {
 			return err
 		}
@@ -796,11 +816,23 @@ func AutoDisableChannelById(id int, reason string, modelName string) (bool, erro
 			return nil
 		}
 
+		// 熔断计数：滚动窗口过期则重置为 1，否则 +1。
+		// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+		newCount = channel.AutoDisableCount + 1
+		newWindowStart := channel.AutoDisableWindowStart
+		if currentTime-channel.AutoDisableWindowStart > common.ChannelAutoDisableCircuitWindowSeconds {
+			newCount = 1
+			newWindowStart = currentTime
+		}
+		prevAutoEnabled = channel.AutoEnabled
+
 		updates := map[string]interface{}{
-			"status":               common.ChannelStatusAutoDisabled,
-			"auto_disabled_reason": reason,
-			"auto_disabled_time":   currentTime,
-			"auto_disabled_model":  modelName,
+			"status":                    common.ChannelStatusAutoDisabled,
+			"auto_disabled_reason":      reason,
+			"auto_disabled_time":        currentTime,
+			"auto_disabled_model":       modelName,
+			"auto_disable_count":        newCount,
+			"auto_disable_window_start": newWindowStart,
 		}
 
 		// abilities 先于 channels（与 UpdateChannelStatusById 锁顺序一致，防死锁）
@@ -819,8 +851,26 @@ func AutoDisableChannelById(id int, reason string, modelName string) (bool, erro
 
 		// RowsAffected == 0：该渠道已被其他实例/事务禁用，本次不算"首次禁用"
 		disabled = result.RowsAffected > 0
+
+		// 达阈锁死：只有本次是首次禁用 + 达阈 + 之前 auto_enabled 为 true 才需要单独写。
+		// auto_enabled bool 的 false 零值会被 GORM 的 Updates(map) 忽略非零值检测——这里用 map 是可以的，
+		// 但为对齐 UpdateAutoEnabled(596-600 行)已有的显式列名模式，仍用 Select("auto_enabled") 明确列。
+		if disabled && newCount >= common.ChannelAutoDisableCircuitThreshold && prevAutoEnabled {
+			if err := tx.Model(&Channel{}).Where("id = ?", id).
+				Select("auto_enabled").
+				Updates(map[string]interface{}{"auto_enabled": false}).Error; err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+
+	if err == nil && disabled && newCount >= common.ChannelAutoDisableCircuitThreshold && prevAutoEnabled {
+		logger.SysLog(fmt.Sprintf(
+			"channel #%d auto_enabled locked to false: reached auto-disable threshold %d within %ds window",
+			id, common.ChannelAutoDisableCircuitThreshold, common.ChannelAutoDisableCircuitWindowSeconds,
+		))
+	}
 
 	return disabled, err
 }
@@ -881,7 +931,13 @@ func BatchUpdateChannelStatus(ids []int, status int) error {
 	}
 
 	// 批量更新Channel状态
-	channelResult := tx.Model(&Channel{}).Where("id IN (?)", ids).Update("status", status)
+	// 手动启用时顺带清零 24h 熔断计数（参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md）
+	batchChannelUpdates := map[string]interface{}{"status": status}
+	if enabled {
+		batchChannelUpdates["auto_disable_count"] = 0
+		batchChannelUpdates["auto_disable_window_start"] = 0
+	}
+	channelResult := tx.Model(&Channel{}).Where("id IN (?)", ids).Updates(batchChannelUpdates)
 	if channelResult.Error != nil {
 		tx.Rollback()
 		logger.SysError(fmt.Sprintf("failed to batch update channel status: %s", channelResult.Error.Error()))

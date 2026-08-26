@@ -8,6 +8,38 @@
 
 ## 2026-08-26
 
+### fix(auto-disable): UpdateChannel 保存时重读熔断内部字段，避免 lost-update 静默回滚锁死
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（代码审计发现）
+- **涉及文件**:
+  - `controller/channel.go` — `UpdateChannel` handler 在 `channel.Update()` 之前从 DB 重读 `auto_disable_count`、`auto_disable_window_start`、`auto_disabled_reason/time/model` 覆盖到 channel 结构；对 `auto_enabled` / `auto_disabled` 仅当 rawBody 未显式提供时才用 DB 最新值
+- **问题根因**: `existingChannel := *model.GetChannelById(id)` 是打开编辑页时读的快照，管理员在页面停留期间 `AutoDisableChannelById` 可能已经把 count 加到 3 并锁死 `auto_enabled=false`；保存时 `channel.Update()` 内部 `Updates(channel struct)` 会用陈旧的 count 值覆盖 DB（非零 int 不被跳过），而 `Select("auto_enabled").Updates(map)` 更是强制写陈旧的 `auto_enabled=true`——熔断锁死被静默回滚且无告警
+- **修复策略**: 保存前一次 SELECT 重读 5 个内部字段 + 条件性重读 2 个可编辑字段。窗口极窄（毫秒级），实际并发场景基本消除；若并发极高仍有残留 TOCTOU，属于可接受的最后一毫秒竞态
+- **验证**: `go build && go vet` 通过；`go test ./model/...` 全绿（无回归）
+- **关联审计**: 本次改动前的 9-angle 代码审计（`superpowers:code-review` skill）发现，B 类 finding
+
+### feat(auto-disable): 整渠道自动禁用引入 24h 熔断计数 + 达阈锁死 auto_enabled
+
+- **分支**: `dynamic-priority`
+- **类型**: 新功能（防止误判反复救火，为持续故障渠道设终止条件）
+- **涉及文件**:
+  - `common/constants.go` — 新增 `ChannelAutoDisableCircuitThreshold=3`、`ChannelAutoDisableCircuitWindowSeconds=86400`、`ChannelAutoDisableProbeBackoff=[15m,30m,60m]`
+  - `model/channel.go` — Channel struct 加 `AutoDisableCount int` + `AutoDisableWindowStart int64`；`AutoDisableChannelById` 事务内累加计数、跨窗口重置、达阈单独 `Select("auto_enabled").Updates` 锁死；`UpdateChannelStatusById` + `BatchUpdateChannelStatus` 手动启用时清零 count/window（不动 auto_enabled）
+  - `controller/channel-test.go` — `recoverAutoDisabledModels` 在 `!AutoEnabled` 检查后加退避跳过：`AutoDisableCount>0` 且距 `AutoDisabledTime` 不足 backoff[count-1] 就 skip
+  - `model/channel_auto_disable_count_test.go` — 新增。覆盖首次触发/达阈锁死/窗口过期重置/AutoDisabled=false 前置退出/MultiKey 前置退出/已 auto_disabled 幂等/手动启用清零/批量启用清零 8 个场景
+  - `docs/plans/2026-08-26-auto-disable-circuit-breaker.md` — 新增。方案与决策
+- **解决的问题**:
+  1. **反复救火**：整渠道被自动禁用后，恢复探针可能刚救起就再挂，运维疲于奔命。加入 15/30/60min 指数退避，让探针不再高频重试。
+  2. **持续故障无终止条件**：key 长期失效或上游长期不可用的渠道被一救再救。24h 内触发 3 次整渠道禁用直接 `auto_enabled=false` 锁死，管理员必须显式介入。
+- **保留的现有机制**（不改）:
+  - 模型级隔离 `AutoDisableModelOnChannel`：一个渠道 60 个模型中只有 vision 挂，仍只禁 vision
+  - 只有升级到整渠道禁用（`AutoDisableChannelById` 的 4 条调用路径）才触发计数 +1
+  - Multi-key / AutoDisabled=false 的渠道天然不进计数逻辑（前置退出继承）
+- **兼容性**: 新字段 default=0，历史数据无迁移风险；GORM AutoMigrate 启动即生效；手动启用只清零计数不动 auto_enabled —— 锁死后必须在 UI 显式打开 auto_enabled 才能重新参与自动救援
+- **验证**: `go build && go vet` 通过；`go test ./model/... -run "AutoDisable|UpdateChannelStatus|BatchUpdateChannelStatus"` 8 个新增子测试全绿
+- **关联计划**: `docs/plans/2026-08-26-auto-disable-circuit-breaker.md`
+
 ### fix(dynamic-priority): hotfix —— context 泄漏 + 同分排序 + 存量兜底探索
 
 - **分支**: `dynamic-priority`
