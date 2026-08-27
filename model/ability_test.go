@@ -466,3 +466,30 @@ func TestGetChannelsWithAutoDisabledAbilities(t *testing.T) {
 		t.Fatalf("期望只返回 [1]，实际 %v", ids)
 	}
 }
+
+// TestGetAutoDisabledAbilities_OrdersByTimeDESC 验证恢复候选按 auto_disabled_time 降序：
+// 最近被禁的排最前（优先探测最可能自愈的），避免老僵尸占满每轮预算把新渠道饿死在队尾。
+func TestGetAutoDisabledAbilities_OrdersByTimeDESC(t *testing.T) {
+	setupAbilityTestDB(t)
+	seedChannel(t, 1, common.ChannelStatusEnabled)
+
+	// disabledSecondsAgo 越大 → 被禁越久 → auto_disabled_time 越小
+	seedAutoDisabled(t, 1, "default", "m-old", 3000)
+	seedAutoDisabled(t, 1, "default", "m-mid", 2000)
+	seedAutoDisabled(t, 1, "default", "m-new", 1000)
+
+	items, err := GetAutoDisabledAbilities()
+	if err != nil {
+		t.Fatalf("GetAutoDisabledAbilities 失败: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("期望 3 个候选，实际 %d: %+v", len(items), items)
+	}
+	// DESC：最近被禁的（time 最大，即 disabledSecondsAgo 最小）排最前
+	want := []string{"m-new", "m-mid", "m-old"}
+	for i, w := range want {
+		if items[i].Model != w {
+			t.Fatalf("DESC 排序错误：位置 %d 期望 %s 实际 %s（完整 %+v）", i, w, items[i].Model, items)
+		}
+	}
+}

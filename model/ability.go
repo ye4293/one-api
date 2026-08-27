@@ -340,7 +340,9 @@ type AutoDisabledAbility struct {
 //     EnableModelOnChannel 顺带把 status 提升回 enabled。
 //
 // 排除 manually_disabled：手动禁用是运维明确决策，不做自动测试恢复。
-// 按 auto_disabled_time 升序：优先恢复最久的，也是最可能已经自愈的。
+// 按 auto_disabled_time 降序：优先探测「最近被禁」的——号池换 key 间隙的瞬时 401 等
+// 属于误禁、最可能已自愈，恢复投入产出比最高。反之最久没恢复的多是真失效僵尸，
+// 若按升序优先它们会反复占满每轮预算、把新被误禁的活跃渠道饿死在队尾（见僵尸退避）。
 func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
 	var items []AutoDisabledAbility
 	err := DB.Table("abilities a").
@@ -348,7 +350,7 @@ func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
 		Joins("JOIN channels c ON c.id = a.channel_id").
 		Where("a.auto_disabled = ? AND c.status != ?", true, common.ChannelStatusManuallyDisabled).
 		Group("a.channel_id, a.model").
-		Order("auto_disabled_time ASC").
+		Order("auto_disabled_time DESC").
 		Scan(&items).Error
 	if err != nil {
 		return nil, err

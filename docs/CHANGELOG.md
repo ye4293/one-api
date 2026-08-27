@@ -8,6 +8,21 @@
 
 ## 2026-08-27
 
+### refactor(auto-disable): 恢复探针改 DESC 排序 + 并发全量 + 僵尸退避
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 重构（生产事故驱动）
+- **背景**: jsy 站点渠道 62395 的 gpt-5.5 反复被 401 误禁后**从不自动恢复**，只能人工救回。Loki 日志坐实：恢复探针每轮 `candidates=877 processed=100 recovered=0`——`recoverModelsMaxPerRound=100` 硬顶 + `auto_disabled_time ASC` 排序，导致测不通的老僵尸永占前 100 名额，最近被禁的活跃渠道排队尾、**从未被探测**（死锁）
+- **涉及文件**:
+  - `model/ability.go` — `GetAutoDisabledAbilities` 排序 `ASC` → `DESC`（优先探测最近被禁、最可能自愈的）
+  - `controller/channel-test.go` — 新增进程内僵尸退避表（失败指数退避 5m~6h，成功清除，每轮 prune 防泄漏）；`recoverAutoDisabledModels` 串行 for → worker pool 并发；`recoverModelsMaxPerRound` 100 → 2000（纯兜底）
+  - `common/config/config.go` — 新增 `RecoverConcurrency = env.Int("RECOVER_CONCURRENCY", 16)`
+  - `model/ability_test.go`、`controller/channel_recover_backoff_test.go` — 单测（DESC 排序 + 退避表，含 -race）
+- **效果**: 僵尸进退避期后被排除，候选骤降到「新禁 + 退避到期」小集合，16 路并发一轮跑完；62395 这类被误禁的渠道可自动恢复，无需人工介入
+- **未处理**: 禁用侧号池瞬时 401 即禁的敏感问题（后续可加抖动窗口）
+- **关联计划**: `docs/plans/2026-08-27-recover-probe-desc-concurrent.md`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./controller/ ./model/` 通过
+
 ### fix(channel-test): 默认测试模型改为 channel.Models 列表末尾
 
 - **分支**: `auto-disable-refactor`

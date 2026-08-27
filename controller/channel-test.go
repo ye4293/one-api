@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/songquanpeng/one-api/common"
@@ -721,18 +722,88 @@ func TestChannels(c *gin.Context) {
 var recoverModelsLock sync.Mutex
 var recoverModelsRunning bool
 
-// recoverModelsMaxPerRound 每轮模型级恢复处理的最大 (channel, model) 数。
-// 生产环境可能出现单模型挂几百渠道、每渠道又累积多个被禁模型的场景，
-// 无上限时一轮会发几百次真实付费请求且串行 sleep，占满整个恢复周期。
-// 100 是经验值：按 RequestInterval~500ms 估算，一轮上限约 50s，与 5min 周期相容。
-const recoverModelsMaxPerRound = 100
+// recoverModelsMaxPerRound 每轮模型级恢复处理的最大 (channel, model) 数，纯安全兜底：
+// 防 abilities 表异常膨胀（几万行）时一轮失控。正常情况配合僵尸退避，真实候选远低于此，
+// 等效「一轮全量跑完」。探测本身已并发（config.RecoverConcurrency），不再受串行耗时约束。
+const recoverModelsMaxPerRound = 2000
+
+// recoverModelProbeBackoff 模型级恢复「探测失败」退避曲线：连续失败次数越多，下次探测越晚。
+// 连续测不通的老僵尸（真失效渠道）不再每轮占用并发预算、反复发无效付费请求，把预算让给
+// 最近被禁、最可能自愈的渠道（配合 GetAutoDisabledAbilities 的 DESC 排序）。
+var recoverModelProbeBackoff = []time.Duration{
+	5 * time.Minute,
+	15 * time.Minute,
+	30 * time.Minute,
+	1 * time.Hour,
+	3 * time.Hour,
+	6 * time.Hour,
+}
+
+type recoverBackoffEntry struct {
+	failCount   int
+	nextProbeAt time.Time
+}
+
+// recoverBackoff 进程内退避表。恢复探针仅主节点跑（AutomaticallyTestChannels 内 IsMasterNode
+// 门控），进程内一致即可；重启丢失可接受（重新学习）。
+var recoverBackoff = map[string]*recoverBackoffEntry{}
+var recoverBackoffMu sync.Mutex
+
+func recoverBackoffKey(channelId int, modelName string) string {
+	return fmt.Sprintf("%d\x00%s", channelId, modelName)
+}
+
+// recoverBackoffBlocked 判断该 (channel, model) 是否处于退避期，本轮不再探测。
+func recoverBackoffBlocked(channelId int, modelName string, now time.Time) bool {
+	recoverBackoffMu.Lock()
+	defer recoverBackoffMu.Unlock()
+	e := recoverBackoff[recoverBackoffKey(channelId, modelName)]
+	return e != nil && now.Before(e.nextProbeAt)
+}
+
+// recoverBackoffOnFail 记录一次探测失败：递增失败计数并按曲线推后下次探测时间。
+func recoverBackoffOnFail(channelId int, modelName string, now time.Time) {
+	recoverBackoffMu.Lock()
+	defer recoverBackoffMu.Unlock()
+	key := recoverBackoffKey(channelId, modelName)
+	e := recoverBackoff[key]
+	if e == nil {
+		e = &recoverBackoffEntry{}
+		recoverBackoff[key] = e
+	}
+	e.failCount++
+	idx := e.failCount - 1
+	if idx >= len(recoverModelProbeBackoff) {
+		idx = len(recoverModelProbeBackoff) - 1
+	}
+	e.nextProbeAt = now.Add(recoverModelProbeBackoff[idx])
+}
+
+// recoverBackoffOnSuccess 探测成功，清除退避记录（下次若再被禁从头计数）。
+func recoverBackoffOnSuccess(channelId int, modelName string) {
+	recoverBackoffMu.Lock()
+	defer recoverBackoffMu.Unlock()
+	delete(recoverBackoff, recoverBackoffKey(channelId, modelName))
+}
+
+// recoverBackoffPrune 删除退避表中已不在本轮候选集合里的条目（渠道被删/已恢复的残留），防内存泄漏。
+func recoverBackoffPrune(liveKeys map[string]struct{}) {
+	recoverBackoffMu.Lock()
+	defer recoverBackoffMu.Unlock()
+	for k := range recoverBackoff {
+		if _, ok := liveKeys[k]; !ok {
+			delete(recoverBackoff, k)
+		}
+	}
+}
 
 // recoverAutoDisabledModels 模型级恢复：测试被模型级禁用的模型，成功则重新启用该 (channel, model)。
 //
-// 与方案 A 匹配的语义：
+// 语义：
 //   - 覆盖 channel.status ∈ {enabled, auto_disabled} 两类渠道；manually_disabled 不动。
 //   - 恢复动作走 EnableModelOnChannel，内联把 auto_disabled 渠道 status 提升回 enabled。
-//   - 按 auto_disabled_time 升序（优先恢复最久的），每轮上限 recoverModelsMaxPerRound。
+//   - 按 auto_disabled_time 降序（优先探测最近被禁、最可能自愈的），并发 config.RecoverConcurrency 路。
+//   - 探测失败的 (channel, model) 进入僵尸退避（recoverModelProbeBackoff），不再每轮反复占用预算。
 //   - 不可 chat 探测的模型/渠道类型（image/embedding/video 等）在发请求前跳过，只能靠前端人工批量启用。
 //
 // 受 config.AutomaticEnableChannelEnabled 与单渠道 AutoEnabled 约束，仅主节点调用。
@@ -759,73 +830,112 @@ func recoverAutoDisabledModels() {
 		return
 	}
 	if len(items) == 0 {
+		// 无候选：退避表整体清空，避免残留
+		recoverBackoffPrune(map[string]struct{}{})
 		return
 	}
+
+	// 先按「全量候选」收集退避表 live keys（截断前），确保被推迟到下轮的候选其退避记录不被误删
+	liveKeys := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		liveKeys[recoverBackoffKey(it.ChannelId, it.Model)] = struct{}{}
+	}
+
 	if len(items) > recoverModelsMaxPerRound {
-		logger.SysLog(fmt.Sprintf("model recovery: %d candidates found, processing first %d (by auto_disabled_time ASC); rest defer to next round",
+		logger.SysLog(fmt.Sprintf("model recovery: %d candidates found, processing first %d (by auto_disabled_time DESC); rest defer to next round",
 			len(items), recoverModelsMaxPerRound))
 		items = items[:recoverModelsMaxPerRound]
 	}
 
-	// 按渠道缓存，避免同渠道多模型重复取库
-	channelCache := make(map[int]*model.Channel)
-	processed, recovered, skipped := 0, 0, 0
-	for _, it := range items {
-		channel, ok := channelCache[it.ChannelId]
-		if !ok {
-			channel, err = model.GetChannelById(it.ChannelId, true)
-			if err != nil {
-				logger.SysError(fmt.Sprintf("model recovery: failed to get channel %d: %s", it.ChannelId, err.Error()))
-				channelCache[it.ChannelId] = nil
-				continue
-			}
-			channelCache[it.ChannelId] = channel
-		}
-		if channel == nil {
-			continue
-		}
-		// 渠道关闭自动启用则跳过其模型级恢复
-		if !channel.AutoEnabled {
-			skipped++
-			continue
-		}
-		// 24h 熔断退避：本渠道近期已触发过整渠道自动禁用，未过退避窗口就不再探测。
-		// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
-		if channel.AutoDisableCount > 0 && channel.AutoDisabledTime != nil {
-			idx := channel.AutoDisableCount - 1
-			if idx >= len(common.ChannelAutoDisableProbeBackoff) {
-				idx = len(common.ChannelAutoDisableProbeBackoff) - 1
-			}
-			minWait := int64(common.ChannelAutoDisableProbeBackoff[idx].Seconds())
-			if time.Now().Unix()-*channel.AutoDisabledTime < minWait {
-				skipped++
-				continue
-			}
-		}
-		// 预过滤：不可 chat 探测的渠道类型 / 模型名，直接跳过避免浪费真实 API 调用。
-		// 这类模型只能通过前端「模型自动禁用」批量启用手工恢复。
-		if isUnsupportedTestChannel(channel.Type) || isUnsupportedTestModel(it.Model) {
-			skipped++
-			continue
-		}
-
-		processed++
-		testErr, openaiErr, _, _ := testChannel(channel, it.Model, true)
-		if util.ShouldEnableChannel(testErr, openaiErr) {
-			if e := model.EnableModelOnChannel(it.ChannelId, it.Model); e != nil {
-				logger.SysError(fmt.Sprintf("model recovery: failed to enable channel %d model %s: %s", it.ChannelId, it.Model, e.Error()))
-			} else {
-				recovered++
-				logger.SysLog(fmt.Sprintf("model recovery: channel #%d model %s re-enabled", it.ChannelId, it.Model))
-			}
-		}
-		time.Sleep(config.RequestInterval)
+	concurrency := config.RecoverConcurrency
+	if concurrency < 1 {
+		concurrency = 1
 	}
-	logger.SysLog(fmt.Sprintf("model recovery round done: candidates=%d processed=%d recovered=%d skipped=%d",
-		len(items), processed, recovered, skipped))
+
+	var processed, recovered, skipped int64
+	now := time.Now()
+
+	jobs := make(chan model.AutoDisabledAbility)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for it := range jobs {
+				// 每个 job 独立取库，不共享 *Channel 指针，规避并发读写
+				channel, cerr := model.GetChannelById(it.ChannelId, true)
+				if cerr != nil {
+					logger.SysError(fmt.Sprintf("model recovery: failed to get channel %d: %s", it.ChannelId, cerr.Error()))
+					continue
+				}
+				// 渠道关闭自动启用则跳过其模型级恢复
+				if !channel.AutoEnabled {
+					atomic.AddInt64(&skipped, 1)
+					continue
+				}
+				// 24h 熔断退避：本渠道近期已触发过整渠道自动禁用，未过退避窗口就不再探测。
+				// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+				if channel.AutoDisableCount > 0 && channel.AutoDisabledTime != nil {
+					idx := channel.AutoDisableCount - 1
+					if idx >= len(common.ChannelAutoDisableProbeBackoff) {
+						idx = len(common.ChannelAutoDisableProbeBackoff) - 1
+					}
+					minWait := int64(common.ChannelAutoDisableProbeBackoff[idx].Seconds())
+					if time.Now().Unix()-*channel.AutoDisabledTime < minWait {
+						atomic.AddInt64(&skipped, 1)
+						continue
+					}
+				}
+				// 预过滤：不可 chat 探测的渠道类型 / 模型名，直接跳过避免浪费真实 API 调用。
+				// 僵尸退避判定已前移到入队前（见下方入队循环），退避期内的候选根本不入队，
+				// 连 GetChannelById 都省掉；此处不再重复判定。
+				if isUnsupportedTestChannel(channel.Type) || isUnsupportedTestModel(it.Model) {
+					atomic.AddInt64(&skipped, 1)
+					continue
+				}
+
+				atomic.AddInt64(&processed, 1)
+				testErr, openaiErr, _, _ := testChannel(channel, it.Model, true)
+				if util.ShouldEnableChannel(testErr, openaiErr) {
+					if e := model.EnableModelOnChannel(it.ChannelId, it.Model); e != nil {
+						logger.SysError(fmt.Sprintf("model recovery: failed to enable channel %d model %s: %s", it.ChannelId, it.Model, e.Error()))
+						// 写库失败：不清退避、不计成功，下轮再试
+					} else {
+						atomic.AddInt64(&recovered, 1)
+						recoverBackoffOnSuccess(it.ChannelId, it.Model)
+						logger.SysLog(fmt.Sprintf("model recovery: channel #%d model %s re-enabled", it.ChannelId, it.Model))
+					}
+				} else {
+					// 探测失败：记退避，避免僵尸每轮反复占用预算
+					recoverBackoffOnFail(it.ChannelId, it.Model, now)
+				}
+				if config.RequestInterval > 0 {
+					time.Sleep(config.RequestInterval)
+				}
+			}
+		}()
+	}
+	// 入队前先做僵尸退避过滤：退避期内的候选不入队，省掉 worker 里的 GetChannelById。
+	// 注意 liveKeys 已在上方按「全量候选」构建（退避过滤之前），被这里跳过的候选其退避
+	// 记录仍在 liveKeys 中，不会被收尾的 recoverBackoffPrune 误删 —— 这是退避不失效的前提。
+	for _, it := range items {
+		if recoverBackoffBlocked(it.ChannelId, it.Model, now) {
+			atomic.AddInt64(&skipped, 1)
+			continue
+		}
+		jobs <- it
+	}
+	close(jobs)
+	wg.Wait()
+
+	// 收尾：清理退避表中已不在候选集合的残留条目（防内存泄漏）
+	recoverBackoffPrune(liveKeys)
+
+	logger.SysLog(fmt.Sprintf("model recovery round done: candidates=%d processed=%d recovered=%d skipped=%d concurrency=%d",
+		len(items), atomic.LoadInt64(&processed), atomic.LoadInt64(&recovered), atomic.LoadInt64(&skipped), concurrency))
 
 	// 整渠道「最近使用模型全禁」的收尾判定已剥离到 evaluateUsageBasedChannelDisable
-	// 独立评估，不再挂本函数尾部。避免因 recoverModelsMaxPerRound=100 截断而漏评估。
+	// 独立评估，不再挂本函数尾部。
 	// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
 }
 

@@ -255,6 +255,11 @@ var RequestInterval = time.Duration(requestInterval) * time.Second
 
 var SyncFrequency = env.Int("SYNC_FREQUENCY", 10*60) // unit is second
 
+// RecoverConcurrency 模型级恢复探针每轮的并发探测数。恢复是 I/O 等待型
+// （逐个打上游 chat completions，死渠道多半走到超时），并发几乎线性加速。
+// 默认 16：可在 ~10 分钟一轮内跑完数百个积压候选。下限保护 >=1。
+var RecoverConcurrency = env.Int("RECOVER_CONCURRENCY", 16)
+
 var BatchUpdateEnabled = false
 var BatchUpdateInterval = env.Int("BATCH_UPDATE_INTERVAL", 5)
 
