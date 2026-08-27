@@ -349,7 +349,10 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 			} else {
 				modelNames := strings.Split(channel.Models, ",")
 				if len(modelNames) > 0 {
-					modelName = strings.TrimSpace(modelNames[0])
+					// 取最后一个 —— 约定新 model 追加到 Models 列表末尾，
+					// 取末尾能规避"服务端选到已下线老模型"的 404 误判（如 gemini-1.5-flash）。
+					// 更精准的做法是让运维填 channel.TestModel 字段。
+					modelName = strings.TrimSpace(modelNames[len(modelNames)-1])
 				}
 			}
 		}

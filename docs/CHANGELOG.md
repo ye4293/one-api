@@ -8,6 +8,20 @@
 
 ## 2026-08-27
 
+### fix(channel-test): 默认测试模型改为 channel.Models 列表末尾
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 小改进
+- **背景**: testChannel 无 specifiedModel + 无 channel.TestModel 时，之前 fallback 到 `channel.Models split(",")[0]`。生产实测：因上游同步 (`channel_upstream_update`) 返回的 Models 列表第一个常是**已下线的老模型**（如 gemini-1.5-flash），触发 404 误判。约定新 model 追加到末尾，取末尾能大幅降低选到老模型的概率
+- **涉及文件**:
+  - `controller/channel-test.go:352` — `modelNames[0]` → `modelNames[len(modelNames)-1]`
+- **优先级链保持不变**:
+  1. handler 传入的 model 参数（如 skill `--model`）
+  2. `channel.TestModel` 字段（每个渠道自配）
+  3. `channel.Models` **末尾** ← 本次变更（原为首个）
+- **局限**: "末尾 = 最新" 只是约定不是保证。真正精准的做法是让运维填 `channel.TestModel`，或未来加 Options 里 per-type 的 default test model
+- **验证**: `go build && go vet` 通过
+
 ### fix(channel-test): filter 分派只按"命中自动禁用规则"判定，修复 model_not_found 404 误判
 
 - **分支**: `auto-disable-refactor`
