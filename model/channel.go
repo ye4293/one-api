@@ -320,7 +320,22 @@ func GetAllChannels(startIdx int, num int, scope string) ([]*Channel, error) {
 	return channels, err
 }
 
-func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, error) {
+// GetAllChannelsForTest 拉取用于批量测试的渠道列表。
+//
+// scope 取值：
+//   - "all"           : 所有渠道
+//   - "disabled"      : 手动/自动禁用（status ∈ {2, 3}）
+//   - "auto_disabled" : 仅自动禁用且 auto_enabled=true
+//   - "filter"        : 精准巡检（keyword/channelType/statusList 生效）
+//   - 其他            : 分页拉取（startIdx/num）
+//
+// filter 分支参数语义：
+//   - keyword     : 空 = 不过滤；否则 name LIKE %keyword%
+//   - channelType : nil = 不过滤；否则 type = *channelType
+//   - statusList  : 空 = 默认 [enabled]；否则 status IN (...)
+//
+// 参见 docs/plans/2026-08-27-channel-filter-healthcheck.md
+func GetAllChannelsForTest(startIdx int, num int, scope string, keyword string, channelType *int, statusList []int) ([]*Channel, error) {
 	var channels []*Channel
 	var err error
 	switch scope {
@@ -330,6 +345,19 @@ func GetAllChannelsForTest(startIdx int, num int, scope string) ([]*Channel, err
 		err = DB.Order("id desc").Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Find(&channels).Error
 	case "auto_disabled":
 		err = DB.Order("id desc").Where("status = ? AND auto_enabled = ?", common.ChannelStatusAutoDisabled, true).Find(&channels).Error
+	case "filter":
+		q := DB.Order("id desc")
+		if keyword != "" {
+			q = q.Where("name LIKE ?", "%"+keyword+"%")
+		}
+		if channelType != nil {
+			q = q.Where("type = ?", *channelType)
+		}
+		if len(statusList) == 0 {
+			statusList = []int{common.ChannelStatusEnabled}
+		}
+		q = q.Where("status IN ?", statusList)
+		err = q.Find(&channels).Error
 	default:
 		// 对于测试，我们总是需要包含key字段
 		err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&channels).Error

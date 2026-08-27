@@ -8,6 +8,42 @@
 
 ## 2026-08-27
 
+### feat(channel-test): 新增 scope=filter 精准巡检 —— 按 keyword/type/status 筛选 + 测通恢复 + 测失败禁用
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 新功能（补齐"精准范围 × auto_disabled 语义 × 恢复能力"三者交集）
+- **涉及文件**:
+  - `model/channel.go` — `GetAllChannelsForTest` 签名扩展（新增 keyword/channelType/statusList 参数）+ 新增 `case "filter"` 分支
+  - `controller/channel-test.go` — `TestChannels` handler 解析 filter 参数（keyword/type/status CSV）+ 参数校验（keyword 或 type 至少一个、status 值域 1-3）；`testChannels` 内部签名扩展 + 独立 `filterCheckLock` + 循环内 filter 分派逻辑；两处 startup/tick caller 更新
+  - `model/channel_filter_test.go` — 新增。7 个测试覆盖 SQL filter 分支（keyword-only、type-only、默认 status、CSV 多状态、keyword+type 联合、只测 manually_disabled、backward-compat）
+  - `controller/channel_filter_handler_test.go` — 新增。4 个测试覆盖 handler 参数校验层（缺 keyword/type、非法 type、status 越界、status 含非数字）
+  - `docs/plans/2026-08-27-channel-filter-healthcheck.md` — 新增。方案 + 决策
+- **API 契约**:
+  ```
+  GET /api/channel/test?scope=filter&keyword=<>&type=<>&status=<csv>
+  ```
+  - keyword 或 type 至少一个（否则 400）
+  - status 逗号分隔多状态（默认 `1`）
+- **分派语义**（status 参数即用户意图声明）:
+  - 测失败 && status=1（enabled）→ `DisableChannelSafelyWithStatusCode` → auto_disabled=3
+  - 测通 && status ∈ {2, 3} → `UpdateChannelStatusById(id, enabled)` → status=1
+  - 其他组合 no-op
+- **门控策略**（与现有 scope=all 不同）:
+  - 禁用**不受** `AutomaticDisableChannelEnabled` 门控
+  - 恢复**不受** `AutomaticEnableChannelEnabled` 门控
+  - 理由：主动调 API = 运维意图明确
+  - `channel.AutoEnabled=false` 熔断锁死的渠道**跳过**巡检（尊重熔断决策）
+- **并发**: 独立 `filterCheckLock`，与 `testAllChannelsRunning` 分离。filter 巡检和 scope=all 全量测试可并发运行
+- **向后兼容**: `scope=all/disabled/auto_disabled` 语义完全不变；`GetAllChannelsForTest` 现有 caller 统一升级到新签名（`""`/`nil`/`nil`）
+- **使用场景**:
+  1. 批次事件清算：`?scope=filter&keyword=mi-tl-oai&type=1` 精准清 mi-tl-oai openai
+  2. 主动恢复批次：`?scope=filter&keyword=mi-tl-oai&type=1&status=3` 巡检自动禁用的看能否救回
+  3. 混合巡检：`?scope=filter&type=24&status=1,3` 一次禁失效救复活
+- **验证**:
+  - `go build ./... && go vet ./...` 通过
+  - `go test ./model/ ./controller/ -run "Filter|filter"` 全绿（11 个新增测试）
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
 ### refactor(auto-disable): 收尾判定从恢复探针尾部剥离为独立 goroutine（P1）
 
 - **分支**: `auto-disable-refactor`

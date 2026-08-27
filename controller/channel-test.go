@@ -526,19 +526,37 @@ func TestChannel(c *gin.Context) {
 var testAllChannelsLock sync.Mutex
 var testAllChannelsRunning bool = false
 
-func testChannels(notify bool, scope string) error {
+// filterCheckLock/Running 与 testAllChannelsLock 分离，让精准巡检（scope=filter）
+// 与全量测试（scope=all/disabled/auto_disabled）能并发运行，互不阻塞。
+// 参见 docs/plans/2026-08-27-channel-filter-healthcheck.md
+var filterCheckLock sync.Mutex
+var filterCheckRunning bool = false
+
+func testChannels(notify bool, scope string, keyword string, channelType *int, statusList []int) error {
 	if config.RootUserEmail == "" {
 		config.RootUserEmail = model.GetRootUserEmail()
 	}
-	testAllChannelsLock.Lock()
-	if testAllChannelsRunning {
-		testAllChannelsLock.Unlock()
+
+	// 独立 lock：filter 模式与其他 scope 分离
+	lock := &testAllChannelsLock
+	running := &testAllChannelsRunning
+	if scope == "filter" {
+		lock = &filterCheckLock
+		running = &filterCheckRunning
+	}
+	lock.Lock()
+	if *running {
+		lock.Unlock()
 		return errors.New("测试已在运行中")
 	}
-	testAllChannelsRunning = true
-	testAllChannelsLock.Unlock()
-	channels, err := model.GetAllChannelsForTest(0, 0, scope)
+	*running = true
+	lock.Unlock()
+
+	channels, err := model.GetAllChannelsForTest(0, 0, scope, keyword, channelType, statusList)
 	if err != nil {
+		lock.Lock()
+		*running = false
+		lock.Unlock()
 		return err
 	}
 	var disableThreshold = int64(config.ChannelDisableThreshold * 1000)
@@ -559,16 +577,45 @@ func testChannels(notify bool, scope string) error {
 			err, openaiErr, _, _ := testChannel(channel, "", true)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
-			if isChannelEnabled && milliseconds > disableThreshold {
-				err = fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
-				if config.AutomaticDisableChannelEnabled {
-					monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", 0)
-				} else {
-					_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
+
+			if scope == "filter" {
+				// 精准巡检分派（主动调用，禁用+恢复均不受 Automatic*Enabled 门控）：
+				//   测失败 && enabled  → 禁用为 auto_disabled
+				//   测通    && !enabled → 恢复为 enabled
+				//   其他组合 no-op
+				timeout := isChannelEnabled && milliseconds > disableThreshold
+				failed := (err != nil) || util.ShouldDisableChannel(openaiErr, -1) || timeout
+				if isChannelEnabled && failed {
+					reason := ""
+					if err != nil {
+						reason = err.Error()
+					} else if timeout {
+						reason = fmt.Sprintf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
+					} else {
+						reason = "测试失败"
+					}
+					monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, reason, "N/A (Filter Test)", -1)
+				} else if !isChannelEnabled && !failed {
+					if e := model.UpdateChannelStatusById(channel.Id, common.ChannelStatusEnabled); e != nil {
+						logger.SysError(fmt.Sprintf("filter check: enable channel %d failed: %s", channel.Id, e.Error()))
+					} else {
+						logger.SysLog(fmt.Sprintf("filter check: channel #%d (%s) re-enabled after test success", channel.Id, channel.Name))
+					}
 				}
-			}
-			if isChannelEnabled && util.ShouldDisableChannel(openaiErr, -1) {
-				monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", -1)
+			} else {
+				// 现有 scope=all/disabled/auto_disabled 逻辑：只对 enabled 渠道做超时/关键词禁用，
+				// 不做恢复动作，保持向后兼容。
+				if isChannelEnabled && milliseconds > disableThreshold {
+					err = fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
+					if config.AutomaticDisableChannelEnabled {
+						monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", 0)
+					} else {
+						_ = message.Notify(message.ByAll, fmt.Sprintf("渠道 %s （%d）测试超时", channel.Name, channel.Id), "", err.Error())
+					}
+				}
+				if isChannelEnabled && util.ShouldDisableChannel(openaiErr, -1) {
+					monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, err.Error(), "N/A (Test)", -1)
+				}
 			}
 			// 方案 A：不再由渠道级测通触发"整渠道恢复"（原逻辑会连带清零 auto_disabled 洗白坏模型）。
 			// 被自动禁用的渠道统一由 recoverAutoDisabledModels 逐模型恢复：测通哪个模型就恢复哪个，
@@ -576,9 +623,9 @@ func testChannels(notify bool, scope string) error {
 			channel.UpdateResponseTime(milliseconds)
 			time.Sleep(config.RequestInterval)
 		}
-		testAllChannelsLock.Lock()
-		testAllChannelsRunning = false
-		testAllChannelsLock.Unlock()
+		lock.Lock()
+		*running = false
+		lock.Unlock()
 		if notify {
 			err := message.Notify(message.ByAll, "渠道测试完成", "", "渠道测试完成，如果没有收到禁用通知，说明所有渠道都正常")
 			if err != nil {
@@ -594,7 +641,54 @@ func TestChannels(c *gin.Context) {
 	if scope == "" {
 		scope = "all"
 	}
-	err := testChannels(true, scope)
+
+	// filter 模式参数解析
+	var (
+		keyword     string
+		channelType *int
+		statusList  []int
+	)
+	if scope == "filter" {
+		keyword = c.Query("keyword")
+		typeStr := c.Query("type")
+		statusStr := c.DefaultQuery("status", strconv.Itoa(common.ChannelStatusEnabled))
+
+		if typeStr != "" {
+			t, terr := strconv.Atoi(typeStr)
+			if terr != nil || t < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"message": "invalid type: " + typeStr,
+				})
+				return
+			}
+			channelType = &t
+		}
+		if keyword == "" && channelType == nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "filter mode requires keyword or type",
+			})
+			return
+		}
+		for _, s := range strings.Split(statusStr, ",") {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			v, verr := strconv.Atoi(s)
+			if verr != nil || v < common.ChannelStatusEnabled || v > common.ChannelStatusAutoDisabled {
+				c.JSON(http.StatusBadRequest, gin.H{
+					"success": false,
+					"message": "invalid status: " + s,
+				})
+				return
+			}
+			statusList = append(statusList, v)
+		}
+	}
+
+	err := testChannels(true, scope, keyword, channelType, statusList)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -772,7 +866,7 @@ func AutomaticallyTestChannels() {
 	// 启动时立即执行一次，与 upstream sync 行为对齐，避免重启后等待完整周期
 	if config.AutoTestChannelFrequency > 0 {
 		logger.SysLog("automatically testing all channels (startup run)")
-		if err := testChannels(false, "auto_disabled"); err != nil {
+		if err := testChannels(false, "auto_disabled", "", nil, nil); err != nil {
 			logger.SysLog(fmt.Sprintf("startup auto-test skipped: %s", err.Error()))
 		}
 		recoverAutoDisabledModels()
@@ -791,7 +885,7 @@ func AutomaticallyTestChannels() {
 			continue
 		}
 		logger.SysLog("automatically testing all channels")
-		if err := testChannels(false, "auto_disabled"); err != nil {
+		if err := testChannels(false, "auto_disabled", "", nil, nil); err != nil {
 			logger.SysLog(fmt.Sprintf("auto-test skipped (previous run still in progress): %s", err.Error()))
 		}
 		recoverAutoDisabledModels()
