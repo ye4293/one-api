@@ -579,28 +579,38 @@ func testChannels(notify bool, scope string, keyword string, channelType *int, s
 			milliseconds := tok.Sub(tik).Milliseconds()
 
 			if scope == "filter" {
-				// 精准巡检分派（主动调用，禁用+恢复均不受 Automatic*Enabled 门控）：
-				//   测失败 && enabled  → 禁用为 auto_disabled
-				//   测通    && !enabled → 恢复为 enabled
-				//   其他组合 no-op
-				timeout := isChannelEnabled && milliseconds > disableThreshold
-				failed := (err != nil) || util.ShouldDisableChannel(openaiErr, -1) || timeout
-				if isChannelEnabled && failed {
+				// 精准巡检分派（主动调用）：
+				//   命中"自动禁用规则"（关键词/401/特定 Type/Code）&& enabled → 禁用为 auto_disabled
+				//   严格测通（err=nil 且 openaiErr=nil）&& !enabled → 恢复为 enabled
+				//   其他组合 no-op（包括 404 model_not_found 类误判、临时网络错误、超时等——避免把
+				//   服务端选到老 model / 上游偶发抖动误判为渠道失效）
+				//
+				// 用 MatchesDisableRule 而非 ShouldDisableChannel：主动 API 触发不受
+				// AutomaticDisableChannelEnabled 全局开关门控。
+				matchesRule := util.MatchesDisableRule(openaiErr, -1)
+				testPassed := (err == nil && openaiErr == nil)
+				if isChannelEnabled && matchesRule {
 					reason := ""
-					if err != nil {
+					if openaiErr != nil {
+						reason = openaiErr.Message
+					}
+					if reason == "" && err != nil {
 						reason = err.Error()
-					} else if timeout {
-						reason = fmt.Sprintf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
-					} else {
-						reason = "测试失败"
+					}
+					if reason == "" {
+						reason = "命中自动禁用规则"
 					}
 					monitor.DisableChannelSafelyWithStatusCode(channel.Id, channel.Name, reason, "N/A (Filter Test)", -1)
-				} else if !isChannelEnabled && !failed {
+				} else if !isChannelEnabled && testPassed {
 					if e := model.UpdateChannelStatusById(channel.Id, common.ChannelStatusEnabled); e != nil {
 						logger.SysError(fmt.Sprintf("filter check: enable channel %d failed: %s", channel.Id, e.Error()))
 					} else {
 						logger.SysLog(fmt.Sprintf("filter check: channel #%d (%s) re-enabled after test success", channel.Id, channel.Name))
 					}
+				} else if isChannelEnabled && err != nil && !matchesRule {
+					// 测失败但没命中规则 —— 记录 warning 让运维知道，但不禁用（避免 model_not_found 类 404 误判）
+					logger.SysLog(fmt.Sprintf("filter check: channel #%d (%s) test failed but no disable-rule match, skipping (err=%s)",
+						channel.Id, channel.Name, err.Error()))
 				}
 			} else {
 				// 现有 scope=all/disabled/auto_disabled 逻辑：只对 enabled 渠道做超时/关键词禁用，

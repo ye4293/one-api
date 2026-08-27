@@ -8,6 +8,29 @@
 
 ## 2026-08-27
 
+### fix(channel-test): filter 分派只按"命中自动禁用规则"判定，修复 model_not_found 404 误判
+
+- **分支**: `auto-disable-refactor`
+- **类型**: Bug 修复（生产事故驱动）
+- **根因**: filter scope 之前的分派逻辑 `failed = (err != nil) || ShouldDisableChannel || timeout` 过度激进，把 404 model_not_found、临时网络错误、响应超时全当"渠道失效"。生产实测：JSY 站点跑 `--prefix gemini` 时服务端 testChannel 自选到已下线的 `gemini-1.5-flash`，返回 404 `not found for API version v1beta`，本来正常的渠道被大规模误禁到 auto_disabled=3
+- **涉及文件**:
+  - `relay/util/common.go` — 抽 `MatchesDisableRule` 纯规则函数（不受 `AutomaticDisableChannelEnabled` 全局开关门控）；`ShouldDisableChannel` 变成 `MatchesDisableRule` + 全局开关的包装（业务请求路径行为完全不变）
+  - `controller/channel-test.go` — filter 分派逻辑重构：只按 `MatchesDisableRule` 命中判定禁用；恢复用严格 `err==nil && openaiErr==nil`；测失败但未命中规则的**打 warning 但不禁用**
+- **新分派语义**:
+  ```
+  filter 循环:
+    命中规则 (关键词/401/特定 Type/Code) && enabled → 禁用为 auto_disabled
+    严格测通 (err=nil && openaiErr=nil) && !enabled → 恢复为 enabled
+    测失败但未命中规则 → 打 warning 日志跳过（避免 model_not_found 类 404 误判）
+    其他 → no-op
+  ```
+- **移除的过度激进条件**:
+  - `err != nil` 单独作为禁用理由 → 移除（404/网络错误/HTTP 层错误不该视为失效）
+  - `milliseconds > disableThreshold` 超时禁用 → 移除（filter 是主动巡检，不做超时禁用）
+- **业务请求路径行为保持不变**: `ShouldDisableChannel` 语义与门控完全一致，`controller/relay.go` 等 caller 不受影响
+- **验证**: `go build && go vet` 通过；handler/filter SQL 测试全绿
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
 ### feat(channel-test): scope=filter 加 model 参数支持，避免服务端选老模型被 404 误判
 
 - **分支**: `auto-disable-refactor`

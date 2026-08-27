@@ -21,33 +21,36 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
-	if !config.AutomaticDisableChannelEnabled {
-		return false
-	}
+// MatchesDisableRule 判定错误是否命中自动禁用规则（401 / 特定 Type / Code / 关键词），
+// **不受** config.AutomaticDisableChannelEnabled 全局开关门控。
+//
+// 用途：
+//   - 业务请求路径的 ShouldDisableChannel 复用此函数 + 全局开关；
+//   - 主动触发路径（如 scope=filter 巡检）直接用此函数——运维明确调 API 表达"按规则禁用"意图，
+//     不应被全局开关阉割；同时也不该把 err != nil / timeout 等宽泛的"测试失败"当作禁用理由，
+//     避免 404 model_not_found 类误判把正常渠道禁掉。
+func MatchesDisableRule(err *relaymodel.Error, statusCode int) bool {
 	if err == nil {
 		return false
 	}
 
-	// 检查401状态码 - 通常是认证问题，应该禁用
+	// 401 状态码 —— 通常是认证问题
 	if statusCode == http.StatusUnauthorized {
 		return true
 	}
 
-	// 移除403状态码的直接检查，改为完全依靠关键字判断
-
-	// 检查错误类型
+	// 错误类型
 	switch err.Type {
 	case "insufficient_quota", "authentication_error", "permission_error", "forbidden":
 		return true
 	}
 
-	// 检查错误代码
+	// 错误代码
 	if err.Code == "invalid_api_key" || err.Code == "account_deactivated" || err.Code == "Some resource has been exhausted" {
 		return true
 	}
 
-	// 使用可配置的关键词进行检查（按行分割，忽略大小写）
+	// 可配置的关键词（按行分割，忽略大小写）
 	config.OptionMapRWMutex.RLock()
 	autoDisableKeywords := config.AutoDisableKeywords
 	config.OptionMapRWMutex.RUnlock()
@@ -55,7 +58,6 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	if autoDisableKeywords != "" {
 		message := strings.ToLower(err.Message)
 		keywords := strings.Split(autoDisableKeywords, "\n")
-
 		for _, keyword := range keywords {
 			keyword = strings.TrimSpace(strings.ToLower(keyword))
 			if keyword != "" && strings.Contains(message, keyword) {
@@ -65,6 +67,13 @@ func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
 	}
 
 	return false
+}
+
+func ShouldDisableChannel(err *relaymodel.Error, statusCode int) bool {
+	if !config.AutomaticDisableChannelEnabled {
+		return false
+	}
+	return MatchesDisableRule(err, statusCode)
 }
 
 func ShouldEnableChannel(err error, openAIErr *relaymodel.Error) bool {
