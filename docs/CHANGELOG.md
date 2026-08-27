@@ -8,6 +8,33 @@
 
 ## 2026-08-27
 
+### feat(channel-test): scope=filter 加 model 参数支持，避免服务端选老模型被 404 误判
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 增强（生产事故驱动）
+- **触发**: 生产环境跑 `/test-channels --site JSY --prefix gemini` 触发大量 404 `models/gemini-1.5-flash is not found for API version v1beta`——服务端 testChannel 内部自选到已被 Google 下线的老模型，导致本来正常的渠道被误判为失效并禁到 auto_disabled=3
+- **涉及文件**:
+  - `controller/channel-test.go` — `TestChannels` handler 加 `model` query param 解析（filter scope 生效，可选）；`testChannels` 签名扩展 `specifiedModel string`；循环内 `testChannel(channel, specifiedModel, true)` 传入；两处 startup/tick caller 更新为 `""`
+  - `.claude/skills/test-channels/scripts/batch_test.sh` — 加 `--model` 参数，透传到 API
+  - `.claude/skills/test-channels/SKILL.md` — 参数说明 + 示例（含"救回被老模型误判"用例）
+- **API 契约扩展**:
+  ```
+  GET /api/channel/test?scope=filter&keyword=<>&type=<>&status=<>&model=<name>
+  ```
+  - `model` 可选：传了强制用此 model 测试，不传保持现状（服务端 testChannel 内部自选）
+  - 只在 filter scope 生效（避免影响 scope=all/disabled/auto_disabled 现有行为）
+- **使用**:
+  ```bash
+  # 指定测试模型
+  /test-channels --site JSY --prefix gemini --model gemini-2.0-flash-exp
+
+  # 救回被老模型误判禁的
+  /test-channels --site JSY --prefix gemini --status 3 --model gemini-2.0-flash-exp
+  ```
+- **skill 侧新增**: `--site <NAME>` 多站点支持（同一 .env 内多套 `${SITE}_URL` / `${SITE}_API_KEY`）
+- **验证**: `go build && go vet` 通过；handler 测试 4 个全绿
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
 ### feat(channel-test): 新增 scope=filter 精准巡检 —— 按 keyword/type/status 筛选 + 测通恢复 + 测失败禁用
 
 - **分支**: `auto-disable-refactor`

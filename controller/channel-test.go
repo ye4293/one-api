@@ -532,7 +532,7 @@ var testAllChannelsRunning bool = false
 var filterCheckLock sync.Mutex
 var filterCheckRunning bool = false
 
-func testChannels(notify bool, scope string, keyword string, channelType *int, statusList []int) error {
+func testChannels(notify bool, scope string, keyword string, channelType *int, statusList []int, specifiedModel string) error {
 	if config.RootUserEmail == "" {
 		config.RootUserEmail = model.GetRootUserEmail()
 	}
@@ -574,7 +574,7 @@ func testChannels(notify bool, scope string, keyword string, channelType *int, s
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 			tik := time.Now()
-			err, openaiErr, _, _ := testChannel(channel, "", true)
+			err, openaiErr, _, _ := testChannel(channel, specifiedModel, true)
 			tok := time.Now()
 			milliseconds := tok.Sub(tik).Milliseconds()
 
@@ -644,14 +644,16 @@ func TestChannels(c *gin.Context) {
 
 	// filter 模式参数解析
 	var (
-		keyword     string
-		channelType *int
-		statusList  []int
+		keyword       string
+		channelType   *int
+		statusList    []int
+		specifiedModel string
 	)
 	if scope == "filter" {
 		keyword = c.Query("keyword")
 		typeStr := c.Query("type")
 		statusStr := c.DefaultQuery("status", strconv.Itoa(common.ChannelStatusEnabled))
+		specifiedModel = strings.TrimSpace(c.Query("model")) // 可选：强制用此 model 测试，避免服务端选到老模型被 404 误判
 
 		if typeStr != "" {
 			t, terr := strconv.Atoi(typeStr)
@@ -688,7 +690,7 @@ func TestChannels(c *gin.Context) {
 		}
 	}
 
-	err := testChannels(true, scope, keyword, channelType, statusList)
+	err := testChannels(true, scope, keyword, channelType, statusList, specifiedModel)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -866,7 +868,7 @@ func AutomaticallyTestChannels() {
 	// 启动时立即执行一次，与 upstream sync 行为对齐，避免重启后等待完整周期
 	if config.AutoTestChannelFrequency > 0 {
 		logger.SysLog("automatically testing all channels (startup run)")
-		if err := testChannels(false, "auto_disabled", "", nil, nil); err != nil {
+		if err := testChannels(false, "auto_disabled", "", nil, nil, ""); err != nil {
 			logger.SysLog(fmt.Sprintf("startup auto-test skipped: %s", err.Error()))
 		}
 		recoverAutoDisabledModels()
@@ -885,7 +887,7 @@ func AutomaticallyTestChannels() {
 			continue
 		}
 		logger.SysLog("automatically testing all channels")
-		if err := testChannels(false, "auto_disabled", "", nil, nil); err != nil {
+		if err := testChannels(false, "auto_disabled", "", nil, nil, ""); err != nil {
 			logger.SysLog(fmt.Sprintf("auto-test skipped (previous run still in progress): %s", err.Error()))
 		}
 		recoverAutoDisabledModels()
