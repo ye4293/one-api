@@ -715,28 +715,51 @@ func recoverAutoDisabledModels() {
 	logger.SysLog(fmt.Sprintf("model recovery round done: candidates=%d processed=%d recovered=%d skipped=%d",
 		len(items), processed, recovered, skipped))
 
-	// 收尾：对本轮涉及的渠道去重，按「最近使用的模型全部被自动禁用且超过抖动窗口」判定是否禁整个渠道。
-	// 判定放在本轮探测之后而非模型级禁用的同步链路里，是为了：
-	//   - 给恢复探针至少一个完整周期尝试把瞬时抖动导致的禁用模型救回来
-	//   - 让「渠道配了大量模型但只有少数被真实使用」的场景能按实际流量判禁
-	// 参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md
-	evaluated := make(map[int]struct{}, len(items))
-	for _, it := range items {
-		if _, done := evaluated[it.ChannelId]; done {
-			continue
-		}
-		evaluated[it.ChannelId] = struct{}{}
-		should, used, disabled, jerr := model.ShouldDisableChannelByRecentUsage(it.ChannelId)
+	// 整渠道「最近使用模型全禁」的收尾判定已剥离到 evaluateUsageBasedChannelDisable
+	// 独立评估，不再挂本函数尾部。避免因 recoverModelsMaxPerRound=100 截断而漏评估。
+	// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
+}
+
+// disableChannelByRecentUsageFn 抽为包变量以便测试注入。生产环境始终使用默认值。
+// 参见 evaluate_usage_disable_test.go
+var disableChannelByRecentUsageFn = monitor.DisableChannelByRecentUsage
+
+// evaluateUsageBasedChannelDisable 独立执行「最近使用中的模型全部被自动禁用」的收尾判定。
+//
+// 与 recoverAutoDisabledModels 解耦：
+//   - 不依赖 AutomaticEnableChannelEnabled（禁用是保护动作，不该被「启用」开关阉割）
+//   - 不受 recoverModelsMaxPerRound 硬顶截断（判定纯 SQL 无 API 调用，成本可忽略）
+//   - 不参与恢复队列的抖动 / 挤位
+//
+// 触发时机：主循环独立 tick，周期同 AutoTestChannelFrequency。
+// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
+func evaluateUsageBasedChannelDisable() {
+	if !config.IsMasterNode {
+		return
+	}
+	if !config.AutomaticDisableChannelEnabled {
+		return
+	}
+	channelIds, err := model.GetChannelsWithAutoDisabledAbilities()
+	if err != nil {
+		logger.SysError(fmt.Sprintf("evaluate usage-based disable: query channels failed: %s", err.Error()))
+		return
+	}
+	triggered := 0
+	for _, cid := range channelIds {
+		should, used, disabled, jerr := model.ShouldDisableChannelByRecentUsage(cid)
 		if jerr != nil {
-			logger.SysError(fmt.Sprintf("channel #%d usage-based disable judge failed: %s", it.ChannelId, jerr.Error()))
+			logger.SysError(fmt.Sprintf("channel #%d usage-based disable judge failed: %s", cid, jerr.Error()))
 			continue
 		}
 		if !should {
 			continue
 		}
-		logger.SysLog(fmt.Sprintf("channel #%d usage-based disable triggered: used=%d disabled=%d", it.ChannelId, used, disabled))
-		monitor.DisableChannelByRecentUsage(it.ChannelId, used)
+		logger.SysLog(fmt.Sprintf("channel #%d usage-based disable triggered: used=%d disabled=%d", cid, used, disabled))
+		disableChannelByRecentUsageFn(cid, used)
+		triggered++
 	}
+	logger.SysLog(fmt.Sprintf("usage-based disable round done: candidates=%d triggered=%d", len(channelIds), triggered))
 }
 
 // AutomaticallyTestChannels 仅主节点执行：周期性测试并自动启用符合条件的渠道
@@ -773,5 +796,36 @@ func AutomaticallyTestChannels() {
 		}
 		recoverAutoDisabledModels()
 		logger.SysLog("automatically channel test finished")
+	}
+}
+
+// StartUsageBasedDisableEvaluator 独立 tick，周期同 AutoTestChannelFrequency。
+// 与 AutomaticallyTestChannels 并行运行、无相互依赖，专门执行整渠道「最近使用模型全禁」
+// 的收尾判定，把 evaluateUsageBasedChannelDisable 从原来的恢复探针尾部解耦出来。
+//
+// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
+func StartUsageBasedDisableEvaluator() {
+	logger.SysLog(fmt.Sprintf("usage-based disable evaluator starting, config.IsMasterNode: %v", config.IsMasterNode))
+	if !config.IsMasterNode {
+		return
+	}
+	// 启动即跑一次，对齐 AutomaticallyTestChannels 的 startup run 语义
+	if config.AutoTestChannelFrequency > 0 {
+		logger.SysLog("usage-based disable evaluator (startup run)")
+		evaluateUsageBasedChannelDisable()
+	}
+	for {
+		frequency := config.AutoTestChannelFrequency
+		if frequency <= 0 {
+			// 未启用，每分钟轮询一次等待开启
+			time.Sleep(time.Minute)
+			continue
+		}
+		time.Sleep(time.Duration(frequency) * time.Minute)
+		// 再次读取，防止睡眠期间被关闭
+		if config.AutoTestChannelFrequency <= 0 {
+			continue
+		}
+		evaluateUsageBasedChannelDisable()
 	}
 }

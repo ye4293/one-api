@@ -356,6 +356,32 @@ func GetAutoDisabledAbilities() ([]AutoDisabledAbility, error) {
 	return items, nil
 }
 
+// GetChannelsWithAutoDisabledAbilities 返回所有当前 status=enabled、且存在 auto_disabled abilities 的渠道 id（去重）。
+//
+// 用途：独立收尾判定（evaluateUsageBasedChannelDisable）的输入源，替代原来"从恢复候选队列反查渠道"的路径。
+//
+// 与 GetAutoDisabledAbilities 的区别：
+//   - 本函数只关心「渠道-级」判定，返回 int 列表；不返回 model 明细
+//   - status 过滤更严格：只取 enabled，避免把已 auto_disabled / manually_disabled 的渠道再评估一次
+//     * auto_disabled：已被禁，评估无意义
+//     * manually_disabled：运维决策，AutoDisableChannelById 内部并未防御性排除该状态，
+//       若不在此处过滤，评估触发的 DisableChannelByRecentUsage 会把 status 从 2 覆盖成 3，
+//       污染运维手动决策
+//
+// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
+func GetChannelsWithAutoDisabledAbilities() ([]int, error) {
+	var ids []int
+	err := DB.Table("abilities a").
+		Joins("JOIN channels c ON c.id = a.channel_id").
+		Where("a.auto_disabled = ? AND c.status = ?", true, common.ChannelStatusEnabled).
+		Distinct("a.channel_id").
+		Pluck("a.channel_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // EnableModelOnChannel 模型级恢复：清 (channel_id, model) 所有行的 auto_disabled 标记并 enable。
 //
 // 若渠道当前 status=auto_disabled（因该 model 被禁而连带禁用），一并提升 status=enabled；

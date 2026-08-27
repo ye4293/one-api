@@ -417,3 +417,52 @@ func TestEnableModelOnChannel_DoesNotPromoteManuallyDisabled(t *testing.T) {
 		t.Fatalf("手动禁用的渠道 status 不应被自动提升，实际 %d", ch.Status)
 	}
 }
+
+// TestGetChannelsWithAutoDisabledAbilities 覆盖 status 过滤语义：
+//   - 只返回 status=enabled 且存在 auto_disabled abilities 的渠道
+//   - manually_disabled / auto_disabled 状态的渠道即使有 auto_disabled abilities 也不返回
+//   - 完全没有 auto_disabled abilities 的 enabled 渠道也不返回
+//   - 同一渠道多条 auto_disabled abilities → 去重返回一次
+//
+// 参见 docs/plans/2026-08-27-auto-disable-refactor.md
+func TestGetChannelsWithAutoDisabledAbilities(t *testing.T) {
+	setupAbilityTestDB(t)
+
+	// ch=1 enabled，2 条 auto_disabled abilities → 应返回，且去重成 1 个
+	seedChannel(t, 1, common.ChannelStatusEnabled)
+	seedAbility(t, 1, "default", "gpt-4")
+	seedAbility(t, 1, "default", "gpt-4o")
+	if err := AutoDisableModelOnChannel(1, "gpt-4", "seed"); err != nil {
+		t.Fatalf("seed ch1 gpt-4 失败: %v", err)
+	}
+	if err := AutoDisableModelOnChannel(1, "gpt-4o", "seed"); err != nil {
+		t.Fatalf("seed ch1 gpt-4o 失败: %v", err)
+	}
+
+	// ch=2 manually_disabled，1 条 auto_disabled → 不应返回（避免覆盖运维决策）
+	seedChannel(t, 2, common.ChannelStatusManuallyDisabled)
+	seedAbility(t, 2, "default", "claude-3")
+	if err := AutoDisableModelOnChannel(2, "claude-3", "seed"); err != nil {
+		t.Fatalf("seed ch2 失败: %v", err)
+	}
+
+	// ch=3 auto_disabled，1 条 auto_disabled → 不应返回（已经禁了不需要再评估）
+	seedChannel(t, 3, common.ChannelStatusAutoDisabled)
+	seedAbility(t, 3, "default", "gemini-pro")
+	if err := AutoDisableModelOnChannel(3, "gemini-pro", "seed"); err != nil {
+		t.Fatalf("seed ch3 失败: %v", err)
+	}
+
+	// ch=4 enabled，但没有 auto_disabled abilities → 不应返回
+	seedChannel(t, 4, common.ChannelStatusEnabled)
+	seedAbility(t, 4, "default", "gpt-3.5")
+
+	ids, err := GetChannelsWithAutoDisabledAbilities()
+	if err != nil {
+		t.Fatalf("GetChannelsWithAutoDisabledAbilities 失败: %v", err)
+	}
+
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("期望只返回 [1]，实际 %v", ids)
+	}
+}

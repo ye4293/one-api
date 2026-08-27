@@ -178,6 +178,7 @@ func main() {
 	}
 
 	go controller.AutomaticallyTestChannels()
+	go controller.StartUsageBasedDisableEvaluator()
 	controller.StartChannelUpstreamModelUpdateTask()
 	controller.StartDynamicPriorityTask()
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {

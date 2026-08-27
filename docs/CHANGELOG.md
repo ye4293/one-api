@@ -6,6 +6,44 @@
 
 ---
 
+## 2026-08-27
+
+### refactor(auto-disable): 收尾判定从恢复探针尾部剥离为独立 goroutine（P1）
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 重构（解耦调度依赖，修复线上"漏禁"根因之一）
+- **涉及文件**:
+  - `controller/channel-test.go` — 新增 `evaluateUsageBasedChannelDisable`（独立收尾判定，不看 `AutomaticEnableChannelEnabled`、不受 `recoverModelsMaxPerRound=100` 截断）+ `StartUsageBasedDisableEvaluator` 主循环（周期同 `AutoTestChannelFrequency`）+ 包变量 hook `disableChannelByRecentUsageFn`（测试注入用）；移除 `recoverAutoDisabledModels` 尾部 718-739 的收尾循环，替换为指向新函数的注释
+  - `model/ability.go` — 新增 `GetChannelsWithAutoDisabledAbilities`：`SELECT DISTINCT a.channel_id FROM abilities a JOIN channels c ON c.id = a.channel_id WHERE a.auto_disabled=1 AND c.status = ChannelStatusEnabled`。**主动过滤 manually_disabled**，规避 `AutoDisableChannelById` pre-existing 未防御 status=2 会覆盖为 status=3 的 bug（下游修复留 P2）
+  - `main.go` — 新增 `go controller.StartUsageBasedDisableEvaluator()`，紧跟 `AutomaticallyTestChannels` 拉起
+  - `model/ability_test.go` — 追加 `TestGetChannelsWithAutoDisabledAbilities` 覆盖 4 种渠道状态过滤（enabled+auto_disabled abilities / manually_disabled / auto_disabled / enabled 无 auto_disabled abilities）
+  - `controller/evaluate_usage_disable_test.go` — 新增测试文件，5 个场景：全局开关关 / 非 master / 单渠道触发 / 多渠道混合 / 候选查询失败安全退出。用 sqlite 起 abilities+channels+model_metrics 三表跑集成，hook `disableChannelByRecentUsageFn` 观察调用
+  - `docs/plans/2026-08-27-auto-disable-refactor.md` — 新增。P1/P2/P3 三阶段完整方案 + 历史数据处理脚本
+- **解决的问题（P1 定位）**:
+  1. **收尾判定被 100 上限截断**：线上实测 18020 待恢复候选，`recoverModelsMaxPerRound=100` 每轮只取 top 100，`ShouldDisableChannelByRecentUsage` 尾部收尾只能覆盖被截断后的候选集。若某渠道所有模型都排在 100 之后（如 channel 80919 排第 15385 位），永久轮不到评估
+  2. **依赖"启用"开关**：收尾判定挂在 `recoverAutoDisabledModels` 头部 `if !config.AutomaticEnableChannelEnabled return` 之后。运维出于安全考虑关掉自动启用时，自动禁用的收尾判定被间接阉割 —— 语义耦合、名字有欺骗性
+- **未处理（留 P2/P3）**:
+  - AutoDisableChannelById 未防御 status=manually_disabled（本 PR 只在 SELECT 端规避，未在 UPDATE 端根治）
+  - evaluator 未检查 channel.AutoEnabled（熔断锁死后运维手动 re-enable 会被立刻覆盖）
+  - startup run 与 AutomaticallyTestChannels 并发无序（老僵尸 abilities 可能未获恢复探针机会就被禁）
+  - 720 渠道同轮触发时飞书/邮件通知无 rate limit
+  - 恢复队列僵尸退火 + 死亡机制（P2）
+  - Prometheus 观测四指标（P3）
+  - 9-angle 代码审计发现的 P0 findings 已记入 plan doc，本次上线前不修，待 P1 上线观察后决策
+- **历史数据处理**（P1 上线之前必须完成）:
+  - 分档 SQL 直改 720 个漏禁渠道：`>3d` 不消耗熔断额度、`1h-3d` 消耗 1 次、`<1h` 不动交给 P1 处理
+  - 备份 → 分档 UPDATE → 重启节点刷缓存 → 飞书发运维通报（非告警）
+  - 具体脚本见 plan doc "历史数据处理脚本" 章节
+- **兼容性**:
+  - `AutomaticDisableChannelEnabled=false`：evaluator 入口 return，与现状一致
+  - `AutoTestChannelFrequency=0`：主循环 sleep 1min 轮询等待
+  - Multi-key 渠道：`disableChannelInternalWithStatusCode` 前置退出，天然跳过
+  - 无 schema 变更，无迁移风险
+- **验证**: `go build ./... && go vet ./...` 通过；单元测试见新增 5+1 个用例
+- **关联计划**: `docs/plans/2026-08-27-auto-disable-refactor.md`
+
+---
+
 ## 2026-08-26
 
 ### fix(auto-disable): UpdateChannel 保存时重读熔断内部字段，避免 lost-update 静默回滚锁死
