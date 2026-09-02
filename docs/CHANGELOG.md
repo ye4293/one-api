@@ -6,6 +6,22 @@
 
 ---
 
+## 2026-09-02
+
+### feat(auto-disable): abilities 持久化模型级禁用原因 + 整渠道禁用文案拼接真实上游错误
+
+- **分支**: `feat/ability-disable-reason`
+- **类型**: 新功能（含 schema 变更）
+- **背景**: 模型级自动禁用只落 `auto_disabled` / `auto_disabled_time`，上游真实错误只进系统日志；「最近使用的模型全部被自动禁用」升级为整渠道禁用时，`channels.auto_disabled_reason` 只能写通用文案，最后被禁模型的真实上游错误已丢失，排查需翻日志
+- **涉及文件**:
+  - `model/ability.go` — `Ability` 新增 `AutoDisabledReason varchar(1024)` 列（AutoMigrate 自动加列）；`AutoDisableModelOnChannel` 落库按 rune 截断的原因；`EnableModelOnChannel` 恢复时清空防残留；新增 `GetLatestAutoDisabledModelReason`（按 time DESC 取最新一条，走 channel_id 索引）
+  - `monitor/channel.go` — `DisableChannelByRecentUsage` 取最后被禁模型的 (model, reason) 拼接 `最近使用中的 N 个模型全部被自动禁用，最后模型禁用原因：<上游错误>（模型：<model>）`；reason 拼接抽为 `composeUsageDisableReason` 纯函数；模型名传入 `channels.auto_disabled_model`（原为空）。查询失败或存量空值回退通用文案，不引入新失败路径
+  - `model/ability_disable_reason_test.go`、`monitor/channel_test.go` — 单测（写入/截断/清空/DESC 查询/文案拼接回退）
+- **影响范围**: 前端零改动（仍读 `auto_disabled_reason`），飞书/邮件通知自动受益；多 Key、metric、filter 巡检等原因来源不变
+- **数据迁移**: 无需手工 SQL；保守起见可由用户决策提前执行 `ALTER TABLE abilities ADD COLUMN auto_disabled_reason varchar(1024) NOT NULL DEFAULT '';`
+- **关联计划**: `docs/plans/2026-08-31-ability-disable-reason.md`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./model/ ./monitor/` 相关用例全绿
+
 ## 2026-08-27
 
 ### refactor(auto-disable): 恢复探针改 DESC 排序 + 并发全量 + 僵尸退避

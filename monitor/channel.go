@@ -151,9 +151,23 @@ func DisableModelOnChannelWithStatusCode(channelId int, channelName string, reas
 	// 参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md
 }
 
+// composeUsageDisableReason 组装「最近使用的模型全部被自动禁用」的整渠道禁用原因。
+//
+// lastModel/lastReason 为该渠道最后一条被模型级禁用的模型与其落库的真实原因
+// （abilities.auto_disabled_reason），任一为空时（查询失败、存量数据列默认空）
+// 回退到通用文案，保证新功能不引入新的失败路径。
+func composeUsageDisableReason(usedModels int, lastModel, lastReason string) string {
+	reason := fmt.Sprintf("最近使用中的 %d 个模型全部被自动禁用", usedModels)
+	if lastModel == "" || lastReason == "" {
+		return reason
+	}
+	return fmt.Sprintf("%s，最后模型禁用原因：%s（模型：%s）", reason, lastReason, lastModel)
+}
+
 // DisableChannelByRecentUsage 由统一恢复链路在判定「最近使用的模型全部被自动禁用」后调用。
 // 与 DisableChannelSafelyWithStatusCode 的区别：不由单次上游请求错误驱动，
-// statusCode 传 0，modelName 传空字符串，reason 描述使用中的模型数。
+// statusCode 传 0；reason 拼接最后被禁模型的真实原因，modelName 传该模型名。
+// 参见 docs/plans/2026-08-31-ability-disable-reason.md
 func DisableChannelByRecentUsage(channelId int, usedModels int) {
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
@@ -165,8 +179,14 @@ func DisableChannelByRecentUsage(channelId int, usedModels int) {
 		logger.SysLog(fmt.Sprintf("multi-key channel #%d (%s) not auto-disabled by usage-based rule", channelId, channel.Name))
 		return
 	}
-	reason := fmt.Sprintf("最近使用中的 %d 个模型全部被自动禁用", usedModels)
-	disableChannelInternalWithStatusCode(channel, channelId, channel.Name, reason, "", 0)
+	lastModel, lastReason, reasonErr := model.GetLatestAutoDisabledModelReason(channelId)
+	if reasonErr != nil {
+		// 查询失败不阻塞禁用本身，回退通用文案
+		logger.SysError(fmt.Sprintf("Failed to get latest auto-disabled model reason for channel %d: %s", channelId, reasonErr.Error()))
+		lastModel, lastReason = "", ""
+	}
+	reason := composeUsageDisableReason(usedModels, lastModel, lastReason)
+	disableChannelInternalWithStatusCode(channel, channelId, channel.Name, reason, lastModel, 0)
 }
 
 // DisableChannel disable & notify

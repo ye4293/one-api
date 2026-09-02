@@ -31,6 +31,10 @@ type Ability struct {
 	// 存量行 AutoMigrate 后为 false，语义等价旧行为。
 	AutoDisabled     bool  `json:"auto_disabled" gorm:"default:false;index"`
 	AutoDisabledTime int64 `json:"auto_disabled_time" gorm:"default:0"`
+	// 模型级禁用的真实原因（上游返回的错误信息，按 rune 截断到 1024）。
+	// 仅用于排查与整渠道禁用时拼接 channels.auto_disabled_reason，不参与选路。
+	// 存量行 AutoMigrate 后为空字符串，语义安全（调用方需做空值兜底）。
+	AutoDisabledReason string `json:"auto_disabled_reason" gorm:"type:varchar(1024);default:''"`
 }
 
 func GetRandomSatisfiedChannel(group string, model string) (*Channel, error) {
@@ -312,9 +316,10 @@ func AutoDisableModelOnChannel(channelId int, modelName, reason string) error {
 	err := DB.Model(&Ability{}).
 		Where("channel_id = ? AND model = ? AND enabled = ?", channelId, modelName, true).
 		Updates(map[string]interface{}{
-			"enabled":            false,
-			"auto_disabled":      true,
-			"auto_disabled_time": currentTime,
+			"enabled":              false,
+			"auto_disabled":        true,
+			"auto_disabled_time":   currentTime,
+			"auto_disabled_reason": truncateReason(reason, maxAbilityDisableReasonLen),
 		}).Error
 	if err != nil {
 		return err
@@ -323,6 +328,44 @@ func AutoDisableModelOnChannel(channelId int, modelName, reason string) error {
 	logger.SysLog(fmt.Sprintf("model-scope auto-disable: channel #%d model %s disabled, reason: %s",
 		channelId, modelName, reason))
 	return nil
+}
+
+// maxAbilityDisableReasonLen abilities.auto_disabled_reason 列长度上限（与 gorm tag 保持一致）。
+const maxAbilityDisableReasonLen = 1024
+
+// truncateReason 按 rune 截断，避免把多字节中文字符截出乱码。
+func truncateReason(reason string, maxLen int) string {
+	if len(reason) <= maxLen {
+		return reason
+	}
+	runes := []rune(reason)
+	if len(runes) <= maxLen {
+		// 字节数超限但字符数没超（说明含多字节字符），按字符数返回即可
+		return reason
+	}
+	return string(runes[:maxLen])
+}
+
+// GetLatestAutoDisabledModelReason 返回该渠道最近一条被模型级禁用的 (model, reason)。
+//
+// ORDER BY auto_disabled_time DESC LIMIT 1：多分组行的 time 相同，任取一行即可。
+// 无候选（或列默认为空）时 model 返回 ""，调用方回退通用文案。
+// 走 channel_id 索引，单渠道模型数一般 <100，代价亚毫秒级。
+func GetLatestAutoDisabledModelReason(channelId int) (modelName, reason string, err error) {
+	var row struct {
+		Model  string `gorm:"column:model"`
+		Reason string `gorm:"column:auto_disabled_reason"`
+	}
+	err = DB.Model(&Ability{}).
+		Select("model, auto_disabled_reason").
+		Where("channel_id = ? AND auto_disabled = ? AND auto_disabled_time > 0", channelId, true).
+		Order("auto_disabled_time DESC").
+		Limit(1).
+		Scan(&row).Error
+	if err != nil {
+		return "", "", err
+	}
+	return row.Model, row.Reason, nil
 }
 
 // AutoDisabledAbility 是待恢复扫描的最小定位信息。
@@ -400,9 +443,10 @@ func EnableModelOnChannel(channelId int, modelName string) error {
 		if err := tx.Model(&Ability{}).
 			Where("channel_id = ? AND model = ?", channelId, modelName).
 			Updates(map[string]interface{}{
-				"enabled":            true,
-				"auto_disabled":      false,
-				"auto_disabled_time": 0,
+				"enabled":              true,
+				"auto_disabled":        false,
+				"auto_disabled_time":   0,
+				"auto_disabled_reason": "",
 			}).Error; err != nil {
 			return err
 		}
