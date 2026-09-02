@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/metrics"
+	"github.com/songquanpeng/one-api/common/shipper"
 
 	"gorm.io/gorm"
 )
@@ -195,6 +197,14 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	err := LOG_DB.Create(log).Error
 	if err != nil {
 		logger.Error(ctx, "failed to record log: "+err.Error())
+	} else if shipper.Enabled() {
+		body, mErr := json.Marshal(log)
+		if mErr != nil {
+			logger.Error(ctx, "failed to marshal consume log for bill shipper: "+mErr.Error())
+		} else {
+			// 写库成功后把该行 JSON 非阻塞投递到 SQS（billship 内部攒批异步发，不阻塞热路径）
+			shipper.Ship(int64(log.Id), log.CreatedAt, log.ModelName, body)
+		}
 	}
 
 	// 增量更新直方图（用于 P50/P95/P99 计算，零 DB 查询）
@@ -663,8 +673,18 @@ func GetLogsByVideoTaskId(videoTaskId string) (*Log, error) {
 	return &log, nil
 }
 
-// RecordVideoConsumeLog 记录视频任务的消费日志，包含VideoTaskId
+// RecordVideoConsumeLog 记录视频任务的消费日志，包含 VideoTaskId，并在写库成功后投递。
 func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, videoTaskId string) {
+	recordVideoConsumeLog(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, videoTaskId, true)
+}
+
+// RecordVideoConsumeLogDeferred 只创建视频消费日志，不立即投递。
+// 用于需要在异步任务完成后按实际用量结算的模型；结算更新成功后由 UpdateLogQuotaAndTokens 首次投递完整日志。
+func RecordVideoConsumeLogDeferred(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, videoTaskId string) {
+	recordVideoConsumeLog(ctx, userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, duration, title, httpReferer, videoTaskId, false)
+}
+
+func recordVideoConsumeLog(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, videoTaskId string, shipAfterCreate bool) {
 	var requestIP string
 	if v := ctx.Value(logger.RequestIPKey); v != nil {
 		requestIP, _ = v.(string)
@@ -709,13 +729,15 @@ func RecordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 	err := LOG_DB.Create(log).Error
 	if err != nil {
 		logger.Error(ctx, "failed to record video log: "+err.Error())
+	} else if shipAfterCreate {
+		shipConsumeLog(ctx, log)
 	}
 }
 
-// UpdateLogQuotaAndTokens 更新日志记录的Quota和CompletionTokens字段
+// UpdateLogQuotaAndTokens 更新视频日志的最终费用和 token 数，并在更新成功后首次投递完整日志。
 func UpdateLogQuotaAndTokens(videoTaskId string, quota int64, completionTokens int) error {
 	result := LOG_DB.Model(&Log{}).
-		Where("video_task_id = ?", videoTaskId).
+		Where("video_task_id = ? AND (quota <> ? OR completion_tokens <> ?)", videoTaskId, int(quota), completionTokens).
 		Updates(map[string]interface{}{
 			"quota":             int(quota),
 			"completion_tokens": completionTokens,
@@ -726,10 +748,40 @@ func UpdateLogQuotaAndTokens(videoTaskId string, quota int64, completionTokens i
 	}
 
 	if result.RowsAffected == 0 {
-		return errors.New("no log found with the given video_task_id")
+		var existing Log
+		lookupErr := LOG_DB.Where("video_task_id = ?", videoTaskId).First(&existing).Error
+		if errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return errors.New("no log found with the given video_task_id")
+		}
+		if lookupErr != nil {
+			return lookupErr
+		}
+		// 已经是最终值：避免重复轮询时再次投递同一份完整日志。
+		return nil
+	}
+	if !shipper.Enabled() {
+		return nil
 	}
 
+	log, err := GetLogsByVideoTaskId(videoTaskId)
+	if err != nil {
+		return fmt.Errorf("load updated video log: %w", err)
+	}
+	shipConsumeLog(context.Background(), log)
+
 	return nil
+}
+
+func shipConsumeLog(ctx context.Context, log *Log) {
+	if !shipper.Enabled() {
+		return
+	}
+	body, err := json.Marshal(log)
+	if err != nil {
+		logger.Error(ctx, "failed to marshal consume log for bill shipper: "+err.Error())
+		return
+	}
+	shipper.Ship(int64(log.Id), log.CreatedAt, log.ModelName, body)
 }
 
 // ===== 性能统计相关结构体和查询函数 =====

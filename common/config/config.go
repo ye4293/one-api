@@ -376,6 +376,20 @@ var MetricsMaxModelLabels = env.Int("METRICS_MAX_MODEL_LABELS", 500)
 // 前 7 个与 model.LatencyBoundaries 对齐，后 4 个覆盖长流式请求（STREAMING_TIMEOUT=600）。
 var MetricsLatencyBuckets = env.String("METRICS_LATENCY_BUCKETS", "0.5,1,2,3,5,10,30,60,120,300,600")
 
+// —— 计费投递（billship / SQS）——
+// SiteID 为每个部署实例的固定值：多站点用同一镜像、各自设 BILL_SHIP_SITE_ID 区分，无需重新打包。
+var BillShipEnabled = env.Bool("BILL_SHIP_ENABLED", false)
+var BillShipQueueURL = env.String("BILL_SHIP_QUEUE_URL", "")
+var BillShipRegion = env.String("BILL_SHIP_REGION", "")
+var BillShipSiteID = env.String("BILL_SHIP_SITE_ID", "")
+var BillShipLogFailedBody = env.Bool("BILL_SHIP_LOG_FAILED_BODY", false)
+var BillShipBufferSize = env.Int("BILL_SHIP_BUFFER_SIZE", 10000)
+var BillShipBatchSize = env.Int("BILL_SHIP_BATCH_SIZE", 10)
+var BillShipBatchWaitMS = env.Int("BILL_SHIP_BATCH_WAIT_MS", 200)
+var BillShipSendConcurrency = env.Int("BILL_SHIP_SEND_CONCURRENCY", 8)
+var BillShipSendTimeoutSeconds = env.Int("BILL_SHIP_SEND_TIMEOUT_SECONDS", 3)
+var BillShipMaxRetries = env.Int("BILL_SHIP_MAX_RETRIES", 3)
+
 func getHostname() string {
 	hostname, err := os.Hostname()
 	if err != nil {

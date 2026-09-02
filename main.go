@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/sessions"
@@ -17,6 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/metrics"
+	"github.com/songquanpeng/one-api/common/shipper"
 	"github.com/songquanpeng/one-api/controller"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
@@ -78,6 +83,12 @@ func setupMonitoringEndpoints(server *gin.Engine) {
 }
 
 func main() {
+	if err := run(); err != nil {
+		logger.FatalLog(err.Error())
+	}
+}
+
+func run() error {
 	logger.SetupLogger()
 	logger.SysLog(fmt.Sprintf("One API %s started", common.Version))
 	if os.Getenv("GIN_MODE") != "debug" {
@@ -151,6 +162,14 @@ func main() {
 	// 启动审计模块（依赖 options 表中的配置，关闭时为空操作，初始化失败自动降级）
 	audit.Start(context.Background())
 	defer audit.Shutdown()
+
+	// 启动计费投递（billship → SQS）；未启用/初始化失败自动降级，不影响业务
+	shipper.Init()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shipper.Shutdown(ctx)
+	}()
 
 	logger.SysLog(fmt.Sprintf("using theme %s", config.Theme))
 	if common.RedisEnabled {
@@ -257,8 +276,32 @@ func main() {
 	if port == "" {
 		port = strconv.Itoa(*common.Port)
 	}
-	err = server.Run(":" + port)
-	if err != nil {
-		logger.FatalLog("failed to start HTTP server: " + err.Error())
+	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	httpServer := &http.Server{
+		Addr:    ":" + port,
+		Handler: server,
 	}
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.SysLog("HTTP server listening on :" + port)
+		serverErr <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case <-stopCtx.Done():
+		logger.SysLog("shutdown signal received, stopping HTTP server")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if shutdownErr := httpServer.Shutdown(shutdownCtx); shutdownErr != nil {
+			logger.SysError("failed to shutdown HTTP server: " + shutdownErr.Error())
+		}
+		cancel()
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("failed to start HTTP server: %w", err)
+		}
+	}
+
+	return nil
 }

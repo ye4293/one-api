@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:18 AS builder
 
 WORKDIR /web
@@ -6,7 +8,7 @@ COPY ./web .
 
 WORKDIR /web/default
 RUN npm config set registry https://registry.npmmirror.com && npm install
-RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat VERSION) npm run build
+RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat ../VERSION) npm run build
 
 # WORKDIR /web/berry
 # RUN npm install
@@ -16,7 +18,7 @@ RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat VERSION) npm run build
 # RUN npm install
 # RUN DISABLE_ESLINT_PLUGIN='true' REACT_APP_VERSION=$(cat VERSION) npm run build
 
-FROM golang AS builder2
+FROM golang:1.25 AS builder2
 
 ENV GO111MODULE=on \
     CGO_ENABLED=1 \
@@ -24,12 +26,16 @@ ENV GO111MODULE=on \
 
 WORKDIR /build
 ADD go.mod go.sum ./
-RUN go mod download
+COPY third_party/charge-shipper-v0.1.0 ./third_party/charge-shipper-v0.1.0
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
 COPY --from=builder /web/build ./web/build
-RUN go build -ldflags "-s -w -X 'github.com/songquanpeng/one-api/common.Version=$(cat VERSION)' -extldflags '-static'" -o one-api
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -mod=readonly -ldflags "-s -w -X 'github.com/songquanpeng/one-api/common.Version=$(cat VERSION)' -extldflags '-static'" -o one-api
 
-FROM alpine
+FROM alpine:3.22
 
 RUN apk update \
     && apk upgrade \
