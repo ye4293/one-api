@@ -144,11 +144,19 @@ func DisableModelOnChannelWithStatusCode(channelId int, channelName string, reas
 		logger.SysError(fmt.Sprintf("Failed to model-scope disable channel %d model %s: %s", channelId, modelName, err.Error()))
 		return
 	}
-	// 「是否禁整个渠道」由统一恢复链路 recoverAutoDisabledModels 尾部按
-	// 「最近使用的模型全部被自动禁用且超过抖动窗口」判定并触发 DisableChannelByRecentUsage，
-	// 不再由此处的模型级禁用同步触发。这样避免瞬时抖动引发误禁，也让「渠道配了 60 个模型
-	// 但只有 5 个真实使用」的场景能正确禁掉。
-	// 参见 docs/plans/2026-08-21-channel-disable-by-recent-usage.md
+
+	// 即刻触发整渠道禁用判定（方案 C）：模型级禁用的那一刻，若「近 config.ChannelUsageWindowMinutes
+	// 分钟内有真实请求的模型」已全部被自动禁用，则整渠道即刻禁用。triggerModel 显式并入判定，
+	// 兜底 model_metrics 5 分钟聚合滞后。已去掉抖动窗口，误禁由恢复探针逐模型救回。
+	// 本函数已在 processChannelRelayError 的异步协程内，同步两条判定 SQL 不阻塞用户请求。
+	// 恢复探针尾部仍保留同名周期判定作兜底（应对即刻判定时 metrics 尚未聚合导致的漏判）。
+	// 参见 docs/plans/2026-09-02-immediate-channel-disable.md
+	if should, used, _, jerr := model.ShouldDisableChannelByRecentUsageImmediate(channelId, modelName); jerr != nil {
+		logger.SysError(fmt.Sprintf("channel #%d immediate usage-based disable judge failed: %s", channelId, jerr.Error()))
+	} else if should {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) immediate usage-based disable triggered by model %s: used=%d", channelId, channelName, modelName, used))
+		DisableChannelByRecentUsage(channelId, used)
+	}
 }
 
 // DisableChannelByRecentUsage 由统一恢复链路在判定「最近使用的模型全部被自动禁用」后调用。

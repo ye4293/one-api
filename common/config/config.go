@@ -139,6 +139,10 @@ var AutomaticEnableChannelEnabled = false
 // 为 false 时回退到旧行为：命中禁用条件直接禁用整个渠道（线上快速回滚开关）。
 // 仅作用于单 Key 渠道，多 Key 渠道维持既有 key 级禁用逻辑。
 var ModelScopeAutoDisableEnabled = true
+
+// ChannelUsageWindowMinutes 「最近使用模型」时间窗（分钟），用于整渠道自动禁用判定：
+// 窗口内有真实请求的模型全部被自动禁用时，整渠道自动禁用。默认 60 分钟。
+var ChannelUsageWindowMinutes = 60
 var AutoTestChannelFrequency = 0           // 自动测试渠道的频率（分钟），0 表示禁用
 var UpstreamModelUpdateIntervalMinutes = 0 // 上游模型巡检间隔（分钟），0 表示使用默认值（5 分钟 / 300 秒）
 

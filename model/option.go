@@ -36,6 +36,7 @@ func InitOptionMap() {
 	config.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(config.AutomaticDisableChannelEnabled)
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
 	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
+	config.OptionMap["ChannelUsageWindowMinutes"] = strconv.Itoa(config.ChannelUsageWindowMinutes)
 	config.OptionMap["UpstreamModelUpdateIntervalMinutes"] = strconv.Itoa(config.UpstreamModelUpdateIntervalMinutes)
 	config.OptionMap["UpstreamRemoveGuardPercent"] = strconv.Itoa(config.UpstreamRemoveGuardPercent)
 	config.OptionMap["UpstreamRemoveGuardMinLocalModels"] = strconv.Itoa(config.UpstreamRemoveGuardMinLocalModels)
@@ -509,6 +510,9 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	case "AutoTestChannelFrequency":
 		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
+	case "ChannelUsageWindowMinutes":
+		// 窗口取 0 无意义（会禁掉所有近期无流量的判定），解析失败或 <=0 时保持默认
+		setPositiveIntOption(&config.ChannelUsageWindowMinutes, value)
 	case "UpstreamModelUpdateIntervalMinutes":
 		config.UpstreamModelUpdateIntervalMinutes, _ = strconv.Atoi(value)
 	case "UpstreamRemoveGuardPercent":
