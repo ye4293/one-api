@@ -22,6 +22,23 @@
 - **关联计划**: `docs/plans/2026-08-31-ability-disable-reason.md`
 - **验证**: `go build ./... && go vet ./...` 通过；`go test ./model/ ./monitor/` 相关用例全绿
 
+### feat(auto-disable): 整渠道自动禁用改为「模型被禁即刻触发 + 可配置窗口 + 去抖动」
+
+- **分支**: `dynamic-priority`
+- **类型**: 新功能（让真实流量能即时下线「账户级故障但冷模型无流量」的渠道，不再依赖手动巡检兜底）
+- **涉及文件**:
+  - `common/config/config.go` — 新增 `ChannelUsageWindowMinutes = 60`（「最近使用模型」窗口，分钟，可运营配置）
+  - `model/option.go` — OptionMap 注册 + `updateOptionMap` case（用 `setPositiveIntOption` 带校验，<=0 保持默认）
+  - `model/channel_disable_by_usage.go` — 抽内部 `shouldDisableByRecentUsage(channelId, extraUsed)`：①窗口改用 `config.ChannelUsageWindowMinutes` ②删除 stabilizeCutoff 抖动窗口（刚禁即计入）③渠道已非 enabled 时短路 ④支持并入额外模型。新增即刻入口 `ShouldDisableChannelByRecentUsageImmediate(channelId, triggerModel)`，保留周期入口 `ShouldDisableChannelByRecentUsage(channelId)`
+  - `monitor/channel.go` — `DisableModelOnChannelWithStatusCode` 在模型级禁用成功后同步调用即刻判定并触发 `DisableChannelByRecentUsage`（本函数已在 `processChannelRelayError` 异步协程内，不阻塞用户请求）
+  - `model/channel_disable_by_usage_test.go` — 重写：删除抖动相关用例，新增去抖动/窗口可配置/triggerModel 并入/渠道已禁短路等用例
+  - **前端**（独立仓库 `~/code/ezlinkai-web`，main 分支）— `sections/setting/view/settingPage.tsx` 运营设置加「渠道最近使用窗口（分钟）」整型配置项（state + options 读取 + 提交 payload + 输入框渲染）
+- **问题根因**: 真实流量的自动禁用是「被动 + 模型级」——只禁被真实请求打到的 (渠道,模型) ability，整渠道禁用要等「最近使用模型全禁」。旧判定窗口硬编码 24h、由恢复探针周期兜底触发（随 `AutoTestChannelFrequency`）、且有 20min 抖动窗口，导致账户欠费但冷模型无流量的渠道长期潜伏，必须手动 `test-channels` 才下线
+- **风险与安全网**: 去抖动后上游瞬时抖动可能连锁禁整渠道；安全网 = 恢复探针 `recoverAutoDisabledModels` 逐模型探测救回。model_metrics 每 5 分钟聚合，即刻判定靠 triggerModel 显式并入兜底聚合滞后，周期入口继续兜底漏判
+- **已知限制（待修 #1）**: model_metrics 为小时桶，判定查询 `hour_timestamp >= windowStart` 在窗口 <60 分钟时会把当前小时桶整个排除，导致 `used=0`、整渠道禁用静默失效。默认 60 分钟不触发（窗口长度=桶粒度使当前桶恒被包含），但前端已开放 min=1。修复方向：`windowStart` 下取整到整点桶 `FloorHour(now-窗口秒数)`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./model/... ./monitor/...` 全绿；前端 `tsc --noEmit` 无 settingPage 相关错误
+- **关联计划**: `docs/plans/2026-09-02-immediate-channel-disable.md`
+
 ## 2026-08-27
 
 ### refactor(auto-disable): 恢复探针改 DESC 排序 + 并发全量 + 僵尸退避
