@@ -6,6 +6,25 @@
 
 ---
 
+## 2026-09-04
+
+### feat(flux-video): 对接 BFL FLUX 3 Video 模型
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: 在既有 Flux 渠道（`ChannelTypeFlux=46`，BaseURL 已是 `https://api.bfl.ai`）上新增 `flux-3-video` 视频生成的 `VideoAdaptor`，异步「POST 提交 → 拿 id → GET 轮询到 Ready」，结构对齐 luma；认证用 `x-key` header。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go`（新增）— `FluxVideoRequest`（mode/prompt/keyframes/start_video/draft_cache/resolution/duration/aspect_ratio/generate_audio/safety_tolerance/draft/version）、`FluxVideoSubmitResponse`、`FluxVideoPollingResponse`、审核失败状态常量
+  - `relay/channel/flux/video_adaptor.go`（新增）— 实现 `channel.VideoAdaptor`，provider=`flux`；`HandleVideoRequest` 提交并算 quota，`HandleVideoResult` 轮询映射 `Ready→succeed / Error·Moderated→failed / 其余→processing`
+  - `relay/channel/video_helper.go` — 新增 `XKeyAuthHeaders`
+  - `relay/helper/main.go` — `GetVideoAdaptor` 加 `flux-3-video` 前缀 case；`GetVideoAdaptorByProvider` 加 `"flux"` case
+  - `common/video-pricing.go` — `DefaultVideoPricingRules` 加 flux-3-video 按秒计费（HD=$0.17/s；FHD=$0.34/s ⚠️占位；兜底 $0.17/s，USD）
+  - `common/model-ratio.go` — `DefaultModelPrice` 加 `"flux-3-video": 0.85` 兜底
+- **影响范围**: 不影响 flux 图像生成（分发链路独立）；无数据库 schema 变更（复用 `Video` 表字段）
+- **待核对**: ⚠️ FHD 单价 $0.34/s 为占位估算、draft 折扣未知——上线前需去 bfl.ai/pricing 计算器逐档核对；BFL 价格档实为「每帧 MP」定义的 hd/fhd 分档
+- **关联计划**: `docs/plans/2026-09-04-flux3-video.md`
+- **验证**: `go build ./... && go vet ./...` 通过；gofmt 无差异
+
 ## 2026-09-02
 
 ### feat(auto-disable): abilities 持久化模型级禁用原因 + 整渠道禁用文案拼接真实上游错误

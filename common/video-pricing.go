@@ -62,6 +62,12 @@ var DefaultVideoPricingRules = []VideoPricingRule{
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "std", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 10},
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "pro", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 1.0, Currency: "CNY", Priority: 10},
 	{Model: "kling-3.0-turbo", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.8, Currency: "CNY", Priority: 5},
+	// flux-3-video (BFL)，按秒计费（USD）
+	// HD 单价来自 bfl.ai/pricing 计算器：$0.17/s。
+	// ⚠️ FHD 为占位估算（HD×2），draft 折扣未知——上线前需去 bfl.ai/pricing 逐档核对。
+	{Model: "flux-3-video", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "hd", PricingType: PricingTypePerSecond, Price: 0.17, Currency: "USD", Priority: 10},
+	{Model: "flux-3-video", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "fhd", PricingType: PricingTypePerSecond, Price: 0.34, Currency: "USD", Priority: 10},
+	{Model: "flux-3-video", Type: "*", Mode: "*", Sound: "*", Duration: "*", Resolution: "*", PricingType: PricingTypePerSecond, Price: 0.17, Currency: "USD", Priority: 5},
 	// 注意：gemini-omni-flash-preview 不再使用 VideoPricingRule 计费，
 	// 改为按真实 token 用量计费，见 CalculateGeminiOmniQuota。
 }

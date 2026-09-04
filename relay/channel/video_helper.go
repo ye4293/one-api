@@ -77,6 +77,13 @@ func BearerAuthHeaders(apiKey string) map[string]string {
 	}
 }
 
+// XKeyAuthHeaders 返回携带 x-key 的请求头 map（BFL/Flux 使用）
+func XKeyAuthHeaders(apiKey string) map[string]string {
+	return map[string]string{
+		"x-key": apiKey,
+	}
+}
+
 // UploadVideoURLToR2 从远程 URL 下载视频后上传到 R2，返回公开访问 URL
 func UploadVideoURLToR2(videoURL string, userId int, videoFormat string) (string, error) {
 	if videoURL == "" {
