@@ -43,11 +43,13 @@ type ModelChannelItem struct {
 	Groups          []string `json:"groups"`           // 该渠道该模型挂载的所有 group
 	GroupCount      int      `json:"group_count"`      // group 数量
 	Enabled         bool     `json:"enabled"`          // 该渠道该模型是否启用（所有 group 同步）
+	AutoDisabled    bool     `json:"auto_disabled"`    // 该渠道该模型是否被模型级自动禁用（渠道仍启用）
 	ChannelStatus   int      `json:"channel_status"`   // 渠道状态（来自 channels 表）
 	Priority        int64    `json:"priority"`         // 静态优先级（所有 group 同步）
 	DynamicPriority int64    `json:"dynamic_priority"` // 动态优先级（所有 group 同步）
 	Weight          int      `json:"weight"`
 	UnitPrice       float64  `json:"unit_price"`
+	CreatedTime     int64    `json:"created_time"` // 渠道创建时间（Unix 秒）；前端可结合 dp=0 判定"新加渠道探索位"
 }
 
 // ListModelsOverview 模型汇总分页列表。
@@ -155,6 +157,8 @@ func ListModelsOverview(c *gin.Context) {
 // ListModelChannels 单个模型下挂载的所有渠道（跨 group），扁平列表。
 //
 // 用于模型详情页。model 参数必填（精确匹配），channel_type 可选筛选。
+// status_filter 可选筛选状态：1=启用, 2=手动禁用, 3=自动禁用, 0=全部
+// 分页参数：page（默认1）、page_size（默认10，最大100）。
 // 渠道按有效分 DESC 排序（与选渠道热路径一致）。
 func ListModelChannels(c *gin.Context) {
 	modelName := strings.TrimSpace(c.Query("model"))
@@ -166,6 +170,16 @@ func ListModelChannels(c *gin.Context) {
 		return
 	}
 	channelTypeStr := strings.TrimSpace(c.Query("channel_type"))
+	statusFilterStr := strings.TrimSpace(c.Query("status_filter"))
+
+	page := parseIntSafeDefault(c.Query("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := parseIntSafeDefault(c.Query("page_size"), 10)
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
 
 	groupCol := "`group`"
 	if common.UsingPostgreSQL {
@@ -192,17 +206,49 @@ func ListModelChannels(c *gin.Context) {
 				"c.type AS channel_type, "+groupsExpr+" AS "+groupsAlias+", "+
 				"COUNT(*) AS group_count, "+
 				"MAX(a.enabled) AS enabled, "+
+				"MAX(a.auto_disabled) AS auto_disabled, "+
 				"c.status AS channel_status, "+
 				"MAX(COALESCE(a.priority, 0)) AS priority, "+
 				"MAX(COALESCE(a.dynamic_priority, 0)) AS dynamic_priority, "+
-				"MAX(COALESCE(c.weight, 0)) AS weight, MAX(COALESCE(c.unit_price, 0)) AS unit_price",
+				"c.weight AS weight, c.unit_price AS unit_price, "+
+				"c.created_time AS created_time",
 		).
 		Where("a.model = ?", modelName).
-		Group("a.channel_id, c.name, c.type, c.status").
-		Order("MAX(COALESCE(NULLIF(a.dynamic_priority, 0), COALESCE(a.priority, 0))) DESC, MAX(COALESCE(a.priority, 0)) DESC, a.channel_id ASC")
+		// GROUP BY 只需 channel_id + channel 侧展示列。c.weight/c.unit_price 由 channel_id 唯一决定，
+		// 严格 SQL 模式下加入 GROUP BY 而非 MAX 聚合，避免不必要的聚合计算。
+		Group("a.channel_id, c.name, c.type, c.status, c.weight, c.unit_price, c.created_time").
+		// 排序对齐 model/cache.go:selectByDynamicPriority 的主键：
+		//   1. 有评分（dp>0）永远排在未评分之前 —— 与选渠道热路径信号一致
+		//   2. 评分池内按 dp DESC
+		//   3. 未评分池内按 created_time DESC（对齐探索位选取偏好：新加渠道排前）
+		//   4. 兜底 static priority + channel_id
+		// 用 COALESCE(a.dynamic_priority, 0) 而非裸字段：PG DESC 下 NULL 排最前会错位。
+		Order(
+			"(CASE WHEN MAX(COALESCE(a.dynamic_priority, 0)) > 0 THEN 1 ELSE 0 END) DESC, " +
+				"MAX(COALESCE(a.dynamic_priority, 0)) DESC, " +
+				"c.created_time DESC, " +
+				"MAX(COALESCE(a.priority, 0)) DESC, " +
+				"a.channel_id ASC",
+		)
 
 	if ct := parseIntSafe(channelTypeStr); ct > 0 {
 		query = query.Where("c.type = ?", ct)
+	}
+
+	// 状态筛选：1=启用(status=1且enabled=true), 2=手动禁用(status=2), 3=自动禁用(status=3)
+	// 注意：这里过滤的是 channels.status，因为 status 字段存储的是禁用原因
+	// enabled=true 时需要 status=1，enabled=false 时 status=2或3
+	if sf := parseIntSafe(statusFilterStr); sf > 0 {
+		switch sf {
+		case 1: // 启用
+			query = query.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
+		case 2: // 手动禁用
+			query = query.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
+		case 3: // 渠道自动禁用
+			query = query.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			query = query.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
+		}
 	}
 
 	type row struct {
@@ -212,14 +258,49 @@ func ListModelChannels(c *gin.Context) {
 		Groups          string  `gorm:"column:groups"`
 		GroupCount      int     `gorm:"column:group_count"`
 		Enabled         bool    `gorm:"column:enabled"`
+		AutoDisabled    bool    `gorm:"column:auto_disabled"`
 		ChannelStatus   int     `gorm:"column:channel_status"`
 		Priority        int64   `gorm:"column:priority"`
 		DynamicPriority int64   `gorm:"column:dynamic_priority"`
 		Weight          int     `gorm:"column:weight"`
 		UnitPrice       float64 `gorm:"column:unit_price"`
+		CreatedTime     int64   `gorm:"column:created_time"`
 	}
+
+	// 先获取总数（分页用）
+	var total int64
+	countQuery := model.DB.Table("abilities a").
+		Joins("JOIN channels c ON a.channel_id = c.id").
+		Where("a.model = ?", modelName)
+	if ct := parseIntSafe(channelTypeStr); ct > 0 {
+		countQuery = countQuery.Where("c.type = ?", ct)
+	}
+	if sf := parseIntSafe(statusFilterStr); sf > 0 {
+		switch sf {
+		case 1: // 启用
+			countQuery = countQuery.Where("c.status = ? AND a.enabled = ?", common.ChannelStatusEnabled, true)
+		case 2: // 手动禁用
+			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusManuallyDisabled)
+		case 3: // 渠道自动禁用
+			countQuery = countQuery.Where("c.status = ?", common.ChannelStatusAutoDisabled)
+		case 4: // 模型级自动禁用（渠道仍启用，但该模型被禁）
+			countQuery = countQuery.Where("c.status = ? AND a.auto_disabled = ?", common.ChannelStatusEnabled, true)
+		}
+	}
+	// COUNT(DISTINCT a.channel_id)：list 是按 channel 聚合的（一渠道多 group 合并成一行），
+	// 因此 total 也必须以渠道为单位。若用 COUNT(*)，会数出 channel × group 的 ability 行数
+	// （单渠道多 group 时被 5× 放大），前端分页组件按此算出的页数会远超实际数据页，
+	// 翻到后面页出现空白，视感上像卡顿。
+	if err := countQuery.Distinct("a.channel_id").Count(&total).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "failed to count model channels: " + err.Error(),
+		})
+		return
+	}
+
 	var rows []row
-	if err := query.Scan(&rows).Error; err != nil {
+	if err := query.Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error; err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "failed to list model channels: " + err.Error(),
@@ -236,18 +317,25 @@ func ListModelChannels(c *gin.Context) {
 			Groups:          splitGroups(r.Groups),
 			GroupCount:      r.GroupCount,
 			Enabled:         r.Enabled,
+			AutoDisabled:    r.AutoDisabled,
 			ChannelStatus:   r.ChannelStatus,
 			Priority:        r.Priority,
 			DynamicPriority: r.DynamicPriority,
 			Weight:          r.Weight,
 			UnitPrice:       r.UnitPrice,
+			CreatedTime:     r.CreatedTime,
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    items,
+		"data": gin.H{
+			"list":     items,
+			"total":    total,
+			"page":     page,
+			"pageSize": pageSize,
+		},
 	})
 }
 
@@ -299,6 +387,52 @@ func UpdateModelChannelPriority(c *gin.Context) {
 		"success":  true,
 		"message":  "",
 		"affected": result.RowsAffected,
+	})
+}
+
+// BatchEnableModelChannel 批量启用被模型级禁用的 (channel, model)。
+//
+// 方案 A 下 image/embedding/video 等不可 chat 探测的模型只能靠人工兜底，配合前端「模型自动禁用」
+// 筛选与多选提供批量启用入口。每项调 EnableModelOnChannel 复用同一事务与锁语义——顺带把
+// 因该模型全禁而进入 auto_disabled 的渠道 status 提升回 enabled。
+//
+// 失败项不阻塞整体：返回 affected/failed 明细供前端展示。
+func BatchEnableModelChannel(c *gin.Context) {
+	var req struct {
+		Items []struct {
+			ChannelId int    `json:"channel_id" binding:"required"`
+			Model     string `json:"model" binding:"required"`
+		} `json:"items" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误: " + err.Error()})
+		return
+	}
+	if len(req.Items) == 0 {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "items 不能为空"})
+		return
+	}
+
+	type failedItem struct {
+		ChannelId int    `json:"channel_id"`
+		Model     string `json:"model"`
+		Error     string `json:"error"`
+	}
+	affected := 0
+	failed := make([]failedItem, 0)
+	for _, it := range req.Items {
+		if err := model.EnableModelOnChannel(it.ChannelId, it.Model); err != nil {
+			failed = append(failed, failedItem{ChannelId: it.ChannelId, Model: it.Model, Error: err.Error()})
+			continue
+		}
+		affected++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"message":  "",
+		"affected": affected,
+		"failed":   failed,
 	})
 }
 

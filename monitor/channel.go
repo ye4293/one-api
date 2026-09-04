@@ -120,6 +120,83 @@ func disableChannelInternalWithStatusCode(channel *model.Channel, channelId int,
 	notifyRootUserWithoutFeishu(subject, content)
 }
 
+// DisableModelOnChannelWithStatusCode 模型级自动禁用：只禁用该渠道上的该模型；
+// 当该渠道所有模型都被禁用时，回落到整渠道禁用（走完整通知）。仅用于单 Key 渠道。
+func DisableModelOnChannelWithStatusCode(channelId int, channelName string, reason string, modelName string, statusCode int) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d: %s", channelId, err.Error()))
+		return
+	}
+
+	if !channel.AutoDisabled {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) model %s should be disabled but auto-disable is turned off, reason: %s", channelId, channelName, modelName, reason))
+		return
+	}
+
+	// 多 Key 渠道不做模型级禁用，交由既有 key 级逻辑处理（理论上调用方已过滤）
+	if channel.MultiKeyInfo.IsMultiKey {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) is multi-key, skip model-scope disable for model %s", channelId, channelName, modelName))
+		return
+	}
+
+	if err := model.AutoDisableModelOnChannel(channelId, modelName, reason); err != nil {
+		logger.SysError(fmt.Sprintf("Failed to model-scope disable channel %d model %s: %s", channelId, modelName, err.Error()))
+		return
+	}
+
+	// 即刻触发整渠道禁用判定（方案 C）：模型级禁用的那一刻，若「近 config.ChannelUsageWindowMinutes
+	// 分钟内有真实请求的模型」已全部被自动禁用，则整渠道即刻禁用。triggerModel 显式并入判定，
+	// 兜底 model_metrics 5 分钟聚合滞后。已去掉抖动窗口，误禁由恢复探针逐模型救回。
+	// 本函数已在 processChannelRelayError 的异步协程内，同步两条判定 SQL 不阻塞用户请求。
+	// 恢复探针尾部仍保留同名周期判定作兜底（应对即刻判定时 metrics 尚未聚合导致的漏判）。
+	// 参见 docs/plans/2026-09-02-immediate-channel-disable.md
+	if should, used, _, jerr := model.ShouldDisableChannelByRecentUsageImmediate(channelId, modelName); jerr != nil {
+		logger.SysError(fmt.Sprintf("channel #%d immediate usage-based disable judge failed: %s", channelId, jerr.Error()))
+	} else if should {
+		logger.SysLog(fmt.Sprintf("channel #%d (%s) immediate usage-based disable triggered by model %s: used=%d", channelId, channelName, modelName, used))
+		DisableChannelByRecentUsage(channelId, used)
+	}
+}
+
+// composeUsageDisableReason 组装「最近使用的模型全部被自动禁用」的整渠道禁用原因。
+//
+// lastModel/lastReason 为该渠道最后一条被模型级禁用的模型与其落库的真实原因
+// （abilities.auto_disabled_reason），任一为空时（查询失败、存量数据列默认空）
+// 回退到通用文案，保证新功能不引入新的失败路径。
+func composeUsageDisableReason(usedModels int, lastModel, lastReason string) string {
+	reason := fmt.Sprintf("最近使用中的 %d 个模型全部被自动禁用", usedModels)
+	if lastModel == "" || lastReason == "" {
+		return reason
+	}
+	return fmt.Sprintf("%s，最后模型禁用原因：%s（模型：%s）", reason, lastReason, lastModel)
+}
+
+// DisableChannelByRecentUsage 由统一恢复链路在判定「最近使用的模型全部被自动禁用」后调用。
+// 与 DisableChannelSafelyWithStatusCode 的区别：不由单次上游请求错误驱动，
+// statusCode 传 0；reason 拼接最后被禁模型的真实原因，modelName 传该模型名。
+// 参见 docs/plans/2026-08-31-ability-disable-reason.md
+func DisableChannelByRecentUsage(channelId int, usedModels int) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("Failed to get channel %d for usage-based disable: %s", channelId, err.Error()))
+		return
+	}
+	if channel.MultiKeyInfo.IsMultiKey {
+		// 多 Key 渠道不由本判定禁用，与 DisableChannelSafelyWithStatusCode 语义一致。
+		logger.SysLog(fmt.Sprintf("multi-key channel #%d (%s) not auto-disabled by usage-based rule", channelId, channel.Name))
+		return
+	}
+	lastModel, lastReason, reasonErr := model.GetLatestAutoDisabledModelReason(channelId)
+	if reasonErr != nil {
+		// 查询失败不阻塞禁用本身，回退通用文案
+		logger.SysError(fmt.Sprintf("Failed to get latest auto-disabled model reason for channel %d: %s", channelId, reasonErr.Error()))
+		lastModel, lastReason = "", ""
+	}
+	reason := composeUsageDisableReason(usedModels, lastModel, lastReason)
+	disableChannelInternalWithStatusCode(channel, channelId, channel.Name, reason, lastModel, 0)
+}
+
 // DisableChannel disable & notify
 func DisableChannel(channelId int, channelName string, reason string, modelName string) {
 	DisableChannelWithStatusCode(channelId, channelName, reason, modelName, 0)

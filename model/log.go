@@ -131,14 +131,21 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	// DB 侧的 AvgSpeed = sumSpeed/speedCount 是"比值的算术平均"，不等于总吞吐）。
 	metrics.ObserveConsume(dbModelName, isStream, promptTokens, completionTokens, cachedTokens, quota, duration, firstWordLatency)
 
-	// 动态优先级滑动窗口埋点。与 ObserveConsume 同理，必须在 LogConsumeEnabled 早退之前，
-	// 否则关日志开关会让动态优先级评分失明。用映射后的 modelName（实际请求上游的模型名），
-	// 与 abilities 表的 model 字段一致——选渠道和评分都按这个名字匹配。
-	// 失败请求不经过本函数（走 processChannelRelayError），所以这里记的 success 恒为 true；
-	// 失败样本由失败路径单独记录，见 processChannelRelayError。
-	metrics.RecordAbilityMetric(metrics.AbilityMetric{
+	// 动态优先级滑动窗口打点：Model 用 dbModelName（原始名）而不是 modelName（可能是映射后名），
+	// 与 abilities.model / 失败路径 processChannelRelayError 保持一致。
+	//
+	// dbModelName 的来源（见上方解析块）：
+	//   - chat 主路径通过 helper.go 的 appendModelMappingInfo 把 origin_model_name:xxx 塞进 other，
+	//     本函数解析后 dbModelName = 原始名（映射前）
+	//   - claude/gemini native 等入口本身传入的 modelName 就是 c.GetString("original_model") 原始名，
+	//     other 里没有 origin_model_name → dbModelName == modelName == 原始名
+	//   - 无 model_mapping 的普通渠道：dbModelName == modelName == 原始名（本来就一致）
+	//
+	// 埋点必须在下方 LogConsumeEnabled 早退之前，否则关日志开关会让评分失明（与 ObserveConsume 同理）。
+	// 失败请求不经过本函数（走 controller/relay.go processChannelRelayError，用 originalModel 原始名打点）。
+	metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
 		ChannelId:        channelId,
-		Model:            modelName,
+		Model:            dbModelName,
 		Success:          true,
 		Duration:         duration,
 		FirstWordLatency: firstWordLatency,

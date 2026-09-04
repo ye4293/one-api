@@ -133,6 +133,16 @@ var QuotaForInvitee int64 = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false
+
+// ModelScopeAutoDisableEnabled 为 true 时，自动禁用只禁「该渠道上的该模型」（abilities 行），
+// 渠道保持启用；当渠道所有模型都被禁用时才禁用整个渠道。
+// 为 false 时回退到旧行为：命中禁用条件直接禁用整个渠道（线上快速回滚开关）。
+// 仅作用于单 Key 渠道，多 Key 渠道维持既有 key 级禁用逻辑。
+var ModelScopeAutoDisableEnabled = true
+
+// ChannelUsageWindowMinutes 「最近使用模型」时间窗（分钟），用于整渠道自动禁用判定：
+// 窗口内有真实请求的模型全部被自动禁用时，整渠道自动禁用。默认 60 分钟。
+var ChannelUsageWindowMinutes = 60
 var AutoTestChannelFrequency = 0           // 自动测试渠道的频率（分钟），0 表示禁用
 var UpstreamModelUpdateIntervalMinutes = 0 // 上游模型巡检间隔（分钟），0 表示使用默认值（5 分钟 / 300 秒）
 
@@ -184,9 +194,12 @@ var DynamicPriorityApplyEnabled = false
 var DynamicPriorityWeightSuccess = 50.0 // 成功率权重（0-100）
 var DynamicPriorityWeightLatency = 30.0 // 延迟权重（0-100）
 var DynamicPriorityWeightPrice = 20.0   // 价格权重（0-100）
-var DynamicPriorityCalcIntervalMinutes = 5 // Master 节点评分计算周期（分钟）
-var DynamicPriorityTopThreshold = 10       // 选渠道时同档阈值（%）：top X% 视为同档加权随机
-var DynamicPriorityWindowMinutes = 10      // 滑动窗口长度（分钟），评分只看该窗口内数据
+var DynamicPriorityCalcIntervalMinutes = 5  // Master 节点评分计算周期（分钟）
+var DynamicPriorityTopThreshold = 10        // 选渠道时同档阈值（%）：top X% 视为同档加权随机
+var DynamicPriorityWindowMinutes = 10       // 滑动窗口长度（分钟），评分只看该窗口内数据
+var DynamicPriorityExploreSlots = 2          // top 档预留几个未评分探索位（首选生效，重试关闭）
+var DynamicPriorityExplorationTTLHours = 720 // 新加渠道享受"K slot 硬占位"探索优待的时长（小时）；默认 30 天，覆盖存量老 dp=0 渠道
+var DynamicPriorityExploreRatio = 5          // 概率化兜底探索：K slot 之外，X% 概率从整个 unscored 池随机替换 tier 末位（不看 TTL，覆盖长期 dp=0 存量渠道）；0 关闭
 var PingIntervalEnabled = false
 var PingIntervalSeconds = 0
 
@@ -245,6 +258,11 @@ var requestInterval, _ = strconv.Atoi(os.Getenv("POLLING_INTERVAL"))
 var RequestInterval = time.Duration(requestInterval) * time.Second
 
 var SyncFrequency = env.Int("SYNC_FREQUENCY", 10*60) // unit is second
+
+// RecoverConcurrency 模型级恢复探针每轮的并发探测数。恢复是 I/O 等待型
+// （逐个打上游 chat completions，死渠道多半走到超时），并发几乎线性加速。
+// 默认 16：可在 ~10 分钟一轮内跑完数百个积压候选。下限保护 >=1。
+var RecoverConcurrency = env.Int("RECOVER_CONCURRENCY", 16)
 
 var BatchUpdateEnabled = false
 var BatchUpdateInterval = env.Int("BATCH_UPDATE_INTERVAL", 5)

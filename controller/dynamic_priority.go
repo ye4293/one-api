@@ -4,7 +4,7 @@ package controller
 //
 // 流程（仅 Master 节点，每 DynamicPriorityCalcIntervalMinutes 分钟一次）：
 //   1. 查所有 enabled 的 (channel_id, model, group) 去重三元组
-//   2. 按 model 分组；同 model 内对每个渠道 ScanAbilityWindow 聚合窗口指标 + 读 UnitPrice
+//   2. 按 model 分组；同 model 内一次 pipeline 批量聚合各渠道窗口指标（按 channelId 去重）+ 读 UnitPrice
 //   3. 调 dynamicprio.ScoreChannels 算分
 //   4. BatchUpdateDynamicPriority 批量落库
 //
@@ -12,6 +12,7 @@ package controller
 // 选渠道热路径回退到静态 Priority。不会因评分失败影响正常服务。
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -74,6 +75,10 @@ const dynamicPriorityCalcLockTTL = 5 * time.Minute
 
 // runDynamicPriorityCalcOnce 执行一轮评分计算。
 func runDynamicPriorityCalcOnce() {
+	// 定时任务无请求 ctx；用 Background 只是给底层 log 接口一个非 nil ctx，
+	// 避免 log 里 ctx.Value(RequestID) 为 nil 打不到 request id 字段（此路径下本来就没有）。
+	ctx := context.Background()
+
 	// 分布式锁：仅一个 Master 节点执行本轮计算。拿不到锁直接跳过，下轮再来。
 	// Redis 未启用时 RedisLockAcquire 返回 "local"，等价于「拿到锁」（单机模式无并发问题）。
 	token := common.RedisLockAcquire(dynamicPriorityCalcLockKey, dynamicPriorityCalcLockTTL)
@@ -87,7 +92,7 @@ func runDynamicPriorityCalcOnce() {
 
 	candidates, err := loadAbilityCandidates()
 	if err != nil {
-		logger.SysError("dynamic priority: load candidates failed: " + err.Error())
+		logger.Error(ctx, "dynamic priority: load candidates failed: "+err.Error())
 		return
 	}
 	if len(candidates) == 0 {
@@ -113,8 +118,34 @@ func runDynamicPriorityCalcOnce() {
 	var allUpdates []model.DynamicPriorityUpdate
 	var channelsScored, channelsSkipped int
 
+	// 一次批量拉取所有 enabled 渠道的 UnitPrice，避免 buildStatsForModel 里对每个
+	// (model, channel) 组合发单条 GetChannelById 查询。
+	//
+	// 修复前的性能坑：`priceCache` 是 buildStatsForModel 的局部变量，每个 model 建一份空
+	// cache。同一 channel 出现在 N 个 model 下就会被 GetChannelById 查询 N 次。
+	// 生产 62K 渠道 × 544 model × 平均 ~300 channel/model → 十几万次单条 SELECT ×
+	// 2ms RTT ≈ 5 分钟。这里改成一次批量 SELECT，把 O(N_models × N_channels) 降到 O(1)。
+	//
+	// 读失败不中止本轮：priceCache 空时 buildStatsForModel 的价格维度回退到中位分，
+	// 只是本轮无价格偏好，成功率+延迟维度仍能评分。
+	priceCache := make(map[int]float64)
+	var priceRows []struct {
+		Id        int     `gorm:"column:id"`
+		UnitPrice float64 `gorm:"column:unit_price"`
+	}
+	if err := model.DB.Table("channels").
+		Where("status = ?", common.ChannelStatusEnabled).
+		Select("id, unit_price").
+		Find(&priceRows).Error; err != nil {
+		logger.Errorf(ctx, "dynamic priority: load unit prices failed (fallback to no price bias): %s", err.Error())
+	} else {
+		for _, p := range priceRows {
+			priceCache[p.Id] = p.UnitPrice
+		}
+	}
+
 	for modelName, groupCands := range byModel {
-		stats, candIdx := buildStatsForModel(modelName, groupCands, window)
+		stats, candIdx := buildStatsForModel(ctx, modelName, groupCands, window, priceCache)
 		if len(stats) == 0 {
 			channelsSkipped += len(groupCands)
 			continue
@@ -144,7 +175,7 @@ func runDynamicPriorityCalcOnce() {
 	}
 
 	if err := model.BatchUpdateDynamicPriority(allUpdates); err != nil {
-		logger.SysError(fmt.Sprintf("dynamic priority: batch update failed (%d items): %s", len(allUpdates), err.Error()))
+		logger.Errorf(ctx, "dynamic priority: batch update failed (%d items): %s", len(allUpdates), err.Error())
 		return
 	}
 
@@ -158,20 +189,31 @@ func runDynamicPriorityCalcOnce() {
 // 返回 stats 和对应的 candidate 索引（candIdx[i] 是 stats[i] 对应的候选）。
 // 只返回有至少一个有效样本的渠道——纯无数据的渠道也要保留（写 0 分回退静态优先级），
 // 但若整组 Redis 全无数据则返回空，跳过该 model。
-func buildStatsForModel(modelName string, cands []abilityCandidate, window time.Duration) ([]dynamicprio.ChannelStat, []int) {
+//
+// priceCache 由调用方（runDynamicPriorityCalcOnce）一次批量拉取传入，避免此处对每个
+// channel 发单条 SQL —— 生产 60K+ 渠道 × 500+ model 场景下能把整轮耗时从数分钟压到秒级。
+// 缺失 key（例如渠道刚新建、批量拉取时间点之后）视为未配置价格 UnitPrice=0，
+// 价格维度自然回退到中位分。
+func buildStatsForModel(ctx context.Context, modelName string, cands []abilityCandidate, window time.Duration, priceCache map[int]float64) ([]dynamicprio.ChannelStat, []int) {
 	stats := make([]dynamicprio.ChannelStat, 0, len(cands))
 	candIdx := make([]int, 0, len(cands))
 	anyData := false
 
-	// UnitPrice 按 channelId 去重读取，避免同渠道多 group 重复查
-	priceCache := make(map[int]float64)
+	// 批量读窗口：一次 pipeline 拿到该 model 下所有 channel 的样本，内部按 channelId 去重。
+	// 消除「同 channel 多 group 各扫一次」的重复，并把 N×2 次串行 RTT 降到 2 次。
+	channelIds := make([]int, 0, len(cands))
+	for _, c := range cands {
+		channelIds = append(channelIds, c.ChannelId)
+	}
+	samples, err := metrics.ScanAbilityWindowBatch(ctx, channelIds, modelName, window)
+	if err != nil {
+		// 整体读失败：本 model 全部按无数据处理，返回 nil 让调用方跳过（保留旧分，回退静态优先级）
+		logger.Errorf(ctx, "dynamic priority: batch scan window model=%s: %s", modelName, err.Error())
+		return nil, nil
+	}
 
 	for i, c := range cands {
-		sample, err := metrics.ScanAbilityWindow(c.ChannelId, modelName, window)
-		if err != nil {
-			logger.SysError(fmt.Sprintf("dynamic priority: scan window ch=%d model=%s: %s", c.ChannelId, modelName, err.Error()))
-			continue
-		}
+		sample := samples[c.ChannelId] // 缺失 = 零值，等价无数据
 
 		total := sample.SuccessCount + sample.FailureCount
 		if total > 0 {
@@ -196,15 +238,9 @@ func buildStatsForModel(modelName string, cands []abilityCandidate, window time.
 			st.AvgLatencyMs = sample.NonStreamDurSum / float64(sample.NonStreamCount) * 1000
 		}
 
-		// 价格：同 channel 多 group 共享一个价格，缓存
+		// 价格：从调用方批量拉取的 priceCache 里读，缺失视为未配置（0）
 		if price, ok := priceCache[c.ChannelId]; ok {
 			st.UnitPrice = price
-		} else {
-			ch, perr := model.GetChannelById(c.ChannelId, false)
-			if perr == nil && ch != nil {
-				st.UnitPrice = ch.UnitPrice
-				priceCache[c.ChannelId] = ch.UnitPrice
-			}
 		}
 
 		stats = append(stats, st)

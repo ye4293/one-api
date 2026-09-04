@@ -38,6 +38,22 @@ const (
 	ChannelStatusAutoDisabled     = 3
 )
 
+// 渠道自动禁用熔断参数
+// 参见 docs/plans/2026-08-26-auto-disable-circuit-breaker.md
+const (
+	ChannelAutoDisableCircuitThreshold     = 3     // 滚动窗口内触发多少次整渠道自动禁用后锁死 auto_enabled
+	ChannelAutoDisableCircuitWindowSeconds = 86400 // 计数滚动窗口长度（秒），24h
+)
+
+// 每次整渠道自动禁用后，允许恢复探针重新探测的最小等待时间。
+// 下标对齐 (AutoDisableCount - 1)：第 1 次禁用等 15min，第 2 次 30min，第 3 次 60min。
+// 第 3 次到达阈值后 auto_enabled 会被置 false，探针分支已提前跳过；此处 60min 是防御性上限。
+var ChannelAutoDisableProbeBackoff = []time.Duration{
+	15 * time.Minute,
+	30 * time.Minute,
+	60 * time.Minute,
+}
+
 const (
 	ChannelTypeUnknown = iota
 	ChannelTypeOpenAI

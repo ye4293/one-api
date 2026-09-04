@@ -36,6 +36,7 @@ func InitOptionMap() {
 	config.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(config.AutomaticDisableChannelEnabled)
 	config.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(config.AutomaticEnableChannelEnabled)
 	config.OptionMap["AutoTestChannelFrequency"] = strconv.Itoa(config.AutoTestChannelFrequency)
+	config.OptionMap["ChannelUsageWindowMinutes"] = strconv.Itoa(config.ChannelUsageWindowMinutes)
 	config.OptionMap["UpstreamModelUpdateIntervalMinutes"] = strconv.Itoa(config.UpstreamModelUpdateIntervalMinutes)
 	config.OptionMap["UpstreamRemoveGuardPercent"] = strconv.Itoa(config.UpstreamRemoveGuardPercent)
 	config.OptionMap["UpstreamRemoveGuardMinLocalModels"] = strconv.Itoa(config.UpstreamRemoveGuardMinLocalModels)
@@ -58,6 +59,9 @@ func InitOptionMap() {
 	config.OptionMap["DynamicPriorityCalcIntervalMinutes"] = strconv.Itoa(config.DynamicPriorityCalcIntervalMinutes)
 	config.OptionMap["DynamicPriorityTopThreshold"] = strconv.Itoa(config.DynamicPriorityTopThreshold)
 	config.OptionMap["DynamicPriorityWindowMinutes"] = strconv.Itoa(config.DynamicPriorityWindowMinutes)
+	config.OptionMap["DynamicPriorityExploreSlots"] = strconv.Itoa(config.DynamicPriorityExploreSlots)
+	config.OptionMap["DynamicPriorityExplorationTTLHours"] = strconv.Itoa(config.DynamicPriorityExplorationTTLHours)
+	config.OptionMap["DynamicPriorityExploreRatio"] = strconv.Itoa(config.DynamicPriorityExploreRatio)
 	config.OptionMap["AutoDisableKeywords"] = config.AutoDisableKeywords
 	config.OptionMap["RetryKeywords"] = config.RetryKeywords
 	config.OptionMap["ApproximateTokenEnabled"] = strconv.FormatBool(config.ApproximateTokenEnabled)
@@ -506,6 +510,9 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateClaudeRequestHeadersByJSONString(value)
 	case "AutoTestChannelFrequency":
 		config.AutoTestChannelFrequency, _ = strconv.Atoi(value)
+	case "ChannelUsageWindowMinutes":
+		// 窗口取 0 无意义（会禁掉所有近期无流量的判定），解析失败或 <=0 时保持默认
+		setPositiveIntOption(&config.ChannelUsageWindowMinutes, value)
 	case "UpstreamModelUpdateIntervalMinutes":
 		config.UpstreamModelUpdateIntervalMinutes, _ = strconv.Atoi(value)
 	case "UpstreamRemoveGuardPercent":
@@ -563,6 +570,18 @@ func updateOptionMap(key string, value string) (err error) {
 		setPositiveIntOption(&config.DynamicPriorityTopThreshold, value)
 	case "DynamicPriorityWindowMinutes":
 		setPositiveIntOption(&config.DynamicPriorityWindowMinutes, value)
+	case "DynamicPriorityExploreSlots":
+		// 允许设为 0（等价于关闭探索位），故不能用 setPositiveIntOption（它要求 >0）
+		if v, parseErr := strconv.Atoi(value); parseErr == nil && v >= 0 {
+			config.DynamicPriorityExploreSlots = v
+		}
+	case "DynamicPriorityExplorationTTLHours":
+		setPositiveIntOption(&config.DynamicPriorityExplorationTTLHours, value)
+	case "DynamicPriorityExploreRatio":
+		// 允许设为 0（关闭概率化探索）；上限 100
+		if v, parseErr := strconv.Atoi(value); parseErr == nil && v >= 0 && v <= 100 {
+			config.DynamicPriorityExploreRatio = v
+		}
 	case "ChannelAffinityConfig":
 		cfg, parseErr := common.AffinityConfigFromJSON(value)
 		if parseErr != nil {

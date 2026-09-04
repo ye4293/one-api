@@ -756,6 +756,7 @@ var DefaultModelPrice = map[string]float64{
 	"kling-v1-6-pro":             120, // Kling 1.6 专业版
 	"gen3a_turbo":                0.25,
 	"luma":                       0.4,
+	"flux-3-video":               0.85, // 兜底价（≈HD $0.17/s × 5s），正常走 VideoPricingRule
 	"dall-e-3":                   0.04,
 	"dall-e-2":                   0.02,
 	"viggle":                     0.2,

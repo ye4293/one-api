@@ -67,9 +67,21 @@ type ChannelScore struct {
 	PriceScore   float64
 }
 
-// MinSampleCount 是成功率维度参与归一化的最小样本门槛。
-// 低于此值的渠道不参与成功率维度排名，该维度回退到中位分，避免「1 次失败 = 0 分」。
+// MinSampleCount 是成功率维度的参考样本量常量，仅用于文档说明。
+// 从 v2 起用 Beta-Binomial 平滑替代硬阈值，任何样本数都能给出合理分数，
+// 不再作为"参与评分"的门槛。保留常量便于运维参考"多少样本后分数逼近真实"。
 const MinSampleCount = 20
+
+// Beta-Binomial 先验：假设未知渠道的成功率符合 Beta(alpha, beta) 分布。
+// alpha=beta=2.5 等价于「加入 2.5 个虚拟成功 + 2.5 个虚拟失败」的平滑，
+// 让小样本渠道从"完全不确定 → 50 分"平滑过渡到"有信号但样本少 → 偏离 50"，
+// 大样本时先验被真实数据压过，逼近实际成功率。
+//
+// 具体行为对照见 docs/plans/2026-08-25-dp-fixes.md 附表。
+const (
+	priorAlpha = 2.5
+	priorBeta  = 2.5
+)
 
 const (
 	// maxScore / midScore 是归一化后的上下界，分数被 clamp 到 [0,100]。
@@ -124,36 +136,49 @@ func ScoreChannels(stats []ChannelStat, weights Weights) []ChannelScore {
 	return out
 }
 
-// hasEnoughData 判断渠道是否有「足够」实时数据参与评分。
-// 成功率维度要求样本量，延迟维度只要有任一延迟指标（流式首字 / 非流式总时长）非零即视为有数据。
-// 二者都缺时 HasData=false，走兜底。
+// hasEnoughData 判断渠道是否有实时数据参与评分。
+//
+// 放宽策略（v2）：只要窗口内有任何请求样本（含全失败）或延迟数据，即视为有信号。
+// 关键场景：某渠道 15 次全 429 但样本数 <20 时，旧策略判为无数据、写入 dp=0、被
+// static priority=100 兜底后又被首选 → 恶性循环。新策略下 TotalCount=15 也算有数据，
+// Beta-Binomial 平滑后拿到低分（约 10~25）参与正常排序，不再假装未评分。
 func hasEnoughData(s ChannelStat) bool {
-	return s.TotalCount >= MinSampleCount || s.AvgLatencyMs > 0 || s.AvgFirstTokenMs > 0
+	return s.TotalCount > 0 || s.AvgLatencyMs > 0 || s.AvgFirstTokenMs > 0
 }
 
-// scoreSuccess 成功率维度评分。
+// scoreSuccess 成功率维度评分，用 Beta-Binomial 平滑。
 //
-// 直接 successRate×100，但样本不足（<MinSampleCount）的渠道不参与相对排名，
-// 回退到中位分 50，避免小样本噪声。所有渠道都缺样本时统一给中位分。
+// 公式：score = 100 × (SuccessCount + priorAlpha) / (TotalCount + priorAlpha + priorBeta)
+//
+// 与原硬阈值实现相比的优势：
+//   - 无阈值断层：不再有「20 次样本前后分数从 50 突变到 SuccessRate×100」的跳跃
+//   - 小样本负面信号可被识别：0/5 失败 → 25 分（旧版给 50 分误判"中等"）
+//   - 大样本收敛真实值：100/0 → 97.6 分，逼近 100
+//   - 完全无样本仍是 50 分（先验中立），兼容原兜底语义
+//
+// 对照表（priorAlpha=priorBeta=2.5）：
+//
+//	0/5   → 25.0    小样本纯失败
+//	0/20  → 10.0    大样本纯失败
+//	5/5   → 50.0    5:5 中立
+//	100/0 → 97.6    大样本纯成功
+//	0/0   → 50.0    无数据
 func scoreSuccess(stats []ChannelStat) []float64 {
 	out := make([]float64, len(stats))
-	hasSample := false
 	for i, s := range stats {
-		if s.TotalCount >= MinSampleCount {
-			hasSample = true
-			out[i] = s.SuccessRate * maxScore
-			if out[i] > maxScore {
-				out[i] = maxScore
-			}
-		}
-	}
-	// 没有足够样本的渠道回退到中位分，不参与排名拉扯。
-	for i := range stats {
-		if stats[i].TotalCount < MinSampleCount {
+		denom := float64(s.TotalCount) + priorAlpha + priorBeta
+		if denom <= 0 {
 			out[i] = midScore
+			continue
+		}
+		smoothed := (float64(s.SuccessCount) + priorAlpha) / denom
+		out[i] = smoothed * maxScore
+		if out[i] < 0 {
+			out[i] = 0
+		} else if out[i] > maxScore {
+			out[i] = maxScore
 		}
 	}
-	_ = hasSample // 保留语义：当前实现下小样本统一中位分，无需区分「全员无样本」
 	return out
 }
 

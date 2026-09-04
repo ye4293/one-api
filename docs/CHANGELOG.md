@@ -6,6 +6,483 @@
 
 ---
 
+## 2026-09-04
+
+### feat(flux-video): 对接 BFL FLUX 3 Video 模型
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: 在既有 Flux 渠道（`ChannelTypeFlux=46`，BaseURL 已是 `https://api.bfl.ai`）上新增 `flux-3-video` 视频生成的 `VideoAdaptor`，异步「POST 提交 → 拿 id → GET 轮询到 Ready」，结构对齐 luma；认证用 `x-key` header。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go`（新增）— `FluxVideoRequest`（mode/prompt/keyframes/start_video/draft_cache/resolution/duration/aspect_ratio/generate_audio/safety_tolerance/draft/version）、`FluxVideoSubmitResponse`、`FluxVideoPollingResponse`、审核失败状态常量
+  - `relay/channel/flux/video_adaptor.go`（新增）— 实现 `channel.VideoAdaptor`，provider=`flux`；`HandleVideoRequest` 提交并算 quota，`HandleVideoResult` 轮询映射 `Ready→succeed / Error·Moderated→failed / 其余→processing`
+  - `relay/channel/video_helper.go` — 新增 `XKeyAuthHeaders`
+  - `relay/helper/main.go` — `GetVideoAdaptor` 加 `flux-3-video` 前缀 case；`GetVideoAdaptorByProvider` 加 `"flux"` case
+  - `common/video-pricing.go` — `DefaultVideoPricingRules` 加 flux-3-video 按秒计费（HD=$0.17/s；FHD=$0.34/s ⚠️占位；兜底 $0.17/s，USD）
+  - `common/model-ratio.go` — `DefaultModelPrice` 加 `"flux-3-video": 0.85` 兜底
+- **影响范围**: 不影响 flux 图像生成（分发链路独立）；无数据库 schema 变更（复用 `Video` 表字段）
+- **待核对**: ⚠️ FHD 单价 $0.34/s 为占位估算、draft 折扣未知——上线前需去 bfl.ai/pricing 计算器逐档核对；BFL 价格档实为「每帧 MP」定义的 hd/fhd 分档
+- **关联计划**: `docs/plans/2026-09-04-flux3-video.md`
+- **验证**: `go build ./... && go vet ./...` 通过；gofmt 无差异
+
+## 2026-09-02
+
+### feat(auto-disable): abilities 持久化模型级禁用原因 + 整渠道禁用文案拼接真实上游错误
+
+- **分支**: `feat/ability-disable-reason`
+- **类型**: 新功能（含 schema 变更）
+- **背景**: 模型级自动禁用只落 `auto_disabled` / `auto_disabled_time`，上游真实错误只进系统日志；「最近使用的模型全部被自动禁用」升级为整渠道禁用时，`channels.auto_disabled_reason` 只能写通用文案，最后被禁模型的真实上游错误已丢失，排查需翻日志
+- **涉及文件**:
+  - `model/ability.go` — `Ability` 新增 `AutoDisabledReason varchar(1024)` 列（AutoMigrate 自动加列）；`AutoDisableModelOnChannel` 落库按 rune 截断的原因；`EnableModelOnChannel` 恢复时清空防残留；新增 `GetLatestAutoDisabledModelReason`（按 time DESC 取最新一条，走 channel_id 索引）
+  - `monitor/channel.go` — `DisableChannelByRecentUsage` 取最后被禁模型的 (model, reason) 拼接 `最近使用中的 N 个模型全部被自动禁用，最后模型禁用原因：<上游错误>（模型：<model>）`；reason 拼接抽为 `composeUsageDisableReason` 纯函数；模型名传入 `channels.auto_disabled_model`（原为空）。查询失败或存量空值回退通用文案，不引入新失败路径
+  - `model/ability_disable_reason_test.go`、`monitor/channel_test.go` — 单测（写入/截断/清空/DESC 查询/文案拼接回退）
+- **影响范围**: 前端零改动（仍读 `auto_disabled_reason`），飞书/邮件通知自动受益；多 Key、metric、filter 巡检等原因来源不变
+- **数据迁移**: 无需手工 SQL；保守起见可由用户决策提前执行 `ALTER TABLE abilities ADD COLUMN auto_disabled_reason varchar(1024) NOT NULL DEFAULT '';`
+- **关联计划**: `docs/plans/2026-08-31-ability-disable-reason.md`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./model/ ./monitor/` 相关用例全绿
+
+### feat(auto-disable): 整渠道自动禁用改为「模型被禁即刻触发 + 可配置窗口 + 去抖动」
+
+- **分支**: `dynamic-priority`
+- **类型**: 新功能（让真实流量能即时下线「账户级故障但冷模型无流量」的渠道，不再依赖手动巡检兜底）
+- **涉及文件**:
+  - `common/config/config.go` — 新增 `ChannelUsageWindowMinutes = 60`（「最近使用模型」窗口，分钟，可运营配置）
+  - `model/option.go` — OptionMap 注册 + `updateOptionMap` case（用 `setPositiveIntOption` 带校验，<=0 保持默认）
+  - `model/channel_disable_by_usage.go` — 抽内部 `shouldDisableByRecentUsage(channelId, extraUsed)`：①窗口改用 `config.ChannelUsageWindowMinutes` ②删除 stabilizeCutoff 抖动窗口（刚禁即计入）③渠道已非 enabled 时短路 ④支持并入额外模型。新增即刻入口 `ShouldDisableChannelByRecentUsageImmediate(channelId, triggerModel)`，保留周期入口 `ShouldDisableChannelByRecentUsage(channelId)`
+  - `monitor/channel.go` — `DisableModelOnChannelWithStatusCode` 在模型级禁用成功后同步调用即刻判定并触发 `DisableChannelByRecentUsage`（本函数已在 `processChannelRelayError` 异步协程内，不阻塞用户请求）
+  - `model/channel_disable_by_usage_test.go` — 重写：删除抖动相关用例，新增去抖动/窗口可配置/triggerModel 并入/渠道已禁短路等用例
+  - **前端**（独立仓库 `~/code/ezlinkai-web`，main 分支）— `sections/setting/view/settingPage.tsx` 运营设置加「渠道最近使用窗口（分钟）」整型配置项（state + options 读取 + 提交 payload + 输入框渲染）
+- **问题根因**: 真实流量的自动禁用是「被动 + 模型级」——只禁被真实请求打到的 (渠道,模型) ability，整渠道禁用要等「最近使用模型全禁」。旧判定窗口硬编码 24h、由恢复探针周期兜底触发（随 `AutoTestChannelFrequency`）、且有 20min 抖动窗口，导致账户欠费但冷模型无流量的渠道长期潜伏，必须手动 `test-channels` 才下线
+- **风险与安全网**: 去抖动后上游瞬时抖动可能连锁禁整渠道；安全网 = 恢复探针 `recoverAutoDisabledModels` 逐模型探测救回。model_metrics 每 5 分钟聚合，即刻判定靠 triggerModel 显式并入兜底聚合滞后，周期入口继续兜底漏判
+- **已知限制（待修 #1）**: model_metrics 为小时桶，判定查询 `hour_timestamp >= windowStart` 在窗口 <60 分钟时会把当前小时桶整个排除，导致 `used=0`、整渠道禁用静默失效。默认 60 分钟不触发（窗口长度=桶粒度使当前桶恒被包含），但前端已开放 min=1。修复方向：`windowStart` 下取整到整点桶 `FloorHour(now-窗口秒数)`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./model/... ./monitor/...` 全绿；前端 `tsc --noEmit` 无 settingPage 相关错误
+- **关联计划**: `docs/plans/2026-09-02-immediate-channel-disable.md`
+
+## 2026-08-27
+
+### refactor(auto-disable): 恢复探针改 DESC 排序 + 并发全量 + 僵尸退避
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 重构（生产事故驱动）
+- **背景**: jsy 站点渠道 62395 的 gpt-5.5 反复被 401 误禁后**从不自动恢复**，只能人工救回。Loki 日志坐实：恢复探针每轮 `candidates=877 processed=100 recovered=0`——`recoverModelsMaxPerRound=100` 硬顶 + `auto_disabled_time ASC` 排序，导致测不通的老僵尸永占前 100 名额，最近被禁的活跃渠道排队尾、**从未被探测**（死锁）
+- **涉及文件**:
+  - `model/ability.go` — `GetAutoDisabledAbilities` 排序 `ASC` → `DESC`（优先探测最近被禁、最可能自愈的）
+  - `controller/channel-test.go` — 新增进程内僵尸退避表（失败指数退避 5m~6h，成功清除，每轮 prune 防泄漏）；`recoverAutoDisabledModels` 串行 for → worker pool 并发；`recoverModelsMaxPerRound` 100 → 2000（纯兜底）
+  - `common/config/config.go` — 新增 `RecoverConcurrency = env.Int("RECOVER_CONCURRENCY", 16)`
+  - `model/ability_test.go`、`controller/channel_recover_backoff_test.go` — 单测（DESC 排序 + 退避表，含 -race）
+- **效果**: 僵尸进退避期后被排除，候选骤降到「新禁 + 退避到期」小集合，16 路并发一轮跑完；62395 这类被误禁的渠道可自动恢复，无需人工介入
+- **未处理**: 禁用侧号池瞬时 401 即禁的敏感问题（后续可加抖动窗口）
+- **关联计划**: `docs/plans/2026-08-27-recover-probe-desc-concurrent.md`
+- **验证**: `go build ./... && go vet ./...` 通过；`go test ./controller/ ./model/` 通过
+
+### fix(channel-test): 默认测试模型改为 channel.Models 列表末尾
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 小改进
+- **背景**: testChannel 无 specifiedModel + 无 channel.TestModel 时，之前 fallback 到 `channel.Models split(",")[0]`。生产实测：因上游同步 (`channel_upstream_update`) 返回的 Models 列表第一个常是**已下线的老模型**（如 gemini-1.5-flash），触发 404 误判。约定新 model 追加到末尾，取末尾能大幅降低选到老模型的概率
+- **涉及文件**:
+  - `controller/channel-test.go:352` — `modelNames[0]` → `modelNames[len(modelNames)-1]`
+- **优先级链保持不变**:
+  1. handler 传入的 model 参数（如 skill `--model`）
+  2. `channel.TestModel` 字段（每个渠道自配）
+  3. `channel.Models` **末尾** ← 本次变更（原为首个）
+- **局限**: "末尾 = 最新" 只是约定不是保证。真正精准的做法是让运维填 `channel.TestModel`，或未来加 Options 里 per-type 的 default test model
+- **验证**: `go build && go vet` 通过
+
+### fix(channel-test): filter 分派只按"命中自动禁用规则"判定，修复 model_not_found 404 误判
+
+- **分支**: `auto-disable-refactor`
+- **类型**: Bug 修复（生产事故驱动）
+- **根因**: filter scope 之前的分派逻辑 `failed = (err != nil) || ShouldDisableChannel || timeout` 过度激进，把 404 model_not_found、临时网络错误、响应超时全当"渠道失效"。生产实测：JSY 站点跑 `--prefix gemini` 时服务端 testChannel 自选到已下线的 `gemini-1.5-flash`，返回 404 `not found for API version v1beta`，本来正常的渠道被大规模误禁到 auto_disabled=3
+- **涉及文件**:
+  - `relay/util/common.go` — 抽 `MatchesDisableRule` 纯规则函数（不受 `AutomaticDisableChannelEnabled` 全局开关门控）；`ShouldDisableChannel` 变成 `MatchesDisableRule` + 全局开关的包装（业务请求路径行为完全不变）
+  - `controller/channel-test.go` — filter 分派逻辑重构：只按 `MatchesDisableRule` 命中判定禁用；恢复用严格 `err==nil && openaiErr==nil`；测失败但未命中规则的**打 warning 但不禁用**
+- **新分派语义**:
+  ```
+  filter 循环:
+    命中规则 (关键词/401/特定 Type/Code) && enabled → 禁用为 auto_disabled
+    严格测通 (err=nil && openaiErr=nil) && !enabled → 恢复为 enabled
+    测失败但未命中规则 → 打 warning 日志跳过（避免 model_not_found 类 404 误判）
+    其他 → no-op
+  ```
+- **移除的过度激进条件**:
+  - `err != nil` 单独作为禁用理由 → 移除（404/网络错误/HTTP 层错误不该视为失效）
+  - `milliseconds > disableThreshold` 超时禁用 → 移除（filter 是主动巡检，不做超时禁用）
+- **业务请求路径行为保持不变**: `ShouldDisableChannel` 语义与门控完全一致，`controller/relay.go` 等 caller 不受影响
+- **验证**: `go build && go vet` 通过；handler/filter SQL 测试全绿
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
+### feat(channel-test): scope=filter 加 model 参数支持，避免服务端选老模型被 404 误判
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 增强（生产事故驱动）
+- **触发**: 生产环境跑 `/test-channels --site JSY --prefix gemini` 触发大量 404 `models/gemini-1.5-flash is not found for API version v1beta`——服务端 testChannel 内部自选到已被 Google 下线的老模型，导致本来正常的渠道被误判为失效并禁到 auto_disabled=3
+- **涉及文件**:
+  - `controller/channel-test.go` — `TestChannels` handler 加 `model` query param 解析（filter scope 生效，可选）；`testChannels` 签名扩展 `specifiedModel string`；循环内 `testChannel(channel, specifiedModel, true)` 传入；两处 startup/tick caller 更新为 `""`
+  - `.claude/skills/test-channels/scripts/batch_test.sh` — 加 `--model` 参数，透传到 API
+  - `.claude/skills/test-channels/SKILL.md` — 参数说明 + 示例（含"救回被老模型误判"用例）
+- **API 契约扩展**:
+  ```
+  GET /api/channel/test?scope=filter&keyword=<>&type=<>&status=<>&model=<name>
+  ```
+  - `model` 可选：传了强制用此 model 测试，不传保持现状（服务端 testChannel 内部自选）
+  - 只在 filter scope 生效（避免影响 scope=all/disabled/auto_disabled 现有行为）
+- **使用**:
+  ```bash
+  # 指定测试模型
+  /test-channels --site JSY --prefix gemini --model gemini-2.0-flash-exp
+
+  # 救回被老模型误判禁的
+  /test-channels --site JSY --prefix gemini --status 3 --model gemini-2.0-flash-exp
+  ```
+- **skill 侧新增**: `--site <NAME>` 多站点支持（同一 .env 内多套 `${SITE}_URL` / `${SITE}_API_KEY`）
+- **验证**: `go build && go vet` 通过；handler 测试 4 个全绿
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
+### feat(channel-test): 新增 scope=filter 精准巡检 —— 按 keyword/type/status 筛选 + 测通恢复 + 测失败禁用
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 新功能（补齐"精准范围 × auto_disabled 语义 × 恢复能力"三者交集）
+- **涉及文件**:
+  - `model/channel.go` — `GetAllChannelsForTest` 签名扩展（新增 keyword/channelType/statusList 参数）+ 新增 `case "filter"` 分支
+  - `controller/channel-test.go` — `TestChannels` handler 解析 filter 参数（keyword/type/status CSV）+ 参数校验（keyword 或 type 至少一个、status 值域 1-3）；`testChannels` 内部签名扩展 + 独立 `filterCheckLock` + 循环内 filter 分派逻辑；两处 startup/tick caller 更新
+  - `model/channel_filter_test.go` — 新增。7 个测试覆盖 SQL filter 分支（keyword-only、type-only、默认 status、CSV 多状态、keyword+type 联合、只测 manually_disabled、backward-compat）
+  - `controller/channel_filter_handler_test.go` — 新增。4 个测试覆盖 handler 参数校验层（缺 keyword/type、非法 type、status 越界、status 含非数字）
+  - `docs/plans/2026-08-27-channel-filter-healthcheck.md` — 新增。方案 + 决策
+- **API 契约**:
+  ```
+  GET /api/channel/test?scope=filter&keyword=<>&type=<>&status=<csv>
+  ```
+  - keyword 或 type 至少一个（否则 400）
+  - status 逗号分隔多状态（默认 `1`）
+- **分派语义**（status 参数即用户意图声明）:
+  - 测失败 && status=1（enabled）→ `DisableChannelSafelyWithStatusCode` → auto_disabled=3
+  - 测通 && status ∈ {2, 3} → `UpdateChannelStatusById(id, enabled)` → status=1
+  - 其他组合 no-op
+- **门控策略**（与现有 scope=all 不同）:
+  - 禁用**不受** `AutomaticDisableChannelEnabled` 门控
+  - 恢复**不受** `AutomaticEnableChannelEnabled` 门控
+  - 理由：主动调 API = 运维意图明确
+  - `channel.AutoEnabled=false` 熔断锁死的渠道**跳过**巡检（尊重熔断决策）
+- **并发**: 独立 `filterCheckLock`，与 `testAllChannelsRunning` 分离。filter 巡检和 scope=all 全量测试可并发运行
+- **向后兼容**: `scope=all/disabled/auto_disabled` 语义完全不变；`GetAllChannelsForTest` 现有 caller 统一升级到新签名（`""`/`nil`/`nil`）
+- **使用场景**:
+  1. 批次事件清算：`?scope=filter&keyword=mi-tl-oai&type=1` 精准清 mi-tl-oai openai
+  2. 主动恢复批次：`?scope=filter&keyword=mi-tl-oai&type=1&status=3` 巡检自动禁用的看能否救回
+  3. 混合巡检：`?scope=filter&type=24&status=1,3` 一次禁失效救复活
+- **验证**:
+  - `go build ./... && go vet ./...` 通过
+  - `go test ./model/ ./controller/ -run "Filter|filter"` 全绿（11 个新增测试）
+- **关联计划**: `docs/plans/2026-08-27-channel-filter-healthcheck.md`
+
+### refactor(auto-disable): 收尾判定从恢复探针尾部剥离为独立 goroutine（P1）
+
+- **分支**: `auto-disable-refactor`
+- **类型**: 重构（解耦调度依赖，修复线上"漏禁"根因之一）
+- **涉及文件**:
+  - `controller/channel-test.go` — 新增 `evaluateUsageBasedChannelDisable`（独立收尾判定，不看 `AutomaticEnableChannelEnabled`、不受 `recoverModelsMaxPerRound=100` 截断）+ `StartUsageBasedDisableEvaluator` 主循环（周期同 `AutoTestChannelFrequency`）+ 包变量 hook `disableChannelByRecentUsageFn`（测试注入用）；移除 `recoverAutoDisabledModels` 尾部 718-739 的收尾循环，替换为指向新函数的注释
+  - `model/ability.go` — 新增 `GetChannelsWithAutoDisabledAbilities`：`SELECT DISTINCT a.channel_id FROM abilities a JOIN channels c ON c.id = a.channel_id WHERE a.auto_disabled=1 AND c.status = ChannelStatusEnabled`。**主动过滤 manually_disabled**，规避 `AutoDisableChannelById` pre-existing 未防御 status=2 会覆盖为 status=3 的 bug（下游修复留 P2）
+  - `main.go` — 新增 `go controller.StartUsageBasedDisableEvaluator()`，紧跟 `AutomaticallyTestChannels` 拉起
+  - `model/ability_test.go` — 追加 `TestGetChannelsWithAutoDisabledAbilities` 覆盖 4 种渠道状态过滤（enabled+auto_disabled abilities / manually_disabled / auto_disabled / enabled 无 auto_disabled abilities）
+  - `controller/evaluate_usage_disable_test.go` — 新增测试文件，5 个场景：全局开关关 / 非 master / 单渠道触发 / 多渠道混合 / 候选查询失败安全退出。用 sqlite 起 abilities+channels+model_metrics 三表跑集成，hook `disableChannelByRecentUsageFn` 观察调用
+  - `docs/plans/2026-08-27-auto-disable-refactor.md` — 新增。P1/P2/P3 三阶段完整方案 + 历史数据处理脚本
+- **解决的问题（P1 定位）**:
+  1. **收尾判定被 100 上限截断**：线上实测 18020 待恢复候选，`recoverModelsMaxPerRound=100` 每轮只取 top 100，`ShouldDisableChannelByRecentUsage` 尾部收尾只能覆盖被截断后的候选集。若某渠道所有模型都排在 100 之后（如 channel 80919 排第 15385 位），永久轮不到评估
+  2. **依赖"启用"开关**：收尾判定挂在 `recoverAutoDisabledModels` 头部 `if !config.AutomaticEnableChannelEnabled return` 之后。运维出于安全考虑关掉自动启用时，自动禁用的收尾判定被间接阉割 —— 语义耦合、名字有欺骗性
+- **未处理（留 P2/P3）**:
+  - AutoDisableChannelById 未防御 status=manually_disabled（本 PR 只在 SELECT 端规避，未在 UPDATE 端根治）
+  - evaluator 未检查 channel.AutoEnabled（熔断锁死后运维手动 re-enable 会被立刻覆盖）
+  - startup run 与 AutomaticallyTestChannels 并发无序（老僵尸 abilities 可能未获恢复探针机会就被禁）
+  - 720 渠道同轮触发时飞书/邮件通知无 rate limit
+  - 恢复队列僵尸退火 + 死亡机制（P2）
+  - Prometheus 观测四指标（P3）
+  - 9-angle 代码审计发现的 P0 findings 已记入 plan doc，本次上线前不修，待 P1 上线观察后决策
+- **历史数据处理**（P1 上线之前必须完成）:
+  - 分档 SQL 直改 720 个漏禁渠道：`>3d` 不消耗熔断额度、`1h-3d` 消耗 1 次、`<1h` 不动交给 P1 处理
+  - 备份 → 分档 UPDATE → 重启节点刷缓存 → 飞书发运维通报（非告警）
+  - 具体脚本见 plan doc "历史数据处理脚本" 章节
+- **兼容性**:
+  - `AutomaticDisableChannelEnabled=false`：evaluator 入口 return，与现状一致
+  - `AutoTestChannelFrequency=0`：主循环 sleep 1min 轮询等待
+  - Multi-key 渠道：`disableChannelInternalWithStatusCode` 前置退出，天然跳过
+  - 无 schema 变更，无迁移风险
+- **验证**: `go build ./... && go vet ./...` 通过；单元测试见新增 5+1 个用例
+- **关联计划**: `docs/plans/2026-08-27-auto-disable-refactor.md`
+
+---
+
+## 2026-08-26
+
+### fix(auto-disable): UpdateChannel 保存时重读熔断内部字段，避免 lost-update 静默回滚锁死
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（代码审计发现）
+- **涉及文件**:
+  - `controller/channel.go` — `UpdateChannel` handler 在 `channel.Update()` 之前从 DB 重读 `auto_disable_count`、`auto_disable_window_start`、`auto_disabled_reason/time/model` 覆盖到 channel 结构；对 `auto_enabled` / `auto_disabled` 仅当 rawBody 未显式提供时才用 DB 最新值
+- **问题根因**: `existingChannel := *model.GetChannelById(id)` 是打开编辑页时读的快照，管理员在页面停留期间 `AutoDisableChannelById` 可能已经把 count 加到 3 并锁死 `auto_enabled=false`；保存时 `channel.Update()` 内部 `Updates(channel struct)` 会用陈旧的 count 值覆盖 DB（非零 int 不被跳过），而 `Select("auto_enabled").Updates(map)` 更是强制写陈旧的 `auto_enabled=true`——熔断锁死被静默回滚且无告警
+- **修复策略**: 保存前一次 SELECT 重读 5 个内部字段 + 条件性重读 2 个可编辑字段。窗口极窄（毫秒级），实际并发场景基本消除；若并发极高仍有残留 TOCTOU，属于可接受的最后一毫秒竞态
+- **验证**: `go build && go vet` 通过；`go test ./model/...` 全绿（无回归）
+- **关联审计**: 本次改动前的 9-angle 代码审计（`superpowers:code-review` skill）发现，B 类 finding
+
+### feat(auto-disable): 整渠道自动禁用引入 24h 熔断计数 + 达阈锁死 auto_enabled
+
+- **分支**: `dynamic-priority`
+- **类型**: 新功能（防止误判反复救火，为持续故障渠道设终止条件）
+- **涉及文件**:
+  - `common/constants.go` — 新增 `ChannelAutoDisableCircuitThreshold=3`、`ChannelAutoDisableCircuitWindowSeconds=86400`、`ChannelAutoDisableProbeBackoff=[15m,30m,60m]`
+  - `model/channel.go` — Channel struct 加 `AutoDisableCount int` + `AutoDisableWindowStart int64`；`AutoDisableChannelById` 事务内累加计数、跨窗口重置、达阈单独 `Select("auto_enabled").Updates` 锁死；`UpdateChannelStatusById` + `BatchUpdateChannelStatus` 手动启用时清零 count/window（不动 auto_enabled）
+  - `controller/channel-test.go` — `recoverAutoDisabledModels` 在 `!AutoEnabled` 检查后加退避跳过：`AutoDisableCount>0` 且距 `AutoDisabledTime` 不足 backoff[count-1] 就 skip
+  - `model/channel_auto_disable_count_test.go` — 新增。覆盖首次触发/达阈锁死/窗口过期重置/AutoDisabled=false 前置退出/MultiKey 前置退出/已 auto_disabled 幂等/手动启用清零/批量启用清零 8 个场景
+  - `docs/plans/2026-08-26-auto-disable-circuit-breaker.md` — 新增。方案与决策
+- **解决的问题**:
+  1. **反复救火**：整渠道被自动禁用后，恢复探针可能刚救起就再挂，运维疲于奔命。加入 15/30/60min 指数退避，让探针不再高频重试。
+  2. **持续故障无终止条件**：key 长期失效或上游长期不可用的渠道被一救再救。24h 内触发 3 次整渠道禁用直接 `auto_enabled=false` 锁死，管理员必须显式介入。
+- **保留的现有机制**（不改）:
+  - 模型级隔离 `AutoDisableModelOnChannel`：一个渠道 60 个模型中只有 vision 挂，仍只禁 vision
+  - 只有升级到整渠道禁用（`AutoDisableChannelById` 的 4 条调用路径）才触发计数 +1
+  - Multi-key / AutoDisabled=false 的渠道天然不进计数逻辑（前置退出继承）
+- **兼容性**: 新字段 default=0，历史数据无迁移风险；GORM AutoMigrate 启动即生效；手动启用只清零计数不动 auto_enabled —— 锁死后必须在 UI 显式打开 auto_enabled 才能重新参与自动救援
+- **验证**: `go build && go vet` 通过；`go test ./model/... -run "AutoDisable|UpdateChannelStatus|BatchUpdateChannelStatus"` 8 个新增子测试全绿
+- **关联计划**: `docs/plans/2026-08-26-auto-disable-circuit-breaker.md`
+
+### fix(dynamic-priority): hotfix —— context 泄漏 + 同分排序 + 存量兜底探索
+
+- **分支**: `dynamic-priority`
+- **类型**: 生产 hotfix（上一轮 dp-fixes 部署后 Grafana + DB + Redis 交叉验证发现的三个问题）
+- **涉及文件**:
+  - `common/helper/context.go` — 新增。导出 `DetachCancel(ctx)`，返回 `context.WithoutCancel(ctx)`，用于异步 goroutine 断开 gin request 的 cancel 信号但保留 request-id 等 value
+  - `controller/relay.go` — imports 加 `common/helper`；30 处 `go processChannelRelayError(ctx, ...)` 统一改为 `go processChannelRelayError(helper.DetachCancel(ctx), ...)`
+  - `relay/controller/claude.go` — imports 加别名 `commonhelper`；`go recordClaudeConsumption(ctx, ...)` → `go recordClaudeConsumption(commonhelper.DetachCancel(ctx), ...)`
+  - `common/config/config.go` — `DynamicPriorityExplorationTTLHours` 默认 24 → 720（30 天）；新增 `DynamicPriorityExploreRatio = 5`（概率化兜底探索百分比，0 关闭）
+  - `model/option.go` — OptionMap 注册 + LoadOption case 分支 `DynamicPriorityExploreRatio`
+  - `model/cache.go` — `selectByDynamicPriority` mainTier 分支 topCount 切分后加"同分向后扫"逻辑；tier 组装完成后加 `ExploreRatio%` 概率**直接 return** unscored 渠道（bypass 加权与 tier 抽奖）
+- **修的三个问题**:
+  1. **context canceled 打点丢失**：`go recordClaudeConsumption(ctx, ...)` / `go processChannelRelayError(ctx, ...)` 用的是 `c.Request.Context()`，HTTP 响应后 gin cancel ctx → 异步 goroutine 内 `pipe.Exec(ctx)` 报 "context canceled" → Redis 打点失败。Grafana Loki 观察到大量 `ability metric ZAdd/Expire error: context canceled` 和 `record rate limit ZAdd/Expire error: context canceled`。改用 `context.WithoutCancel`（Go 1.21+）后异步链路不受主 request 生命周期影响。
+  2. **top X% 硬切分裂 dp 同分并列渠道**：Beta-Binomial 平滑后大量渠道同分（如生产 `claude-opus-4-8` 8 个 dp=25），`created_time DESC` 决胜负导致老 VIP 渠道被挤出 top 档。改为切分后向后扫，把与 boundary 同分的一起纳入 tier —— dp 平局全部保留，加权公式（normW × dp）自然让 VIP weight=100 拿到应有比例。
+  3. **存量 dp=0 老渠道死锁**：24h TTL + K 硬 slot 让部署前 >24h 的老 dp=0 渠道拿不到探索资格 → 无流量 → 无 metrics → dp 永远 0。生产观察部署后活跃 channel 从 108 → 73（-32%）。改为 TTL 默认拉到 30 天 + 加 5% 概率化探索：ExploreRatio% 概率**直接返回一个随机 unscored 渠道**（bypass tier 加权抽奖 —— 若走加权，dp=0 渠道 w=1~10 vs dp>0 渠道 w=25~1000，实际打到探索位仅 ~0.05%，达不到设计目标）。K slot 覆盖冷启动，概率化直接 return 覆盖存量兜底，两者互补。
+- **验证**:
+  - Grafana Loki：部署后 `{job="ezlinkai"} |= "context canceled"` 报错量应趋近 0
+  - Redis：`ability_metrics:79741:*` 从 ZCARD=0 → 有数据
+  - DB：活跃 channel 数 73 → 恢复到 90+
+  - `claude-opus-4-8` 上 14417 流量占比从 17% 恢复接近理论 58%
+- **回滚**: (c) 通过 option API 关闭：`DynamicPriorityExploreRatio=0` 或 `DynamicPriorityExplorationTTLHours=24`，无需重新部署；(a)(b) revert 相关文件
+- **关联计划**: `docs/plans/2026-08-26-dp-hotfix.md`
+
+### refactor(dynamic-priority): 加权公式精细化 —— 归一化 weight × dp + 429 指数衰减
+
+- **分支**: `dynamic-priority`
+- **类型**: 加权算法优化（code review 发现的两处过激设计）
+- **涉及文件**:
+  - `model/cache.go` — `selectByDynamicPriority` 档内加权计算重写；导入 `math`
+  - `docs/plans/2026-08-25-dp-fixes.md` — 第十章追加"加权公式精细化"段
+- **修的问题**:
+  1. **`weight × dp` 让 weight 稀释 dp**：weight 差 100x 会让 dp 差 2x 变成 w 差 50x，dp 信号被吞。改成先把 tier 内 weight 归一化到 [1, 10]，再乘 dp —— 保留 weight 相对比例（VIP 仍占主导），压平绝对差距（dp 有话语权）。weight 全等场景（运维默认）normW 全为 1，退化为纯 dp 加权，行为不变。
+  2. **3 次 429 断崖式降到 w=1 太极端**：高 QPS 场景偶发 3 次 429（错误率可能 <0.1%）就把主力秒变陪衬。改成指数衰减 `w × pow(0.7, N)`：1 次 429 降 30%，3 次降到 1/3，10 次降到 3%，无阈值断层，自然区分偶发/频发/严重。长期严重问题交给 `auto_disabled` 熔断。
+- **兼容**: weight 全等场景行为不变；weight 差异化场景下 dp 信号明显增强
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章"加权公式精细化"段
+
+### fix(dynamic-priority): 429 计数按 (channel, model) 分维度
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（code review 发现）
+- **涉及文件**:
+  - `common/metrics/rate_limit.go` — `RecordRateLimit` / `GetRecentRateLimits` 加 model 参数，key 从 `channel_recent_429:{id}` 改为 `channel_recent_429:{id}:{model}`；`model==""` 静默返回
+  - `controller/relay.go` — 打点时传 `modelName`
+  - `model/cache.go` — `selectByDynamicPriority` 已有 `model` 参数，透传给 `GetRecentRateLimits`
+- **修的问题**: 初版只按 channel 存储 429 计数，跨 model 误伤。上游 429 有两种语义：账号/key 级全局限流（多 model 共享）和 model 级独立配额（各 model 独立）。只按 channel 存储在 model 级限流场景下 A model 触发会误降权 B model。按 `(channel, model)` 复合 key 后，全局限流场景等价效果，model 级限流场景不误伤。
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章"审计修正"段
+
+### feat(dynamic-priority): 档内 dp 加权随机 + 429 秒级降权
+
+- **分支**: `dynamic-priority`
+- **类型**: 负载均衡机制 + 秒级故障反馈
+- **涉及文件**:
+  - `common/metrics/rate_limit.go` — 新增。`RecordRateLimit` / `GetRecentRateLimits`（批量 pipeline）
+  - `controller/relay.go` — 失败路径 `err.StatusCode==429` 时调 `RecordRateLimit`
+  - `model/cache.go` — `selectByDynamicPriority` 档内加权公式改为 `weight × dp`（dp>0 时）；tier 组成后一次 pipeline 读所有渠道的最近 60s 429 计数，命中 ≥3 阈值时权重降到 1
+- **修的问题**:
+  1. **档内负载集中**（生产观察）：`top X%` 档内按 `channel.weight` 等权分流，高分渠道拿远超其容量的流量，被瞬时打满触发 429。改成 `weight × dp` 后，dp=90 vs dp=50 流量比 1.8:1 而不是 1:1，负载自然分散。
+  2. **429 反馈延迟**：dp 是 10 分钟窗口 + 每分钟评分的慢变信号，某渠道刚开始被打爆时评分要 1~2 分钟才反应，客户端体验间歇性 429。新增独立的 60 秒短窗口 Redis 计数，选渠道时一次 pipeline 批量读，命中阈值秒级降权。60s 后自动恢复。
+- **架构分工**：
+  - **动态优先级评分**：稳态健康度信号（10 分钟窗口）
+  - **档内 dp 加权**：稳态按分数比例分流，避免高分垄断
+  - **429 反馈层**：异常时秒级避让，dp 评分周期外的兜底
+- **性能开销**：选渠道热路径新增 1 次 Redis pipeline（batch ZCount），tier 通常 1~10 个渠道，单次 <2ms
+- **降级路径**：Redis 未启用/断开时 `GetRecentRateLimits` 返回空 map，等价关闭本机制，不影响选渠道
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第十章
+
+## 2026-08-25
+
+### perf(dynamic-priority): 批量拉 UnitPrice + 展示层排序对齐选渠道
+
+- **分支**: `dynamic-priority`
+- **类型**: 性能修复 + 前后端一致性修复
+- **涉及文件**:
+  - `controller/dynamic_priority.go` — `runDynamicPriorityCalcOnce` 顶层一次批量 SELECT 全部 enabled 渠道的 UnitPrice；`buildStatsForModel` 签名新增 `priceCache map[int]float64` 参数，删掉内部 `GetChannelById` 调用
+  - `controller/dynamic_priority_view.go` — `ListModelChannels` ORDER BY 与 `selectByDynamicPriority` 对齐（COALESCE + `(dp>0) DESC` 分层）；SELECT 加 `c.created_time`；`ModelChannelItem` 新增 `CreatedTime` 字段
+  - `docs/plans/2026-08-25-dp-fixes.md` — 追加第九章"上线后性能与前后端一致性修复"
+- **修的两个问题**:
+  1. **priceCache 作用域错了**（性能坑）：`buildStatsForModel` 的 `priceCache` 是每个 model 建一份的局部变量，同一 channel 在 N 个 model 下会被 `GetChannelById` 单条 DB 查询 N 次。生产 62K 渠道 × 544 model × 平均 300 channel/model ≈ **163K 次单查询 × 2ms RTT ≈ 322s**，正是观察到的单轮耗时。改成一次批量 SELECT 后，预期单轮从 322s 降到 10~30s，1 分钟评分周期能真正生效。
+  2. **展示层 ORDER BY 与选渠道不一致**：`ListModelChannels` 用的还是 `COALESCE(NULLIF(dp,0), priority) DESC` —— 修法 A 修掉的那个 Bug 的孪生版。管理页面看到"A 排第一"，实际选渠道按 `(dp>0) DESC` 打给 B。ORDER BY 对齐后前后端一致。
+- **观测**: 上线后 `grep "dynamic priority calc done"` 观察 `cost=xxx`，稳态应 <30s
+- **兼容**: `ModelChannelItem` 新增 `created_time` JSON 字段，前端可选消费（不消费不影响现有页面）
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md` 第九章
+
+### fix(dynamic-priority): 修复选渠道信号反向 + 加探索位 + 成功率 Beta-Binomial 平滑
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复 + 新功能（三个改动合并落地）
+- **涉及文件**:
+  - `common/config/config.go` — 新增 `DynamicPriorityExploreSlots`（默认 2）、`DynamicPriorityExplorationTTLHours`（默认 24）两个配置项
+  - `model/option.go` — OptionMap 注册 + `LoadOption` 分支加载两个新配置
+  - `model/cache.go` — `selectByDynamicPriority` 重写：修 SQL 兜底方向（修法 A）+ 拆 scored/unscored 池 + 加 K 个探索位 + 新加渠道优待
+  - `common/dynamicprio/score.go` — `scoreSuccess` 改用 Beta-Binomial 平滑（`priorAlpha=priorBeta=2.5`）；`hasEnoughData` 放宽（有任何样本即视为有信号）
+  - `common/dynamicprio/score_test.go` — 更新 `SmallSampleFallback` / `SingleChannel` 断言以匹配新平滑值；新增 3 个用例覆盖 Beta 边界行为
+- **修的 3 个问题**:
+  1. **Bug A（SQL 兜底方向反了）**：`COALESCE(NULLIF(dp,0), priority) DESC` 让 static priority=100 兜底压过所有真实评分。全库 735 条 dp>0 记录进入选渠道 top 10% 的 0 条（0.0%），评分对选渠道**完全无影响**。改成 `(dp>0) DESC, dp DESC, ...` 后，评分渠道永远优先。
+  2. **冷启动无探索机制**：修法 A 会让 dp=0 拿不到流量 → 永远评不上分。加 K 个探索位塞进 top 档，按 `channels.created_time DESC` 优先选新加的（24h TTL）。首选生效，重试关闭。
+  3. **Bug B（持续 429 但 dp=0）**：`hasEnoughData` 要求 20 样本 + 失败样本无 duration，导致 15 次全 429 的渠道判为无数据 → dp=0 → 兜底 100 → 又被首选 → 恶性循环。改用 Beta-Binomial 平滑后，0/5 全失败给 25 分，0/20 全失败给 10 分，纯负面信号可被识别。
+- **验证**:
+  - 生产 DB 抽样：全库 437 模型评分覆盖率 10.3%，735 条 dp>0 记录进 top 10% 的**为 0**；修复后模拟排序（纯 dp DESC）top 10% 里能有 611 个真评分渠道进入
+  - 单元测试全绿：`go test ./common/dynamicprio/...` + `go test ./model/...`
+  - `go build ./... && go vet ./...` 通过
+- **回滚**: 三改动都在应用层，无 schema 变动。探索位可通过 `DynamicPriorityExploreSlots=0` 关闭；其他改动 `git revert` 单独回滚。
+- **关联计划**: `docs/plans/2026-08-25-dp-fixes.md`
+- **待实现（进 backlog）**: 重试链梯度参数化（可变 N 自适应扩档序列）—— 需要 controller 层配合传递 `(retryIndex, maxRetry)`，本次稳定后单独 PR
+
+### fix(dynamic-priority): 修正 32dc1c4 —— 用 dbModelName 打点，不删 log.go 公共埋点
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（前一 commit 的错误修正）
+- **涉及文件**:
+  - `model/log.go` — 恢复被 32dc1c4 误删的 `RecordAbilityMetric` 调用（在 `ObserveConsume` 之后），但把 `Model` 字段从原来的 `modelName` 改为 `dbModelName`；补充详细注释说明 dbModelName 的来源
+  - `relay/controller/helper.go` — 删掉 32dc1c4 加错的 `RecordAbilityMetric` 段（`textRequest.Model` 在 `relay/controller/text.go:51` 早已被 `GetMappedModelName` 覆写为映射后名，跟原 log.go 里的 `BillingModelName()` 完全等价，等于什么都没修）；同时删除只为该段而加的 `common/metrics` 包 import
+- **32dc1c4 的错误**（代码审计发现，未上线，本 commit 修复）:
+  1. **修错了地方**：以为 `textRequest.Model` 是原始名，实际它在 `text.go:51` 已被 `GetMappedModelName` 覆写为映射后名，跟 `BillingModelName()` 等价——dp=0 的根源根本没治
+  2. **误删公共埋点造成大面积回归**：`log.go` 里的 `RecordAbilityMetric` 被所有 `RecordConsumeLog*` 调用点覆盖，claude/gemini/audio/image/midjourney/video 等入口传入的 `modelName` 本来就是 `c.GetString("original_model")` 原始名，本来是对的；32dc1c4 把这段公共埋点删掉、只在 helper.go 单点重加，等于把 6 类入口的成功样本打点全废
+- **真正的修法（本 commit）**: 项目里已经有一整套 pattern:
+  - `helper.go:324` 早就在拼 `otherInfo` 时调 `appendModelMappingInfo` 塞 `origin_model_name:{OriginModelName}`
+  - `log.go:97-113` 解析 `other` 里的 `origin_model_name:` 前缀，把原始名赋给 `dbModelName`
+  - 只需把 `RecordAbilityMetric` 里那个 `modelName`（可能映射后）改成 `dbModelName`（一定是原始名，因为有兜底机制），全部对齐
+- **保留 32dc1c4 里正确的部分**（未回退）:
+  - `common/metrics/ability_window.go` ZAdd → pipeline + 自适应 `EXPIRE` 兜底（默认 30 分钟；长窗口时按窗口长度 + 10 分钟）
+  - `RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics` 加 ctx 首参数
+  - `logger.SysError` → `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`
+  - `controller/dynamic_priority.go` ctx 传递 + `context.Background()` 兜底
+  - `controller/relay.go` 失败路径 ctx 透传
+- **教训**: 未验证 `textRequest.Model` 在 `postConsumeQuota` 调用时的实际值，仅凭字段名直觉推断为"原始名"，是这次事故的根本原因。**字段名 ≠ 变量赋值状态，改动前必须 grep 中途赋值路径**
+- **关联计划**: `docs/plans/2026-08-25-fix-model-mapping-metric.md`（已同步更新方案描述）
+
+### fix(dynamic-priority): 修复 model_mapping 渠道成功样本打点 model 名错配导致 dp=0
+
+- **分支**: `dynamic-priority`
+- **类型**: Bug 修复（生产观察发现）
+- **涉及文件**:
+  - `relay/controller/helper.go` — 在成功路径 `postConsumeQuota` 中显式调用 `metrics.RecordAbilityMetric`，`Model` 字段用 `textRequest.Model`（原始名），与 abilities.model 及失败路径 `originalModel` 对齐；新增 `common/metrics` 包 import
+  - `model/log.go` — 删除原来放在此处的 `RecordAbilityMetric` 调用及其误导性注释（原来传的 `modelName` 是 `helper.go` 里的 `logModelName` = `BillingModelName()` = 映射后名，与 abilities.model 存的原始名对不上）
+  - `common/metrics/ability_window.go` — `RecordAbilityMetric` 里 `ZAdd` 改为 pipeline，追加自适应 `EXPIRE`（默认 30 分钟；长窗口时按窗口长度 + 10 分钟），让停止写入的历史脏 key（如映射后名遗留数据）自动过期，无需手动 DEL；同时 `RecordAbilityMetric` / `ScanAbilityWindow` / `ScanAbilityWindowBatch` / `DeleteAbilityMetrics` 全部新增 `ctx context.Context` 首参数，内部原有 `logger.SysError`（无 ctx 全局 log）改为 `logger.Error(ctx, ...)` / `logger.Errorf(ctx, ...)`，让打点异常日志能带上调用方 request-id 便于排查
+  - `controller/dynamic_priority.go` — `runDynamicPriorityCalcOnce` 内部创建 `ctx := context.Background()`（Master 定时任务无请求 ctx，用 Background 只是给 log 接口一个非 nil ctx）；`buildStatsForModel` 加 ctx 参数并传给 `ScanAbilityWindowBatch`；内部 `SysError` 改为 `Error(ctx, ...)` / `Errorf(ctx, ...)`
+  - `controller/relay.go` — `processChannelRelayError` 里 `RecordAbilityMetric` 调用补 ctx 参数（该函数本身已有 ctx 入参）
+- **说明**: AWS Bedrock/Vertex 等配置了 `model_mapping` 的渠道，成功路径打点用映射后名（如 `global.anthropic.claude-opus-4-7`），失败路径打点用原始名，abilities 表 + 评分链路用原始名——同一渠道成功/失败样本进不同 Redis key，评分只能读到失败样本或空，`HasData=false` → `dp=0`。生产 ElastiCache 实测确认了两套 key 并存的现象。修复后，经 `RecordConsumeLog*` 公共消费日志入口且携带 `origin_model_name` 的 model_mapping 成功请求会按原始名写入动态优先级窗口。
+- **验证证据**: 
+  - Redis 实测：`79726` 同时有 `claude-opus-4-7` 和 `global.anthropic.claude-opus-4-7` 两个 key；`79866` 只有映射后名 key
+  - 代码证据：`model/ability.go:130` 存原始名，`relay/util/relay_meta.go:92-97` `BillingModelName` 返回映射后名
+- **影响范围**: 覆盖 `RecordConsumeLog*` / `RecordConsumeLogWithOtherAndRequestID` 公共消费日志入口；独立 `RecordVideoConsumeLog` 入口仍不写动态优先级成功样本，异步视频任务如需参与评分要另行设计
+- **遗留脏数据（重要，需运维一次性处理）**: TTL 只对新 ZADD 生效，**部署前已存在的老 key 没有 TTL，不会自动消失**。需在部署后执行一次「给所有 ability_metrics:* 打 TTL」的运维操作；下面命令适用于默认 10 分钟窗口，长窗口配置详见 plan doc：
+  ```
+  $RCLI --scan --pattern 'ability_metrics:*' | awk '{print "EXPIRE", $0, 1800}' | $RCLI --pipe
+  ```
+  执行后：正常渠道下一次 ZADD 会自动刷新 TTL，不影响；映射后名脏 key 和已下线渠道 key 会在 TTL 到期后自动消失
+- **关联计划**: `docs/plans/2026-08-25-fix-model-mapping-metric.md`
+
+---
+
+## 2026-08-21
+
+### fix(auto-disable): 抖动窗口加 10 分钟地板值，防低 freq 下退化
+
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: Bug 修复（审计发现）
+- **涉及文件**:
+  - `model/channel_disable_by_usage.go` — 新增常量 `channelDisableStabilizeFloorSeconds = 10*60`，`stabilizeSeconds = max(2*freq*60, 600)`
+  - `model/channel_disable_by_usage_test.go` — 新增 `TestShouldDisableChannelByRecentUsage_StabilizeFloor`：freq=1 分钟时验证 300s/700s 两侧行为
+- **说明**: 上一 commit 引入的 `2 × AutoTestChannelFrequency` 抖动窗口在 `AutoTestChannelFrequency=1` 时退化为 120s——比恢复探针跑完一整轮还快，等于「上游 2 分钟抖动就禁整渠道」。加地板值确保任何 freq 配置下都至少给 10 分钟恢复窗口。
+- **关联审计**: `docs/plans/2026-08-21-channel-disable-by-recent-usage.md` 后置审计 B1
+
+### feat(auto-disable): 渠道级自动禁用改按「最近使用模型集」判定
+
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能 + API 签名变更
+- **涉及文件**:
+  - `model/channel_disable_by_usage.go`（新增）— `ShouldDisableChannelByRecentUsage(channelId)`：读 `model_metrics`（最近 1 天 `total_requests>0`）拿使用模型集，再读 `abilities`（`auto_disabled=1` 且 `auto_disabled_time` 超过 `2 × AutoTestChannelFrequency` 分钟抖动窗口）判定禁用数，全禁触发。分两次查询避免 `LOG_DB`/`DB` 分库时跨库 JOIN。
+  - `model/channel_disable_by_usage_test.go`(新增)— 8 个子测试覆盖：无流量 / 有流量无禁用 / 抖动窗口内 / 超窗口全禁 / 部分禁用 / 多 group 同模型 / 窗口外流量 / 跨渠道隔离。
+  - `model/ability.go` — `AutoDisableModelOnChannel` 签名从 `(bool, error)` 简化为 `error`，移除内部 `remaining==0` 判定和事务（改单次 UPDATE）。「是否禁整个渠道」的决策权交给统一恢复链路。
+  - `model/ability_test.go` — 更新 `TestAutoDisableModelOnChannel` 及 `TestEnableModelOnChannel_*` 测试的调用点适配新签名。
+  - `monitor/channel.go` — `DisableModelOnChannelWithStatusCode` 去掉「拿 channelDisabled 就 disableChannelInternal」的分支；新增导出函数 `DisableChannelByRecentUsage(channelId, usedModels)` 供恢复链路调用（复用 `disableChannelInternalWithStatusCode` 骨架，reason 描述使用中模型数、statusCode=0）。
+  - `controller/channel-test.go` — `recoverAutoDisabledModels()` 收尾对本轮涉及的 `channel_id` 去重后逐个调 `ShouldDisableChannelByRecentUsage`，命中则调 `monitor.DisableChannelByRecentUsage`。
+- **说明**: 原判定分母是「渠道 abilities 表中所有 enabled=true 的行」——渠道配 60 个模型只用 5 个时，`remaining>0` 永远达不到禁渠道条件，观感上「渠道已废但系统仍在派单」。新判定分母改为「最近 1 天真实调用过的模型集」，且引入 2 倍探针周期的抖动窗口，避免瞬时上游抖动误禁。判定挂到恢复链路 tick 末尾，天然带过恢复窗口——这一轮能救回来的模型不算分子。
+- **⚠️ API 签名变更**: `model.AutoDisableModelOnChannel` 现返回 `error`；`monitor.DisableModelOnChannelWithStatusCode` 内部行为变化但签名不变（`statusCode` 参数保留以兼容 relay 层调用点）。
+- **关联计划**: `docs/plans/2026-08-21-channel-disable-by-recent-usage.md`
+
+---
+
+## 2026-08-20
+
+### feat(recovery): 恢复链路统一 · 方案 A（纯测试恢复 + 人工兜底）
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能 + 行为破坏性变更
+- **涉及文件（后端）**:
+  - `model/channel.go` — `UpdateChannelStatusById`/`BatchUpdateChannelStatus` 启用分支：`WHERE auto_disabled=false` 才 enable，不再乐观清零 auto_disabled
+  - `model/ability.go` — `EnableModelOnChannel` 改为事务 + `channelStatusLock`，事务内：enable 模型的所有 group 行 + 若渠道 `status=auto_disabled` 则条件 UPDATE 提升为 enabled（manually_disabled 不动）；`GetAutoDisabledAbilities` 放宽范围为 `status != manually_disabled`，加 `ORDER BY MIN(auto_disabled_time) ASC` 优先恢复最久的
+  - `controller/channel-test.go` — 删除 `testChannels("auto_disabled")` 中的 `monitor.EnableChannel` 分支（不再"测通洗全部"）；`recoverAutoDisabledModels` 加每轮上限 100（`recoverModelsMaxPerRound`）+ 预过滤 `isUnsupportedTestChannel/isUnsupportedTestModel`（image/embedding/video 等在发请求前跳过，只能人工恢复）+ 结果日志
+  - `controller/dynamic_priority_view.go` — 新增 `BatchEnableModelChannel`：`POST /api/channel/model_channel_enable`，批量走 `EnableModelOnChannel`，返回 affected/failed
+  - `router/api-router.go` — 注册 `POST /api/channel/model_channel_enable`
+  - `model/ability_test.go` — 新增 `TestEnableModelOnChannel_PromotesAutoDisabledStatus` 与 `TestEnableModelOnChannel_DoesNotPromoteManuallyDisabled`；`setupAbilityTestDB` 增建 channels 表
+- **涉及文件（前端 ezlinkai-web）**:
+  - `sections/model/model-channels-table.tsx` — 新增多选列（仅 auto_disabled 行可勾）+ "批量启用 (N)" 按钮 + 当前页可选行数提示
+  - `app/api/channel/model_channel_enable/route.ts`（新增）— API 代理
+- **说明**: 上一次方案里"渠道级恢复测通即整渠道洗白"会连带清零 `auto_disabled`，导致永久坏模型被反复复活抖动。本次统一：所有恢复都走模型级 `EnableModelOnChannel`（单模型粒度 + 顺带提升渠道 status），删除渠道级"测一个洗全部"。不可 chat 探测的模型（image/embedding/video）改为通过前端「模型自动禁用」筛选 + 批量启用手工救火。核心不变式仍是 `enabled=(渠道启用)AND(NOT auto_disabled)`，恢复只在测通/人工确认后单点生效。
+- **⚠️ 行为破坏性变更（不可回滚）**: `ModelScopeAutoDisableEnabled=false` 只回退禁用侧；恢复侧的老"洗全部"逻辑一旦删除需 revert commit。运维需知悉：image/embedding/video 类模型被模型级禁用后**不会**自动恢复。
+- **关联计划**: `docs/plans/2026-08-20-unified-recovery.md`
+
+---
+
+## 2026-08-20
+
+### perf(dynamic-priority): 评分窗口读取去重 + pipeline，缓解多渠道模型瓶颈
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 性能优化
+- **涉及文件**:
+  - `common/metrics/ability_window.go` — 新增 `ScanAbilityWindowBatch`：channelId 去重 + 一次 pipeline 批量 ZRANGEBYSCORE、一次 pipeline 批量 ZREMRANGEBYSCORE
+  - `controller/dynamic_priority.go` — `buildStatsForModel` 改用批量扫描替代 per-(channel,group) 逐个 `ScanAbilityWindow`
+- **说明**: 原评分对每个 `(channel, model, group)` 候选各调一次 `ScanAbilityWindow`，而窗口数据只与 `(channel, model)` 有关——N 个 group 就是 N× 重复 Redis 往返，且全程串行。改为按 model 内 unique channel 去重、pipeline 合并往返，把「三元组数×2 次串行 RTT」降到「2 次 RTT」，remote Redis 下收益显著。纯性能优化，评分结果与落库语义不变。
+
+### feat(model-view): 模型详情页展示「模型自动禁用」状态
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件（后端）**:
+  - `controller/dynamic_priority_view.go` — `ListModelChannels` 聚合新增 `MAX(a.auto_disabled) AS auto_disabled`，`ModelChannelItem`/row 加 `AutoDisabled` 字段；`status_filter` 新增 `4=模型级自动禁用`（`c.status=启用 AND a.auto_disabled=true`）
+- **涉及文件（前端 ezlinkai-web）**:
+  - `sections/model/types.ts` — `ModelChannelItem` 加 `auto_disabled: boolean`
+  - `sections/model/model-channels-table.tsx` — `statusBadge` 新增「模型自动禁用」徽章（琥珀色，区别于整渠道禁用）；状态筛选下拉加「模型自动禁用」，并把 `3` 文案改为「渠道自动禁用」
+- **说明**: 配合模型级自动禁用后端改动，详情页可直观区分「渠道启用但该模型被自动禁用」与「整渠道禁用」，并支持按模型级禁用状态筛选。
+
+### feat(auto-disable): 自动禁用改为模型级，全模型禁用才禁渠道
+- **分支**: `feat/model-level-disable-dynamic-priority`
+- **类型**: 新功能
+- **涉及文件**:
+  - `common/config/config.go` — 新增灰度开关 `ModelScopeAutoDisableEnabled`（默认 true），false 回退旧的整渠道禁用
+  - `model/ability.go` — `Ability` 加 `AutoDisabled`/`AutoDisabledTime` 两列；新增 `AutoDisableModelOnChannel`（禁模型 + 统计剩余）、`GetAutoDisabledAbilities`、`EnableModelOnChannel`；按新不变式 `enabled=(渠道启用)AND(NOT auto_disabled)` 重写 `CheckDataConsistency`、`SyncChannelAbilities`
+  - `model/channel.go` — `UpdateChannelStatusById`/`BatchUpdateChannelStatus`：渠道启用时乐观清零 `auto_disabled`，禁用时保留
+  - `monitor/channel.go` — 新增 `DisableModelOnChannelWithStatusCode`：仅禁单模型，全模型禁用时回落 `disableChannelInternalWithStatusCode` 走完整通知
+  - `controller/relay.go` — 单 Key 渠道失败路径受开关切换到模型级禁用
+  - `controller/channel-test.go` — 新增 `recoverAutoDisabledModels` 并接入 `AutomaticallyTestChannels` 周期，测试被禁模型成功则重新启用
+  - `model/ability_test.go` — 新增 `TestAutoDisableModelOnChannel` 覆盖禁用/全禁判定/恢复
+- **说明**: 原自动禁用命中关键词/401 就禁整渠道，会连累同渠道正常模型。改为只禁「该渠道上的该模型」（abilities 行 `auto_disabled=true`），渠道保持启用；某渠道所有模型都被禁时才禁整渠道。配套模型级自动恢复测试。仅作用于单 Key 渠道，多 Key 维持既有 key 级逻辑。核心不变式 `enabled=(渠道启用)AND(NOT auto_disabled)` 贯穿一致性检查与状态联动，避免模型级禁用被静默撤销。
+- **关联计划**: `docs/plans/2026-08-20-model-scope-auto-disable.md`
+
+---
+
 ## 2026-08-14
 
 ### feat(model-view): 模型详情页按渠道聚合 + 优先级同步编辑
