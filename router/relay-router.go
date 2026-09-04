@@ -115,6 +115,7 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps/:stepId", controller.RelayNotImplemented)
 		relayV1Router.GET("/threads/:id/runs/:runsId/steps", controller.RelayNotImplemented)
 		relayV1Router.POST("/video/generations", controller.RelayVideoGenerate)
+		relayV1Router.POST("/flux-3-video", controller.RelayVideoGenerate)
 		relayV1Router.POST("/ocr", controller.RelayOcr)
 		relayV1Router.POST("/images/imageToImage", controller.RelayRecraft)
 		relayV1Router.POST("/images/inpaint", controller.RelayRecraft)

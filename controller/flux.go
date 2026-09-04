@@ -14,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/flux"
+	relaycontroller "github.com/songquanpeng/one-api/relay/controller"
 	relaymodel "github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -195,6 +196,16 @@ func GetFlux(c *gin.Context) {
 
 	image, err := model.GetImageByTaskId(taskID)
 	if err != nil {
+		// 图片任务未命中：尝试按视频任务处理（flux-3-video 走 VideoAdaptor，落 videos 表）。
+		// BFL 的 task_id 是 UUID，图片/视频不会重叠，分表查询安全。
+		if _, verr := model.GetVideoTaskById(taskID); verr == nil {
+			logger.Infof(c, "Flux get_result 命中视频任务，转视频结果查询: task_id=%s", taskID)
+			c.Set("response_format", c.Query("response_format"))
+			if bizErr := relaycontroller.GetVideoResult(c, taskID); bizErr != nil {
+				c.JSON(bizErr.StatusCode, gin.H{"error": util.ProcessString(bizErr.Error.Message)})
+			}
+			return
+		}
 		logger.Errorf(c, "Flux 任务不存在: task_id=%s, error=%v", taskID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
 		return
