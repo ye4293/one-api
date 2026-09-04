@@ -8,6 +8,36 @@
 
 ## 2026-09-04
 
+### fix(flux-video): Replicate flux-3 按实测 schema 修 duration 422 与 resolution 计费口径
+
+- **分支**: `flux-video`
+- **类型**: 修复
+- **背景**: 用真实 `REPLICATE_API_KEY` 跑通 `black-forest-labs/flux-3` 完整流程（提交→轮询→输出），核对官方 Input/Output schema 后发现两处真实缺陷。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — 新增 `normalizeReplicateDuration`（duration 归一为字符串枚举 `auto`/`5`~`20`，越界钳边）、`normalizeBillingResolution`（`720p→hd`/`1080p→fhd`）；`buildReplicateVideoInput` 的 duration 改用字符串化输出
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoRequest` 计费入口改用 `normalizeBillingResolution`
+- **修复点**:
+  - **duration 422**：Replicate `duration` 是字符串枚举，客户端按 BFL 习惯传 JSON 数字 `5` 会被上游 Pydantic 校验拒绝（422）。强制字符串化下发。
+  - **resolution 计费口径**：Replicate 原生 `720p`/`1080p` 匹配不到计费规则的 `hd`/`fhd`，直传 `1080p` 会落兜底通配价（0.17）少收一半。计费前归一到 hd/fhd。
+- **实测确认**: 字段名 BFL/Replicate 同源全对（无未知字段 422 风险）；Output 为单个 mp4 URL；`metrics.video_output_duration_seconds` 提供上游真实时长
+- **已知未闭口**: `duration=auto`/缺省仍按 5 秒估算计费（资损口子），正解为"按 metrics 真实时长结算"，已排期为下一轮（C），因涉及 BFL/Replicate 计费机制分叉与 videos 表补扣流转
+- **关联计划**: `docs/plans/2026-09-04-replicate-flux-video.md`（含实测 schema 与流程记录）
+- **验证**: `go build ./... && go vet ./relay/channel/flux/...` 通过；gofmt 无差异
+
+### feat(flux-video): flux-3-video 增加 Replicate 上游（baseURL 分支，同名共价）
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: Replicate 上线 `black-forest-labs/flux-3` 视频生成。让 `flux-3-video` 既能走 BFL 原生，也能走 Replicate，由渠道 baseURL 决定（与 flux 图片同构）。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — 新增 `ReplicateVideoModelMap`、`buildReplicateVideoInput`（hd→720p/fhd→1080p、keyframes→images、去掉 mode 交由上游推断）、分辨率/keyframes 转换 helper；轮询响应复用现有 `ReplicateResponse`
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoRequest`/`HandleVideoResult` 各加 `isReplicate(baseURL)` 分支：Replicate 用 Bearer + `POST /v1/models/{id}/predictions` 提交、`GET /v1/predictions/{id}` 轮询；提交逻辑拆为 `submitBFLVideo`/`submitReplicateVideo`，计费在提交后共用一段（方案 A）
+- **计费**: 方案 A 同名共价——BFL/Replicate 共用现有 `flux-3-video` 按秒规则，视频计费链路不吃渠道折扣，两家计费一致
+- **影响范围**: 不影响 BFL flux-3-video（分支互斥）与 flux 图片 Replicate 链路（图片走 Adaptor、视频走 VideoAdaptor）；无 schema 变更；路由/distributor/helper/计费规则均无需改
+- **已知限制**: keyframes 的 [秒,图] 对形态不支持（仅 string/[]string）；输出直接透传 Replicate 签名 mp4 URL（不转存 R2）；Replicate flux-3 真实按秒单价待核，暂与 BFL 同价
+- **关联计划**: `docs/plans/2026-09-04-replicate-flux-video.md`
+- **验证**: `go build ./... && go vet ./...` 通过；gofmt 无差异
+
 ### feat(flux-video): flux-3-video 专用路由（BFL 原生形态）
 
 - **分支**: `flux-video`

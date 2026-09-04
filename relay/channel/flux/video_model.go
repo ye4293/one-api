@@ -1,6 +1,10 @@
 package flux
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // FluxVideoRequest BFL FLUX 3 Video 的请求体
 // 端点：POST /v1/flux-3-video
@@ -45,3 +49,114 @@ const (
 	UpstreamStatusRequestModerated = "Request Moderated"
 	UpstreamStatusContentModerated = "Content Moderated"
 )
+
+// ReplicateVideoModelMap one-api 模型名 → Replicate 模型 ID（视频）
+// 与图片侧 ReplicateModelMap 同构：baseURL 含 replicate.com 时走此映射拼 predictions URL。
+var ReplicateVideoModelMap = map[string]string{
+	"flux-3-video": "black-forest-labs/flux-3",
+}
+
+// fluxResolutionToReplicate 将 BFL 的 hd/fhd 档位映射为 Replicate 的分辨率字面值。
+// 计费仍按 hd/fhd 命中 video-pricing 规则，此处仅转换下发给上游的取值。
+func fluxResolutionToReplicate(res string) string {
+	switch res {
+	case "", "hd":
+		return "720p"
+	case "fhd":
+		return "1080p"
+	default:
+		return res // 已是 720p/1080p 等则原样透传
+	}
+}
+
+// normalizeBillingResolution 把请求分辨率归一为计费口径 hd/fhd。
+// Replicate 原生只认 720p/1080p，若不归一，"1080p" 会匹配不到 fhd 规则、
+// 落到兜底通配价（0.17）少收一半。空/未知一律按 hd 兜底。
+func normalizeBillingResolution(res string) string {
+	switch strings.ToLower(res) {
+	case "", "hd", "720p":
+		return "hd"
+	case "fhd", "1080p":
+		return "fhd"
+	default:
+		return "hd"
+	}
+}
+
+// normalizeReplicateDuration 把 duration 归一为 Replicate 的字符串枚举（auto / "5"~"20"）。
+// Replicate schema 的 duration 是字符串枚举，客户端若按 BFL 习惯传 JSON 数字 5，
+// 下发数字会被上游 Pydantic 枚举校验拒绝（422）。返回 "" 表示不下发，交上游默认 auto。
+func normalizeReplicateDuration(d interface{}) string {
+	s := durationToString(d)
+	if s == "" {
+		return ""
+	}
+	if strings.EqualFold(s, "auto") {
+		return "auto"
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return "" // 无法识别，交上游默认 auto
+	}
+	// 枚举范围 5~20，越界钳到边界避免 422
+	if n < 5 {
+		n = 5
+	} else if n > 20 {
+		n = 20
+	}
+	return strconv.Itoa(n)
+}
+
+// keyframesToReplicateImages 将 BFL keyframes 转为 Replicate 的 images 数组。
+// 支持：单图 URL/base64（string）、首尾帧数组（[]string）。
+// [秒,图] 对等复杂形态本期不支持，返回 nil（不下发 images）。
+func keyframesToReplicateImages(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if single == "" {
+			return nil
+		}
+		return []string{single}
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return arr
+	}
+	return nil
+}
+
+// buildReplicateVideoInput 把 BFL 请求字段转成 Replicate predictions 的 input。
+// mode 不下发：Replicate 由 images/start_video 是否存在自行推断 t2v/i2v/v2v。
+func buildReplicateVideoInput(req FluxVideoRequest) map[string]any {
+	input := map[string]any{
+		"prompt":     req.Prompt,
+		"resolution": fluxResolutionToReplicate(req.Resolution),
+	}
+	if imgs := keyframesToReplicateImages(req.Keyframes); len(imgs) > 0 {
+		input["images"] = imgs
+	}
+	if req.StartVideo != "" {
+		input["start_video"] = req.StartVideo
+	}
+	if req.Duration != nil {
+		if dur := normalizeReplicateDuration(req.Duration); dur != "" {
+			input["duration"] = dur
+		}
+	}
+	if req.AspectRatio != "" {
+		input["aspect_ratio"] = req.AspectRatio
+	}
+	if req.GenerateAudio != nil {
+		input["generate_audio"] = *req.GenerateAudio
+	}
+	if req.SafetyTolerance != nil {
+		input["safety_tolerance"] = *req.SafetyTolerance
+	}
+	if req.Draft != nil {
+		input["draft"] = *req.Draft
+	}
+	return input
+}
