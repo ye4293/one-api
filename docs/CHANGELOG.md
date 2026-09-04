@@ -8,6 +8,20 @@
 
 ## 2026-09-04
 
+### feat(flux-video): flux-3-video 专用路由（BFL 原生形态）
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: 让客户端可用与 BFL 一致的专用路径调用 flux-3-video，而非仅通用 `/v1/video/generations` + `model` 字段。
+- **涉及文件**:
+  - `middleware/distributor.go` — `getModelRequest` 加 `/v1/flux-3-video` 分支，按路径硬编码注入 `model="flux-3-video"`（BFL 原生 body 无 model，参照 kling/ali 做法）
+  - `router/relay-router.go` — 新增提交路由 `POST /v1/flux-3-video`→`RelayVideoGenerate`（挂 Distribute 段）
+  - `controller/flux.go` — 改造 `GetFlux` 为图片/视频统一分发：图片 taskId 未命中时回退查 videos 表，命中走 `relaycontroller.GetVideoResult`；查询复用现有 `GET /flux/v1/get_result?id=`（避免与图片路由重复注册 panic）
+- **影响范围**: 通用 `/v1/video/generations` 与图片查询逻辑均不变；完全复用已实现的 flux VideoAdaptor / 计费 / videos 表；无 schema 变更
+- **已知不一致**: 提交走 `/v1/flux-3-video`、查询走 `/flux/v1/get_result`（提交不能进 `/flux/v1/*model` 通配，否则被当图片模型）
+- **关联计划**: `docs/plans/2026-09-04-flux3-video-dedicated-route.md`
+- **验证**: `go build ./... && go vet ./...` 通过；gofmt 无差异
+
 ### feat(flux-video): 对接 BFL FLUX 3 Video 模型
 
 - **分支**: `flux-video`
