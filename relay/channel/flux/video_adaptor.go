@@ -78,10 +78,8 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 
 	// 计费参数归一化（方案 A：BFL/Replicate 同名共用一套按秒计费规则）
 	durationStr := durationToString(fluxReq.Duration)
-	resolution := fluxReq.Resolution
-	if resolution == "" {
-		resolution = "hd"
-	}
+	// 计费口径归一：Replicate 原生 720p/1080p 需映射回 hd/fhd 才能命中计费规则
+	resolution := normalizeBillingResolution(fluxReq.Resolution)
 	sound := "on" // generate_audio 默认 true
 	if fluxReq.GenerateAudio != nil && !*fluxReq.GenerateAudio {
 		sound = "off"

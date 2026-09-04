@@ -69,3 +69,27 @@ Replicate 上线了 `black-forest-labs/flux-3`（视频生成，与 BFL flux-3-v
 5. i2v：带 `keyframes`（单图 URL）复测，确认转成 Replicate `images` 提交成功。
 6. 回归：BFL 渠道的 flux-3-video 仍走 `x-key` + `/v1/flux-3-video`（未受影响）。
 7. 核对 videos 表落库（provider=flux）与 logs 扣费。
+
+## 实测确认（2026-09-04，用 REPLICATE_API_KEY 真实跑通）
+
+**真实 Input schema**（`GET /v1/models/black-forest-labs/flux-3`）：
+- `prompt` string（唯一必填）
+- `images` array（default `[]`）
+- `start_video` string
+- `resolution` **enum 仅 `720p`/`1080p`**（default `720p`）
+- `aspect_ratio` enum：auto/21:9/2:1/16:9/4:3/1:1/3:4/9:16（default auto）
+- `duration` **enum 字符串** `'auto','5'…'20'`（default `auto`）—— **不是数字**
+- `generate_audio` bool（default true）、`draft` bool（default false）、`safety_tolerance` int（default 2）
+- **Output：单个 string（mp4 uri）**
+
+**完整流程**（实测 t2v/5s/720p，约 45s 完成）：
+- 提交 `POST /v1/models/black-forest-labs/flux-3/predictions` → 201，`{id, status:"starting", urls:{get,cancel,stream,web}, ...}`
+- 轮询 `GET /v1/predictions/{id}`（= `urls.get`）→ `starting→processing→succeeded`
+- 成功：`output` 为 mp4 URL 字符串；`metrics` 含 `video_output_duration_seconds`（真实时长）、`resolution_target`、`predict_time`
+
+**据此修复（本轮 A+B）**：
+- **A** `duration` 数字→字符串枚举归一（`normalizeReplicateDuration`），杜绝客户端传 JSON 数字导致的 422。
+- **B** 计费口径归一（`normalizeBillingResolution`）：`720p→hd`/`1080p→fhd`，堵住 `1080p` 落兜底通配价少收一半。
+- 字段名核对：BFL 与 Replicate flux-3 字段**同源全对**，无未知字段 422 风险（此前 P0-1 担忧证伪）。
+
+**待下轮（C，已排期）**：计费时机由"提交时按请求时长估算"改为"succeeded 时按 `metrics.video_output_duration_seconds` 真实结算"。注意 BFL `get_result` 不返回时长 metrics，C 仅对 Replicate 生效、会引入两条路径计费机制分叉 + videos 表补扣/退款流转，需单独计划。`duration=auto`/缺省在 C 落地前仍按 5 秒计费（资损口子未闭）。

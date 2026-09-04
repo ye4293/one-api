@@ -1,6 +1,10 @@
 package flux
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // FluxVideoRequest BFL FLUX 3 Video 的请求体
 // 端点：POST /v1/flux-3-video
@@ -65,6 +69,44 @@ func fluxResolutionToReplicate(res string) string {
 	}
 }
 
+// normalizeBillingResolution 把请求分辨率归一为计费口径 hd/fhd。
+// Replicate 原生只认 720p/1080p，若不归一，"1080p" 会匹配不到 fhd 规则、
+// 落到兜底通配价（0.17）少收一半。空/未知一律按 hd 兜底。
+func normalizeBillingResolution(res string) string {
+	switch strings.ToLower(res) {
+	case "", "hd", "720p":
+		return "hd"
+	case "fhd", "1080p":
+		return "fhd"
+	default:
+		return "hd"
+	}
+}
+
+// normalizeReplicateDuration 把 duration 归一为 Replicate 的字符串枚举（auto / "5"~"20"）。
+// Replicate schema 的 duration 是字符串枚举，客户端若按 BFL 习惯传 JSON 数字 5，
+// 下发数字会被上游 Pydantic 枚举校验拒绝（422）。返回 "" 表示不下发，交上游默认 auto。
+func normalizeReplicateDuration(d interface{}) string {
+	s := durationToString(d)
+	if s == "" {
+		return ""
+	}
+	if strings.EqualFold(s, "auto") {
+		return "auto"
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return "" // 无法识别，交上游默认 auto
+	}
+	// 枚举范围 5~20，越界钳到边界避免 422
+	if n < 5 {
+		n = 5
+	} else if n > 20 {
+		n = 20
+	}
+	return strconv.Itoa(n)
+}
+
 // keyframesToReplicateImages 将 BFL keyframes 转为 Replicate 的 images 数组。
 // 支持：单图 URL/base64（string）、首尾帧数组（[]string）。
 // [秒,图] 对等复杂形态本期不支持，返回 nil（不下发 images）。
@@ -100,7 +142,9 @@ func buildReplicateVideoInput(req FluxVideoRequest) map[string]any {
 		input["start_video"] = req.StartVideo
 	}
 	if req.Duration != nil {
-		input["duration"] = req.Duration
+		if dur := normalizeReplicateDuration(req.Duration); dur != "" {
+			input["duration"] = dur
+		}
 	}
 	if req.AspectRatio != "" {
 		input["aspect_ratio"] = req.AspectRatio

@@ -8,6 +8,22 @@
 
 ## 2026-09-04
 
+### fix(flux-video): Replicate flux-3 按实测 schema 修 duration 422 与 resolution 计费口径
+
+- **分支**: `flux-video`
+- **类型**: 修复
+- **背景**: 用真实 `REPLICATE_API_KEY` 跑通 `black-forest-labs/flux-3` 完整流程（提交→轮询→输出），核对官方 Input/Output schema 后发现两处真实缺陷。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — 新增 `normalizeReplicateDuration`（duration 归一为字符串枚举 `auto`/`5`~`20`，越界钳边）、`normalizeBillingResolution`（`720p→hd`/`1080p→fhd`）；`buildReplicateVideoInput` 的 duration 改用字符串化输出
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoRequest` 计费入口改用 `normalizeBillingResolution`
+- **修复点**:
+  - **duration 422**：Replicate `duration` 是字符串枚举，客户端按 BFL 习惯传 JSON 数字 `5` 会被上游 Pydantic 校验拒绝（422）。强制字符串化下发。
+  - **resolution 计费口径**：Replicate 原生 `720p`/`1080p` 匹配不到计费规则的 `hd`/`fhd`，直传 `1080p` 会落兜底通配价（0.17）少收一半。计费前归一到 hd/fhd。
+- **实测确认**: 字段名 BFL/Replicate 同源全对（无未知字段 422 风险）；Output 为单个 mp4 URL；`metrics.video_output_duration_seconds` 提供上游真实时长
+- **已知未闭口**: `duration=auto`/缺省仍按 5 秒估算计费（资损口子），正解为"按 metrics 真实时长结算"，已排期为下一轮（C），因涉及 BFL/Replicate 计费机制分叉与 videos 表补扣流转
+- **关联计划**: `docs/plans/2026-09-04-replicate-flux-video.md`（含实测 schema 与流程记录）
+- **验证**: `go build ./... && go vet ./relay/channel/flux/...` 通过；gofmt 无差异
+
 ### feat(flux-video): flux-3-video 增加 Replicate 上游（baseURL 分支，同名共价）
 
 - **分支**: `flux-video`
