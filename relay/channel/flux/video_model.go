@@ -45,3 +45,74 @@ const (
 	UpstreamStatusRequestModerated = "Request Moderated"
 	UpstreamStatusContentModerated = "Content Moderated"
 )
+
+// ReplicateVideoModelMap one-api 模型名 → Replicate 模型 ID（视频）
+// 与图片侧 ReplicateModelMap 同构：baseURL 含 replicate.com 时走此映射拼 predictions URL。
+var ReplicateVideoModelMap = map[string]string{
+	"flux-3-video": "black-forest-labs/flux-3",
+}
+
+// fluxResolutionToReplicate 将 BFL 的 hd/fhd 档位映射为 Replicate 的分辨率字面值。
+// 计费仍按 hd/fhd 命中 video-pricing 规则，此处仅转换下发给上游的取值。
+func fluxResolutionToReplicate(res string) string {
+	switch res {
+	case "", "hd":
+		return "720p"
+	case "fhd":
+		return "1080p"
+	default:
+		return res // 已是 720p/1080p 等则原样透传
+	}
+}
+
+// keyframesToReplicateImages 将 BFL keyframes 转为 Replicate 的 images 数组。
+// 支持：单图 URL/base64（string）、首尾帧数组（[]string）。
+// [秒,图] 对等复杂形态本期不支持，返回 nil（不下发 images）。
+func keyframesToReplicateImages(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if single == "" {
+			return nil
+		}
+		return []string{single}
+	}
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return arr
+	}
+	return nil
+}
+
+// buildReplicateVideoInput 把 BFL 请求字段转成 Replicate predictions 的 input。
+// mode 不下发：Replicate 由 images/start_video 是否存在自行推断 t2v/i2v/v2v。
+func buildReplicateVideoInput(req FluxVideoRequest) map[string]any {
+	input := map[string]any{
+		"prompt":     req.Prompt,
+		"resolution": fluxResolutionToReplicate(req.Resolution),
+	}
+	if imgs := keyframesToReplicateImages(req.Keyframes); len(imgs) > 0 {
+		input["images"] = imgs
+	}
+	if req.StartVideo != "" {
+		input["start_video"] = req.StartVideo
+	}
+	if req.Duration != nil {
+		input["duration"] = req.Duration
+	}
+	if req.AspectRatio != "" {
+		input["aspect_ratio"] = req.AspectRatio
+	}
+	if req.GenerateAudio != nil {
+		input["generate_audio"] = *req.GenerateAudio
+	}
+	if req.SafetyTolerance != nil {
+		input["safety_tolerance"] = *req.SafetyTolerance
+	}
+	if req.Draft != nil {
+		input["draft"] = *req.Draft
+	}
+	return input
+}
