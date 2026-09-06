@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/config"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	openaiAdaptor "github.com/songquanpeng/one-api/relay/channel/openai"
@@ -65,12 +67,14 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	}
 
 	// 提交：baseURL 含 replicate.com 走 Replicate，否则走 BFL 原生。
-	var taskId string
+	// pollingURL：BFL 原生返回上游 polling_url（多集群路由地址，必须原样使用）；
+	// Replicate 无此语义，返回空串。
+	var taskId, pollingURL string
 	var submitErr *model.ErrorWithStatusCode
 	if isReplicate(meta.BaseURL) {
-		taskId, submitErr = a.submitReplicateVideo(fluxReq, meta, ch)
+		taskId, pollingURL, submitErr = a.submitReplicateVideo(fluxReq, meta, ch)
 	} else {
-		taskId, submitErr = a.submitBFLVideo(fluxReq, meta, ch)
+		taskId, pollingURL, submitErr = a.submitBFLVideo(fluxReq, meta, ch)
 	}
 	if submitErr != nil {
 		return nil, submitErr
@@ -88,6 +92,13 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 
 	quota := common.CalculateVideoQuota(meta.ActualModelName, videoType, fluxReq.Mode, durationStr, resolution, sound)
 
+	// 客户端轮询端点：one-api 自有代理地址（客户端持 one-api token 查，命中 GetFlux → GetVideoResult）。
+	// 与承载 BFL 上游 polling_url 的 Credentials 严格区分——上游 polling_url 含 BFL key 语义，不可返给客户端。
+	clientPollingURL := ""
+	if config.ServerAddress != "" {
+		clientPollingURL = fmt.Sprintf("%s/flux/v1/get_result?id=%s", strings.TrimRight(config.ServerAddress, "/"), taskId)
+	}
+
 	return &relaychannel.VideoTaskResult{
 		TaskId:     taskId,
 		TaskStatus: "succeed", // 提交成功；实际生成结果由轮询决定
@@ -98,41 +109,48 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		Sound:      sound,
 		Quota:      quota,
 		Prompt:     fluxReq.Prompt,
+		// 复用 Credentials 承载 BFL 上游 polling_url，供轮询命中正确集群（避免 Task not found）。
+		// Replicate 分支 pollingURL 为空，轮询走回退自拼 URL。
+		Credentials: pollingURL,
+		PollingUrl:  clientPollingURL,
 	}, nil
 }
 
 // submitBFLVideo 走 BFL 原生：x-key + POST /v1/flux-3-video，解析 {id, polling_url}。
-func (a *VideoAdaptor) submitBFLVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, *model.ErrorWithStatusCode) {
+// 返回 (taskId, pollingURL)：pollingURL 为上游多集群路由地址，轮询必须原样使用。
+func (a *VideoAdaptor) submitBFLVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, string, *model.ErrorWithStatusCode) {
 	requestURL := meta.BaseURL + "/v1/flux-3-video"
 
 	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, fluxReq, relaychannel.XKeyAuthHeaders(ch.Key))
 	if httpErr != nil {
-		return "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
+		return "", "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return "", openaiAdaptor.ErrorWrapper(
+		return "", "", openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("flux video API error: status=%d body=%s", httpResp.StatusCode, string(body)),
 			"api_error", httpResp.StatusCode)
 	}
 
 	var submitResp FluxVideoSubmitResponse
 	if parseErr := json.Unmarshal(body, &submitResp); parseErr != nil {
-		return "", openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
+		return "", "", openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
 	}
 	if submitResp.ID == "" {
-		return "", openaiAdaptor.ErrorWrapper(
+		return "", "", openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("flux video API returned empty task id: body=%s", string(body)),
 			"api_error", http.StatusInternalServerError)
 	}
-	return submitResp.ID, nil
+	return submitResp.ID, submitResp.PollingURL, nil
 }
 
 // submitReplicateVideo 走 Replicate：Bearer + POST /v1/models/{id}/predictions，
 // 请求体包进 {"input": ...}，不带 webhook（本项目走轮询），返回 prediction id。
-func (a *VideoAdaptor) submitReplicateVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, *model.ErrorWithStatusCode) {
+// 返回 (taskId, pollingURL)：Replicate 轮询用 predictions/{id}、渠道自有 baseURL，
+// 无多集群路由问题，pollingURL 恒为空串（轮询走回退自拼）。
+func (a *VideoAdaptor) submitReplicateVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, string, *model.ErrorWithStatusCode) {
 	replicateID, ok := ReplicateVideoModelMap[meta.ActualModelName]
 	if !ok {
-		return "", openaiAdaptor.ErrorWrapper(
+		return "", "", openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("模型 %s 在 Replicate 渠道暂不支持视频生成", meta.ActualModelName),
 			"model_not_supported", http.StatusBadRequest)
 	}
@@ -141,24 +159,24 @@ func (a *VideoAdaptor) submitReplicateVideo(fluxReq FluxVideoRequest, meta *util
 
 	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, reqBody, relaychannel.BearerAuthHeaders(ch.Key))
 	if httpErr != nil {
-		return "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
+		return "", "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return "", openaiAdaptor.ErrorWrapper(
+		return "", "", openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("replicate video API error: status=%d body=%s", httpResp.StatusCode, string(body)),
 			"api_error", httpResp.StatusCode)
 	}
 
 	var predResp ReplicateResponse
 	if parseErr := json.Unmarshal(body, &predResp); parseErr != nil {
-		return "", openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
+		return "", "", openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
 	}
 	if predResp.ID == "" {
-		return "", openaiAdaptor.ErrorWrapper(
+		return "", "", openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("replicate video API returned empty prediction id: body=%s", string(body)),
 			"api_error", http.StatusInternalServerError)
 	}
-	return predResp.ID, nil
+	return predResp.ID, "", nil
 }
 
 func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Video, ch *dbmodel.Channel, cfg *dbmodel.ChannelConfig) (*model.GeneralFinalVideoResponse, *model.ErrorWithStatusCode) {
@@ -174,7 +192,13 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		return a.handleReplicateVideoResult(videoTask, ch, baseURL)
 	}
 
+	// 轮询地址优先用提交时上游返回并落库（credentials）的 polling_url——BFL 多集群路由，
+	// 任务只在分配到的集群可查，用 id 自拼全局 URL 会打错集群返回 404 "Task not found"。
+	// 存量任务无 polling_url（credentials 空或非 http）时回退到自拼 URL，保证兼容。
 	queryURL := fmt.Sprintf("%s/v1/get_result?id=%s", baseURL, taskId)
+	if strings.HasPrefix(videoTask.Credentials, "http") {
+		queryURL = videoTask.Credentials
+	}
 
 	resp, body, err := relaychannel.SendVideoResultQuery(queryURL, relaychannel.XKeyAuthHeaders(ch.Key))
 	if err != nil {

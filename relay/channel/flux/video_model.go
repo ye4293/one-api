@@ -27,7 +27,7 @@ type FluxVideoRequest struct {
 // FluxVideoSubmitResponse 提交后（POST）的响应
 type FluxVideoSubmitResponse struct {
 	ID         string `json:"id"`          // 任务标识
-	PollingURL string `json:"polling_url"` // 轮询地址（本项目用 id 重构 get_result，此字段仅留存）
+	PollingURL string `json:"polling_url"` // 上游轮询地址：BFL 多集群路由，轮询必须原样使用（落库 credentials）
 }
 
 // FluxVideoPollingResponse 轮询（GET /v1/get_result?id=）的响应
