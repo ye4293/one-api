@@ -48,6 +48,9 @@ type FluxVideoResult struct {
 const (
 	UpstreamStatusRequestModerated = "Request Moderated"
 	UpstreamStatusContentModerated = "Content Moderated"
+	// UpstreamStatusTaskNotFound BFL 对已过期/无效任务返回的 status（伴随 HTTP 404）。
+	// 归入失败以触发退款，杜绝被 default 分支误判为 processing 而永久卡死。
+	UpstreamStatusTaskNotFound = "Task not found"
 )
 
 // ReplicateVideoModelMap one-api 模型名 → Replicate 模型 ID（视频）

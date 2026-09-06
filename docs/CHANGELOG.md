@@ -6,6 +6,21 @@
 
 ---
 
+## 2026-09-06
+
+### fix(flux-video): 上游 404/"Task not found" 判失败触发退款，修复视频永久卡 processing
+
+- **分支**: `flux-video`
+- **类型**: 修复
+- **背景**: 测试环境一条 flux-3-video 任务（task_id `10bbd52a...`）一直 processing。排查确认：任务提交成功并扣费后，客户端从未查询过结果（Loki `job=one-api-test` 全天对该 id 仅命中人工测试 1 行），而 flux 视频**无服务端兜底轮询**（`flux_reconciler.go` 只扫 images 表），状态推进 100% 依赖客户端查询。更致命的是——即便补查，BFL 对过期任务返回 HTTP 404 `{"status":"Task not found"}`，而 `SendVideoResultQuery` 不校验状态码、`HandleVideoResult` 的 switch 把 "Task not found" 落 default 分支误判为 `processing`，导致永远不转 failed、永不退款。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — 新增常量 `UpstreamStatusTaskNotFound = "Task not found"`
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoResult`（BFL）与 `handleReplicateVideoResult`（Replicate）均接收 `resp` 并按状态码分类：HTTP 404 → `failed`（触发退款）；其余非 2xx（401/403/429/5xx）→ 返回错误交上层重试（不判失败、不退款）；BFL switch 追加 `UpstreamStatusTaskNotFound` 归入失败
+- **退款安全性**: 复用现有 `UpdateVideoTaskStatus` → `CompensateVideoTask` 链路，`needRefund=(oldStatus!="failed" && status=="failed")` 幂等，重复查询已 failed 任务不会重复退款
+- **未改动**: 不动 `SendVideoResultQuery` 签名（8 个调用方，改动波及 keling/gemini/luma/doubao/pixverse/ali），状态码判断收敛在 flux 适配器内
+- **仍未闭口（P1，另行排期）**: flux 视频缺服务端兜底 poller + 成功结果未转存 R2（signed URL 短时有效，客户端错过就绪窗口仍会丢视频）；processing 超时自动退款机制。本次仅修"补查时能正确终结并退款"的正确性缺陷
+- **验证**: `go build ./... && go vet ./relay/channel/flux/...` 通过；直连 BFL 复核该 task_id 确为 404「Task not found」
+
 ## 2026-09-04
 
 ### fix(flux-video): Replicate flux-3 按实测 schema 修 duration 422 与 resolution 计费口径
