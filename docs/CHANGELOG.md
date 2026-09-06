@@ -8,6 +8,23 @@
 
 ## 2026-09-06
 
+### feat(flux-video): 持久化上游 get_result 完整原始 JSON 到 videos.result 列
+
+- **分支**: `dev`
+- **类型**: 新功能
+- **背景**: flux-3-video 成功时只把视频 URL 存进 `videos.store_url`，上游 get_result 的完整原始响应被丢弃（`videos.result` 列始终为空）。上游 BFL get_result 实际带 `cost`（美分，图片侧 `FluxPollingResponse.Cost` 已证实同端点返回），视频侧既不解析也不留存，事后无法核对上游真实费用、无法还原上游返回排障；且与 gemini/kling（均把上游原文写 `result` 列）口径不一致。
+- **涉及文件**:
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoResult`（BFL）与 `handleReplicateVideoResult`（Replicate）在拿到 body 的 4 个返回点设 `generalResponse.RawResult = string(body)`（各自 404 早返回分支 + `json.Unmarshal` 成功后），覆盖 succeed/failed 两种终态
+  - `relay/controller/video.go` — 客户端查询路径 `invokeVideoAdaptorResult` 存 `store_url` 后，`result.RawResult != ""` 时调 `dbmodel.UpdateVideoResult` 落库
+  - `controller/flux_video_reconciler.go` — 对账器路径 `succeedFluxVideoTask`/`failFluxVideoTask` 增加 `rawResult` 形参，并入 CAS `Updates(map)` 原子落库（超时段无上游查询传 `""`）
+- **复用**: `GeneralFinalVideoResponse.RawResult`（gemini 已用）+ `dbmodel.UpdateVideoResult`（已存在），零新增基础设施
+- **影响范围**: 无 schema 变更（`videos.result` text 列已存在）；不触碰 `quota`/`store_url`/`status` 逻辑；通用查询路径仅对带 `RawResult` 的响应生效，其它 provider 不受影响；存量任务 `result` 仍空，仅对改动后新完成任务生效
+- **后续（未做）**: 拿到上游原文后可评估"视频计费优先上游 `cost`、缺失回退按秒表"，与图片侧统一——本次仅留存，不改计费口径
+- **验证**: `go build ./... && go vet ./...` 通过
+- **关联计划**: `docs/plans/2026-09-06-flux-video-result-raw-json.md`
+
+---
+
 ### feat(flux-video): 创建响应返回 polling_url + 服务端兜底对账器（4h 超时判失败退款）
 
 - **分支**: `flux-video`

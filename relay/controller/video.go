@@ -837,6 +837,14 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		}
 	}
 
+	// 留存上游完整原始 JSON 到 result 列（供审计/排障，如上游 cost）。
+	// 仅设置了 RawResult 的 provider（flux video）会写入，其它 provider 为空跳过。
+	if result.RawResult != "" {
+		if err := dbmodel.UpdateVideoResult(taskId, result.RawResult); err != nil {
+			log.Printf("Failed to update result for task %s: %v", taskId, err)
+		}
+	}
+
 	// 将数据库中存储的 video_duration 填充到响应中
 	if videoTask.VideoDuration > 0 {
 		result.VideoDuration = videoTask.VideoDuration

@@ -82,7 +82,7 @@ func runFluxVideoReconcile(ctx context.Context) {
 	} else if len(expired) > 0 {
 		logger.Infof(ctx, "[flux-video-reconciler] 发现 %d 条超时(>4h)任务，判失败并退款", len(expired))
 		for i := range expired {
-			failFluxVideoTask(ctx, &expired[i], "任务超时(4小时未完成)")
+			failFluxVideoTask(ctx, &expired[i], "任务超时(4小时未完成)", "")
 		}
 	}
 
@@ -145,23 +145,26 @@ func reconcileSingleFluxVideo(ctx context.Context, task *dbmodel.Video) {
 
 	switch result.TaskStatus {
 	case "succeed":
-		succeedFluxVideoTask(ctx, task, result.VideoResult)
+		succeedFluxVideoTask(ctx, task, result.VideoResult, result.RawResult)
 	case "failed":
-		failFluxVideoTask(ctx, task, result.Message)
+		failFluxVideoTask(ctx, task, result.Message, result.RawResult)
 	default:
 		// processing：仍在生成，等待下一轮
 	}
 }
 
-// succeedFluxVideoTask 用 CAS（status=processing）原子转 succeed 并写 store_url。
+// succeedFluxVideoTask 用 CAS（status=processing）原子转 succeed 并写 store_url + result（上游原始 JSON）。
 // RowsAffected==0 表示已被其他路径（客户端查询/另一实例）处理，直接跳过。
-func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL string) {
+func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL string, rawResult string) {
 	updates := map[string]interface{}{
 		"status":     "succeed",
 		"updated_at": time.Now().Unix(),
 	}
 	if videoURL != "" {
 		updates["store_url"] = videoURL
+	}
+	if rawResult != "" {
+		updates["result"] = rawResult // 上游 get_result 完整原始 JSON，供审计/排障
 	}
 	res := dbmodel.DB.Model(&dbmodel.Video{}).
 		Where("task_id = ? AND status = ?", task.TaskId, "processing").
@@ -180,15 +183,19 @@ func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL str
 // failFluxVideoTask 用 CAS（status=processing）原子转 failed，仅在赢得转换时退款。
 // RowsAffected 门控是退款幂等的关键：多实例/超时与对账双路径并发时，只有一次 Update 生效，
 // 也只有那一次触发退款，杜绝重复补偿。
-func failFluxVideoTask(ctx context.Context, task *dbmodel.Video, reason string) {
+func failFluxVideoTask(ctx context.Context, task *dbmodel.Video, reason string, rawResult string) {
+	updates := map[string]interface{}{
+		"status":         "failed",
+		"fail_reason":    reason,
+		"total_duration": time.Now().Unix() - task.CreatedAt,
+		"updated_at":     time.Now().Unix(),
+	}
+	if rawResult != "" {
+		updates["result"] = rawResult // 上游原始 JSON（失败详情），供审计/排障；超时段无上游查询则为空
+	}
 	res := dbmodel.DB.Model(&dbmodel.Video{}).
 		Where("task_id = ? AND status = ?", task.TaskId, "processing").
-		Updates(map[string]interface{}{
-			"status":         "failed",
-			"fail_reason":    reason,
-			"total_duration": time.Now().Unix() - task.CreatedAt,
-			"updated_at":     time.Now().Unix(),
-		})
+		Updates(updates)
 	if res.Error != nil {
 		logger.Errorf(ctx, "[flux-video-reconciler] 更新失败记录失败: task_id=%s, err=%v", task.TaskId, res.Error)
 		return
