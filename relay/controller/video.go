@@ -786,6 +786,7 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		TaskStatus:    taskResult.TaskStatus,
 		Message:       taskResult.Message,
 		VideoDuration: taskResult.VideoDuration,
+		PollingUrl:    taskResult.PollingUrl,
 	})
 
 	return handleSuccessfulResponseWithQuota(c, ctx, meta,

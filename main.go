@@ -232,6 +232,11 @@ func run() error {
 		controller.StartFluxReconciler(context.Background())
 	})
 
+	// 启动 flux-3-video 服务端兜底对账器（用户不查询时也能走完流程，超 4h 判失败退款）
+	common.SafeGoroutine(func() {
+		controller.StartFluxVideoReconciler(context.Background())
+	})
+
 	// 启动 xAI 视频任务轮询器（带 Redis 分布式锁）
 	common.SafeGoroutine(func() {
 		controller.StartXaiVideoTaskPoller(context.Background())

@@ -102,6 +102,7 @@ type GeneralVideoResponse struct {
 	TaskStatus    string  `json:"task_status"`
 	Message       string  `json:"message"`
 	VideoDuration float64 `json:"video_duration,omitempty"` // 输入视频时长（秒），仅编辑/延长时返回
+	PollingUrl    string  `json:"polling_url,omitempty"`    // 客户端轮询结果的地址（one-api 代理端点），仅部分异步 provider 返回
 }
 
 type VideoResultItem struct {

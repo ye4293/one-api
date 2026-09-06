@@ -8,6 +8,42 @@
 
 ## 2026-09-06
 
+### feat(flux-video): 创建响应返回 polling_url + 服务端兜底对账器（4h 超时判失败退款）
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: (1) `/v1/flux-3-video` 创建成功后客户端缺少标准轮询地址；(2) flux video 状态推进原本 100% 依赖客户端主动查询，若客户端提交后不再查询，任务永远卡 processing、不结算、不退款（图片侧 `StartFluxReconciler` 只扫 images 表，覆盖不到 videos）。
+- **涉及文件**:
+  - `relay/model/general.go` — `GeneralVideoResponse` 增加 `PollingUrl string` (`json:"polling_url,omitempty"`)
+  - `relay/channel/interface.go` — `VideoTaskResult` 增加 `PollingUrl`（客户端代理端点，与承载 BFL 上游 polling_url 的 `Credentials` 严格区分）
+  - `relay/channel/flux/video_adaptor.go` — `HandleVideoRequest` 用 `config.ServerAddress` 拼 `{ServerAddress}/flux/v1/get_result?id={taskId}` 填 `PollingUrl`（BFL/Replicate 通用）
+  - `relay/controller/video.go` — 提交响应把 `taskResult.PollingUrl` 带进 `GeneralVideoResponse`
+  - `controller/flux_video_reconciler.go`（新增）— 仿 `flux_reconciler.go` 的服务端兜底对账器
+  - `main.go` — 紧邻 `StartFluxReconciler` 注册 `StartFluxVideoReconciler`
+- **对账器设计**（对齐 `StartFluxReconciler`）: 复用 `ENABLE_VIDEO_TASK_POLLER` 开关（`isFluxReconcilerEnabled`）；30s 间隔；`sync.Mutex` `TryLock` 防重入；50 并发信号量；两段式——① 超 4 小时（`fluxVideoExpireSecs`）仍 processing 直接判失败退款，② 4h 内查上游对账（复用 `flux.VideoAdaptor.HandleVideoResult(nil,...)`，内部区分 BFL/Replicate，BFL 用落库 polling_url 命中集群）。
+- **退款幂等**: `succeed`/`failed` 均以 `Where(status="processing").Updates(...)` 做 CAS，失败退款以 `RowsAffected>0` 门控，仅赢得终态转换的一次退款——规避 gemini poller 失败段无门控的重复退款隐患。
+- **兼容性**: `polling_url` 为 omitempty，其他 provider 响应不变；对账器未开启 `ENABLE_VIDEO_TASK_POLLER` 时零影响；无 schema 变更。
+- **验证**: `go build ./... && go vet ./...` 通过。
+- **关联计划**: `docs/plans/2026-09-06-flux-video-polling-url-and-poller.md`
+
+---
+
+### fix(flux-video): 轮询改用上游 polling_url，修复 BFL 多集群路由导致的 "Task not found"
+
+- **分支**: `flux-video`
+- **类型**: 修复
+- **背景**: flux-3-video BFL 原生任务提交成功（拿到 id）后，轮询立即返回 HTTP 404 `{"status":"Task not found"}`。根因：`HandleVideoResult` 丢弃上游返回的 `polling_url`，改用 `id` 自拼 `api.bfl.ai/v1/get_result?id=`。BFL 官方文档明确要求查询**必须**用响应返回的 `polling_url`——全局/区域端点做多集群路由，任务只在被分配到的集群可查，自拼全局 URL 打错集群即 404。直接后果：BFL 原生 flux-3-video 结构性几乎全挂；上一提交（404→判失败→退款）掩盖根因，把上游已正常生成的视频误判 failed 扔掉并退款。
+- **涉及文件**:
+  - `relay/channel/flux/video_adaptor.go` — `submitBFLVideo`/`submitReplicateVideo` 返回值增加 `pollingURL`（BFL 捕获 `submitResp.PollingURL`，Replicate 恒空）；`HandleVideoRequest` 把 pollingURL 塞进 `VideoTaskResult.Credentials`（复用现有 `UpdateVideoCredentials` 保存路径）；`HandleVideoResult` BFL 分支：`videoTask.Credentials` 以 `http` 开头即作 queryURL，否则回退自拼 URL
+  - `relay/channel/flux/video_model.go` — 更新 `FluxVideoSubmitResponse.PollingURL` 注释
+- **兼容性**: 复用 `videos.credentials` 字段，无 schema 变更；Replicate 分支 credentials 空→走原逻辑不受影响；存量卡死任务 credentials 空→回退自拼→404 时现有退款兜底照常
+- **保留**: 404→退款逻辑保留，作为真失败（任务过期/无效 id）兜底
+- **仍未闭口**: 图片侧同类自拼 URL（`adaptor.go:369、859`）为间歇性 "Task not found" 隐患，本次未处理仅标记
+- **验证**: `go build ./... && go vet ./relay/channel/flux/...` 通过
+- **关联计划**: `docs/plans/2026-09-06-flux-video-polling-url.md`
+
+## 2026-09-06
+
 ### fix(flux-video): 上游 404/"Task not found" 判失败触发退款，修复视频永久卡 processing
 
 - **分支**: `flux-video`

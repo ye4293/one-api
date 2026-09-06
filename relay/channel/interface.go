@@ -63,4 +63,5 @@ type VideoTaskResult struct {
 	VideoDuration    float64 // 输入视频时长（秒），仅编辑/延长时有值
 	Prompt           string  // 用户输入的 prompt，落库到 videos.prompt
 	DeferLogShipping bool    // 创建时只写 logs，待异步结算更新实际用量后再投递
+	PollingUrl       string  // 返给客户端的轮询端点（one-api 代理地址），异步 provider 用
 }
