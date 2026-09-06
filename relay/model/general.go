@@ -146,6 +146,9 @@ type GeneralFinalVideoResponse struct {
 	OutputTextTokens  int64 `json:"-"`
 	OutputVideoTokens int64 `json:"-"`
 	RawResult         string `json:"-"`
+	// UpstreamCost 上游返回的权威费用(美分),仅内部传递用于完成时按上游 cost 多退少补。
+	// >0 触发结算,==0 保持提交预扣(标准 Replicate / 存量任务)。
+	UpstreamCost float64 `json:"-"`
 }
 
 type GeneralImageResponseAsync struct {

@@ -689,6 +689,13 @@ func recordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 	if v := ctx.Value(logger.RequestIPKey); v != nil {
 		requestIP, _ = v.(string)
 	}
+	// x_request_id 从 ctx 的 RequestIdKey 取（取不到为空）。视频异步任务本无对应上游请求 id，
+	// 调用方（如 flux）可在调用前用 context.WithValue 把 task id 覆盖进来，使同一任务的多条日志
+	// 共享同一检索键；未覆盖的路径（如 context.Background）取不到 → 保持为空，行为与改动前一致。
+	var xRequestID string
+	if v := ctx.Value(logger.RequestIdKey); v != nil {
+		xRequestID, _ = v.(string)
+	}
 
 	logger.Info(ctx, fmt.Sprintf("record video consume log: userId=%d, channelId=%d, promptTokens=%d, completionTokens=%d, modelName=%s, tokenName=%s, quota=%d, content=%s, videoTaskId=%s, requestIP=%s", userId, channelId, promptTokens, completionTokens, modelName, tokenName, quota, content, videoTaskId, requestIP))
 
@@ -724,6 +731,7 @@ func recordVideoConsumeLog(ctx context.Context, userId int, channelId int, promp
 		HttpReferer:      httpReferer,
 		Speed:            0,
 		VideoTaskId:      videoTaskId,
+		XRequestID:       xRequestID,
 		Other:            other,
 	}
 	err := LOG_DB.Create(log).Error

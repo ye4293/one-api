@@ -242,9 +242,15 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 			generalResponse.VideoResult = pollResp.Result.Sample
 			generalResponse.VideoResults = []model.VideoResultItem{{Url: pollResp.Result.Sample}}
 		}
+		generalResponse.UpstreamCost = pollResp.Cost // 上游权威费用(美分),>0 时触发完成结算
 	case UpstreamStatusError, UpstreamStatusRequestModerated, UpstreamStatusContentModerated, UpstreamStatusTaskNotFound:
 		generalResponse.TaskStatus = "failed"
-		generalResponse.Message = fmt.Sprintf("flux video %s: %v", pollResp.Status, pollResp.Detail)
+		// 上游实际字段是 details(复数),优先取非空的 Details,回退 Detail,避免审核原因丢失显示 <nil>
+		detail := pollResp.Details
+		if detail == nil {
+			detail = pollResp.Detail
+		}
+		generalResponse.Message = fmt.Sprintf("flux video %s: %v", pollResp.Status, detail)
 	default:
 		generalResponse.TaskStatus = "processing"
 	}
@@ -298,6 +304,7 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 			generalResponse.VideoResult = sample
 			generalResponse.VideoResults = []model.VideoResultItem{{Url: sample}}
 		}
+		generalResponse.UpstreamCost = predResp.Cost // 顶层 cost(部分代理返回),标准 replicate.com 为 0 → 保持预扣
 	case "failed", "canceled":
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate video %s: %v", predResp.Status, predResp.Error)

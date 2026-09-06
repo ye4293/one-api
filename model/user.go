@@ -546,6 +546,12 @@ func updateUserUsedQuota(id int, quota int64) {
 	}
 }
 
+// UpdateUserUsedQuota 调整用户已使用配额(支持负数,不改 request_count)。
+// 用于视频完成时按上游 cost 多退少补的差额结算——请求次数在提交时已计一次,差额不重复计数。
+func UpdateUserUsedQuota(id int, quota int64) {
+	updateUserUsedQuota(id, quota)
+}
+
 func updateUserRequestCount(id int, count int) {
 	err := DB.Model(&User{}).Where("id = ?", id).Update("request_count", gorm.Expr("request_count + ?", count)).Error
 	if err != nil {

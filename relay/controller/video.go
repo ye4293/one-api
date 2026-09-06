@@ -19,6 +19,7 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	relaychannel "github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/channel/ali"
+	"github.com/songquanpeng/one-api/relay/channel/flux"
 	"github.com/songquanpeng/one-api/relay/channel/gemini"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/channel/runway"
@@ -715,17 +716,11 @@ func handleSuccessfulResponseWithQuota(c *gin.Context, ctx context.Context, meta
 	}
 
 	if quota != 0 {
-		var modelPrice float64
-		defaultPrice, ok := common.DefaultModelPrice[modelName]
-		if !ok {
-			modelPrice = 0.1
-		} else {
-			modelPrice = defaultPrice
-		}
-
 		tokenName := c.GetString("token_name")
 		xRequestID := c.GetString("X-Request-ID")
-		logContent := fmt.Sprintf("模型固定价格 %.2f$", modelPrice)
+		// 按实际预扣 quota 反算展示价（quota/QuotaPerUnit），不再写死 DefaultModelPrice——
+		// flux-video 等按秒/按档计费时固定价与真实扣费脱钩会误导对账。
+		logContent := fmt.Sprintf("模型价格 %.2f$", float64(quota)/config.QuotaPerUnit)
 
 		// 如果提供了videoTaskId，使用RecordVideoConsumeLog，否则使用普通的RecordConsumeLogWithRequestID
 		var logOptions videoConsumeLogOptions
@@ -789,7 +784,14 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		PollingUrl:    taskResult.PollingUrl,
 	})
 
-	return handleSuccessfulResponseWithQuota(c, ctx, meta,
+	// flux-video：把 task id 覆盖进 ctx 的 RequestIdKey，使提交预扣日志的 x_request_id = task id，
+	// 与完成时差额结算日志（flux.SettleVideoCostDiff 同样覆盖）共享检索键，可按 task id 一并搜出。
+	// 仅 flux 覆盖；其他 provider 保持原 ctx（走通用 request id chain 或为空），行为与改动前一致。
+	logCtx := ctx
+	if adaptor.GetProviderName() == "flux" {
+		logCtx = context.WithValue(ctx, logger.RequestIdKey, taskResult.TaskId)
+	}
+	return handleSuccessfulResponseWithQuota(c, logCtx, meta,
 		meta.ActualModelName, taskResult.Mode, taskResult.Duration,
 		taskResult.Quota, videoConsumeLogOptions{
 			TaskID:           taskResult.TaskId,
@@ -811,6 +813,40 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 	// 走专用路径，避免下方通用 UpdateVideoTaskStatus 抢先改 status 导致 poller 漏扣。
 	if videoTask.Provider == "gemini-omni" && result.TaskStatus == "succeed" {
 		gemini.ApplyGeminiOmniSuccess(c.Request.Context(), videoTask, result)
+		if videoTask.VideoDuration > 0 {
+			result.VideoDuration = videoTask.VideoDuration
+		}
+		c.JSON(http.StatusOK, result)
+		return nil
+	}
+
+	// flux-video 且上游返回权威 cost：用 CAS（status=processing）原子转 succeed 并把 quota
+	// 改写为按上游 cost 换算的 newQuota，赢家（RowsAffected==1）调 SettleVideoCostDiff 多退少补。
+	// 与对账器共用同一门控语义，保证客户端查询/对账双路径下差额只结算一次。
+	// UpstreamCost==0（标准 replicate.com / 存量任务）不进此分支，走下方通用路径保持预扣。
+	if result.TaskStatus == "succeed" && result.UpstreamCost > 0 {
+		newQuota := flux.VideoQuotaFromUpstreamCost(result.UpstreamCost)
+		updates := map[string]interface{}{
+			"status":         "succeed",
+			"quota":          newQuota,
+			"total_duration": time.Now().Unix() - videoTask.CreatedAt,
+		}
+		if result.VideoResult != "" {
+			updates["store_url"] = result.VideoResult
+		}
+		if result.RawResult != "" {
+			updates["result"] = result.RawResult // 上游原始 JSON，供审计/排障
+		}
+		res := dbmodel.DB.Model(&dbmodel.Video{}).
+			Where("task_id = ? AND status = ?", taskId, "processing").
+			Updates(updates)
+		if res.Error != nil {
+			log.Printf("Failed to CAS-update succeed task %s: %v", taskId, res.Error)
+		} else if res.RowsAffected == 1 {
+			// 赢得转换 → 结算差额（videoTask.Quota 仍是内存里的预扣旧值，用于算 diff）
+			flux.SettleVideoCostDiff(c.Request.Context(), videoTask, result.UpstreamCost)
+		}
+		// RowsAffected==0：已被对账器/另一次查询处理，跳过结算（store_url/result 已由赢家落库）
 		if videoTask.VideoDuration > 0 {
 			result.VideoDuration = videoTask.VideoDuration
 		}

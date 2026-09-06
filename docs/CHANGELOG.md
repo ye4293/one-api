@@ -8,6 +8,30 @@
 
 ## 2026-09-06
 
+### feat(flux-video): 完成时按上游 cost 多退少补 + 修 detail/details 字段名 bug
+
+- **分支**: `flux-video`
+- **类型**: 新功能 / 修复
+- **背景**: (1) flux-3-video 提交时按秒预扣、成功不结算，`duration:"auto"`/浮动时长下预估与上游权威 cost 有差额永不修正；上游 get_result 已返回权威 `cost`（BFL 顶层美分）。(2) `FluxVideoPollingResponse.Detail` 用 `json:"detail"`（单数），上游实际返回 `details`（复数），导致审核原因（`Moderation Reasons`）丢失、message 显示 `<nil>`。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — `FluxVideoPollingResponse` 加 `Cost`（美分）+ `Details`
+  - `relay/channel/flux/model.go` — `ReplicateResponse` 加 `Cost`（标准 replicate.com 无此字段→0）
+  - `relay/model/general.go` — `GeneralFinalVideoResponse` 加内部字段 `UpstreamCost float64 json:"-"`
+  - `relay/channel/flux/video_adaptor.go` — succeed 分支填 `UpstreamCost`；失败分支 message 优先取非空 `Details` 回退 `Detail`
+  - `relay/channel/flux/billing.go` — 新增 `VideoQuotaFromUpstreamCost` + `SettleVideoCostDiff`（多退少补，记 ±diff 差额日志）
+  - `relay/controller/video.go` — 客户端查询成功路径 CAS 化并结算差额；logContent 按实际 quota 反算展示价（不再写死 `DefaultModelPrice`）
+  - `controller/flux_video_reconciler.go` — `succeedFluxVideoTask` 加 `upstreamCost` 形参，CAS 并入 `quota=newQuota`、赢家调 `SettleVideoCostDiff`
+  - `model/user.go` — 导出 `UpdateUserUsedQuota`（支持负数、不改 request_count）供差额结算
+  - `model/log.go` — `recordVideoConsumeLog` 的 `x_request_id` 改为从 ctx 的 `RequestIdKey` 读取
+- **计费口径**: `UpstreamCost>0` 才多退少补，`==0`（标准 Replicate/存量任务）保持提交预扣；换算不乘 groupRatio，与预扣口径对齐
+- **幂等**: 差额结算绑定「赢得 processing→succeed 的 CAS 转换」（`RowsAffected==1`），客户端查询/对账器双路径只结算一次
+- **日志可检索**: flux 提交预扣（仅 `GetProviderName()=="flux"`）与完成差额在调 log 前用 `context.WithValue` 把 task id 覆盖进 ctx `RequestIdKey`，使 `x_request_id=task id`，按 task id 可一并搜出
+- **影响范围**: 无 schema 变更；`log.go` 改从通用 `RequestIdKey` 读后，走通用视频预扣入口且 ctx 带真实 HTTP request id 的其余 VideoAdaptor provider，预扣日志 `x_request_id` 由空变为真实 request id（正向补齐，不改计费/状态）；`context.Background` 路径保持空
+- **验证**: `go build ./... && go vet ./...` 通过
+- **关联计划**: `docs/plans/2026-09-06-flux-video-cost-billing.md`
+
+---
+
 ### feat(flux-video): 持久化上游 get_result 完整原始 JSON 到 videos.result 列
 
 - **分支**: `dev`
