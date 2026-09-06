@@ -176,20 +176,36 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 
 	queryURL := fmt.Sprintf("%s/v1/get_result?id=%s", baseURL, taskId)
 
-	_, body, err := relaychannel.SendVideoResultQuery(queryURL, relaychannel.XKeyAuthHeaders(ch.Key))
+	resp, body, err := relaychannel.SendVideoResultQuery(queryURL, relaychannel.XKeyAuthHeaders(ch.Key))
 	if err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+
+	generalResponse := &model.GeneralFinalVideoResponse{
+		TaskId:   taskId,
+		Duration: videoTask.Duration,
+	}
+
+	// 上游 HTTP 404：任务在 BFL 侧已不存在（无效 id 或结果已过期），不可恢复。
+	// 直接判失败以触发退款；否则 body 里的 "Task not found" 会被 default 分支
+	// 误判为 processing，任务永久卡死且用户永不退款（本次 stuck-processing 的根因）。
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		generalResponse.TaskStatus = "failed"
+		generalResponse.Message = fmt.Sprintf("flux video task not found (upstream 404): %s", string(body))
+		return generalResponse, nil
+	}
+	// 其余非 2xx（401/403/429/5xx 等）多为临时或配置问题：返回错误交上层重试，
+	// 不判失败、不退款，避免把可恢复错误误结算为失败。
+	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return nil, openaiAdaptor.ErrorWrapper(
+			fmt.Errorf("flux get_result error: status=%d body=%s", resp.StatusCode, string(body)),
+			"api_error", resp.StatusCode)
 	}
 
 	var pollResp FluxVideoPollingResponse
 	if parseErr := json.Unmarshal(body, &pollResp); parseErr != nil {
 		log.Printf("Failed to parse flux video response: %v, body: %s", parseErr, string(body))
 		return nil, openaiAdaptor.ErrorWrapper(parseErr, "json_parse_error", http.StatusInternalServerError)
-	}
-
-	generalResponse := &model.GeneralFinalVideoResponse{
-		TaskId:   taskId,
-		Duration: videoTask.Duration,
 	}
 
 	switch pollResp.Status {
@@ -199,7 +215,7 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 			generalResponse.VideoResult = pollResp.Result.Sample
 			generalResponse.VideoResults = []model.VideoResultItem{{Url: pollResp.Result.Sample}}
 		}
-	case UpstreamStatusError, UpstreamStatusRequestModerated, UpstreamStatusContentModerated:
+	case UpstreamStatusError, UpstreamStatusRequestModerated, UpstreamStatusContentModerated, UpstreamStatusTaskNotFound:
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("flux video %s: %v", pollResp.Status, pollResp.Detail)
 	default:
@@ -215,20 +231,34 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 	taskId := videoTask.TaskId
 	queryURL := fmt.Sprintf("%s/v1/predictions/%s", baseURL, taskId)
 
-	_, body, err := relaychannel.SendVideoResultQuery(queryURL, relaychannel.BearerAuthHeaders(ch.Key))
+	resp, body, err := relaychannel.SendVideoResultQuery(queryURL, relaychannel.BearerAuthHeaders(ch.Key))
 	if err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "request_error", http.StatusInternalServerError)
+	}
+
+	generalResponse := &model.GeneralFinalVideoResponse{
+		TaskId:   taskId,
+		Duration: videoTask.Duration,
+	}
+
+	// 上游 HTTP 404：Replicate 侧 prediction 不存在（无效 id 或已被清理），不可恢复。
+	// 判失败以触发退款——Replicate 404 body 无 status 字段，若不在此拦截会解析出
+	// 空 status 落 default 被误判为 processing，与 BFL 分支同样卡死。
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		generalResponse.TaskStatus = "failed"
+		generalResponse.Message = fmt.Sprintf("replicate prediction not found (upstream 404): %s", string(body))
+		return generalResponse, nil
+	}
+	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return nil, openaiAdaptor.ErrorWrapper(
+			fmt.Errorf("replicate get prediction error: status=%d body=%s", resp.StatusCode, string(body)),
+			"api_error", resp.StatusCode)
 	}
 
 	var predResp ReplicateResponse
 	if parseErr := json.Unmarshal(body, &predResp); parseErr != nil {
 		log.Printf("Failed to parse replicate video response: %v, body: %s", parseErr, string(body))
 		return nil, openaiAdaptor.ErrorWrapper(parseErr, "json_parse_error", http.StatusInternalServerError)
-	}
-
-	generalResponse := &model.GeneralFinalVideoResponse{
-		TaskId:   taskId,
-		Duration: videoTask.Duration,
 	}
 
 	switch predResp.Status {
