@@ -216,6 +216,7 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("flux video task not found (upstream 404): %s", string(body))
+		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障
 		return generalResponse, nil
 	}
 	// 其余非 2xx（401/403/429/5xx 等）多为临时或配置问题：返回错误交上层重试，
@@ -231,6 +232,8 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		log.Printf("Failed to parse flux video response: %v, body: %s", parseErr, string(body))
 		return nil, openaiAdaptor.ErrorWrapper(parseErr, "json_parse_error", http.StatusInternalServerError)
 	}
+	// 留存上游 get_result 完整原始 JSON（含 status/result.sample，若上游返回则含 cost）
+	generalResponse.RawResult = string(body)
 
 	switch pollResp.Status {
 	case UpstreamStatusReady:
@@ -271,6 +274,7 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate prediction not found (upstream 404): %s", string(body))
+		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障
 		return generalResponse, nil
 	}
 	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
@@ -284,6 +288,8 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 		log.Printf("Failed to parse replicate video response: %v, body: %s", parseErr, string(body))
 		return nil, openaiAdaptor.ErrorWrapper(parseErr, "json_parse_error", http.StatusInternalServerError)
 	}
+	// 留存上游 prediction 完整原始 JSON（含 status/output/metrics）
+	generalResponse.RawResult = string(body)
 
 	switch predResp.Status {
 	case "succeeded":
