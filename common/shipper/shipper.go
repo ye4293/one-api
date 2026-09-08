@@ -82,6 +82,7 @@ func Init() {
 		time.Duration(runtimeCfg.sendTimeoutSeconds)*time.Second,
 		runtimeCfg.maxRetries,
 	))
+
 }
 
 func (c runtimeConfig) validate() error {
