@@ -36,7 +36,14 @@ type FluxVideoPollingResponse struct {
 	ID     string           `json:"id"`
 	Status string           `json:"status"`
 	Result *FluxVideoResult `json:"result,omitempty"`
-	Detail interface{}      `json:"detail,omitempty"` // 出错时上游可能返回的详情
+	// Detail / Details:出错时上游返回的详情。上游实际字段名是 details(复数,如
+	// {"Moderation Reasons":[...]}),历史误用 detail(单数)导致审核原因丢失、
+	// message 显示 <nil>。两者都留,取值时优先非空的 Details。
+	Detail  interface{} `json:"detail,omitempty"`
+	Details interface{} `json:"details,omitempty"`
+	// Cost 上游权威费用(美分),BFL get_result 顶层返回,如 85.0=$0.85。
+	// 用于完成时按上游 cost 多退少补;缺失(为 0)则保持提交预扣。
+	Cost float64 `json:"cost,omitempty"`
 }
 
 // FluxVideoResult status=Ready 时的结果载荷

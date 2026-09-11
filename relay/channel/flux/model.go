@@ -124,6 +124,9 @@ type ReplicateResponse struct {
 	CreatedAt   string          `json:"created_at"`
 	StartedAt   string          `json:"started_at"`
 	CompletedAt string          `json:"completed_at"`
+	// Cost 上游权威费用(美分)。标准 replicate.com 顶层无此字段(为 0,cost 仅在 logs 文本里,不解析);
+	// 部分 Replicate 兼容代理会返回顶层 cost。>0 时用于完成时多退少补,==0 保持提交预扣。
+	Cost float64 `json:"cost,omitempty"`
 }
 
 // ReplicateMetrics Replicate 预测性能指标

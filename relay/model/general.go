@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type ResponseFormat struct {
 	Type       string         `json:"type,omitempty"`        // "json_object" 或 "json_schema"
 	JSONSchema map[string]any `json:"json_schema,omitempty"` // 当 Type 为 "json_schema" 时使用
@@ -140,12 +142,39 @@ type GeneralFinalVideoResponse struct {
 	Duration      string            `json:"duration"`
 	Usage         *VideoUsage       `json:"usage,omitempty"`
 	VideoDuration float64           `json:"video_duration,omitempty"` // 输入视频时长（秒），仅编辑/延伸场景
+	// Cost 本次任务的权威费用（美分，如 85.0=$0.85）。口径为「最终实际计费 quota ÷ QuotaPerUnit × 100」，
+	// succeed 时返回；processing/failed（失败已退款）不返回。对上游有无返回 cost 的所有分支一致。
+	Cost float64 `json:"cost,omitempty"`
 
 	// 以下字段仅用于 Gemini Omni 按 token 计费的内部传递，不返回客户端
 	InputTokens       int64 `json:"-"`
 	OutputTextTokens  int64 `json:"-"`
 	OutputVideoTokens int64 `json:"-"`
 	RawResult         string `json:"-"`
+	// UpstreamCost 上游返回的权威费用(美分),仅内部传递用于完成时按上游 cost 多退少补。
+	// >0 触发结算,==0 保持提交预扣(标准 Replicate / 存量任务)。
+	UpstreamCost float64 `json:"-"`
+
+	// 以下字段仅用于 flux-3-video get_result 对齐 BFL 原生响应结构（FluxVideoGetResultResponse），
+	// 由 VideoAdaptor 填充、controller 组装，不直接返回客户端。
+	FluxStatus   string          `json:"-"` // BFL 原生 status 字面值（Replicate 已映射为 BFL 字面值）
+	FluxResult   json.RawMessage `json:"-"` // 上游 result 子对象原样透传
+	FluxProgress float64         `json:"-"` // 上游 progress，缺失/null 为 0
+	FluxDetails  json.RawMessage `json:"-"` // 上游 details 原样透传（失败原因等）
+	FluxPreview  json.RawMessage `json:"-"` // 上游 preview 原样透传
+}
+
+// FluxVideoGetResultResponse flux-3-video get_result 对齐 BFL 上游 /v1/get_result 的原生响应结构。
+// 仅 provider=="flux" 的视频任务使用；7 字段恒出现（不加 omitempty）。
+// 缺失填充口径：id/status→""；cost/progress→0；result/details/preview→null（RawMessage 零值 nil）。
+type FluxVideoGetResultResponse struct {
+	ID       string          `json:"id"`
+	Status   string          `json:"status"`
+	Cost     float64         `json:"cost"`
+	Result   json.RawMessage `json:"result"`
+	Progress float64         `json:"progress"`
+	Details  json.RawMessage `json:"details"`
+	Preview  json.RawMessage `json:"preview"`
 }
 
 type GeneralImageResponseAsync struct {

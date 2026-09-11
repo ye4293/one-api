@@ -145,7 +145,7 @@ func reconcileSingleFluxVideo(ctx context.Context, task *dbmodel.Video) {
 
 	switch result.TaskStatus {
 	case "succeed":
-		succeedFluxVideoTask(ctx, task, result.VideoResult, result.RawResult)
+		succeedFluxVideoTask(ctx, task, result.VideoResult, result.RawResult, result.UpstreamCost)
 	case "failed":
 		failFluxVideoTask(ctx, task, result.Message, result.RawResult)
 	default:
@@ -155,7 +155,9 @@ func reconcileSingleFluxVideo(ctx context.Context, task *dbmodel.Video) {
 
 // succeedFluxVideoTask 用 CAS（status=processing）原子转 succeed 并写 store_url + result（上游原始 JSON）。
 // RowsAffected==0 表示已被其他路径（客户端查询/另一实例）处理，直接跳过。
-func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL string, rawResult string) {
+// upstreamCost>0（上游返回权威 cost）时把预扣 quota 原子改写为按上游 cost 换算的 newQuota，
+// 并在赢得转换后调 SettleVideoCostDiff 做多退少补——RowsAffected 门控保证只结算一次。
+func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL string, rawResult string, upstreamCost float64) {
 	updates := map[string]interface{}{
 		"status":     "succeed",
 		"updated_at": time.Now().Unix(),
@@ -165,6 +167,9 @@ func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL str
 	}
 	if rawResult != "" {
 		updates["result"] = rawResult // 上游 get_result 完整原始 JSON，供审计/排障
+	}
+	if upstreamCost > 0 {
+		updates["quota"] = flux.VideoQuotaFromUpstreamCost(upstreamCost) // 以上游权威 cost 为准
 	}
 	res := dbmodel.DB.Model(&dbmodel.Video{}).
 		Where("task_id = ? AND status = ?", task.TaskId, "processing").
@@ -176,6 +181,10 @@ func succeedFluxVideoTask(ctx context.Context, task *dbmodel.Video, videoURL str
 	if res.RowsAffected == 0 {
 		logger.Infof(ctx, "[flux-video-reconciler] 已被其他路径处理（成功跳过）: task_id=%s", task.TaskId)
 		return
+	}
+	// 赢得终态转换 → 按上游 cost 多退少补（内部 diff==0 或 upstreamCost==0 时自身不动）
+	if upstreamCost > 0 {
+		flux.SettleVideoCostDiff(ctx, task, upstreamCost)
 	}
 	logger.Infof(ctx, "[flux-video-reconciler] 对账成功: task_id=%s, user_id=%d", task.TaskId, task.UserId)
 }
