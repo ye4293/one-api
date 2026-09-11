@@ -217,6 +217,7 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("flux video task not found (upstream 404): %s", string(body))
 		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障
+		generalResponse.FluxStatus = UpstreamStatusTaskNotFound
 		return generalResponse, nil
 	}
 	// 其余非 2xx（401/403/429/5xx 等）多为临时或配置问题：返回错误交上层重试，
@@ -234,6 +235,9 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 	}
 	// 留存上游 get_result 完整原始 JSON（含 status/result.sample，若上游返回则含 cost）
 	generalResponse.RawResult = string(body)
+	// 透传 BFL 原生字段（status/result/progress/details/preview）供 flux get_result 对齐上游结构
+	generalResponse.FluxStatus = pollResp.Status
+	fillFluxNativeFields(generalResponse, body)
 
 	switch pollResp.Status {
 	case UpstreamStatusReady:
@@ -281,6 +285,7 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate prediction not found (upstream 404): %s", string(body))
 		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障
+		generalResponse.FluxStatus = UpstreamStatusTaskNotFound
 		return generalResponse, nil
 	}
 	if resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
@@ -296,6 +301,8 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 	}
 	// 留存上游 prediction 完整原始 JSON（含 status/output/metrics）
 	generalResponse.RawResult = string(body)
+	// Replicate 无 BFL 原生结构，主动映射为 BFL 字面 status 供 flux get_result 对齐
+	generalResponse.FluxStatus = replicateStatusToBFL(predResp.Status)
 
 	switch predResp.Status {
 	case "succeeded":
@@ -303,14 +310,66 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 		if sample := string(predResp.Output); sample != "" {
 			generalResponse.VideoResult = sample
 			generalResponse.VideoResults = []model.VideoResultItem{{Url: sample}}
+			// 构造 BFL 风格 result 对象 {"sample": "<mp4 url>"}
+			if raw, err := json.Marshal(map[string]string{"sample": sample}); err == nil {
+				generalResponse.FluxResult = raw
+			}
 		}
 		generalResponse.UpstreamCost = predResp.Cost // 顶层 cost(部分代理返回),标准 replicate.com 为 0 → 保持预扣
 	case "failed", "canceled":
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate video %s: %v", predResp.Status, predResp.Error)
+		// details 透传上游 error 供 flux get_result 展示失败原因
+		if predResp.Error != nil {
+			if raw, err := json.Marshal(map[string]interface{}{"error": predResp.Error}); err == nil {
+				generalResponse.FluxDetails = raw
+			}
+		}
 	default: // starting / processing
 		generalResponse.TaskStatus = "processing"
 	}
 
 	return generalResponse, nil
+}
+
+// replicateStatusToBFL 把 Replicate prediction 状态映射为 BFL 原生 status 字面值，
+// 使 flux get_result 对 Replicate 路径也返回与 BFL 一致的 status。
+func replicateStatusToBFL(status string) string {
+	switch status {
+	case "succeeded":
+		return UpstreamStatusReady
+	case "failed", "canceled":
+		return UpstreamStatusError
+	case "starting":
+		return "Pending"
+	case "processing":
+		return "Processing"
+	default:
+		return status
+	}
+}
+
+// fillFluxNativeFields 从 BFL get_result 原始 body 提取 result/progress/details/preview
+// 原样填充到 generalResponse（供 flux get_result 对齐上游结构）。上游为 null/缺失则保持零值。
+func fillFluxNativeFields(r *model.GeneralFinalVideoResponse, body []byte) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return
+	}
+	notNull := func(v json.RawMessage) bool { return len(v) > 0 && string(v) != "null" }
+	if v, ok := raw["result"]; ok && notNull(v) {
+		r.FluxResult = v
+	}
+	if v, ok := raw["details"]; ok && notNull(v) {
+		r.FluxDetails = v
+	}
+	if v, ok := raw["preview"]; ok && notNull(v) {
+		r.FluxPreview = v
+	}
+	if v, ok := raw["progress"]; ok && notNull(v) {
+		var p float64
+		if json.Unmarshal(v, &p) == nil {
+			r.FluxProgress = p
+		}
+	}
 }

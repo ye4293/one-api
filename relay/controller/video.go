@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -527,6 +528,31 @@ func handleRunwayVideoResponse(c *gin.Context, ctx context.Context, videoRespons
 	}
 }
 
+// videoCostCents 把内部 quota 换算为对外展示的费用（美分，如 85.0=$0.85）。
+// 口径：quota ÷ QuotaPerUnit = USD，再 ×100 得美分；四舍五入到 2 位小数避免浮点噪声。
+func videoCostCents(quota int64) float64 {
+	if quota <= 0 {
+		return 0
+	}
+	cents := float64(quota) / config.QuotaPerUnit * 100
+	return math.Round(cents*100) / 100
+}
+
+// buildFluxVideoResult 把内部 GeneralFinalVideoResponse 组装为 flux-3-video get_result
+// 对外的 BFL 原生 7 字段结构。cost 由调用方按实际计费 quota 换算传入（美分）。
+// Status 用 adaptor 填充的 BFL 原生字面值；result/details/preview 为 nil 时序列化为 null。
+func buildFluxVideoResult(r *model.GeneralFinalVideoResponse, cost float64) model.FluxVideoGetResultResponse {
+	return model.FluxVideoGetResultResponse{
+		ID:       r.TaskId,
+		Status:   r.FluxStatus,
+		Cost:     cost,
+		Result:   r.FluxResult,
+		Progress: r.FluxProgress,
+		Details:  r.FluxDetails,
+		Preview:  r.FluxPreview,
+	}
+}
+
 // 新增计算quota的函数
 func calculateQuota(meta *util.RelayMeta, modelName string, mode string, duration string, c *gin.Context) int64 {
 	var modelPrice float64
@@ -850,7 +876,15 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		if videoTask.VideoDuration > 0 {
 			result.VideoDuration = videoTask.VideoDuration
 		}
-		c.JSON(http.StatusOK, result)
+		// 返回权威费用（美分）：DB quota 已被 CAS 改写为 newQuota，用它换算保证与实际计费一致。
+		cost := videoCostCents(newQuota)
+		result.Cost = cost
+		// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
+		if videoTask.Provider == "flux" {
+			c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
+		} else {
+			c.JSON(http.StatusOK, result)
+		}
 		return nil
 	}
 
@@ -886,7 +920,22 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		result.VideoDuration = videoTask.VideoDuration
 	}
 
-	c.JSON(http.StatusOK, result)
+	// 成功时返回权威费用（美分）：此路径未做差额结算（上游无 cost / 存量任务），
+	// 实际计费即提交预扣的 videoTask.Quota。失败已退款、processing 未定，均不返回 cost。
+	if result.TaskStatus == "succeed" {
+		result.Cost = videoCostCents(videoTask.Quota)
+	}
+
+	// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
+	if videoTask.Provider == "flux" {
+		cost := 0.0
+		if result.TaskStatus == "succeed" {
+			cost = videoCostCents(videoTask.Quota)
+		}
+		c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
+	} else {
+		c.JSON(http.StatusOK, result)
+	}
 	return nil
 }
 

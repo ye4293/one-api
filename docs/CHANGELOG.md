@@ -6,9 +6,23 @@
 
 ---
 
-## 2026-09-06
+## 2026-09-11
 
-### feat(flux-video): 完成时按上游 cost 多退少补 + 修 detail/details 字段名 bug
+### feat(flux-video): get_result 响应返回 cost（美分）计费结果
+
+- **分支**: `flux-video`
+- **类型**: 新功能
+- **背景**: `/flux/v1/get_result` 命中视频任务返回的 `GeneralFinalVideoResponse` 从不返回费用——`UpstreamCost` 是 `json:"-"`，`Usage.cost_in_usd` 从未赋值。客户端拿不到本次任务的实际花费。
+- **涉及文件**:
+  - `relay/model/general.go` — `GeneralFinalVideoResponse` 加顶层 `Cost float64 json:"cost,omitempty"`（美分，如 85.0=$0.85）
+  - `relay/controller/video.go` — 新增 `videoCostCents(quota)` 换算助手；`invokeVideoAdaptorResult` 两处成功路径填 `result.Cost`（import 加 `math`）
+- **计费口径**: `cost美分 = 最终实际计费 quota ÷ QuotaPerUnit × 100`，四舍五入 2 位。上游有 cost 分支用 CAS 后的 `newQuota`；无 cost（标准 Replicate/存量）分支用预扣 `videoTask.Quota`。二者统一，避免直接透传上游 cost 导致 `UpstreamCost==0` 任务显示 0 但实际扣费。
+- **返回时机**: 仅 `succeed` 返回 cost；`processing`（未定）与 `failed`（已退款）经 `omitempty` 省略
+- **范围**: 仅 flux VideoAdaptor 成功路径；gemini-omni（按 token 计费）早返回分支不动
+- **影响范围**: 无 schema 变更；仅新增响应字段，向后兼容
+- **验证**: `go build ./... && go vet ./...` 通过
+
+---
 
 - **分支**: `flux-video`
 - **类型**: 新功能 / 修复
