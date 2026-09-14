@@ -33,6 +33,11 @@ func isReplicate(baseURL string) bool {
 	return strings.Contains(baseURL, "replicate.com")
 }
 
+// IsReplicate 导出版本，供其它包（如结果查询的 DB 优先组装）复用同一判定口径。
+func IsReplicate(baseURL string) bool {
+	return isReplicate(baseURL)
+}
+
 // ValidateRequest 在创建 pending 记录前做前置校验（不产生 DB 副作用）
 // P2-2: 不支持的 Replicate 模型应在任何 DB 操作前返回 400
 func (a *Adaptor) ValidateRequest(meta *util.RelayMeta) error {

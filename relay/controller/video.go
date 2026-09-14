@@ -828,6 +828,28 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 // invokeVideoAdaptorResult 通过 VideoAdaptor 接口查询视频任务结果
 func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor, videoTask *dbmodel.Video, channel *dbmodel.Channel, cfg *dbmodel.ChannelConfig) *model.ErrorWithStatusCode {
 	adaptor.Init(nil)
+
+	// DB 优先：flux-3-video 任务已终态（succeed/failed）时，直接用库里数据组装 BFL 原生响应返回，
+	// 不回源上游。避免已完成任务被反复查询打上游，也杜绝上游结果过期返回 404 把已成功任务误判失败退款。
+	// 对账器只喂 processing 任务且直接调 HandleVideoResult，不经此路径，故本短路不影响对账。
+	if videoTask.Provider == "flux" {
+		baseURL := "https://api.bfl.ai"
+		if channel.BaseURL != nil && *channel.BaseURL != "" {
+			baseURL = *channel.BaseURL
+		}
+		if gr, ok := flux.BuildTerminalResultFromDB(videoTask, baseURL); ok {
+			if videoTask.VideoDuration > 0 {
+				gr.VideoDuration = videoTask.VideoDuration
+			}
+			cost := 0.0
+			if gr.TaskStatus == "succeed" {
+				cost = videoCostCents(videoTask.Quota) // 已结算 quota → 权威费用；failed 已退款 cost=0
+			}
+			c.JSON(http.StatusOK, buildFluxVideoResult(gr, cost))
+			return nil
+		}
+	}
+
 	result, apiErr := adaptor.HandleVideoResult(c, videoTask, channel, cfg)
 	if apiErr != nil {
 		return apiErr
@@ -1678,9 +1700,11 @@ func UpdateVideoTaskStatus(taskid string, status string, failreason string) bool
 
 	log.Printf("Task %s status updated from '%s' to '%s'", taskid, oldStatus, status)
 
-	// 返回是否需要退款：只有当状态变为失败且之前不是失败状态时才退款
-	// 空字符串被视为非失败状态，这是正确的，因为任务刚创建时就是这个状态
-	needRefund := (oldStatus != "failed" && status == "failed")
+	// 返回是否需要退款：只在 processing → failed 转换时退款。
+	// 与对账器 failFluxVideoTask 的 `Where status=processing` CAS 语义对齐：
+	// 已 succeed 的任务因上游结果过期返回 404 被翻成 failed 时，不得退款（已计费成功）。
+	// CreateVideoLog 恒以 "processing" 建任务，不存在 ""→failed 的正常退款需求。
+	needRefund := (oldStatus == "processing" && status == "failed")
 	log.Printf("Task %s refund decision: oldStatus='%s', newStatus='%s', needRefund=%v", taskid, oldStatus, status, needRefund)
 
 	return needRefund
