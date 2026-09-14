@@ -6,7 +6,20 @@
 
 ---
 
-## 2026-09-11
+## 2026-09-14
+
+### feat(flux-video): get_result 增加 DB 优先返回 + 修已成功任务被误退款
+
+- **分支**: `flux-video`
+- **类型**: 新功能 + 修复
+- **背景**: `/flux/v1/get_result` 命中视频任务时每次都回源 BFL/Replicate，无 DB 优先；且 `HandleVideoResult` 对上游 404 一律判 `failed`，导致已 `succeed`（已计费）任务因结果 URL 过期返回 404 被翻成 `failed` 并退款。
+- **涉及文件**:
+  - `relay/channel/flux/adaptor.go` — 新增导出 `IsReplicate(baseURL)`
+  - `relay/channel/flux/video_adaptor.go` — 新增 `BuildTerminalResultFromDB`（+ `fillFromBFLRaw`/`fillFromReplicateRaw`），从 DB 组装终态 BFL 原生响应
+  - `relay/controller/video.go` — `invokeVideoAdaptorResult` 顶部加 flux 终态 DB 优先短路；`UpdateVideoTaskStatus` 退款门控 `oldStatus != "failed"` → `oldStatus == "processing"`
+- **说明**: flux-3-video 任务已 succeed/failed 时直接由 DB 组装返回、不回源（succeed 无 sample 回退 store_url，failed 无 details 回退 fail_reason）；TaskStatus 以 DB 为权威，避免 404/error body 被误判 processing。退款仅允许 `processing→failed`，与对账器 CAS 语义对齐。对账器只喂 processing 任务、未经该短路，行为不变。
+- **关联计划**: `docs/plans/2026-09-14-flux-video-get-result-db-first.md`
+
 
 ### feat(flux-video): get_result 响应返回 cost（美分）计费结果
 

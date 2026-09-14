@@ -373,3 +373,95 @@ func fillFluxNativeFields(r *model.GeneralFinalVideoResponse, body []byte) {
 		}
 	}
 }
+
+// BuildTerminalResultFromDB 在任务已终态（succeed/failed）时，用库里数据组装
+// GeneralFinalVideoResponse，供 flux get_result 的 DB 优先路径直接返回，不回源。
+//
+// 语义要点：
+//   - TaskStatus 以 DB videoTask.Status 为权威，绝不由 raw 反推——失败任务的 raw 可能是
+//     上游 404/error body（非 BFL 7 字段结构），若反推会被误判为 processing。
+//   - FluxStatus/result/details/preview 尽力从 videoTask.Result 原始 JSON 提取；缺失则兜底：
+//     succeed 无 sample 时回退 store_url，failed 无 details 时回退 fail_reason。
+//   - 不设置 UpstreamCost：DB 优先不触发结算（cost 由调用方按已结算 quota 换算）。
+//
+// 返回 (gr, true) 命中 DB 优先；(nil, false) 表示非终态（processing），调用方需回源。
+func BuildTerminalResultFromDB(videoTask *dbmodel.Video, baseURL string) (*model.GeneralFinalVideoResponse, bool) {
+	status := videoTask.Status
+	if status != "succeed" && status != "failed" {
+		return nil, false
+	}
+
+	gr := &model.GeneralFinalVideoResponse{
+		TaskId:     videoTask.TaskId,
+		Duration:   videoTask.Duration,
+		TaskStatus: status, // 以 DB 为权威
+	}
+
+	raw := []byte(videoTask.Result)
+	if len(raw) > 0 {
+		if isReplicate(baseURL) {
+			fillFromReplicateRaw(gr, raw)
+		} else {
+			fillFromBFLRaw(gr, raw)
+		}
+	}
+
+	// 兜底 FluxStatus：raw 未提供有效 status 时按 DB 状态回填 BFL 字面值
+	if gr.FluxStatus == "" {
+		if status == "succeed" {
+			gr.FluxStatus = UpstreamStatusReady
+		} else {
+			gr.FluxStatus = UpstreamStatusError
+		}
+	}
+	// succeed 但 raw 未取到视频 URL → 用 store_url 兜底（覆盖 result 列为空的存量成功任务）
+	if status == "succeed" && gr.VideoResult == "" && videoTask.StoreUrl != "" {
+		gr.VideoResult = videoTask.StoreUrl
+		gr.VideoResults = []model.VideoResultItem{{Url: videoTask.StoreUrl}}
+		if b, err := json.Marshal(map[string]string{"sample": videoTask.StoreUrl}); err == nil {
+			gr.FluxResult = b
+		}
+	}
+	// failed 且 raw 未取到 details → 用 fail_reason 兜底，避免失败原因丢失
+	if status == "failed" && len(gr.FluxDetails) == 0 && videoTask.FailReason != "" {
+		if b, err := json.Marshal(map[string]string{"detail": videoTask.FailReason}); err == nil {
+			gr.FluxDetails = b
+		}
+	}
+
+	return gr, true
+}
+
+// fillFromBFLRaw 从 BFL get_result 原始 JSON 提取 status/result.sample 及原生展示字段到 gr。
+func fillFromBFLRaw(gr *model.GeneralFinalVideoResponse, body []byte) {
+	var pollResp FluxVideoPollingResponse
+	if err := json.Unmarshal(body, &pollResp); err == nil {
+		gr.FluxStatus = pollResp.Status
+		if pollResp.Result != nil && pollResp.Result.Sample != "" {
+			gr.VideoResult = pollResp.Result.Sample
+			gr.VideoResults = []model.VideoResultItem{{Url: pollResp.Result.Sample}}
+		}
+	}
+	fillFluxNativeFields(gr, body) // result/details/preview/progress 原样透传
+}
+
+// fillFromReplicateRaw 从 Replicate prediction 原始 JSON 提取 output/error 并映射为 BFL 字面结构。
+func fillFromReplicateRaw(gr *model.GeneralFinalVideoResponse, body []byte) {
+	var predResp ReplicateResponse
+	if err := json.Unmarshal(body, &predResp); err != nil {
+		return
+	}
+	gr.FluxStatus = replicateStatusToBFL(predResp.Status)
+	if sample := string(predResp.Output); sample != "" {
+		gr.VideoResult = sample
+		gr.VideoResults = []model.VideoResultItem{{Url: sample}}
+		if b, err := json.Marshal(map[string]string{"sample": sample}); err == nil {
+			gr.FluxResult = b
+		}
+	}
+	if predResp.Error != nil {
+		if b, err := json.Marshal(map[string]interface{}{"error": predResp.Error}); err == nil {
+			gr.FluxDetails = b
+		}
+	}
+}
