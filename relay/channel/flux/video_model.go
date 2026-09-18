@@ -2,26 +2,29 @@ package flux
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
 
 // FluxVideoRequest BFL FLUX 3 Video 的请求体
 // 端点：POST /v1/flux-3-video
-// mode / prompt 始终必填；其余按模式选填，全部透传给上游。
+// 普通生成需要 mode / prompt；草稿增强只发送该模式允许的字段。
 type FluxVideoRequest struct {
 	Mode            string          `json:"mode"`                       // t2v / i2v / v2v / draft_enhance，必填
-	Prompt          string          `json:"prompt"`                     // 文本提示词，必填
+	Prompt          string          `json:"prompt"`                     // 普通生成的文本提示词，草稿增强不下发
 	Keyframes       json.RawMessage `json:"keyframes,omitempty"`        // i2v：单图 URL/base64、首尾帧数组、或 [秒,图] 对（最多 10 帧）
 	StartVideo      string          `json:"start_video,omitempty"`      // v2v：待续接视频（mp4，URL 或 base64）
 	DraftCache      string          `json:"draft_cache,omitempty"`      // draft_enhance：先前草稿返回的 bundle
-	Resolution      string          `json:"resolution,omitempty"`       // hd（默认）/ fhd
-	Duration        interface{}     `json:"duration,omitempty"`         // 整数秒 5–20，或 "auto"
+	Resolution      string          `json:"resolution,omitempty"`       // hd / fhd / qhd / uhd，草稿增强默认 fhd
+	Duration        interface{}     `json:"duration,omitempty"`         // 整数秒 5–20 或 "auto"；BFL v2v 最大 15 秒
 	AspectRatio     string          `json:"aspect_ratio,omitempty"`     // auto / 21:9 / 16:9 / 1:1 / 9:16 等
 	GenerateAudio   *bool           `json:"generate_audio,omitempty"`   // 默认 true，false 输出静音
 	SafetyTolerance *int            `json:"safety_tolerance,omitempty"` // 0（最严格）~ 4，默认 2
 	Draft           *bool           `json:"draft,omitempty"`            // true 快速出 HD 预览，结果含 draft_cache
 	Version         string          `json:"version,omitempty"`          // 默认 latest
+	User            string          `json:"user,omitempty"`             // 调用方提供的终端用户标识
 }
 
 // FluxVideoSubmitResponse 提交后（POST）的响应
@@ -79,82 +82,202 @@ func fluxResolutionToReplicate(res string) string {
 	}
 }
 
-// normalizeBillingResolution 把请求分辨率归一为计费口径 hd/fhd。
-// Replicate 原生只认 720p/1080p，若不归一，"1080p" 会匹配不到 fhd 规则、
-// 落到兜底通配价（0.17）少收一半。空/未知一律按 hd 兜底。
+// normalizeBillingResolution 统一分辨率别名，保留高分辨率和未知值供校验。
 func normalizeBillingResolution(res string) string {
-	switch strings.ToLower(res) {
+	switch res = strings.ToLower(strings.TrimSpace(res)); res {
 	case "", "hd", "720p":
 		return "hd"
 	case "fhd", "1080p":
 		return "fhd"
 	default:
-		return "hd"
+		return res
 	}
 }
 
-// normalizeReplicateDuration 把 duration 归一为 Replicate 的字符串枚举（auto / "5"~"20"）。
-// Replicate schema 的 duration 是字符串枚举，客户端若按 BFL 习惯传 JSON 数字 5，
-// 下发数字会被上游 Pydantic 枚举校验拒绝（422）。返回 "" 表示不下发，交上游默认 auto。
-func normalizeReplicateDuration(d interface{}) string {
-	s := durationToString(d)
-	if s == "" {
-		return ""
+// normalizeVideoDuration 只接受整秒或 auto，不截断小数、不钳制越界值。
+// 返回的整数用于 BFL、落库和计费；Replicate 下发时再转成数字字符串。
+func normalizeVideoDuration(d interface{}, maximum int) (interface{}, error) {
+	if d == nil {
+		return "auto", nil
 	}
-	if strings.EqualFold(s, "auto") {
-		return "auto"
+	if s, ok := d.(string); ok {
+		s = strings.TrimSpace(s)
+		if strings.EqualFold(s, "auto") {
+			return "auto", nil
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, fmt.Errorf("duration 必须为 5–%d 的整数或 auto", maximum)
+		}
+		d = n
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return "" // 无法识别，交上游默认 auto
+	var seconds float64
+	switch v := d.(type) {
+	case int:
+		seconds = float64(v)
+	case float64:
+		seconds = v
+	case json.Number:
+		var err error
+		seconds, err = v.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("duration 必须为整数或 auto")
+		}
+	default:
+		return nil, fmt.Errorf("duration 必须为整数或 auto")
 	}
-	// 枚举范围 5~20，越界钳到边界避免 422
-	if n < 5 {
-		n = 5
-	} else if n > 20 {
-		n = 20
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || math.Trunc(seconds) != seconds || seconds < 5 || seconds > float64(maximum) {
+		return nil, fmt.Errorf("duration 必须为 5–%d 的整数或 auto", maximum)
 	}
-	return strconv.Itoa(n)
+	return int(seconds), nil
 }
 
 // keyframesToReplicateImages 将 BFL keyframes 转为 Replicate 的 images 数组。
-// 支持：单图 URL/base64（string）、首尾帧数组（[]string）。
-// [秒,图] 对等复杂形态本期不支持，返回 nil（不下发 images）。
-func keyframesToReplicateImages(raw json.RawMessage) []string {
+// 定时关键帧无法无损转换，必须报错，避免丢弃素材后变成文生视频。
+func keyframesToReplicateImages(raw json.RawMessage) ([]string, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	var single string
 	if err := json.Unmarshal(raw, &single); err == nil {
-		if single == "" {
-			return nil
+		if strings.TrimSpace(single) == "" {
+			return nil, fmt.Errorf("keyframes 图片不能为空")
 		}
-		return []string{single}
+		return []string{single}, nil
 	}
 	var arr []string
-	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
-		return arr
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		if len(arr) < 1 || len(arr) > 10 {
+			return nil, fmt.Errorf("keyframes 必须包含 1–10 张图片")
+		}
+		for _, img := range arr {
+			if strings.TrimSpace(img) == "" {
+				return nil, fmt.Errorf("keyframes 图片不能为空")
+			}
+		}
+		return arr, nil
+	}
+	return nil, fmt.Errorf("Replicate 不支持定时关键帧；keyframes 仅支持单张图片或图片字符串数组，定时关键帧请使用 BFL 渠道")
+}
+
+// normalizeVideoRequest 在提交前统一校验，确保上游参数、落库和计费使用同一语义。
+func normalizeVideoRequest(req *FluxVideoRequest, replicate bool) error {
+	switch strings.ToLower(strings.TrimSpace(req.Mode)) {
+	case "t2v", "text-to-video":
+		req.Mode = "t2v"
+	case "i2v", "image-continuation":
+		req.Mode = "i2v"
+	case "v2v", "video-continuation":
+		req.Mode = "v2v"
+	case "draft_enhance", "draft-enhance":
+		req.Mode = "draft_enhance"
+	default:
+		return fmt.Errorf("mode 必须为 t2v、i2v、v2v 或 draft_enhance")
+	}
+	if req.Mode == "draft_enhance" && replicate {
+		return fmt.Errorf("Replicate 不支持 draft_enhance 草稿增强，请使用 BFL 渠道")
+	}
+	if strings.TrimSpace(req.Resolution) == "" && req.Mode == "draft_enhance" {
+		req.Resolution = "fhd"
+	}
+	req.Resolution = normalizeBillingResolution(req.Resolution)
+	switch req.Resolution {
+	case "hd", "fhd":
+	case "qhd", "uhd":
+		if replicate {
+			return fmt.Errorf("Replicate 仅支持 hd/720p 和 fhd/1080p")
+		}
+	default:
+		return fmt.Errorf("resolution 必须为 hd、fhd、qhd、uhd，或 720p、1080p")
+	}
+	if req.Mode == "draft_enhance" {
+		if strings.TrimSpace(req.DraftCache) == "" {
+			return fmt.Errorf("draft_enhance 必须提供 draft_cache")
+		}
+		if req.Prompt != "" || len(req.Keyframes) > 0 || req.StartVideo != "" || req.Duration != nil || req.AspectRatio != "" || req.GenerateAudio != nil || req.Draft != nil || req.Version != "" {
+			return fmt.Errorf("draft_enhance 只接受 mode、draft_cache、resolution、safety_tolerance 和 user，其他生成参数沿用草稿")
+		}
+		return nil
+	}
+	if req.DraftCache != "" {
+		return fmt.Errorf("draft_cache 仅用于 draft_enhance")
+	}
+	if req.Draft != nil && *req.Draft && req.Resolution != "hd" {
+		return fmt.Errorf("draft 草稿仅支持 hd/720p 分辨率")
+	}
+	maximum := 20
+	if req.Mode == "v2v" && !replicate {
+		maximum = 15
+	}
+	var err error
+	req.Duration, err = normalizeVideoDuration(req.Duration, maximum)
+	if err != nil {
+		return err
+	}
+	hasKeyframes := len(req.Keyframes) > 0 && string(req.Keyframes) != "null"
+	switch req.Mode {
+	case "t2v":
+		if hasKeyframes || req.StartVideo != "" {
+			return fmt.Errorf("t2v 不接受 keyframes 或 start_video")
+		}
+	case "i2v":
+		if !hasKeyframes || req.StartVideo != "" {
+			return fmt.Errorf("i2v 必须提供 keyframes，且不能同时提供 start_video")
+		}
+	case "v2v":
+		if strings.TrimSpace(req.StartVideo) == "" || hasKeyframes {
+			return fmt.Errorf("v2v 必须提供 start_video，且不能同时提供 keyframes")
+		}
+	}
+	if replicate && hasKeyframes {
+		images, err := keyframesToReplicateImages(req.Keyframes)
+		if err != nil {
+			return err
+		}
+		if len(images) >= 3 && req.Duration == "auto" {
+			return fmt.Errorf("Replicate 使用三张及以上图片时必须指定整数 duration")
+		}
 	}
 	return nil
 }
 
+// buildBFLVideoInput 草稿增强使用独立字段集，不能把空 prompt 等字段发给严格校验的上游。
+func buildBFLVideoInput(req FluxVideoRequest) any {
+	if req.Mode != "draft_enhance" {
+		return req
+	}
+	input := map[string]any{"mode": req.Mode, "draft_cache": req.DraftCache, "resolution": req.Resolution}
+	if req.SafetyTolerance != nil {
+		input["safety_tolerance"] = *req.SafetyTolerance
+	}
+	if req.User != "" {
+		input["user"] = req.User
+	}
+	return input
+}
+
 // buildReplicateVideoInput 把 BFL 请求字段转成 Replicate predictions 的 input。
 // mode 不下发：Replicate 由 images/start_video 是否存在自行推断 t2v/i2v/v2v。
-func buildReplicateVideoInput(req FluxVideoRequest) map[string]any {
+func buildReplicateVideoInput(req FluxVideoRequest) (map[string]any, error) {
+	if err := normalizeVideoRequest(&req, true); err != nil {
+		return nil, err
+	}
 	input := map[string]any{
 		"prompt":     req.Prompt,
 		"resolution": fluxResolutionToReplicate(req.Resolution),
 	}
-	if imgs := keyframesToReplicateImages(req.Keyframes); len(imgs) > 0 {
+	imgs, err := keyframesToReplicateImages(req.Keyframes)
+	if err != nil {
+		return nil, err
+	}
+	if len(imgs) > 0 {
 		input["images"] = imgs
 	}
 	if req.StartVideo != "" {
 		input["start_video"] = req.StartVideo
 	}
 	if req.Duration != nil {
-		if dur := normalizeReplicateDuration(req.Duration); dur != "" {
-			input["duration"] = dur
-		}
+		input["duration"] = durationToString(req.Duration)
 	}
 	if req.AspectRatio != "" {
 		input["aspect_ratio"] = req.AspectRatio
@@ -168,5 +291,5 @@ func buildReplicateVideoInput(req FluxVideoRequest) map[string]any {
 	if req.Draft != nil {
 		input["draft"] = *req.Draft
 	}
-	return input
+	return input, nil
 }

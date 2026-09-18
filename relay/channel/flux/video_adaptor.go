@@ -33,7 +33,7 @@ func durationToString(d interface{}) string {
 	case string:
 		return v
 	case float64:
-		return strconv.Itoa(int(v))
+		return strconv.FormatFloat(v, 'f', -1, 64)
 	case int:
 		return strconv.Itoa(v)
 	case json.Number:
@@ -60,6 +60,9 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	if err := common.UnmarshalBodyReusable(c, &fluxReq); err != nil {
 		return nil, openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
 	}
+	if err := normalizeVideoRequest(&fluxReq, isReplicate(meta.BaseURL)); err != nil {
+		return nil, openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
+	}
 
 	ch, err := dbmodel.GetChannelById(meta.ChannelId, true)
 	if err != nil {
@@ -82,8 +85,8 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 
 	// 计费参数归一化（方案 A：BFL/Replicate 同名共用一套按秒计费规则）
 	durationStr := durationToString(fluxReq.Duration)
-	// 计费口径归一：Replicate 原生 720p/1080p 需映射回 hd/fhd 才能命中计费规则
-	resolution := normalizeBillingResolution(fluxReq.Resolution)
+	// 参数已在提交前归一化，计费和落库直接使用实际提交的值。
+	resolution := fluxReq.Resolution
 	sound := "on" // generate_audio 默认 true
 	if fluxReq.GenerateAudio != nil && !*fluxReq.GenerateAudio {
 		sound = "off"
@@ -119,9 +122,12 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 // submitBFLVideo 走 BFL 原生：x-key + POST /v1/flux-3-video，解析 {id, polling_url}。
 // 返回 (taskId, pollingURL)：pollingURL 为上游多集群路由地址，轮询必须原样使用。
 func (a *VideoAdaptor) submitBFLVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, string, *model.ErrorWithStatusCode) {
+	if err := normalizeVideoRequest(&fluxReq, false); err != nil {
+		return "", "", openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
+	}
 	requestURL := meta.BaseURL + "/v1/flux-3-video"
 
-	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, fluxReq, relaychannel.XKeyAuthHeaders(ch.Key))
+	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, buildBFLVideoInput(fluxReq), relaychannel.XKeyAuthHeaders(ch.Key))
 	if httpErr != nil {
 		return "", "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
 	}
@@ -155,7 +161,11 @@ func (a *VideoAdaptor) submitReplicateVideo(fluxReq FluxVideoRequest, meta *util
 			"model_not_supported", http.StatusBadRequest)
 	}
 	requestURL := fmt.Sprintf("%s/v1/models/%s/predictions", meta.BaseURL, replicateID)
-	reqBody := map[string]any{"input": buildReplicateVideoInput(fluxReq)}
+	input, err := buildReplicateVideoInput(fluxReq)
+	if err != nil {
+		return "", "", openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
+	}
+	reqBody := map[string]any{"input": input}
 
 	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, reqBody, relaychannel.BearerAuthHeaders(ch.Key))
 	if httpErr != nil {
@@ -315,7 +325,7 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 				generalResponse.FluxResult = raw
 			}
 		}
-		generalResponse.UpstreamCost = predResp.Cost // 顶层 cost(部分代理返回),标准 replicate.com 为 0 → 保持预扣
+		fillReplicateVideoBilling(generalResponse, videoTask, predResp)
 	case "failed", "canceled":
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate video %s: %v", predResp.Status, predResp.Error)

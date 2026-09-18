@@ -6,6 +6,26 @@
 
 ---
 
+## 2026-09-18
+
+### feat(flux-video): 提交前统一参数校验 + 按实际输出时长结算 + 成功结算统一入口
+
+- **分支**: `flux-video`
+- **类型**: 新功能 + 重构
+- **背景**: (1) 提交前对 mode/resolution/duration/keyframes 无统一校验：小数秒被静默截断、越界时长被钳到 5–20、Replicate 收到不支持的定时关键帧会丢弃素材退化成 t2v、draft_enhance 会把空 prompt 等多余字段发给严格校验的上游。(2) 标准 Replicate 无顶层 cost，任务完成只能保持按 5 秒估算的预扣，与实际输出时长不符。(3) 客户端轮询与后台对账的成功结算逻辑分散在两处，易漂移。
+- **涉及文件**:
+  - `relay/channel/flux/video_model.go` — 新增 `normalizeVideoRequest` 提交前统一校验（mode 别名归一、resolution 档位校验、duration 只接受 5–20 整数或 auto 不截断不钳制、keyframes 按模式互斥校验、draft_enhance 独立字段集）；`keyframesToReplicateImages` 定时关键帧返回 400 而非丢素材；新增 `buildBFLVideoInput`；`buildReplicateVideoInput` 返回 error
+  - `relay/channel/flux/video_billing.go`（新增）— `fillReplicateVideoBilling` 按 `metrics.video_output_duration_seconds` 实际小数秒结算（predict_time 是计算耗时不当作时长，分辨率优先 `resolution_target`）；`ApplyVideoSuccess` 客户端轮询/后台对账共用的成功结算入口，CAS 赢家补退、败者读 DB 终态
+  - `common/video-pricing.go` — 新增 `CalculateVideoQuotaForActualDuration` 按实际秒数（可含小数）结算；配额换算改 `math.Round` 消除浮点少计
+  - `relay/channel/flux/billing.go` — 抽出 `settleVideoQuotaDiff` 差额结算供 cost/实际时长两来源复用，支持零费用退回全部预扣
+  - `relay/channel/flux/video_adaptor.go` — 提交前调 `normalizeVideoRequest`；Replicate 结果经 `fillReplicateVideoBilling` 填费用；`durationToString` 保留小数不截断
+  - `relay/controller/video.go`、`controller/flux_video_reconciler.go` — 成功路径统一走 `ApplyVideoSuccess`，响应统一由 `BuildTerminalResultFromDB` 从 DB 组装，删除两处重复 CAS 代码
+  - `relay/model/general.go` — `GeneralFinalVideoResponse` 加内部字段 `FluxActualQuota *int64`（指针区分零费用与未知）
+- **计费口径**: 上游顶层 cost > 0 优先；否则标准 Replicate 按实际输出时长 × 配置价格结算（沿用请求参数选规则、按实际秒数计价，固定价只收一次）；两者均缺失保持预扣。实际时长写入 `videos.duration`
+- **影响范围**: 无 schema 变更。原"静默截断/钳制/丢字段"改为提交前 400 报错，属预期收紧；已有正确请求不受影响
+- **验证**: `go build ./... && go vet ./... && go test -race ./relay/channel/flux ./common ./relay/controller` 通过
+- **关联文档**: `docs/flux3-video-compatibility.md`
+
 ## 2026-09-14
 
 ### feat(flux-video): get_result 增加 DB 优先返回 + 修已成功任务被误退款

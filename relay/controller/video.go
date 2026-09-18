@@ -868,45 +868,21 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		return nil
 	}
 
-	// flux-video 且上游返回权威 cost：用 CAS（status=processing）原子转 succeed 并把 quota
-	// 改写为按上游 cost 换算的 newQuota，赢家（RowsAffected==1）调 SettleVideoCostDiff 多退少补。
-	// 与对账器共用同一门控语义，保证客户端查询/对账双路径下差额只结算一次。
-	// UpstreamCost==0（标准 replicate.com / 存量任务）不进此分支，走下方通用路径保持预扣。
-	if result.TaskStatus == "succeed" && result.UpstreamCost > 0 {
-		newQuota := flux.VideoQuotaFromUpstreamCost(result.UpstreamCost)
-		updates := map[string]interface{}{
-			"status":         "succeed",
-			"quota":          newQuota,
-			"total_duration": time.Now().Unix() - videoTask.CreatedAt,
+	// Flux 的成功状态、实际时长和费用由同一入口写入，避免客户端轮询与后台对账重复结算。
+	if videoTask.Provider == "flux" && result.TaskStatus == "succeed" {
+		if _, err := flux.ApplyVideoSuccess(c.Request.Context(), videoTask, result); err != nil {
+			return openai.ErrorWrapper(err, "video_settlement_error", http.StatusInternalServerError)
 		}
-		if result.VideoResult != "" {
-			updates["store_url"] = result.VideoResult
+		baseURL := "https://api.bfl.ai"
+		if channel.BaseURL != nil && *channel.BaseURL != "" {
+			baseURL = *channel.BaseURL
 		}
-		if result.RawResult != "" {
-			updates["result"] = result.RawResult // 上游原始 JSON，供审计/排障
+		gr, _ := flux.BuildTerminalResultFromDB(videoTask, baseURL)
+		cost := 0.0
+		if videoTask.Status == "succeed" {
+			cost = videoCostCents(videoTask.Quota)
 		}
-		res := dbmodel.DB.Model(&dbmodel.Video{}).
-			Where("task_id = ? AND status = ?", taskId, "processing").
-			Updates(updates)
-		if res.Error != nil {
-			log.Printf("Failed to CAS-update succeed task %s: %v", taskId, res.Error)
-		} else if res.RowsAffected == 1 {
-			// 赢得转换 → 结算差额（videoTask.Quota 仍是内存里的预扣旧值，用于算 diff）
-			flux.SettleVideoCostDiff(c.Request.Context(), videoTask, result.UpstreamCost)
-		}
-		// RowsAffected==0：已被对账器/另一次查询处理，跳过结算（store_url/result 已由赢家落库）
-		if videoTask.VideoDuration > 0 {
-			result.VideoDuration = videoTask.VideoDuration
-		}
-		// 返回权威费用（美分）：DB quota 已被 CAS 改写为 newQuota，用它换算保证与实际计费一致。
-		cost := videoCostCents(newQuota)
-		result.Cost = cost
-		// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
-		if videoTask.Provider == "flux" {
-			c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
-		} else {
-			c.JSON(http.StatusOK, result)
-		}
+		c.JSON(http.StatusOK, buildFluxVideoResult(gr, cost))
 		return nil
 	}
 

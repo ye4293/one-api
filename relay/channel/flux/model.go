@@ -125,7 +125,7 @@ type ReplicateResponse struct {
 	StartedAt   string          `json:"started_at"`
 	CompletedAt string          `json:"completed_at"`
 	// Cost 上游权威费用(美分)。标准 replicate.com 顶层无此字段(为 0,cost 仅在 logs 文本里,不解析);
-	// 部分 Replicate 兼容代理会返回顶层 cost。>0 时用于完成时多退少补,==0 保持提交预扣。
+	// 部分 Replicate 兼容代理会返回顶层 cost。视频在缺失费用时还可按实际输出时长结算。
 	Cost float64 `json:"cost,omitempty"`
 }
 
@@ -136,6 +136,8 @@ type ReplicateMetrics struct {
 	ImageOutputCount           int     `json:"image_output_count"`
 	ImageOutputMegapixelCount  float64 `json:"image_output_megapixel_count"`
 	ImageInputMegapixelCount   float64 `json:"image_input_megapixel_count"`
+	VideoOutputDurationSeconds float64 `json:"video_output_duration_seconds"` // 实际输出时长，保留小数秒
+	ResolutionTarget           string  `json:"resolution_target"`             // 实际输出分辨率档位
 }
 
 // ReplicateURLs Replicate 预测操作 URL
