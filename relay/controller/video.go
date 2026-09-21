@@ -801,14 +801,18 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		}
 	}
 
-	// 响应客户端
-	c.JSON(http.StatusOK, model.GeneralVideoResponse{
-		TaskId:        taskResult.TaskId,
-		TaskStatus:    taskResult.TaskStatus,
-		Message:       taskResult.Message,
-		VideoDuration: taskResult.VideoDuration,
-		PollingUrl:    taskResult.PollingUrl,
-	})
+	// 视频放大采用 BFL 原生提交响应，查询和结算继续复用 Flux 视频任务链路。
+	if adaptor.GetProviderName() == "flux" && taskResult.Mode == "upscale" {
+		c.JSON(http.StatusOK, flux.FluxVideoSubmitResponse{ID: taskResult.TaskId, PollingURL: taskResult.PollingUrl})
+	} else {
+		c.JSON(http.StatusOK, model.GeneralVideoResponse{
+			TaskId:        taskResult.TaskId,
+			TaskStatus:    taskResult.TaskStatus,
+			Message:       taskResult.Message,
+			VideoDuration: taskResult.VideoDuration,
+			PollingUrl:    taskResult.PollingUrl,
+		})
+	}
 
 	// flux-video：把 task id 覆盖进 ctx 的 RequestIdKey，使提交预扣日志的 x_request_id = task id，
 	// 与完成时差额结算日志（flux.SettleVideoCostDiff 同样覆盖）共享检索键，可按 task id 一并搜出。
@@ -868,45 +872,38 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		return nil
 	}
 
-	// flux-video 且上游返回权威 cost：用 CAS（status=processing）原子转 succeed 并把 quota
-	// 改写为按上游 cost 换算的 newQuota，赢家（RowsAffected==1）调 SettleVideoCostDiff 多退少补。
-	// 与对账器共用同一门控语义，保证客户端查询/对账双路径下差额只结算一次。
-	// UpstreamCost==0（标准 replicate.com / 存量任务）不进此分支，走下方通用路径保持预扣。
-	if result.TaskStatus == "succeed" && result.UpstreamCost > 0 {
-		newQuota := flux.VideoQuotaFromUpstreamCost(result.UpstreamCost)
-		updates := map[string]interface{}{
-			"status":         "succeed",
-			"quota":          newQuota,
-			"total_duration": time.Now().Unix() - videoTask.CreatedAt,
+	// Flux 的回调、客户端轮询和后台对账共用条件更新，终态及原始结果不能被迟到的响应覆盖。
+	if videoTask.Provider == "flux" {
+		var err error
+		switch result.TaskStatus {
+		case "succeed":
+			_, err = flux.ApplyVideoSuccess(c.Request.Context(), videoTask, result)
+		case "failed":
+			_, err = flux.ApplyVideoFailure(videoTask, result.Message, result.RawResult)
+		default:
+			err = flux.ApplyVideoProgress(videoTask, result.RawResult)
 		}
-		if result.VideoResult != "" {
-			updates["store_url"] = result.VideoResult
+		if err != nil {
+			return openai.ErrorWrapper(err, "video_settlement_error", http.StatusInternalServerError)
 		}
-		if result.RawResult != "" {
-			updates["result"] = result.RawResult // 上游原始 JSON，供审计/排障
+		stored, err := dbmodel.GetVideoTaskById(videoTask.TaskId)
+		if err != nil {
+			return openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
 		}
-		res := dbmodel.DB.Model(&dbmodel.Video{}).
-			Where("task_id = ? AND status = ?", taskId, "processing").
-			Updates(updates)
-		if res.Error != nil {
-			log.Printf("Failed to CAS-update succeed task %s: %v", taskId, res.Error)
-		} else if res.RowsAffected == 1 {
-			// 赢得转换 → 结算差额（videoTask.Quota 仍是内存里的预扣旧值，用于算 diff）
-			flux.SettleVideoCostDiff(c.Request.Context(), videoTask, result.UpstreamCost)
+		*videoTask = *stored
+		baseURL := "https://api.bfl.ai"
+		if channel.BaseURL != nil && *channel.BaseURL != "" {
+			baseURL = *channel.BaseURL
 		}
-		// RowsAffected==0：已被对账器/另一次查询处理，跳过结算（store_url/result 已由赢家落库）
-		if videoTask.VideoDuration > 0 {
-			result.VideoDuration = videoTask.VideoDuration
+		gr, terminal := flux.BuildTerminalResultFromDB(videoTask, baseURL)
+		if !terminal {
+			gr = result
 		}
-		// 返回权威费用（美分）：DB quota 已被 CAS 改写为 newQuota，用它换算保证与实际计费一致。
-		cost := videoCostCents(newQuota)
-		result.Cost = cost
-		// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
-		if videoTask.Provider == "flux" {
-			c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
-		} else {
-			c.JSON(http.StatusOK, result)
+		cost := 0.0
+		if videoTask.Status == "succeed" {
+			cost = videoCostCents(videoTask.Quota)
 		}
+		c.JSON(http.StatusOK, buildFluxVideoResult(gr, cost))
 		return nil
 	}
 
@@ -929,8 +926,7 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		}
 	}
 
-	// 留存上游完整原始 JSON 到 result 列（供审计/排障，如上游 cost）。
-	// 仅设置了 RawResult 的 provider（flux video）会写入，其它 provider 为空跳过。
+	// 留存上游完整原始 JSON 到 result 列；未设置 RawResult 时跳过。
 	if result.RawResult != "" {
 		if err := dbmodel.UpdateVideoResult(taskId, result.RawResult); err != nil {
 			log.Printf("Failed to update result for task %s: %v", taskId, err)
@@ -948,16 +944,7 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		result.Cost = videoCostCents(videoTask.Quota)
 	}
 
-	// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
-	if videoTask.Provider == "flux" {
-		cost := 0.0
-		if result.TaskStatus == "succeed" {
-			cost = videoCostCents(videoTask.Quota)
-		}
-		c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
-	} else {
-		c.JSON(http.StatusOK, result)
-	}
+	c.JSON(http.StatusOK, result)
 	return nil
 }
 

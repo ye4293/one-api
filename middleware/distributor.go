@@ -330,6 +330,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool) {
 			// 兜底：URL 缺 model（理论上 *model 会拦住）时退回 body
 			_ = common.UnmarshalBodyReusable(c, &modelRequest)
 		}
+	} else if path == "/v1/flux-tools/video-upscale-v1" {
+		// 视频放大使用 BFL 原生请求体，模型由路径确定。
+		modelRequest.Model = "video-upscale-v1"
 	} else if strings.HasPrefix(path, "/v1/flux-3-video") {
 		// BFL FLUX 3 Video 专用路由：原生请求体无 model 字段，按路径硬编码注入
 		modelRequest.Model = "flux-3-video"

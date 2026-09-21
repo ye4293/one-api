@@ -147,13 +147,15 @@ type GeneralFinalVideoResponse struct {
 	Cost float64 `json:"cost,omitempty"`
 
 	// 以下字段仅用于 Gemini Omni 按 token 计费的内部传递，不返回客户端
-	InputTokens       int64 `json:"-"`
-	OutputTextTokens  int64 `json:"-"`
-	OutputVideoTokens int64 `json:"-"`
+	InputTokens       int64  `json:"-"`
+	OutputTextTokens  int64  `json:"-"`
+	OutputVideoTokens int64  `json:"-"`
 	RawResult         string `json:"-"`
 	// UpstreamCost 上游返回的权威费用(美分),仅内部传递用于完成时按上游 cost 多退少补。
-	// >0 触发结算,==0 保持提交预扣(标准 Replicate / 存量任务)。
+	// >0 优先使用；缺失时 Flux 可按实际时长结算，两者都缺失才保留预扣。
 	UpstreamCost float64 `json:"-"`
+	// FluxActualQuota 为无上游 cost 时按实际时长计算的配额；指针区分零费用与未知费用。
+	FluxActualQuota *int64 `json:"-"`
 
 	// 以下字段仅用于 flux-3-video get_result 对齐 BFL 原生响应结构（FluxVideoGetResultResponse），
 	// 由 VideoAdaptor 填充、controller 组装，不直接返回客户端。

@@ -112,6 +112,12 @@ func SettleVideoCostDiff(ctx context.Context, videoTask *model.Video, upstreamCo
 		return 0 // 上游未返回 cost（标准 replicate.com / 存量任务）→ 保持提交预扣，不动
 	}
 	newQuota := VideoQuotaFromUpstreamCost(upstreamCostCents)
+	return settleVideoQuotaDiff(ctx, videoTask, newQuota, "上游 cost")
+}
+
+// settleVideoQuotaDiff 在成功 CAS 后执行差额结算，videoTask.Quota 必须仍是预扣旧值。
+// 配额可以为零，支持配置零价格时退回全部预扣。
+func settleVideoQuotaDiff(ctx context.Context, videoTask *model.Video, newQuota int64, source string) int64 {
 	diff := newQuota - videoTask.Quota
 	if diff == 0 {
 		return 0 // 预扣==上游实收（固定 duration 主路径），无需结算
@@ -132,15 +138,15 @@ func SettleVideoCostDiff(ctx context.Context, videoTask *model.Video, upstreamCo
 	if diff < 0 {
 		sign = "多退"
 	}
-	logContent := fmt.Sprintf("上游 cost 结算：%s %+d（上游 cost=%.2f$，预扣 quota=%d → 实收 quota=%d）",
-		sign, diff, upstreamCostCents/100.0, videoTask.Quota, newQuota)
+	logContent := fmt.Sprintf("%s 结算：%s %+d（预扣 quota=%d → 实收 quota=%d）",
+		source, sign, diff, videoTask.Quota, newQuota)
 	// 把 task id 覆盖进 ctx 的 RequestIdKey，使这条差额日志的 x_request_id = task id，
 	// 与提交预扣日志（video.go 同样覆盖）共享检索键，现有日志搜索框按 x_request_id 即可一并搜出。
 	logCtx := context.WithValue(ctx, logger.RequestIdKey, videoTask.TaskId)
 	model.RecordVideoConsumeLog(logCtx, videoTask.UserId, videoTask.ChannelId, 0, 0,
 		videoTask.Model, "", diff, logContent, float64(videoTask.TotalDuration), "", "", videoTask.TaskId)
 
-	logger.Infof(ctx, "[flux-video-billing] 完成结算 task_id=%s user_id=%d channel_id=%d 预扣=%d 上游cost=%.2f$ 实收=%d 差额=%+d",
-		videoTask.TaskId, videoTask.UserId, videoTask.ChannelId, videoTask.Quota, upstreamCostCents/100.0, newQuota, diff)
+	logger.Infof(ctx, "[flux-video-billing] 完成结算 task_id=%s user_id=%d channel_id=%d 来源=%s 预扣=%d 实收=%d 差额=%+d",
+		videoTask.TaskId, videoTask.UserId, videoTask.ChannelId, source, videoTask.Quota, newQuota, diff)
 	return diff
 }

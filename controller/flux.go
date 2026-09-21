@@ -108,7 +108,7 @@ func relayFluxHelper(c *gin.Context) *relaymodel.ErrorWithStatusCode {
 
 // HandleFluxCallback 处理 Flux API 回调通知
 func HandleFluxCallback(c *gin.Context) {
-	// BFL 协议本身不签名，我们在注入的 webhook URL 上挂 ?key=<secret>，由本端校验。
+	// 本站回调复用 URL 上的 ?key=<secret> 鉴权，不依赖上游可选的签名头。
 	// 未配置 FLUX_WEBHOOK_SECRET 时跳过校验，保持向后兼容（与 Replicate 校验逻辑一致）。
 	if expected := os.Getenv("FLUX_WEBHOOK_SECRET"); expected != "" {
 		got := c.Query("key")

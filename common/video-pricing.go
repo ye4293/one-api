@@ -173,13 +173,21 @@ func matchPattern(pattern, value string) bool {
 // 参数: model, videoType, mode, duration(秒), resolution, sound(on/off)
 // 返回: quota (内部积分单位)
 func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound string) int64 {
-	videoPricingMutex.RLock()
-	defer videoPricingMutex.RUnlock()
-
 	durationInt, _ := strconv.Atoi(duration)
 	if durationInt <= 0 {
 		durationInt = 5 // 默认5秒
 	}
+	return CalculateVideoQuotaForActualDuration(model, videoType, mode, duration, resolution, sound, float64(durationInt))
+}
+
+// CalculateVideoQuotaForActualDuration 沿用请求参数选择定价规则，按实际输出秒数结算。
+// 实际时长可包含小数，不能重新走整数解析后退回默认 5 秒；固定价规则保持一次计费。
+func CalculateVideoQuotaForActualDuration(model, videoType, mode, duration, resolution, sound string, actualSeconds float64) int64 {
+	if actualSeconds <= 0 || math.IsNaN(actualSeconds) || math.IsInf(actualSeconds, 0) {
+		return 0
+	}
+	videoPricingMutex.RLock()
+	defer videoPricingMutex.RUnlock()
 
 	// 查找匹配的规则（按优先级排序）
 	var matchedRule *VideoPricingRule
@@ -231,7 +239,7 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 	var totalPrice float64
 	switch matchedRule.PricingType {
 	case PricingTypePerSecond:
-		totalPrice = basePrice * float64(durationInt)
+		totalPrice = basePrice * actualSeconds
 	case PricingTypeFixed:
 		totalPrice = basePrice
 	default:
@@ -239,7 +247,8 @@ func CalculateVideoQuota(model, videoType, mode, duration, resolution, sound str
 	}
 
 	totalPrice = math.Round(totalPrice*100) / 100
-	return int64(totalPrice * config.QuotaPerUnit)
+	// 金额已按美分取整，换算配额时再消除浮点误差，避免少计一个配额单位。
+	return int64(math.Round(totalPrice * config.QuotaPerUnit))
 }
 
 // GetVideoPricingRuleInfo 获取匹配的规则信息（用于调试）

@@ -154,8 +154,8 @@ func TokenAuth() func(c *gin.Context) {
 		}
 
 		// Flux API 从 x-key header 中获取 key
-		// 支持 /flux/ 路径
-		if strings.HasPrefix(c.Request.URL.Path, "/flux/") {
+		// 支持 /flux/ 路径及视频放大的 BFL 原生路径。
+		if strings.HasPrefix(c.Request.URL.Path, "/flux/") || c.Request.URL.Path == "/v1/flux-tools/video-upscale-v1" {
 			xKey := c.Request.Header.Get("x-key")
 			if xKey != "" {
 				c.Request.Header.Set("Authorization", "Bearer "+xKey)
