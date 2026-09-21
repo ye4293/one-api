@@ -171,7 +171,7 @@ func TestReplicateVideoUpscaleLifecycle(t *testing.T) {
 				t.Fatalf("终态不应再次访问上游：次数=%d", pollCalls.Load())
 			}
 			task, err := dbmodel.GetVideoTaskById("replicate-task")
-			if err != nil || task.Model != "video-upscale-v1" || task.Provider != "flux" || !strings.Contains(task.Result, tc.status) {
+			if err != nil || task.Model != "flux-upscale" || task.Provider != "flux" || !strings.Contains(task.Result, tc.status) {
 				t.Fatalf("任务模型或原始结果保存不正确：%+v err=%v", task, err)
 			}
 			var user dbmodel.User
