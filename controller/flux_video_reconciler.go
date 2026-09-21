@@ -159,34 +159,14 @@ func reconcileSingleFluxVideo(ctx context.Context, task *dbmodel.Video) {
 // RowsAffected 门控是退款幂等的关键：多实例/超时与对账双路径并发时，只有一次 Update 生效，
 // 也只有那一次触发退款，杜绝重复补偿。
 func failFluxVideoTask(ctx context.Context, task *dbmodel.Video, reason string, rawResult string) {
-	updates := map[string]interface{}{
-		"status":         "failed",
-		"fail_reason":    reason,
-		"total_duration": time.Now().Unix() - task.CreatedAt,
-		"updated_at":     time.Now().Unix(),
-	}
-	if rawResult != "" {
-		updates["result"] = rawResult // 上游原始 JSON（失败详情），供审计/排障；超时段无上游查询则为空
-	}
-	res := dbmodel.DB.Model(&dbmodel.Video{}).
-		Where("task_id = ? AND status = ?", task.TaskId, "processing").
-		Updates(updates)
-	if res.Error != nil {
-		logger.Errorf(ctx, "[flux-video-reconciler] 更新失败记录失败: task_id=%s, err=%v", task.TaskId, res.Error)
+	applied, err := flux.ApplyVideoFailure(task, reason, rawResult)
+	if err != nil {
+		logger.Errorf(ctx, "[flux-video-reconciler] 失败任务结算出错: task_id=%s, err=%v", task.TaskId, err)
 		return
 	}
-	if res.RowsAffected == 0 {
+	if !applied {
 		logger.Infof(ctx, "[flux-video-reconciler] 已被其他路径处理（失败跳过）: task_id=%s", task.TaskId)
 		return
-	}
-	// 赢得终态转换 → 退款（用户配额 + 渠道配额）
-	if task.Quota > 0 {
-		if err := dbmodel.CompensateVideoTaskQuota(task.UserId, task.Quota); err != nil {
-			logger.Errorf(ctx, "[flux-video-reconciler] 退还用户配额失败: task_id=%s, err=%v", task.TaskId, err)
-		}
-		if err := dbmodel.CompensateChannelQuota(task.ChannelId, task.Quota); err != nil {
-			logger.Errorf(ctx, "[flux-video-reconciler] 退还渠道配额失败: task_id=%s, err=%v", task.TaskId, err)
-		}
 	}
 	logger.Infof(ctx, "[flux-video-reconciler] 任务判失败并退款: task_id=%s, user_id=%d, quota=%d, reason=%s",
 		task.TaskId, task.UserId, task.Quota, reason)

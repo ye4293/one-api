@@ -77,3 +77,37 @@ func ApplyVideoSuccess(ctx context.Context, task *model.Video, result *relaymode
 	*task = *stored
 	return applied, nil
 }
+
+// ApplyVideoFailure 由后台轮询和回调共用，只在赢得终态转换时退还用户及渠道配额。
+func ApplyVideoFailure(task *model.Video, reason, rawResult string) (bool, error) {
+	updates := map[string]any{
+		"status": "failed", "fail_reason": reason,
+		"total_duration": time.Now().Unix() - task.CreatedAt, "updated_at": time.Now().Unix(),
+	}
+	if rawResult != "" {
+		updates["result"] = rawResult
+	}
+	res := model.DB.Model(&model.Video{}).
+		Where("task_id = ? AND status = ?", task.TaskId, "processing").Updates(updates)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return false, res.Error
+	}
+	if task.Quota > 0 {
+		userErr := model.CompensateVideoTaskQuota(task.UserId, task.Quota)
+		channelErr := model.CompensateChannelQuota(task.ChannelId, task.Quota)
+		if userErr != nil {
+			return true, fmt.Errorf("退还用户配额失败: %w", userErr)
+		}
+		if channelErr != nil {
+			return true, fmt.Errorf("退还渠道配额失败: %w", channelErr)
+		}
+	}
+	return true, nil
+}
+
+// ApplyVideoProgress 只更新未完成任务，避免迟到的轮询或进度回调覆盖终态结果。
+func ApplyVideoProgress(task *model.Video, rawResult string) error {
+	return model.DB.Model(&model.Video{}).
+		Where("task_id = ? AND status = ?", task.TaskId, "processing").
+		Updates(map[string]any{"result": rawResult, "updated_at": time.Now().Unix()}).Error
+}

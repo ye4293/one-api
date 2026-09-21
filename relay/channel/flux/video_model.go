@@ -66,7 +66,8 @@ const (
 // ReplicateVideoModelMap one-api 模型名 → Replicate 模型 ID（视频）
 // 与图片侧 ReplicateModelMap 同构：baseURL 含 replicate.com 时走此映射拼 predictions URL。
 var ReplicateVideoModelMap = map[string]string{
-	"flux-3-video": "black-forest-labs/flux-3",
+	"flux-3-video":    "black-forest-labs/flux-3",
+	VideoUpscaleModel: "black-forest-labs/flux-video-upscale",
 }
 
 // fluxResolutionToReplicate 将 BFL 的 hd/fhd 档位映射为 Replicate 的分辨率字面值。

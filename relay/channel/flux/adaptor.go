@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -172,8 +171,7 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 			"input": input,
 		}
 
-		if config.ServerAddress != "" {
-			webhookURL := fmt.Sprintf("%s/flux/internal/replicate/callback", config.ServerAddress)
+		if webhookURL := defaultReplicateWebhookURL(); webhookURL != "" {
 			replicateReq["webhook"] = webhookURL
 			replicateReq["webhook_events_filter"] = []string{"completed"}
 			logger.Debugf(c, "添加 Replicate webhook: %s", webhookURL)
@@ -185,13 +183,8 @@ func (a *Adaptor) ConvertFluxRequest(c *gin.Context, meta *util.RelayMeta) ([]by
 	// BFL 渠道：移除 model 参数（模型名已在 URL 中），添加 webhook_url
 	delete(requestMap, "model")
 
-	if config.ServerAddress != "" {
-		webhookURL := fmt.Sprintf("%s/flux/internal/callback", config.ServerAddress)
-		if secret := os.Getenv("FLUX_WEBHOOK_SECRET"); secret != "" {
-			webhookURL = fmt.Sprintf("%s?key=%s", webhookURL, url.QueryEscape(secret))
-		}
+	if webhookURL := defaultWebhookURL(); webhookURL != "" {
 		requestMap["webhook_url"] = webhookURL
-		logger.Debugf(c, "添加 Flux webhook_url: %s", webhookURL)
 	}
 
 	modifiedBody, err := json.Marshal(requestMap)
@@ -691,11 +684,18 @@ func HandleCallback(c *gin.Context, notification FluxCallbackNotification, rawBo
 	logger.Infof(c, "Flux callback received: task_id=%s, status=%s, progress=%d, raw=%s",
 		taskID, notification.Status, notification.Progress, string(rawBody))
 	logger.Debugf(c, "Flux callback notification: %+v", notification)
+	if video, err := model.GetVideoTaskById(taskID); err == nil && video.Provider == "flux" {
+		return handleVideoCallback(c, video, notification, rawBody)
+	}
 
 	// webhook 可能比创建路径的 ImageRecord.Update() 早到（task_id 还未回填到 DB），
 	// 200ms × 3 退避覆盖该窗口；仍然找不到才返回 404
 	image, err := getImageByTaskIdWithRetry(taskID)
 	if err != nil || image == nil {
+		// 视频回调也可能早于提交记录落库，复用上述退避窗口后再检查一次。
+		if video, videoErr := model.GetVideoTaskById(taskID); videoErr == nil && video.Provider == "flux" {
+			return handleVideoCallback(c, video, notification, rawBody)
+		}
 		logger.Errorf(c, "Flux callback task not found after retries: task_id=%s, error=%v", taskID, err)
 		return false, http.StatusNotFound, "task not found"
 	}
@@ -989,10 +989,20 @@ func (a *Adaptor) queryReplicateResult(c *gin.Context, taskID string, baseURL st
 // HandleReplicateCallback 处理 Replicate webhook 回调，更新 DB 并在成功时扣费
 func HandleReplicateCallback(c *gin.Context, replicateResp ReplicateResponse, rawBody []byte) (bool, int, string) {
 	taskID := replicateResp.ID
+	if taskID == "" {
+		return false, http.StatusBadRequest, "missing task_id"
+	}
+	if video, err := model.GetVideoTaskById(taskID); err == nil && video.Provider == "flux" {
+		return handleReplicateVideoCallback(c, video, replicateResp, rawBody)
+	}
 	//logger.Infof(c, "Replicate callback: task_id=%s, status=%s, raw=%s", taskID, replicateResp.Status, string(rawBody))
 
 	image, err := getImageByTaskIdWithRetry(taskID)
 	if err != nil || image == nil {
+		// 回调可能先于视频提交记录落库，复用图片退避窗口后重新检查。
+		if video, videoErr := model.GetVideoTaskById(taskID); videoErr == nil && video.Provider == "flux" {
+			return handleReplicateVideoCallback(c, video, replicateResp, rawBody)
+		}
 		logger.Errorf(c, "Replicate callback task not found after retries: task_id=%s, error=%v", taskID, err)
 		return false, http.StatusNotFound, "task not found"
 	}

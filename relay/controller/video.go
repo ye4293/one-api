@@ -801,14 +801,18 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		}
 	}
 
-	// 响应客户端
-	c.JSON(http.StatusOK, model.GeneralVideoResponse{
-		TaskId:        taskResult.TaskId,
-		TaskStatus:    taskResult.TaskStatus,
-		Message:       taskResult.Message,
-		VideoDuration: taskResult.VideoDuration,
-		PollingUrl:    taskResult.PollingUrl,
-	})
+	// 视频放大采用 BFL 原生提交响应，查询和结算继续复用 Flux 视频任务链路。
+	if adaptor.GetProviderName() == "flux" && taskResult.Mode == "upscale" {
+		c.JSON(http.StatusOK, flux.FluxVideoSubmitResponse{ID: taskResult.TaskId, PollingURL: taskResult.PollingUrl})
+	} else {
+		c.JSON(http.StatusOK, model.GeneralVideoResponse{
+			TaskId:        taskResult.TaskId,
+			TaskStatus:    taskResult.TaskStatus,
+			Message:       taskResult.Message,
+			VideoDuration: taskResult.VideoDuration,
+			PollingUrl:    taskResult.PollingUrl,
+		})
+	}
 
 	// flux-video：把 task id 覆盖进 ctx 的 RequestIdKey，使提交预扣日志的 x_request_id = task id，
 	// 与完成时差额结算日志（flux.SettleVideoCostDiff 同样覆盖）共享检索键，可按 task id 一并搜出。
@@ -868,16 +872,33 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		return nil
 	}
 
-	// Flux 的成功状态、实际时长和费用由同一入口写入，避免客户端轮询与后台对账重复结算。
-	if videoTask.Provider == "flux" && result.TaskStatus == "succeed" {
-		if _, err := flux.ApplyVideoSuccess(c.Request.Context(), videoTask, result); err != nil {
+	// Flux 的回调、客户端轮询和后台对账共用条件更新，终态及原始结果不能被迟到的响应覆盖。
+	if videoTask.Provider == "flux" {
+		var err error
+		switch result.TaskStatus {
+		case "succeed":
+			_, err = flux.ApplyVideoSuccess(c.Request.Context(), videoTask, result)
+		case "failed":
+			_, err = flux.ApplyVideoFailure(videoTask, result.Message, result.RawResult)
+		default:
+			err = flux.ApplyVideoProgress(videoTask, result.RawResult)
+		}
+		if err != nil {
 			return openai.ErrorWrapper(err, "video_settlement_error", http.StatusInternalServerError)
 		}
+		stored, err := dbmodel.GetVideoTaskById(videoTask.TaskId)
+		if err != nil {
+			return openai.ErrorWrapper(err, "database_error", http.StatusInternalServerError)
+		}
+		*videoTask = *stored
 		baseURL := "https://api.bfl.ai"
 		if channel.BaseURL != nil && *channel.BaseURL != "" {
 			baseURL = *channel.BaseURL
 		}
-		gr, _ := flux.BuildTerminalResultFromDB(videoTask, baseURL)
+		gr, terminal := flux.BuildTerminalResultFromDB(videoTask, baseURL)
+		if !terminal {
+			gr = result
+		}
 		cost := 0.0
 		if videoTask.Status == "succeed" {
 			cost = videoCostCents(videoTask.Quota)
@@ -905,8 +926,7 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		}
 	}
 
-	// 留存上游完整原始 JSON 到 result 列（供审计/排障，如上游 cost）。
-	// 仅设置了 RawResult 的 provider（flux video）会写入，其它 provider 为空跳过。
+	// 留存上游完整原始 JSON 到 result 列；未设置 RawResult 时跳过。
 	if result.RawResult != "" {
 		if err := dbmodel.UpdateVideoResult(taskId, result.RawResult); err != nil {
 			log.Printf("Failed to update result for task %s: %v", taskId, err)
@@ -924,16 +944,7 @@ func invokeVideoAdaptorResult(c *gin.Context, adaptor relaychannel.VideoAdaptor,
 		result.Cost = videoCostCents(videoTask.Quota)
 	}
 
-	// flux-3-video：完全替换为 BFL 原生 7 字段结构；其他 provider 维持归一化响应。
-	if videoTask.Provider == "flux" {
-		cost := 0.0
-		if result.TaskStatus == "succeed" {
-			cost = videoCostCents(videoTask.Quota)
-		}
-		c.JSON(http.StatusOK, buildFluxVideoResult(result, cost))
-	} else {
-		c.JSON(http.StatusOK, result)
-	}
+	c.JSON(http.StatusOK, result)
 	return nil
 }
 

@@ -46,7 +46,7 @@ func GetVideoAdaptor(modelName string) channel.VideoAdaptor {
 	case strings.HasPrefix(strings.ToLower(modelName), "luma"):
 		return &luma.VideoAdaptor{}
 	// Flux (BFL) 视频
-	case strings.HasPrefix(modelName, "flux-3-video"):
+	case strings.HasPrefix(modelName, "flux-3-video"), modelName == flux.VideoUpscaleModel:
 		return &flux.VideoAdaptor{}
 	case strings.HasPrefix(strings.ToLower(modelName), "wan"):
 		return &ali.VideoAdaptor{}
