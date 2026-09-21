@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	VideoUpscaleModel = "video-upscale-v1"
+	VideoUpscaleModel = "flux-upscale"
 	// 模型名用于选渠和计费，上游接口保留 flux-tools 路径。
 	videoUpscaleEndpoint = "/v1/flux-tools/video-upscale-v1"
 )

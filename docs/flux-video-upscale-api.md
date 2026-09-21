@@ -1,6 +1,6 @@
 # Flux 视频放大接口
 
-在 Flux 类型的渠道中添加模型 `video-upscale-v1`，通过渠道地址选择 BFL 或 Replicate：
+在 Flux 类型的渠道中添加模型 `flux-upscale`，通过渠道地址选择 BFL 或 Replicate：
 
 | 服务 | 渠道地址 | 渠道密钥 | 上游模型或接口 |
 | --- | --- | --- | --- |
@@ -8,7 +8,7 @@
 | Replicate | `https://api.replicate.com` | Replicate API Token | `black-forest-labs/flux-video-upscale` |
 
 模型名用于渠道选择、任务记录和计费；请求路径仍为 `/v1/flux-tools/video-upscale-v1`。
-如已按此前版本配置渠道模型或定价规则，需要将模型名同步改为 `video-upscale-v1`。
+如已按此前版本配置渠道模型或定价规则，需要将模型名同步改为 `flux-upscale`。
 已创建的任务继续按任务 ID 查询，无需修改历史记录。
 
 ## 提交任务
@@ -125,7 +125,7 @@ Replicate 的 `starting/processing/succeeded/failed/canceled` 分别转换为
 
 ## 计费与验证
 
-提交时沿用视频定价配置，模型为 `video-upscale-v1`，类型为 `video-to-video`，模式为 `upscale`。
+提交时沿用视频定价配置，模型为 `flux-upscale`，类型为 `video-to-video`，模式为 `upscale`。
 请求不包含输入时长，按秒规则的预估时长沿用现有默认值 5 秒；建议为该模型配置明确的预扣规则。
 未匹配规则时沿用通用兜底预扣 $0.10。成功时若上游返回正数 `cost`，按该费用多退少补。
 Replicate 未返回 `cost` 时，若提供 `metrics.video_output_duration_seconds`，沿用现有视频定价规则按实际时长结算；

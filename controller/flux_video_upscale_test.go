@@ -159,7 +159,7 @@ func TestFluxVideoUpscaleLifecycle(t *testing.T) {
 			if tc.webhook || tc.callback {
 				wantCredentials = ""
 			}
-			if err != nil || task.Provider != "flux" || task.Model != "video-upscale-v1" || task.Prompt != "渔夫站在岸边" || task.Status != "processing" || task.Credentials != wantCredentials {
+			if err != nil || task.Provider != "flux" || task.Model != "flux-upscale" || task.Prompt != "渔夫站在岸边" || task.Status != "processing" || task.Credentials != wantCredentials {
 				t.Fatalf("视频任务未正确保存：task=%+v err=%v", task, err)
 			}
 			if tc.background {
