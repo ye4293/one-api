@@ -79,12 +79,15 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	// 提交：baseURL 含 replicate.com 走 Replicate，否则走 BFL 原生。
 	// pollingURL：BFL 原生返回上游 polling_url（多集群路由地址，必须原样使用）；
 	// Replicate 无此语义，返回空串。
+	// submitResp 承载 BFL 提交响应的 cost/input_mp/output_mp（提交时恒 null，透传给客户端）。
 	var taskId, pollingURL string
+	var submitResp FluxVideoSubmitResponse
 	var submitErr *model.ErrorWithStatusCode
 	if isReplicate(meta.BaseURL) {
 		taskId, pollingURL, submitErr = a.submitReplicateVideo(fluxReq, meta, ch)
 	} else {
-		taskId, pollingURL, submitErr = a.submitBFLVideo(fluxReq, meta, ch)
+		submitResp, submitErr = a.submitBFLVideo(fluxReq, meta, ch)
+		taskId, pollingURL = submitResp.ID, submitResp.PollingURL
 	}
 	if submitErr != nil {
 		return nil, submitErr
@@ -116,6 +119,10 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 		Sound:      sound,
 		Quota:      quota,
 		Prompt:     fluxReq.Prompt,
+		// BFL 提交响应的 usage（提交时恒 null）；Replicate 分支为零值结构体，三者亦为 nil。
+		UpstreamCost: submitResp.Cost,
+		InputMP:      submitResp.InputMP,
+		OutputMP:     submitResp.OutputMP,
 		// 复用 Credentials 承载 BFL 上游 polling_url，供轮询命中正确集群（避免 Task not found）。
 		// Replicate 分支 pollingURL 为空，轮询走回退自拼 URL。
 		Credentials: pollingURL,
@@ -123,11 +130,12 @@ func (a *VideoAdaptor) HandleVideoRequest(c *gin.Context, req *model.VideoReques
 	}, nil
 }
 
-// submitBFLVideo 走 BFL 原生：x-key + POST /v1/flux-3-video，解析 {id, polling_url}。
-// 返回 (taskId, pollingURL)：pollingURL 为上游多集群路由地址，轮询必须原样使用。
-func (a *VideoAdaptor) submitBFLVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (string, string, *model.ErrorWithStatusCode) {
+// submitBFLVideo 走 BFL 原生：x-key + POST /v1/flux-3-video，解析 {id, polling_url, cost, input_mp, output_mp}。
+// 返回完整创建响应：pollingURL 为上游多集群路由地址（轮询必须原样使用）；
+// cost/input_mp/output_mp 提交时恒 null，透传给客户端。出错时返回零值结构。
+func (a *VideoAdaptor) submitBFLVideo(fluxReq FluxVideoRequest, meta *util.RelayMeta, ch *dbmodel.Channel) (FluxVideoSubmitResponse, *model.ErrorWithStatusCode) {
 	if err := normalizeVideoRequest(&fluxReq, false); err != nil {
-		return "", "", openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
+		return FluxVideoSubmitResponse{}, openaiAdaptor.ErrorWrapper(err, "invalid_video_generation_request", http.StatusBadRequest)
 	}
 	requestURL := meta.BaseURL + "/v1/flux-3-video"
 	return submitBFLVideoTask(requestURL, buildBFLVideoInput(fluxReq), ch.Key)
@@ -139,27 +147,28 @@ func videoClientPollingURL(taskID string) string {
 }
 
 // submitBFLVideoTask 共用 BFL 异步视频接口的鉴权、错误处理和任务响应解析。
-func submitBFLVideoTask(requestURL string, input any, apiKey string) (string, string, *model.ErrorWithStatusCode) {
+// 返回完整创建响应（含 id / polling_url / cost / input_mp / output_mp）；出错时返回零值结构。
+func submitBFLVideoTask(requestURL string, input any, apiKey string) (FluxVideoSubmitResponse, *model.ErrorWithStatusCode) {
 	httpResp, body, httpErr := relaychannel.SendJSONVideoRequest(requestURL, input, relaychannel.XKeyAuthHeaders(apiKey))
 	if httpErr != nil {
-		return "", "", openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
+		return FluxVideoSubmitResponse{}, openaiAdaptor.ErrorWrapper(httpErr, "request_error", http.StatusInternalServerError)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return "", "", openaiAdaptor.ErrorWrapper(
+		return FluxVideoSubmitResponse{}, openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("flux video API error: status=%d body=%s", httpResp.StatusCode, string(body)),
 			"api_error", httpResp.StatusCode)
 	}
 
 	var submitResp FluxVideoSubmitResponse
 	if parseErr := json.Unmarshal(body, &submitResp); parseErr != nil {
-		return "", "", openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
+		return FluxVideoSubmitResponse{}, openaiAdaptor.ErrorWrapper(parseErr, "response_parse_error", http.StatusInternalServerError)
 	}
 	if submitResp.ID == "" {
-		return "", "", openaiAdaptor.ErrorWrapper(
+		return FluxVideoSubmitResponse{}, openaiAdaptor.ErrorWrapper(
 			fmt.Errorf("flux video API returned empty task id: body=%s", string(body)),
 			"api_error", http.StatusInternalServerError)
 	}
-	return submitResp.ID, submitResp.PollingURL, nil
+	return submitResp, nil
 }
 
 // submitReplicateVideo 走 Replicate：Bearer + POST /v1/models/{id}/predictions，

@@ -91,23 +91,30 @@ func (a *VideoAdaptor) handleVideoUpscaleRequest(c *gin.Context, meta *util.Rela
 		return nil, openai.ErrorWrapper(err, "get_channel_error", http.StatusInternalServerError)
 	}
 	var taskID, pollingURL string
+	var submitResp FluxVideoSubmitResponse
 	var apiErr *model.ErrorWithStatusCode
 	if replicate {
 		requestURL := strings.TrimRight(meta.BaseURL, "/") + "/v1/models/" + ReplicateVideoModelMap[VideoUpscaleModel] + "/predictions"
 		taskID, pollingURL, apiErr = submitReplicateVideoTask(requestURL, replicateBody, ch.Key)
 	} else {
 		requestURL := strings.TrimRight(meta.BaseURL, "/") + videoUpscaleEndpoint
-		taskID, pollingURL, apiErr = submitBFLVideoTask(requestURL, req, ch.Key)
+		submitResp, apiErr = submitBFLVideoTask(requestURL, req, ch.Key)
+		taskID, pollingURL = submitResp.ID, submitResp.PollingURL
 	}
 	if apiErr != nil {
 		return nil, apiErr
 	}
+	// 输入视频时长未知，按可配置的按秒规则预扣；BFL 提交时不返回 cost（恒 null），
+	// 真实 cost 在完成态 get_result 顶层返回，由 ApplyVideoSuccess 按官方 cost 差额结算。
+	quota := common.CalculateVideoQuota(meta.ActualModelName, "video-to-video", "upscale", "", "", "")
 	return &relaychannel.VideoTaskResult{
 		TaskId: taskID, TaskStatus: "succeed", Mode: "upscale", VideoType: "video-to-video",
-		Prompt: req.Prompt,
-		// 输入视频时长未知，沿用可配置的视频预扣规则；完成后由上游 cost 结算。
-		Quota:       common.CalculateVideoQuota(meta.ActualModelName, "video-to-video", "upscale", "", "", ""),
-		Credentials: pollingURL,
-		PollingUrl:  videoClientPollingURL(taskID),
+		Prompt:       req.Prompt,
+		Quota:        quota,
+		UpstreamCost: submitResp.Cost, // 提交时恒 null，忠实透传
+		InputMP:      submitResp.InputMP,
+		OutputMP:     submitResp.OutputMP,
+		Credentials:  pollingURL,
+		PollingUrl:   videoClientPollingURL(taskID),
 	}, nil
 }

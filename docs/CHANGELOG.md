@@ -8,6 +8,14 @@
 
 ## 2026-09-22
 
+### feat(flux-video): flux-3-video 提交响应对齐 BFL 原生 usage 形状
+
+- **分支**: `flux-video`
+- **类型**: feat（对外 API 形状变更）
+- **涉及文件**: `relay/channel/flux/video_model.go`、`relay/channel/interface.go`、`relay/channel/flux/video_adaptor.go`、`relay/channel/flux/video_upscale.go`、`relay/controller/video.go`、（测试）`relay/channel/flux/video_model_test.go`
+- **说明**: `/v1/flux-3-video` 提交响应由 `GeneralVideoResponse` 改为与 upscale 一致的 BFL 原生形状 `{id, polling_url, cost, input_mp, output_mp}`。官方 key 实测确认 BFL create 响应 `cost/input_mp/output_mp` 恒为 `null`（提交时上游尚未下载/分析素材算不出），故三字段用 `*float64` 忠实透传 `null`，不退化为 `0`。真实 cost 仅在完成态 get_result Ready 顶层返回（flux-3-video=30、upscale=452 美分实测），走既有完成结算（`HandleVideoResult`→`ApplyVideoSuccess` 按官方 cost 差额），客户端轮询 get_result 时经 `buildFluxVideoResult` 用已结算 quota 反算出真实 cost。同时移除 upscale 提交路径中恒不触发的 `submitResp.Cost>0` 死分支。
+- **关联计划**: `docs/plans/2026-09-22-flux-video-submit-usage-shape.md`
+
 ### fix(flux-video): 404 宽限期防误判失败 + 成功结果复活失败任务并正确计费
 
 - **分支**: `flux-video`

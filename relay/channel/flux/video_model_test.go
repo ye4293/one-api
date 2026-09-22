@@ -54,9 +54,9 @@ func TestBFLVideoSubmitPreservesModeFields(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.body), &req); err != nil {
 				t.Fatal(err)
 			}
-			id, _, apiErr := (&VideoAdaptor{}).submitBFLVideo(req, &util.RelayMeta{BaseURL: server.URL}, &dbmodel.Channel{Key: "test-key"})
-			if apiErr != nil || id != "test-task" || calls != 1 {
-				t.Fatalf("提交结果不正确: id=%s calls=%d err=%v", id, calls, apiErr)
+			resp, apiErr := (&VideoAdaptor{}).submitBFLVideo(req, &util.RelayMeta{BaseURL: server.URL}, &dbmodel.Channel{Key: "test-key"})
+			if apiErr != nil || resp.ID != "test-task" || calls != 1 {
+				t.Fatalf("提交结果不正确: id=%s calls=%d err=%v", resp.ID, calls, apiErr)
 			}
 		})
 	}
@@ -105,7 +105,7 @@ func TestVideoInvalidRequestsNeverReachUpstream(t *testing.T) {
 				}
 				message = err.Error.Message
 			} else {
-				_, _, err := (&VideoAdaptor{}).submitBFLVideo(req, meta, &dbmodel.Channel{})
+				_, err := (&VideoAdaptor{}).submitBFLVideo(req, meta, &dbmodel.Channel{})
 				if err == nil || err.StatusCode != http.StatusBadRequest {
 					t.Fatalf("期望提交前返回 400，实际=%v", err)
 				}

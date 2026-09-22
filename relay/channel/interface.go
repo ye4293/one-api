@@ -63,5 +63,8 @@ type VideoTaskResult struct {
 	VideoDuration    float64 // 输入视频时长（秒），仅编辑/延长时有值
 	Prompt           string  // 用户输入的 prompt，落库到 videos.prompt
 	DeferLogShipping bool    // 创建时只写 logs，待异步结算更新实际用量后再投递
-	PollingUrl       string  // 返给客户端的轮询端点（one-api 代理地址），异步 provider 用
+	PollingUrl       string   // 返给客户端的轮询端点（one-api 代理地址），异步 provider 用
+	UpstreamCost     *float64 // 上游提交响应的权威费用（flux：credits==分）；BFL 提交时恒 null，透传给客户端
+	InputMP          *float64 // 上游提交响应的输入百万像素（flux）；提交时恒 null，透传给客户端
+	OutputMP         *float64 // 上游提交响应的输出百万像素（flux）；提交时恒 null，透传给客户端
 }
