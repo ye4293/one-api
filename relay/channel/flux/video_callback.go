@@ -12,7 +12,10 @@ import (
 
 // handleVideoCallback 与客户端查询、后台轮询共用终态结算规则。
 func handleVideoCallback(c *gin.Context, task *dbmodel.Video, notification FluxCallbackNotification, rawBody []byte) (bool, int, string) {
-	if task.Status == "succeed" || task.Status == "failed" {
+	// 仅 succeed 是不可逆终态直接短路；failed 任务允许被随后到达的成功回调复活
+	// （ApplyVideoSuccess 内 failed→succeed CAS 承接）。迟到的 failed/progress 回调
+	// 落在各自 status='processing' 的 CAS 外，对 failed 任务自然 no-op，不会改写。
+	if task.Status == "succeed" {
 		return true, http.StatusOK, "already processed"
 	}
 	var err error
@@ -43,7 +46,8 @@ func handleVideoCallback(c *gin.Context, task *dbmodel.Video, notification FluxC
 
 // handleReplicateVideoCallback 复用轮询转换和视频结算，不进入图片计费链路。
 func handleReplicateVideoCallback(c *gin.Context, task *dbmodel.Video, prediction ReplicateResponse, rawBody []byte) (bool, int, string) {
-	if task.Status == "succeed" || task.Status == "failed" {
+	// 与 BFL 分支一致：仅 succeed 短路，failed 允许被成功结果复活。
+	if task.Status == "succeed" {
 		return true, http.StatusOK, "already processed"
 	}
 	result := buildReplicateVideoResult(task, prediction, rawBody)

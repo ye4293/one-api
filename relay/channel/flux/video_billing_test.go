@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	dbmodel "github.com/songquanpeng/one-api/model"
@@ -198,16 +200,118 @@ func TestBFLDraftCacheSurvivesTerminalResult(t *testing.T) {
 	}
 }
 
-func TestVideoSuccessCannotOverwriteFailedTask(t *testing.T) {
+// TestVideoSuccessRevivesFailedTaskWithCorrectBilling 验证 failed→succeed 复活：
+// 迟到的成功回调/轮询可以覆盖已失败（已退款）任务，并使账务逐项对齐「从未失败的成功路径」。
+//
+// 场景推导（真实原始余额 B0=2000000，预扣 Q0=500000，最终结算 Q_final=1025000）：
+//   预扣后：余额1500000 用量500000 请求1 token余额1500000 token用量500000 渠道500000
+//   失败退款后（token 不还，与退款侧对称）：余额2000000 用量0 请求0 token余额1500000 token用量500000 渠道0
+//   复活 = 撤销退款回到预扣基线 + 差额结算(diff=525000)：
+//     余额975000 用量1025000 请求1 token余额975000 token用量1025000 渠道1025000
+//   与从未失败的成功路径终态完全一致。
+func TestVideoSuccessRevivesFailedTaskWithCorrectBilling(t *testing.T) {
+	setupVideoPricing(t)
 	db := setupVideoSettlementDB(t)
-	task := dbmodel.Video{TaskId: "failed-task", Status: "failed", Quota: 500000, FailReason: "任务已经失败", Duration: "auto"}
-	if err := db.Create(&task).Error; err != nil {
+	// 种子：已失败并已退款（CompensateVideoTaskQuota 只还余额/用量/请求，不还 token）的终态。
+	task := dbmodel.Video{TaskId: "revive", Status: "failed", Provider: "flux", Model: "flux-3-video", TokenId: 1, UserId: 1, ChannelId: 1, Quota: 500000, Duration: "auto", FailReason: "flux video task not found (upstream 404)"}
+	for _, row := range []any{
+		&dbmodel.User{Id: 1, Username: "test", Quota: 2000000, UsedQuota: 0, RequestCount: 0},
+		&dbmodel.Token{Id: 1, UserId: 1, Key: "test-key", RemainQuota: 1500000, UsedQuota: 500000},
+		&dbmodel.Channel{Id: 1, UsedQuota: 0}, &task,
+	} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := &relaymodel.GeneralFinalVideoResponse{
+		TaskStatus: "succeed", Duration: "10.25", VideoResult: "https://example.com/video.mp4",
+		RawResult: `{"status":"Ready","result":{"sample":"https://example.com/video.mp4"}}`, FluxActualQuota: quotaPointer(1025000),
+	}
+	staleTask := task
+	applied, err := ApplyVideoSuccess(context.Background(), &staleTask, result)
+	if err != nil {
 		t.Fatal(err)
 	}
-	stale := task
-	stale.Status = "processing"
-	applied, err := ApplyVideoSuccess(context.Background(), &stale, &relaymodel.GeneralFinalVideoResponse{TaskStatus: "succeed", Duration: "10.25", FluxActualQuota: quotaPointer(1025000)})
-	if err != nil || applied || stale.Status != "failed" || stale.Quota != 500000 || stale.Duration != "auto" {
-		t.Fatalf("已失败任务不应再次扣费或改为成功: applied=%v task=%+v err=%v", applied, stale, err)
+	if !applied {
+		t.Fatal("失败任务应被成功结果复活")
 	}
+	stored, err := dbmodel.GetVideoTaskById(task.TaskId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "succeed" || stored.Quota != 1025000 || stored.StoreUrl != result.VideoResult || stored.Result != result.RawResult || stored.Duration != "10.25" {
+		t.Fatalf("复活后任务状态/结算不正确: %+v", stored)
+	}
+	assertReviveAccounting := func(stage string) {
+		var user dbmodel.User
+		var token dbmodel.Token
+		var channel dbmodel.Channel
+		for _, row := range []any{&user, &token, &channel} {
+			if err := db.First(row, 1).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if user.Quota != 975000 || token.RemainQuota != 975000 || user.UsedQuota != 1025000 || token.UsedQuota != 1025000 || channel.UsedQuota != 1025000 || user.RequestCount != 1 {
+			t.Fatalf("[%s] 复活账务未对齐从未失败路径: 用户余额=%d 用量=%d 请求数=%d token余额=%d 用量=%d 渠道用量=%d",
+				stage, user.Quota, user.UsedQuota, user.RequestCount, token.RemainQuota, token.UsedQuota, channel.UsedQuota)
+		}
+	}
+	assertReviveAccounting("首次复活")
+
+	// 幂等：任务已 succeed，再次成功回调/轮询应 no-op，不得重复扣费。
+	staleTask2 := task // 仍是失败态的旧内存快照，模拟迟到回调
+	applied2, err := ApplyVideoSuccess(context.Background(), &staleTask2, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied2 {
+		t.Fatal("已成功任务不应被再次结算")
+	}
+	assertReviveAccounting("重复回调后")
+}
+
+// TestBFLVideoResult404GraceWindow 验证 404 宽限期门控：
+//   - 宽限期内（任务年龄 < grace）：返回 processing，不写 404 body 到 RawResult/Message，不判失败。
+//   - 宽限期外：返回 failed，保留 404 body 供审计，触发上层退款。
+func TestBFLVideoResult404GraceWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Task not found"}`))
+	}))
+	defer server.Close()
+
+	baseURL := server.URL
+	ch := &dbmodel.Channel{Key: "test-key", BaseURL: &baseURL}
+	newCtx := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		return c
+	}
+
+	t.Run("宽限期内视为瞬时处理中", func(t *testing.T) {
+		task := &dbmodel.Video{TaskId: "grace-in", Duration: "auto", CreatedAt: time.Now().Unix()}
+		result, apiErr := (&VideoAdaptor{}).HandleVideoResult(newCtx(), task, ch, nil)
+		if apiErr != nil {
+			t.Fatalf("宽限期内不应返回错误: %+v", apiErr)
+		}
+		if result.TaskStatus != "processing" {
+			t.Fatalf("宽限期内应返回 processing，实际=%s", result.TaskStatus)
+		}
+		if result.Message != "" || result.RawResult != "" {
+			t.Fatalf("宽限期内不应写入 404 body: message=%q raw=%q", result.Message, result.RawResult)
+		}
+	})
+
+	t.Run("宽限期外判失败并保留审计", func(t *testing.T) {
+		task := &dbmodel.Video{TaskId: "grace-out", Duration: "auto", CreatedAt: time.Now().Unix() - 700}
+		result, apiErr := (&VideoAdaptor{}).HandleVideoResult(newCtx(), task, ch, nil)
+		if apiErr != nil {
+			t.Fatalf("宽限期外应结算失败而非返回错误: %+v", apiErr)
+		}
+		if result.TaskStatus != "failed" {
+			t.Fatalf("宽限期外应返回 failed，实际=%s", result.TaskStatus)
+		}
+		if result.RawResult == "" || result.Message == "" {
+			t.Fatalf("宽限期外应保留 404 body 供审计: message=%q raw=%q", result.Message, result.RawResult)
+		}
+	})
 }

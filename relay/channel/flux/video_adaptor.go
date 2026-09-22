@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
@@ -204,6 +206,27 @@ func submitReplicateVideoTask(requestURL string, reqBody any, apiKey string) (st
 	return predResp.ID, "", nil
 }
 
+// defaultFluxVideoNotFoundGraceSecs 新建任务的 404 宽限期（秒）。BFL 视频任务提交后早期窗口内
+// get_result 可能返回 404 "Task not found"（集群路由未就绪/最终一致性），此时任务其实存活
+// （常伴随 processing 回调）。宽限期内不得据 404 判失败退款，避免误退款并丢弃随后到达的成功结果。
+// 取值远大于视频最大生成耗时、远小于 4h expire 兜底。
+const defaultFluxVideoNotFoundGraceSecs int64 = 600
+
+// fluxVideoNotFoundGraceSecs 允许用 env FLUX_VIDEO_NOTFOUND_GRACE_SECS 覆盖默认宽限期。
+func fluxVideoNotFoundGraceSecs() int64 {
+	if v := strings.TrimSpace(os.Getenv("FLUX_VIDEO_NOTFOUND_GRACE_SECS")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return defaultFluxVideoNotFoundGraceSecs
+}
+
+// withinNotFoundGrace 判断任务是否仍在 404 宽限期内（据 created_at 计算年龄）。
+func withinNotFoundGrace(videoTask *dbmodel.Video) bool {
+	return time.Now().Unix()-videoTask.CreatedAt < fluxVideoNotFoundGraceSecs()
+}
+
 func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Video, ch *dbmodel.Channel, cfg *dbmodel.ChannelConfig) (*model.GeneralFinalVideoResponse, *model.ErrorWithStatusCode) {
 	taskId := videoTask.TaskId
 
@@ -235,10 +258,17 @@ func (a *VideoAdaptor) HandleVideoResult(c *gin.Context, videoTask *dbmodel.Vide
 		Duration: videoTask.Duration,
 	}
 
-	// 上游 HTTP 404：任务在 BFL 侧已不存在（无效 id 或结果已过期），不可恢复。
-	// 直接判失败以触发退款；否则 body 里的 "Task not found" 会被 default 分支
-	// 误判为 processing，任务永久卡死且用户永不退款（本次 stuck-processing 的根因）。
+	// 上游 HTTP 404：任务在 BFL 侧查不到。但新建任务早期窗口的 404 多为集群路由未就绪/
+	// 最终一致性的瞬时现象（此时常已有 processing 回调），不可据此判失败。
+	// 宽限期内 → 返回 processing 且不落库 404 body，等回调/下一轮轮询收敛；
+	// 宽限期外 → 视为不可恢复，判失败以触发退款（否则 body 里的 "Task not found" 会被
+	// default 分支误判为 processing，任务永久卡死且用户永不退款）。
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		if withinNotFoundGrace(videoTask) {
+			generalResponse.TaskStatus = "processing"
+			generalResponse.FluxStatus = "Pending"
+			return generalResponse, nil
+		}
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("flux video task not found (upstream 404): %s", string(body))
 		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障
@@ -303,10 +333,14 @@ func (a *VideoAdaptor) handleReplicateVideoResult(videoTask *dbmodel.Video, ch *
 		Duration: videoTask.Duration,
 	}
 
-	// 上游 HTTP 404：Replicate 侧 prediction 不存在（无效 id 或已被清理），不可恢复。
-	// 判失败以触发退款——Replicate 404 body 无 status 字段，若不在此拦截会解析出
-	// 空 status 落 default 被误判为 processing，与 BFL 分支同样卡死。
+	// 上游 HTTP 404：Replicate 侧 prediction 查不到。与 BFL 分支同理，新建任务早期窗口的
+	// 404 可能是瞬时现象；宽限期内返回 processing 不判失败，宽限期外才判失败触发退款。
 	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		if withinNotFoundGrace(videoTask) {
+			generalResponse.TaskStatus = "processing"
+			generalResponse.FluxStatus = "Pending"
+			return generalResponse, nil
+		}
 		generalResponse.TaskStatus = "failed"
 		generalResponse.Message = fmt.Sprintf("replicate prediction not found (upstream 404): %s", string(body))
 		generalResponse.RawResult = string(body) // 留存上游原始 body 供审计/排障

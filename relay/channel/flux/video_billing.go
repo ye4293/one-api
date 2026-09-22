@@ -38,7 +38,12 @@ func fillReplicateVideoBilling(result *relaymodel.GeneralFinalVideoResponse, tas
 }
 
 // ApplyVideoSuccess 是客户端轮询和后台对账共用的成功结算入口。
-// 只有赢得 processing → succeed 的调用执行补退；竞争失败时读取数据库终态供调用方返回。
+// 两段 CAS，互斥且各自只在赢得终态转换的那一次执行结算：
+//  1. processing→succeed：正常路径，按预扣做差额结算；
+//  2. failed→succeed：成功结果复活失败任务。此前失败已退款，故先撤销退款回到预扣基线，
+//     再复用同一差额结算，使账务与「从未失败的成功路径」逐项对齐。
+//
+// 幂等由 RowsAffected==1 门控：同一终态转换只发生一次；竞争落败时读 DB 终态返回 applied=false。
 func ApplyVideoSuccess(ctx context.Context, task *model.Video, result *relaymodel.GeneralFinalVideoResponse) (bool, error) {
 	if result.TaskStatus != "succeed" {
 		return false, fmt.Errorf("只能结算成功的视频任务")
@@ -62,14 +67,39 @@ func ApplyVideoSuccess(ctx context.Context, task *model.Video, result *relaymode
 	if result.Duration != "" {
 		updates["duration"] = result.Duration
 	}
+
+	// 第一段：正常 processing→succeed（task.Quota 内存仍为预扣旧值，供差额结算）
 	res := model.DB.Model(&model.Video{}).Where("task_id = ? AND status = ?", task.TaskId, "processing").Updates(updates)
 	if res.Error != nil {
 		return false, res.Error
 	}
-	applied := res.RowsAffected == 1
-	if applied {
+	if res.RowsAffected == 1 {
 		settleVideoQuotaDiff(ctx, task, quota, source)
+		return reloadVideoTask(task, true)
 	}
+
+	// 第二段：failed→succeed 复活。撤销失败退款回到预扣基线，再走同一差额结算。
+	res = model.DB.Model(&model.Video{}).Where("task_id = ? AND status = ?", task.TaskId, "failed").Updates(updates)
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected == 1 {
+		if task.Quota > 0 {
+			if err := model.ChargeVideoTaskQuota(task.UserId, task.Quota); err != nil {
+				return true, fmt.Errorf("复活撤销用户退款失败: %w", err)
+			}
+			model.UpdateChannelUsedQuota(task.ChannelId, task.Quota)
+		}
+		settleVideoQuotaDiff(ctx, task, quota, source+"（失败后复活）")
+		return reloadVideoTask(task, true)
+	}
+
+	// 两段都未命中：已被其他路径推进到终态，读 DB 终态返回，applied=false。
+	return reloadVideoTask(task, false)
+}
+
+// reloadVideoTask 用 DB 最新终态回填内存 task，供调用方返回权威结果。
+func reloadVideoTask(task *model.Video, applied bool) (bool, error) {
 	stored, err := model.GetVideoTaskById(task.TaskId)
 	if err != nil {
 		return applied, err
@@ -106,8 +136,14 @@ func ApplyVideoFailure(task *model.Video, reason, rawResult string) (bool, error
 }
 
 // ApplyVideoProgress 只更新未完成任务，避免迟到的轮询或进度回调覆盖终态结果。
+// rawResult 为空时（如 404 宽限期内返回的 processing）只推进 updated_at，不把已有的
+// processing 原始结果覆盖成空串。
 func ApplyVideoProgress(task *model.Video, rawResult string) error {
+	updates := map[string]any{"updated_at": time.Now().Unix()}
+	if rawResult != "" {
+		updates["result"] = rawResult
+	}
 	return model.DB.Model(&model.Video{}).
 		Where("task_id = ? AND status = ?", task.TaskId, "processing").
-		Updates(map[string]any{"result": rawResult, "updated_at": time.Now().Unix()}).Error
+		Updates(updates).Error
 }
