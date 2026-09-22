@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 
 	dbmodel "github.com/songquanpeng/one-api/model"
 )
@@ -26,6 +27,11 @@ func selectRetryChannel(ctx context.Context, group string, model string, failedC
 		ctx, group, model, 0, "", *failedChannelIds,
 	)
 	if err != nil {
+		if constraint, active := dbmodel.GetResponsesConstraint(ctx); active {
+			if constraint.Resource != nil || !errors.Is(err, dbmodel.ErrNoCompatibleResponseChannel) {
+				return nil, err
+			}
+		}
 		// 所有优先级均已耗尽，重置后从最高优先级重新开始
 		*failedChannelIds = nil
 		channel, _, err = dbmodel.CacheGetRandomSatisfiedChannel(

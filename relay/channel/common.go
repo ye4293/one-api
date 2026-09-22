@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
@@ -38,6 +39,10 @@ func DoRequestHelper(a Adaptor, c *gin.Context, meta *util.RelayMeta, requestBod
 	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
+	}
+	// Responses 的状态绑定在取消后停止本次尝试，避免等待无期限的首字节。
+	if _, active := dbmodel.GetResponsesConstraint(c.Request.Context()); active {
+		req = req.WithContext(c.Request.Context())
 	}
 	err = a.SetupRequestHeader(c, req, meta)
 	if err != nil {

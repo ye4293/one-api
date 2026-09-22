@@ -143,14 +143,16 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 	//
 	// 埋点必须在下方 LogConsumeEnabled 早退之前，否则关日志开关会让评分失明（与 ObserveConsume 同理）。
 	// 失败请求不经过本函数（走 controller/relay.go processChannelRelayError，用 originalModel 原始名打点）。
-	metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
-		ChannelId:        channelId,
-		Model:            dbModelName,
-		Success:          true,
-		Duration:         duration,
-		FirstWordLatency: firstWordLatency,
-		IsStream:         isStream,
-	})
+	if !failedResponseConsumption(ctx) {
+		metrics.RecordAbilityMetric(ctx, metrics.AbilityMetric{
+			ChannelId:        channelId,
+			Model:            dbModelName,
+			Success:          true,
+			Duration:         duration,
+			FirstWordLatency: firstWordLatency,
+			IsStream:         isStream,
+		})
+	}
 
 	if !config.LogConsumeEnabled {
 		return
