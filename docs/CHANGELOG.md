@@ -39,6 +39,22 @@
 - **验证**: `go build ./... && go vet ./...` 通过；相关包单元/中间件/httptest 及 `-race` 用例通过。真实 OpenAI/Azure 跨资源互通联调、负载/容量、滚动升级尚未执行。
 - **关联计划**: `docs/plans/2026-09-21-provider-state-binding-review.md`
 
+### fix(flux-video): 404 宽限期防误判失败 + 成功结果复活失败任务并正确计费
+
+- **分支**: `flux-video`
+- **类型**: fix（计费关键路径）
+- **背景**: 高清 upscale 任务 `bf110e64-...` 复现严重 bug：任务创建后 18s，reconciler 轮询 BFL `get_result` 拿到**瞬时 404 "Task not found"**（新建任务早期集群路由未就绪的最终一致性现象），`HandleVideoResult` 把**任意 404 一律判失败**并退款；26s 后上游 `Ready` 回调（真实 36.76s mp4）到达，却因任务已 `failed`、回调首行终态短路 + `ApplyVideoSuccess` 的 CAS 要求 `processing`，**成功结果被静默丢弃，任务永久 failed**。
+- **涉及文件**:
+  - `relay/channel/flux/video_adaptor.go` — 新增 `fluxVideoNotFoundGraceSecs`（默认 600s，env `FLUX_VIDEO_NOTFOUND_GRACE_SECS` 可覆盖）/`withinNotFoundGrace`；BFL 与 Replicate 两处 404 分支改为：宽限期内返回 `processing` 且**不落库 404 body**，宽限期外才判失败退款。reconciler 与 get 两条路径共用此入口，一处改动同时生效
+  - `relay/channel/flux/video_billing.go` — `ApplyVideoSuccess` 改两段 CAS：`processing→succeed`（正常差额结算）失败后尝试 `failed→succeed` 复活（撤销失败退款回到预扣基线，再复用 `settleVideoQuotaDiff`）；新增 `reloadVideoTask`；`ApplyVideoProgress` 加空 `rawResult` 守卫，避免宽限期内空 body 覆盖已有 processing 结果
+  - `model/user.go` — 新增 `ChargeVideoTaskQuota`（`CompensateVideoTaskQuota` 的精确逆操作：余额-Q、used+Q、req+1，不动 token），用于复活时撤销失败退款
+  - `relay/channel/flux/video_callback.go` — `handleVideoCallback` / `handleReplicateVideoCallback` 终态短路由 `succeed || failed` 收窄为**仅 `succeed`**，放行迟到的成功回调复活失败任务
+  - `relay/channel/flux/video_billing_test.go` — 替换旧「失败不可覆盖」测试为复活并断言五项账务（余额/used/req/channel/token）逐项对齐「从未失败的成功路径」+ 复活幂等；新增 404 宽限期内/外行为测试
+- **账务结论**: 复活终态与从未失败的成功路径逐项一致（含 token）。Q_final==Q0 时退化为仅撤销退款
+- **影响范围**: 无 schema 变更（复用 `created_at`/`status`/`quota`）；前向修复，不主动回捞历史 failed 记录
+- **验证**: `go build ./... && go vet ./... && go test ./relay/channel/flux` 通过
+- **关联计划**: `docs/plans/2026-09-22-flux-video-404-grace-and-revive.md`
+
 ## 2026-09-18
 
 ### feat(flux-video): 提交前统一参数校验 + 按实际输出时长结算 + 成功结算统一入口

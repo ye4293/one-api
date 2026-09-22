@@ -575,3 +575,17 @@ func CompensateVideoTaskQuota(userId int, quota int64) error {
 		},
 	).Error
 }
+
+// ChargeVideoTaskQuota 是 CompensateVideoTaskQuota 的精确逆操作：
+// 用于失败任务被成功结果复活（failed→succeed）时，撤销此前的失败退款、恢复到预扣基线。
+// 单条 SQL 同时回扣余额、加回已使用配额和请求次数（不触碰 token 余额，与退款侧对称，
+// token 余额差额由后续 settleVideoQuotaDiff 的 PostConsumeTokenQuota 统一结算）。
+func ChargeVideoTaskQuota(userId int, quota int64) error {
+	return DB.Model(&User{}).Where("id = ?", userId).Updates(
+		map[string]interface{}{
+			"quota":         gorm.Expr("quota - ?", quota),
+			"used_quota":    gorm.Expr("used_quota + ?", quota),
+			"request_count": gorm.Expr("request_count + 1"),
+		},
+	).Error
+}
