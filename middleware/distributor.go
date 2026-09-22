@@ -64,6 +64,9 @@ func Distribute() func(c *gin.Context) {
 		// 先统一解析模型名和设置 relay_mode（参考 new-api 的设计）
 		// 这样不管是否指定特定渠道，都会正确解析请求
 		modelRequest, shouldSelectChannel := getModelRequest(c)
+		if c.IsAborted() || !prepareResponsesBinding(c) {
+			return
+		}
 
 		// 检查是否指定了特定渠道
 		channelId, ok := c.Get("specific_channel_id")
@@ -97,6 +100,11 @@ func Distribute() func(c *gin.Context) {
 					responseID = modelRequest.PreviousResponseID
 				}
 
+				// Responses 使用用户隔离的新索引，不再读取旧 response ID 缓存。
+				if _, active := model.GetResponsesConstraint(c.Request.Context()); active {
+					responseID = ""
+				}
+
 				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
 				if responseID == "" {
 					if preferredID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, userGroup); found {
@@ -116,7 +124,7 @@ func Distribute() func(c *gin.Context) {
 									break
 								}
 							}
-							if groupOK && modelOK {
+							if groupOK && modelOK && model.ValidateResponsesChannel(c.Request.Context(), preferred, userGroup, modelRequest.Model) == nil {
 								channel = preferred
 								logger.Infof(c.Request.Context(), "[Affinity] 使用亲和渠道 渠道=%d 模型=%s 分组=%s",
 									preferredID, modelRequest.Model, userGroup)
@@ -145,6 +153,10 @@ func Distribute() func(c *gin.Context) {
 						c.Set("cached_key_index", cachedKeyIndex)
 					}
 					if err != nil {
+						if _, active := model.GetResponsesConstraint(c.Request.Context()); active {
+							abortResponsesError(c, err)
+							return
+						}
 						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 						if channel != nil {
 							logger.Error(c.Request.Context(), fmt.Sprintf("Channel does not exist：%d", channel.Id))
@@ -174,7 +186,13 @@ func Distribute() func(c *gin.Context) {
 		c.Set("model", requestModel)
 
 		if channel != nil {
+			if !freezeResponsesProvider(c, channel, requestModel, userGroup) {
+				return
+			}
 			SetupContextForSelectedChannel(c, channel, requestModel)
+			if c.IsAborted() {
+				return
+			}
 		}
 		c.Next()
 		// relay 层标记成功后写回规则亲和缓存（避免 SSE 流式响应下 HTTP 200 但实际失败时写入错误渠道）
@@ -337,6 +355,9 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	}
 	c.Set("user_channel_ratio", userChannelRatio)
 	// 设置自定义请求头覆盖配置
+	if _, active := model.GetResponsesConstraint(c.Request.Context()); active {
+		c.Set("headers_override", map[string]string{})
+	}
 	if headersOverride := channel.GetHeaderOverride(); headersOverride != nil {
 		c.Set("headers_override", headersOverride)
 	}
@@ -345,38 +366,64 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	var actualKey string
 	var keyIndex int
 
-	// 优先使用缓存的Key索引（response-id 缓存命中时设置）
-	if idx, ok := c.Get("cached_key_index"); ok {
-		if cachedIdx, valid := idx.(int); valid && cachedIdx >= 0 {
-			if key, keyErr := channel.GetKeyByIndex(cachedIdx); keyErr == nil {
-				actualKey = key
-				keyIndex = cachedIdx
-				logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;using cached key index:%d for response-id cache hit", channel.Id, cachedIdx))
-			} else {
-				logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;cached key index %d invalid (%v), falling back to normal selection", channel.Id, cachedIdx, keyErr))
-			}
-		}
-		// 清除 cached_key_index，避免重试时误用
-		c.Set("cached_key_index", -1)
-	}
-
-	if actualKey == "" {
-		// 检查是否有排除的Key索引（用于重试时跳过失败的Key）
-		excludeIndices := getExcludedKeyIndices(c)
-
+	if constraint, active := model.GetResponsesConstraint(c.Request.Context()); active {
 		var err error
-		if channel.MultiKeyInfo.IsMultiKey && len(excludeIndices) > 0 {
-			// 多Key模式且有排除列表，使用带重试的方法
-			actualKey, keyIndex, err = channel.GetNextAvailableKeyWithRetry(excludeIndices)
+		if constraint.Resource != nil {
+			keyIndex = constraint.Resource.KeyIndex
+			actualKey, err = channel.GetKeyByIndex(keyIndex)
 		} else {
-			// 正常获取Key
 			actualKey, keyIndex, err = channel.GetNextAvailableKey()
 		}
-		if err != nil {
-			logger.Error(c.Request.Context(), fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
-			actualKey = channel.Key // 回退到原始Key
-			keyIndex = 0
+		if err != nil || strings.TrimSpace(actualKey) == "" {
+			abortResponsesError(c, model.ErrNoCompatibleResponseChannel)
+			return
 		}
+		source, err := channel.ResponseSource(actualKey, keyIndex)
+		if err != nil {
+			abortResponsesError(c, err)
+			return
+		}
+		if source.Provider != constraint.Provider || (constraint.Resource != nil && source != *constraint.Resource) {
+			abortResponsesError(c, model.ErrResponsesResourceChanged)
+			return
+		}
+		service.SetResponseAttemptSource(c, source)
+		c.Set("cached_key_index", -1)
+	} else {
+		// 优先使用缓存的Key索引（response-id 缓存命中时设置）
+		if idx, ok := c.Get("cached_key_index"); ok {
+			if cachedIdx, valid := idx.(int); valid && cachedIdx >= 0 {
+				if key, keyErr := channel.GetKeyByIndex(cachedIdx); keyErr == nil {
+					actualKey = key
+					keyIndex = cachedIdx
+					logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;using cached key index:%d for response-id cache hit", channel.Id, cachedIdx))
+				} else {
+					logger.Info(c.Request.Context(), fmt.Sprintf("channel:%d;cached key index %d invalid (%v), falling back to normal selection", channel.Id, cachedIdx, keyErr))
+				}
+			}
+			// 清除 cached_key_index，避免重试时误用
+			c.Set("cached_key_index", -1)
+		}
+
+		if actualKey == "" {
+			// 检查是否有排除的Key索引（用于重试时跳过失败的Key）
+			excludeIndices := getExcludedKeyIndices(c)
+
+			var err error
+			if channel.MultiKeyInfo.IsMultiKey && len(excludeIndices) > 0 {
+				// 多Key模式且有排除列表，使用带重试的方法
+				actualKey, keyIndex, err = channel.GetNextAvailableKeyWithRetry(excludeIndices)
+			} else {
+				// 正常获取Key
+				actualKey, keyIndex, err = channel.GetNextAvailableKey()
+			}
+			if err != nil {
+				logger.Error(c.Request.Context(), fmt.Sprintf("Failed to get available key for channel %d: %s", channel.Id, err.Error()))
+				actualKey = channel.Key // 回退到原始Key
+				keyIndex = 0
+			}
+		}
+
 	}
 
 	// 存储Key信息供后续使用

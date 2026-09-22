@@ -359,9 +359,9 @@ func isExcludedChannel(channelID int, excludeIds []int) bool {
 	return false
 }
 
-func getSortedSatisfiedChannelPriorities(group string, model string, groupCol string, trueVal string) ([]int, error) {
+func getSortedSatisfiedChannelPriorities(ctx context.Context, group string, model string, groupCol string, trueVal string) ([]int, error) {
 	var priorities []int
-	err := DB.Table("abilities").
+	err := DB.WithContext(ctx).Table("abilities").
 		Joins("JOIN channels ON abilities.channel_id = channels.id").
 		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, model, trueVal, common.ChannelStatusEnabled).
 		Pluck("DISTINCT abilities.priority", &priorities).Error
@@ -377,6 +377,14 @@ func getSortedSatisfiedChannelPriorities(group string, model string, groupCol st
 }
 
 func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
+	if _, active := GetResponsesConstraint(ctx); active {
+		var excluded []int
+		if len(excludeChannelIds) > 0 {
+			excluded = excludeChannelIds[0]
+		}
+		return selectResponsesChannel(ctx, group, model, skipPriorityLevels, excluded)
+	}
+
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -457,7 +465,7 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 	}
 
 	// 查询所有优先级。这里不能应用排除条件，否则 skipPriorityLevels 会按"剩余优先级"错位。
-	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
+	priorities, err := getSortedSatisfiedChannelPriorities(ctx, group, model, groupCol, trueVal)
 	if err != nil {
 		return nil, -1, err
 	}
@@ -610,7 +618,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 			"abilities.priority DESC",
 		ttlThreshold,
 	)
-	q := DB.Table("channels").
+	q := DB.WithContext(ctx).Table("channels").
 		Select("channels.*, COALESCE(abilities.dynamic_priority, 0) AS dp").
 		Joins("JOIN abilities ON channels.id = abilities.channel_id").
 		Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?",
@@ -641,6 +649,9 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	}
 
 	if len(rows) == 0 {
+		if _, active := GetResponsesConstraint(ctx); active {
+			return nil, -1, ErrNoCompatibleResponseChannel
+		}
 		return nil, -1, errors.New("no channels available (dynamic priority)")
 	}
 
@@ -938,12 +949,15 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 	}
 
 	// 获取完整优先级列表，保持 skipPriorityLevels 与原始优先级层级一致。
-	priorities, err := getSortedSatisfiedChannelPriorities(group, model, groupCol, trueVal)
+	priorities, err := getSortedSatisfiedChannelPriorities(ctx, group, model, groupCol, trueVal)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(priorities) == 0 {
+		if _, active := GetResponsesConstraint(ctx); active {
+			return nil, ErrNoCompatibleResponseChannel
+		}
 		return nil, errors.New("no priorities available")
 	}
 
@@ -957,7 +971,7 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 
 		// 获取该优先级的所有渠道
 		var channels []Channel
-		channelQuery := DB.Table("channels").
+		channelQuery := DB.WithContext(ctx).Table("channels").
 			Joins("JOIN abilities ON channels.id = abilities.channel_id").
 			Where("abilities."+groupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND abilities.priority = ? AND channels.status = ?",
 				group, model, trueVal, priorityToUse, common.ChannelStatusEnabled)
@@ -968,6 +982,9 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 
 		err = channelQuery.Find(&channels).Error
 		if err != nil {
+			if _, active := GetResponsesConstraint(ctx); active {
+				return nil, err
+			}
 			continue
 		}
 
@@ -1018,6 +1035,9 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 		}
 	}
 
+	if _, active := GetResponsesConstraint(ctx); active {
+		return nil, ErrNoCompatibleResponseChannel
+	}
 	return nil, errors.New("no channels available with required capability")
 }
 

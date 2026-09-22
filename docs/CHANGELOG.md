@@ -32,6 +32,26 @@
 - **验证**: `go build ./... && go vet ./... && go test ./relay/channel/flux` 通过
 - **关联计划**: `docs/plans/2026-09-22-flux-video-404-grace-and-revive.md`
 
+### feat(responses): Provider 与 Responses 状态绑定，按 Provider 约束选渠与重试
+
+- **分支**: `fix/azure-responses-encrypted-content`
+- **类型**: 新功能 + 修复
+- **背景**: `/v1/responses`(含 compact)的加密历史(reasoning/compaction 密文、`previous_response_id` 等服务端引用)只能在同一供应方/资源内回放。原逻辑首选命中失败后会重新随机选渠，可能跨 Provider 回放，且 Azure 曾用「删除历史后重试」的降级绕过校验，破坏历史完整性。
+- **涉及文件**:
+  - `common/channel_provider.go`（新增）— 按渠道类型名称提供稳定默认 Provider（48 类映射，Azure 不并入 OpenAI）
+  - `model/channel_provider.go`（新增）— `NormalizeProvider`(128 字符校验)、`MergeChannelConfig`(字段合并/空串清空)、`EffectiveProvider`
+  - `model/responses_binding.go`（新增）— context 约束(Provider/Resource)、资源指纹、`Matches`/`ValidateResponsesChannel`/`selectResponsesChannel`，候选耗尽返回 `ErrNoCompatibleResponseChannel`
+  - `service/responses_state.go`、`service/responses_state_store.go`（新增）— 历史引用解析、交集合并、用户隔离状态索引(共享 Redis 原子写 + 本地 10 万项 LRU/7 天 TTL，Redis 故障不降级本地)
+  - `middleware/responses_binding.go`（新增）+ `middleware/distributor.go` — 选渠前解析约束；首渠有效 Provider 冻结重试边界
+  - `controller/responses_retry.go`（新增）+ `controller/relay.go`、`controller/retry_policy.go` — `shouldRetryResponses`/健康错误分类；重试在同 Provider 内轮转不重置 `RetryTimes`；移除未验证的最后渠道回退；补齐指定渠道/亲和/取消/已输出检查
+  - `controller/channel.go` — 增改渠道走 `MergeChannelConfig` 校验合并 + `InitChannelCache`
+  - `relay/controller/opeai_response.go`、`relay/controller/responses_stream.go`（新增）— 关闭上游首字节前 ping；状态登记成功后再输出，已输出不重放；SSE 支持多行 data/大事件/断流/超时
+  - `relay/controller/azure_responses.go`、`relay/channel/openai/adaptor.go` — 移除删除历史再重试的 Azure 降级；修 compact 后缀；model 映射仅替换顶层 model 保留未知字段
+  - `model/cache.go`、`model/channel.go`、`model/log.go`、`relay/channel/common.go` — 约束感知选渠入口、失败请求仍结算但不生成成功评分样本
+- **影响范围**: Provider 约束仅对 `/v1/responses`(+compact) 且 apiType 为 OpenAI/xAI 的渠道生效，Claude/Gemini 的选渠与重试行为不变；但渠道保存的 config 校验/合并语义与 `InitChannelCache` 对所有渠道类型生效。无 schema 变更。
+- **验证**: `go build ./... && go vet ./...` 通过；相关包单元/中间件/httptest 及 `-race` 用例通过。真实 OpenAI/Azure 跨资源互通联调、负载/容量、滚动升级尚未执行。
+- **关联计划**: `docs/plans/2026-09-21-provider-state-binding-review.md`
+
 ## 2026-09-18
 
 ### feat(flux-video): 提交前统一参数校验 + 按实际输出时长结算 + 成功结算统一入口
