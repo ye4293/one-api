@@ -8,6 +8,17 @@
 
 ## 2026-09-22
 
+### merge(responses): 合并 `fix/azure-responses-encrypted-content` 到 dev，采用 Provider 状态绑定新方案
+
+- **分支**: `dev`（合并提交 `ea154ed`）
+- **类型**: 合并 / 冲突解决
+- **背景**: dev 曾自行演进出一套基于 encrypted_content 哈希路由 + strip-and-retry（删历史后重试）的 Azure 加密历史处理；功能分支则用「Provider 约束 + 用户隔离状态索引」替代。两套方案在 `middleware/distributor.go`、`relay/controller/opeai_response.go` 冲突，经确认采用功能分支新方案。
+- **冲突解决**:
+  - `middleware/distributor.go` — 取功能分支版本，移除 dev 的 A-2/A-3 encrypted_content 路由与 `responses_affinity_pinned` 标记；**保留 dev 的正交改动 `flux-upscale` 模型改名**。
+  - `relay/controller/opeai_response.go` — 取功能分支版本，移除 strip-and-retry fallback 与 encrypted_content 哈希缓存（属被替换的旧方案）。
+- **验证**: `go build ./... && go vet ./...` 通过。`controller` 包 `EvaluateUsageBasedChannelDisable` 两个测试失败经比对为合并前 dev 既有问题，与本次合并无关。
+- **关联计划**: `docs/plans/2026-09-21-provider-state-binding-review.md`
+
 ### feat(responses): Provider 与 Responses 状态绑定，按 Provider 约束选渠与重试
 
 - **分支**: `fix/azure-responses-encrypted-content`
