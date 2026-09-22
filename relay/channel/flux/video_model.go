@@ -27,10 +27,17 @@ type FluxVideoRequest struct {
 	User            string          `json:"user,omitempty"`             // 调用方提供的终端用户标识
 }
 
-// FluxVideoSubmitResponse 提交后（POST）的响应
+// FluxVideoSubmitResponse 提交后（POST）的响应。
+// 同一结构体既解析 BFL 上游创建响应，又作为 flux 视频端点透传给客户端的响应体。
+// cost/input_mp/output_mp 用指针：BFL 提交时算不出（尚未下载/分析素材），三者恒为 null，
+// 用 *float64 忠实透传 null，避免退化为 0 被误读为“免费”。真实 cost 仅在完成态
+// （get_result Ready 顶层 cost）出现，走完成结算，不在提交响应里。
 type FluxVideoSubmitResponse struct {
-	ID         string `json:"id"`          // 任务标识
-	PollingURL string `json:"polling_url"` // 上游轮询地址：BFL 多集群路由，轮询必须原样使用（落库 credentials）
+	ID         string   `json:"id"`          // 任务标识
+	PollingURL string   `json:"polling_url"` // 上游轮询地址：BFL 多集群路由，轮询必须原样使用（落库 credentials）
+	Cost       *float64 `json:"cost"`        // 上游权威费用：credits 计（1 credit = $0.01 = 1 分）；提交时恒 null
+	InputMP    *float64 `json:"input_mp"`    // 输入百万像素；提交时恒 null
+	OutputMP   *float64 `json:"output_mp"`   // 输出百万像素；提交时恒 null
 }
 
 // FluxVideoPollingResponse 轮询（GET /v1/get_result?id=）的响应

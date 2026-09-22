@@ -123,7 +123,7 @@ func TestBFLVideoTaskSubmitErrors(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			_, _, err := submitBFLVideoTask(server.URL, FluxVideoUpscaleRequest{InputVideo: "video"}, "test-key")
+			_, err := submitBFLVideoTask(server.URL, FluxVideoUpscaleRequest{InputVideo: "video"}, "test-key")
 			if err == nil || err.StatusCode != tc.wantStatus {
 				t.Fatalf("错误响应不正确：%v", err)
 			}

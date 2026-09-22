@@ -801,9 +801,17 @@ func invokeVideoAdaptorRequest(c *gin.Context, ctx context.Context, adaptor rela
 		}
 	}
 
-	// 视频放大采用 BFL 原生提交响应，查询和结算继续复用 Flux 视频任务链路。
-	if adaptor.GetProviderName() == "flux" && taskResult.Mode == "upscale" {
-		c.JSON(http.StatusOK, flux.FluxVideoSubmitResponse{ID: taskResult.TaskId, PollingURL: taskResult.PollingUrl})
+	// Flux 视频（flux-3-video 生成 + flux-upscale 放大）统一采用 BFL 原生提交响应形状
+	// {id, polling_url, cost, input_mp, output_mp}。cost/mp 在 BFL 提交时恒 null（透传 null），
+	// 真实 cost 由客户端轮询 get_result（完成态）获取。查询和结算继续复用 Flux 视频任务链路。
+	if adaptor.GetProviderName() == "flux" {
+		c.JSON(http.StatusOK, flux.FluxVideoSubmitResponse{
+			ID:         taskResult.TaskId,
+			PollingURL: taskResult.PollingUrl, // one-api 代理轮询地址，不泄露上游 polling_url
+			Cost:       taskResult.UpstreamCost,
+			InputMP:    taskResult.InputMP,
+			OutputMP:   taskResult.OutputMP,
+		})
 	} else {
 		c.JSON(http.StatusOK, model.GeneralVideoResponse{
 			TaskId:        taskResult.TaskId,
