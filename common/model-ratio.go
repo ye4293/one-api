@@ -268,6 +268,16 @@ var CacheWriteRatio = map[string]float64{
 	"gpt-5.6-luna":           1.25,
 }
 
+// ClaudeCacheCreation5mRatio Claude 5 分钟缓存创建（写入）倍率：相对文本输入价格的倍率。
+// Claude 官方口径默认 1.25。仅 Claude 原生计费使用，独立于 OpenAI 的 CacheWriteRatio，
+// 避免相互影响。未配置的模型由 GetClaudeCacheCreation5mRatio 回退到默认常量 1.25。
+var ClaudeCacheCreation5mRatio = map[string]float64{}
+
+// ClaudeCacheCreation1hRatio Claude 1 小时缓存创建（写入）倍率：相对文本输入价格的倍率。
+// Claude 官方口径默认 2.0。仅 Claude 原生计费使用。
+// 未配置的模型由 GetClaudeCacheCreation1hRatio 回退到默认常量 2.0。
+var ClaudeCacheCreation1hRatio = map[string]float64{}
+
 // LongContextThreshold 记录支持 long-context 分层定价的模型及其触发阈值（按总输入 token 计）。
 // 只对表内模型生效，不影响其它模型。
 var LongContextThreshold = map[string]int{
@@ -296,6 +306,8 @@ var DefaultAudioOutputRatio map[string]float64
 var DefaultImageInputRatio map[string]float64
 var DefaultImageOutputRatio map[string]float64
 var DefaultCacheRatio map[string]float64
+var DefaultClaudeCacheCreation5mRatio map[string]float64
+var DefaultClaudeCacheCreation1hRatio map[string]float64
 var ModelPrice map[string]float64
 
 func init() {
@@ -326,6 +338,14 @@ func init() {
 	DefaultCacheRatio = make(map[string]float64)
 	for k, v := range CacheRatio {
 		DefaultCacheRatio[k] = v
+	}
+	DefaultClaudeCacheCreation5mRatio = make(map[string]float64)
+	for k, v := range ClaudeCacheCreation5mRatio {
+		DefaultClaudeCacheCreation5mRatio[k] = v
+	}
+	DefaultClaudeCacheCreation1hRatio = make(map[string]float64)
+	for k, v := range ClaudeCacheCreation1hRatio {
+		DefaultClaudeCacheCreation1hRatio[k] = v
 	}
 	ModelPrice = make(map[string]float64)
 	for k, v := range DefaultModelPrice {
@@ -601,6 +621,72 @@ func AddNewMissingCacheRatio(oldRatio string) string {
 	return string(jsonBytes)
 }
 
+func ClaudeCacheCreation5mRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(ClaudeCacheCreation5mRatio)
+	if err != nil {
+		logger.SysError("error marshalling claude cache 5m ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateClaudeCacheCreation5mRatioByJSONString(jsonStr string) error {
+	ClaudeCacheCreation5mRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &ClaudeCacheCreation5mRatio)
+}
+
+func AddNewMissingClaudeCacheCreation5mRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old claude cache 5m ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultClaudeCacheCreation5mRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new claude cache 5m ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
+func ClaudeCacheCreation1hRatio2JSONString() string {
+	jsonBytes, err := json.Marshal(ClaudeCacheCreation1hRatio)
+	if err != nil {
+		logger.SysError("error marshalling claude cache 1h ratio: " + err.Error())
+	}
+	return string(jsonBytes)
+}
+
+func UpdateClaudeCacheCreation1hRatioByJSONString(jsonStr string) error {
+	ClaudeCacheCreation1hRatio = make(map[string]float64)
+	return json.Unmarshal([]byte(jsonStr), &ClaudeCacheCreation1hRatio)
+}
+
+func AddNewMissingClaudeCacheCreation1hRatio(oldRatio string) string {
+	newRatio := make(map[string]float64)
+	err := json.Unmarshal([]byte(oldRatio), &newRatio)
+	if err != nil {
+		logger.SysError("error unmarshalling old claude cache 1h ratio: " + err.Error())
+		return oldRatio
+	}
+	for k, v := range DefaultClaudeCacheCreation1hRatio {
+		if _, ok := newRatio[k]; !ok {
+			newRatio[k] = v
+		}
+	}
+	jsonBytes, err := json.Marshal(newRatio)
+	if err != nil {
+		logger.SysError("error marshalling new claude cache 1h ratio: " + err.Error())
+		return oldRatio
+	}
+	return string(jsonBytes)
+}
+
 // GetCacheRatio 获取缓存token倍率
 // 如果找到了缓存倍率就直接使用，如果没找到就默认使用文字补全的倍率（CompletionRatio）
 func GetCacheRatio(name string) float64 {
@@ -622,6 +708,44 @@ func GetCacheWriteRatio(name string) float64 {
 		return ratio
 	}
 	return 1.25
+}
+
+// GetClaudeCacheReadRatio 获取 Claude 缓存读取倍率。
+// 复用可前端配置的 CacheRatio 存储；未命中时固定回退 0.1（Claude 缓存读默认），
+// 刻意不 fallback 到 GetCompletionRatio —— 后者对 "claude-" 前缀返回 3~5，
+// 会把缓存读按 3~5 倍误计费。优先级：CacheRatio 配置 > DefaultCacheRatio > 0.1。
+func GetClaudeCacheReadRatio(name string) float64 {
+	if ratio, ok := CacheRatio[name]; ok {
+		return ratio
+	}
+	if ratio, ok := DefaultCacheRatio[name]; ok {
+		return ratio
+	}
+	return 0.1
+}
+
+// GetClaudeCacheCreation5mRatio 获取 Claude 5 分钟缓存创建倍率。
+// 优先级：前端配置 > 默认 map > 常量 1.25。
+func GetClaudeCacheCreation5mRatio(name string) float64 {
+	if ratio, ok := ClaudeCacheCreation5mRatio[name]; ok {
+		return ratio
+	}
+	if ratio, ok := DefaultClaudeCacheCreation5mRatio[name]; ok {
+		return ratio
+	}
+	return 1.25
+}
+
+// GetClaudeCacheCreation1hRatio 获取 Claude 1 小时缓存创建倍率。
+// 优先级：前端配置 > 默认 map > 常量 2.0。
+func GetClaudeCacheCreation1hRatio(name string) float64 {
+	if ratio, ok := ClaudeCacheCreation1hRatio[name]; ok {
+		return ratio
+	}
+	if ratio, ok := DefaultClaudeCacheCreation1hRatio[name]; ok {
+		return ratio
+	}
+	return 2.0
 }
 
 // GetLongContextMultipliers 返回 long-context 分层计费倍率。

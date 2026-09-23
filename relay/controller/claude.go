@@ -25,17 +25,13 @@ import (
 	"github.com/songquanpeng/one-api/relay/util"
 )
 
-// Claude 缓存倍率常量（相对于输入价格）
-//   - 5 分钟缓存创建：输入价格 × 1.25
-//   - 1 小时缓存创建：输入价格 × 2.0
-//   - 缓存读取：输入价格 × 0.1
+// Claude 缓存倍率（相对于输入价格）现已改为前端可配置，优先级：前端配置 > 默认值。
+// 取值统一走 common 包，未配置时回退到官方默认常量：
+//   - 5 分钟缓存创建：common.GetClaudeCacheCreation5mRatio（默认 1.25）
+//   - 1 小时缓存创建：common.GetClaudeCacheCreation1hRatio（默认 2.0）
+//   - 缓存读取：      common.GetClaudeCacheReadRatio（默认 0.1）
 //
-// 单一来源：计费计算、billingDetails 展示都应引用这些常量，避免倍率漂移。
-const (
-	claudeCache5mRatio   = 1.25
-	claudeCache1hRatio   = 2.0
-	claudeCacheReadRatio = 0.1
-)
+// 单一来源：计费计算、billingDetails 展示都引用这些函数，避免倍率漂移。
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
 // Vertex AI API 要求必须指定 role 字段(值为 "user" 或 "model"),而 Gemini 原生 API 可以省略
@@ -229,17 +225,17 @@ func recordClaudeConsumption(ctx context.Context, userId, channelId, tokenId int
 	if usageMetadata != nil {
 		if usageMetadata.CacheCreation != nil {
 			if usageMetadata.CacheCreation.Ephemeral5mInputTokens > 0 {
-				billingDetails["claude_cache_5m_ratio"] = claudeCache5mRatio
+				billingDetails["claude_cache_5m_ratio"] = common.GetClaudeCacheCreation5mRatio(modelName)
 			}
 			if usageMetadata.CacheCreation.Ephemeral1hInputTokens > 0 {
-				billingDetails["claude_cache_1h_ratio"] = claudeCache1hRatio
+				billingDetails["claude_cache_1h_ratio"] = common.GetClaudeCacheCreation1hRatio(modelName)
 			}
 		} else if usageMetadata.CacheCreationInputTokens > 0 {
 			// 没有细粒度信息时，CalculateClaudeQuotaByRatio 会把全部创建计入 5m 档
-			billingDetails["claude_cache_5m_ratio"] = claudeCache5mRatio
+			billingDetails["claude_cache_5m_ratio"] = common.GetClaudeCacheCreation5mRatio(modelName)
 		}
 		if usageMetadata.CacheReadInputTokens > 0 {
-			billingDetails["claude_cache_read_ratio"] = claudeCacheReadRatio
+			billingDetails["claude_cache_read_ratio"] = common.GetClaudeCacheReadRatio(modelName)
 		}
 	}
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
@@ -381,10 +377,14 @@ func CalculateClaudeQuotaByRatio(usageMetadata *anthropic.Usage, modelName strin
 	// ========== 获取各类型的倍率 ==========
 	modelRatio := common.GetModelRatio(modelName)
 	completionRatio := common.GetCompletionRatio(modelName)
+	// Claude 缓存倍率（前端可配置，未配置回退默认 1.25 / 2.0 / 0.1）
+	cache5mRatio := common.GetClaudeCacheCreation5mRatio(modelName)
+	cache1hRatio := common.GetClaudeCacheCreation1hRatio(modelName)
+	cacheReadRatio := common.GetClaudeCacheReadRatio(modelName)
 
 	// 打印倍率信息
-	logger.SysLog(fmt.Sprintf("[Claude计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f",
-		modelName, modelRatio, completionRatio))
+	logger.SysLog(fmt.Sprintf("[Claude计费] 模型: %s, 倍率配置: ModelRatio=%.4f, CompletionRatio=%.4f, Cache5m=%.4f, Cache1h=%.4f, CacheRead=%.4f",
+		modelName, modelRatio, completionRatio, cache5mRatio, cache1hRatio, cacheReadRatio))
 
 	// 打印 token 数量
 	logger.SysLog(fmt.Sprintf("[Claude计费] Token数量: 输入=%d, 输出=%d, 5分钟缓存创建=%d, 1小时缓存创建=%d, 缓存读取=%d, 总计=%d",
@@ -400,23 +400,23 @@ func CalculateClaudeQuotaByRatio(usageMetadata *anthropic.Usage, modelName strin
 	outputQuota := float64(cost.OutputTextTokens) * modelRatio * completionRatio
 
 	// 缓存创建部分
-	// 5分钟缓存：tokens × modelRatio × claudeCache5mRatio
-	cache5mQuota := float64(cost.CacheCreation5mTokens) * modelRatio * claudeCache5mRatio
-	// 1小时缓存：tokens × modelRatio × claudeCache1hRatio
-	cache1hQuota := float64(cost.CacheCreation1hTokens) * modelRatio * claudeCache1hRatio
+	// 5分钟缓存：tokens × modelRatio × cache5mRatio
+	cache5mQuota := float64(cost.CacheCreation5mTokens) * modelRatio * cache5mRatio
+	// 1小时缓存：tokens × modelRatio × cache1hRatio
+	cache1hQuota := float64(cost.CacheCreation1hTokens) * modelRatio * cache1hRatio
 
-	// 缓存读取部分：tokens × modelRatio × claudeCacheReadRatio
-	cacheReadQuota := float64(cost.CacheReadTokens) * modelRatio * claudeCacheReadRatio
+	// 缓存读取部分：tokens × modelRatio × cacheReadRatio
+	cacheReadQuota := float64(cost.CacheReadTokens) * modelRatio * cacheReadRatio
 
 	// 打印各部分配额计算
 	logger.SysLog(fmt.Sprintf("[Claude计费] 各部分Ratio Tokens: 输入=%.2f (%d×%.4f), 输出=%.2f (%d×%.4f×%.4f)",
 		inputQuota, cost.InputTextTokens, modelRatio,
 		outputQuota, cost.OutputTextTokens, modelRatio, completionRatio))
 
-	logger.SysLog(fmt.Sprintf("[Claude计费] 缓存Ratio Tokens: 5分钟创建=%.2f (%d×%.4f×1.25), 1小时创建=%.2f (%d×%.4f×2.0), 读取=%.2f (%d×%.4f×0.1)",
-		cache5mQuota, cost.CacheCreation5mTokens, modelRatio,
-		cache1hQuota, cost.CacheCreation1hTokens, modelRatio,
-		cacheReadQuota, cost.CacheReadTokens, modelRatio))
+	logger.SysLog(fmt.Sprintf("[Claude计费] 缓存Ratio Tokens: 5分钟创建=%.2f (%d×%.4f×%.4f), 1小时创建=%.2f (%d×%.4f×%.4f), 读取=%.2f (%d×%.4f×%.4f)",
+		cache5mQuota, cost.CacheCreation5mTokens, modelRatio, cache5mRatio,
+		cache1hQuota, cost.CacheCreation1hTokens, modelRatio, cache1hRatio,
+		cacheReadQuota, cost.CacheReadTokens, modelRatio, cacheReadRatio))
 
 	// ========== 计算最终配额 ==========
 	// 公式: 总RatioTokens / 1000000 × 2 × groupRatio × QuotaPerUnit
