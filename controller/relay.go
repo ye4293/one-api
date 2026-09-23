@@ -3323,16 +3323,15 @@ func RelayResponse(c *gin.Context) {
 	// 普通失败不再每次写 DB，统一在所有重试结束后由 recordFinalErrorLog 写一条
 
 	// 处理首次失败的渠道错误（包括自动禁用逻辑）
-	if responsesChannelHealthError(c, relayError) {
-		go processChannelRelayError(helper.DetachCancel(ctx), userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
-	}
+	go processChannelRelayError(helper.DetachCancel(ctx), userId, originalChannelId, originalChannelName, originalKeyIndex, relayError, originalModel)
 
 	// 记录所有已失败的渠道ID，用于重试时排除
 	failedChannelIds := []int{channelId}
 
 	group := c.GetString("group")
+	lastResponseChannel := getLastRetryFallbackChannel(originalChannelId)
 	retryTimes := config.RetryTimes
-	if !shouldRetryResponses(c, relayError) {
+	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
 		retryTimes = 0
 	}
@@ -3340,27 +3339,26 @@ func RelayResponse(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			relayError = responseRoutingError(err)
-			break
+			if lastResponseChannel == nil {
+				logger.Errorf(ctx, "No channels available after cycling: %v", err)
+				break
+			}
+			logger.Infof(ctx, "No channel found after cycling, retrying with last channel #%d (%d/%d)", lastResponseChannel.Id, currentAttempt, retryTimes)
+			channel = lastResponseChannel
 		}
-		if c.Request.Context().Err() != nil || c.Writer.Written() {
-			break
-		}
-		if err := dbmodel.ValidateResponsesChannel(c.Request.Context(), channel, group, originalModel); err != nil {
-			relayError = responseRoutingError(err)
-			break
-		}
-		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
-		if c.IsAborted() {
-			return
-		}
+		lastResponseChannel = channel
 
 		// 获取重试原因 - 直接使用原始错误消息
 		retryReason := relayError.Error.Message
 
 		// 获取新渠道的key信息
-		newKeyIndex := c.GetInt("key_index")
-		isMultiKey := channel.MultiKeyInfo.IsMultiKey
+		newKeyIndex := 0
+		isMultiKey := false
+		if channel.MultiKeyInfo.IsMultiKey {
+			isMultiKey = true
+			// 获取下一个可用key的索引
+			_, newKeyIndex, _ = channel.GetNextAvailableKey()
+		}
 
 		// 生成详细的重试日志
 		retryLog := formatRetryLog(ctx, originalChannelId, originalChannelName, originalKeyIndex,
@@ -3380,6 +3378,7 @@ func RelayResponse(c *gin.Context) {
 
 		logger.Infof(ctx, "Using channel #%d to retry Claude request (remain times %d)", channel.Id, i)
 
+		middleware.SetupContextForSelectedChannel(c, channel, originalModel)
 		requestBody, _ := common.GetRequestBody(c)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 		util.PublishFailedRetryHistory(c, retryAttempts)
@@ -3413,24 +3412,27 @@ func RelayResponse(c *gin.Context) {
 		})
 		util.PublishFailedRetryHistory(c, retryAttempts)
 
-		if !shouldRetryResponses(c, relayError) {
+		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)
-			if responsesChannelHealthError(c, relayError) {
-				go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
-			}
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 			break
 		}
 
-		if responsesChannelHealthError(c, relayError) {
-			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
-		}
+		go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
 	}
 
 	if relayError != nil {
 		// 记录渠道历史到上下文中
 		c.Set("admin_channel_history", channelHistory)
 		recordFinalErrorLog(ctx, c, relayError, retryAttempts, channelHistory, service.GetAffinityLogTag(c))
-		writeResponsesRelayError(c, relayError)
+		//转换成claude 的错误格式
+		c.JSON(relayError.StatusCode, gin.H{
+			"error": gin.H{
+				"message": relayError.Error.Message,
+				"code":    relayError.Error.Code,
+				"status":  relayError.Error.Status,
+			},
+		})
 	}
 }
 
