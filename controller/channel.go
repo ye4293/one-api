@@ -143,11 +143,6 @@ func AddChannel(c *gin.Context) {
 	}
 
 	channel := requestData.Channel
-	channel.Config, err = model.MergeChannelConfig("", channel.Config)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
-		return
-	}
 
 	channel.CreatedTime = helper.GetTimestamp()
 
@@ -237,7 +232,6 @@ func AddChannel(c *gin.Context) {
 		})
 		return
 	}
-	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
 		"message":    "",
@@ -619,17 +613,6 @@ func UpdateChannel(c *gin.Context) {
 	channel := *existingChannel
 
 	// 智能更新字段
-	if rawConfig, exists := rawBody["config"]; exists {
-		if _, valid := rawConfig.(string); !valid {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "config 必须是字符串"})
-			return
-		}
-		requestData.Config, err = model.MergeChannelConfig(existingChannel.Config, requestData.Config)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
-			return
-		}
-	}
 	updateChannelFields(&channel, &requestData.Channel, rawBody)
 
 	// 验证 HeaderOverride 字段的 JSON 格式
@@ -690,7 +673,6 @@ func UpdateChannel(c *gin.Context) {
 		})
 		return
 	}
-	model.InitChannelCache()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

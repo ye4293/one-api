@@ -14,19 +14,21 @@ import (
 
 // ModelPriceInfo 模型价格信息
 type ModelPriceInfo struct {
-	ModelName        string  `json:"model_name"`
-	ModelRatio       float64 `json:"model_ratio"`
-	CompletionRatio  float64 `json:"completion_ratio"`
-	FixedPrice       float64 `json:"fixed_price"`
-	InputPrice       float64 `json:"input_price"`
-	OutputPrice      float64 `json:"output_price"`
-	PriceType        string  `json:"price_type"`
-	HasRatio         bool    `json:"has_ratio"`
-	CacheRatio       float64 `json:"cache_ratio"`
-	ImageInputRatio  float64 `json:"image_input_ratio"`
-	ImageOutputRatio float64 `json:"image_output_ratio"`
-	AudioInputRatio  float64 `json:"audio_input_ratio"`
-	AudioOutputRatio float64 `json:"audio_output_ratio"`
+	ModelName          string  `json:"model_name"`
+	ModelRatio         float64 `json:"model_ratio"`
+	CompletionRatio    float64 `json:"completion_ratio"`
+	FixedPrice         float64 `json:"fixed_price"`
+	InputPrice         float64 `json:"input_price"`
+	OutputPrice        float64 `json:"output_price"`
+	PriceType          string  `json:"price_type"`
+	HasRatio           bool    `json:"has_ratio"`
+	CacheRatio         float64 `json:"cache_ratio"`
+	ClaudeCache5mRatio float64 `json:"claude_cache_5m_ratio"`
+	ClaudeCache1hRatio float64 `json:"claude_cache_1h_ratio"`
+	ImageInputRatio    float64 `json:"image_input_ratio"`
+	ImageOutputRatio   float64 `json:"image_output_ratio"`
+	AudioInputRatio    float64 `json:"audio_input_ratio"`
+	AudioOutputRatio   float64 `json:"audio_output_ratio"`
 }
 
 // GetModelPrices 获取所有模型的价格信息
@@ -84,11 +86,11 @@ func GetModelPrices(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"list":        filteredPrices[start:end],
-			"total":       total,
-			"page":        page,
-			"pageSize":    pageSize,
-			"totalPages":  (total + pageSize - 1) / pageSize,
+			"list":       filteredPrices[start:end],
+			"total":      total,
+			"page":       page,
+			"pageSize":   pageSize,
+			"totalPages": (total + pageSize - 1) / pageSize,
 		},
 	})
 }
@@ -175,15 +177,17 @@ func GetUnsetRatioModels(c *gin.Context) {
 // UpdateModelRatio 更新单个模型的倍率
 func UpdateModelRatio(c *gin.Context) {
 	var req struct {
-		ModelName        string   `json:"model_name" binding:"required"`
-		ModelRatio       *float64 `json:"model_ratio"`
-		CompletionRatio  *float64 `json:"completion_ratio"`
-		FixedPrice       *float64 `json:"fixed_price"`
-		ImageInputRatio  *float64 `json:"image_input_ratio"`
-		ImageOutputRatio *float64 `json:"image_output_ratio"`
-		AudioInputRatio  *float64 `json:"audio_input_ratio"`
-		AudioOutputRatio *float64 `json:"audio_output_ratio"`
-		CacheRatio       *float64 `json:"cache_ratio"`
+		ModelName          string   `json:"model_name" binding:"required"`
+		ModelRatio         *float64 `json:"model_ratio"`
+		CompletionRatio    *float64 `json:"completion_ratio"`
+		FixedPrice         *float64 `json:"fixed_price"`
+		ImageInputRatio    *float64 `json:"image_input_ratio"`
+		ImageOutputRatio   *float64 `json:"image_output_ratio"`
+		AudioInputRatio    *float64 `json:"audio_input_ratio"`
+		AudioOutputRatio   *float64 `json:"audio_output_ratio"`
+		CacheRatio         *float64 `json:"cache_ratio"`
+		ClaudeCache5mRatio *float64 `json:"claude_cache_5m_ratio"`
+		ClaudeCache1hRatio *float64 `json:"claude_cache_1h_ratio"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -299,6 +303,46 @@ func UpdateModelRatio(c *gin.Context) {
 		}
 	}
 
+	// 更新 Claude 5 分钟缓存创建倍率
+	if req.ClaudeCache5mRatio != nil {
+		if *req.ClaudeCache5mRatio <= 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "Claude 5 分钟缓存倍率必须大于 0",
+			})
+			return
+		}
+		common.ClaudeCacheCreation5mRatio[req.ModelName] = *req.ClaudeCache5mRatio
+		err := model.UpdateOption("ClaudeCacheCreation5mRatio", common.ClaudeCacheCreation5mRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存 Claude 5 分钟缓存倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
+	// 更新 Claude 1 小时缓存创建倍率
+	if req.ClaudeCache1hRatio != nil {
+		if *req.ClaudeCache1hRatio <= 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "Claude 1 小时缓存倍率必须大于 0",
+			})
+			return
+		}
+		common.ClaudeCacheCreation1hRatio[req.ModelName] = *req.ClaudeCache1hRatio
+		err := model.UpdateOption("ClaudeCacheCreation1hRatio", common.ClaudeCacheCreation1hRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存 Claude 1 小时缓存倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "更新成功",
@@ -309,15 +353,17 @@ func UpdateModelRatio(c *gin.Context) {
 func BatchUpdateModelRatio(c *gin.Context) {
 	var req struct {
 		Models []struct {
-			ModelName        string   `json:"model_name"`
-			ModelRatio       *float64 `json:"model_ratio"`
-			CompletionRatio  *float64 `json:"completion_ratio"`
-			FixedPrice       *float64 `json:"fixed_price"`
-			ImageInputRatio  *float64 `json:"image_input_ratio"`
-			ImageOutputRatio *float64 `json:"image_output_ratio"`
-			AudioInputRatio  *float64 `json:"audio_input_ratio"`
-			AudioOutputRatio *float64 `json:"audio_output_ratio"`
-			CacheRatio       *float64 `json:"cache_ratio"`
+			ModelName          string   `json:"model_name"`
+			ModelRatio         *float64 `json:"model_ratio"`
+			CompletionRatio    *float64 `json:"completion_ratio"`
+			FixedPrice         *float64 `json:"fixed_price"`
+			ImageInputRatio    *float64 `json:"image_input_ratio"`
+			ImageOutputRatio   *float64 `json:"image_output_ratio"`
+			AudioInputRatio    *float64 `json:"audio_input_ratio"`
+			AudioOutputRatio   *float64 `json:"audio_output_ratio"`
+			CacheRatio         *float64 `json:"cache_ratio"`
+			ClaudeCache5mRatio *float64 `json:"claude_cache_5m_ratio"`
+			ClaudeCache1hRatio *float64 `json:"claude_cache_1h_ratio"`
 		} `json:"models"`
 	}
 
@@ -337,6 +383,8 @@ func BatchUpdateModelRatio(c *gin.Context) {
 	audioInputRatioUpdated := false
 	audioOutputRatioUpdated := false
 	cacheRatioUpdated := false
+	claudeCache5mRatioUpdated := false
+	claudeCache1hRatioUpdated := false
 
 	for _, m := range req.Models {
 		if m.ModelRatio != nil {
@@ -370,6 +418,14 @@ func BatchUpdateModelRatio(c *gin.Context) {
 		if m.CacheRatio != nil {
 			common.CacheRatio[m.ModelName] = *m.CacheRatio
 			cacheRatioUpdated = true
+		}
+		if m.ClaudeCache5mRatio != nil && *m.ClaudeCache5mRatio > 0 {
+			common.ClaudeCacheCreation5mRatio[m.ModelName] = *m.ClaudeCache5mRatio
+			claudeCache5mRatioUpdated = true
+		}
+		if m.ClaudeCache1hRatio != nil && *m.ClaudeCache1hRatio > 0 {
+			common.ClaudeCacheCreation1hRatio[m.ModelName] = *m.ClaudeCache1hRatio
+			claudeCache1hRatioUpdated = true
 		}
 	}
 
@@ -462,6 +518,28 @@ func BatchUpdateModelRatio(c *gin.Context) {
 		}
 	}
 
+	if claudeCache5mRatioUpdated {
+		err := model.UpdateOption("ClaudeCacheCreation5mRatio", common.ClaudeCacheCreation5mRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存 Claude 5 分钟缓存倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
+	if claudeCache1hRatioUpdated {
+		err := model.UpdateOption("ClaudeCacheCreation1hRatio", common.ClaudeCacheCreation1hRatio2JSONString())
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "保存 Claude 1 小时缓存倍率失败: " + err.Error(),
+			})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "批量更新成功",
@@ -471,10 +549,10 @@ func BatchUpdateModelRatio(c *gin.Context) {
 // getAllModelPrices 获取所有模型的价格信息
 func getAllModelPrices() []ModelPriceInfo {
 	var prices []ModelPriceInfo
-	
+
 	// 基础价格单位：$0.002 / 1K tokens
 	basePricePerK := 0.002
-	
+
 	// 获取QuotaPerUnit配置
 	quotaPerUnit := config.QuotaPerUnit
 	if quotaPerUnit <= 0 {
@@ -485,30 +563,39 @@ func getAllModelPrices() []ModelPriceInfo {
 	processedModels := make(map[string]bool)
 	for modelName, ratio := range common.ModelRatio {
 		processedModels[modelName] = true
-		
+
 		// 计算输入价格 ($/1M tokens)
 		inputPricePerM := ratio * basePricePerK * 1000
-		
+
 		// 获取补全倍率
 		completionRatio := common.GetCompletionRatio(modelName)
-		
+
 		// 计算输出价格 ($/1M tokens)
 		outputPricePerM := inputPricePerM * completionRatio
 
+		// Claude 模型的缓存读倍率与计费口径对齐（GetClaudeCacheReadRatio 未命中回退 0.1，
+		// 而非 GetCacheRatio 的补全倍率），避免前端展示与实际计费不一致。
+		cacheRatioForDisplay := common.GetCacheRatio(modelName)
+		if strings.HasPrefix(modelName, "claude-") {
+			cacheRatioForDisplay = common.GetClaudeCacheReadRatio(modelName)
+		}
+
 		prices = append(prices, ModelPriceInfo{
-			ModelName:        modelName,
-			ModelRatio:       ratio,
-			CompletionRatio:  completionRatio,
-			FixedPrice:       0,
-			InputPrice:       inputPricePerM,
-			OutputPrice:      outputPricePerM,
-			PriceType:        "ratio",
-			HasRatio:         true,
-			CacheRatio:       common.GetCacheRatio(modelName),
-			ImageInputRatio:  common.GetImageInputRatio(modelName),
-			ImageOutputRatio: common.GetImageOutputRatio(modelName),
-			AudioInputRatio:  common.GetAudioInputRatio(modelName),
-			AudioOutputRatio: common.GetAudioOutputRatio(modelName),
+			ModelName:          modelName,
+			ModelRatio:         ratio,
+			CompletionRatio:    completionRatio,
+			FixedPrice:         0,
+			InputPrice:         inputPricePerM,
+			OutputPrice:        outputPricePerM,
+			PriceType:          "ratio",
+			HasRatio:           true,
+			CacheRatio:         cacheRatioForDisplay,
+			ClaudeCache5mRatio: common.GetClaudeCacheCreation5mRatio(modelName),
+			ClaudeCache1hRatio: common.GetClaudeCacheCreation1hRatio(modelName),
+			ImageInputRatio:    common.GetImageInputRatio(modelName),
+			ImageOutputRatio:   common.GetImageOutputRatio(modelName),
+			AudioInputRatio:    common.GetAudioInputRatio(modelName),
+			AudioOutputRatio:   common.GetAudioOutputRatio(modelName),
 		})
 	}
 
@@ -565,4 +652,3 @@ func getUsedModelsFromChannels() map[string]bool {
 
 	return usedModels
 }
-

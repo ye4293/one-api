@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,7 +21,6 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
-	"github.com/songquanpeng/one-api/service"
 )
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
@@ -28,7 +29,6 @@ import (
 
 // RelayOpenaiResponseNative 处理 openai 原生 API 请求
 func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
-	c.Set("responses_upstream_attempted", false)
 	ctx := c.Request.Context()
 	startTime := time.Now()
 
@@ -46,7 +46,6 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openai.ErrorWrapper(err, "failed_to_get_request_body", http.StatusInternalServerError)
 	}
 	meta := util.GetRelayMeta(c)
-	meta.DisablePing = true
 	meta.ActualModelName = meta.OriginModelName
 	isModelMapped := false
 	if len(meta.ModelMapping) > 0 {
@@ -67,7 +66,8 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 
 	// 如果模型发生了重定向，替换请求体中的 model 字段
 	if isModelMapped {
-		newBody, err := mapResponsesRequestModel(originRequestBody, meta.ActualModelName)
+		openaiResponseRequest.Model = meta.ActualModelName
+		newBody, err := json.Marshal(openaiResponseRequest)
 		if err != nil {
 			return openai.ErrorWrapper(err, "json_marshal_failed", http.StatusInternalServerError)
 		}
@@ -102,8 +102,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	//先写死透传
 
 	adaptor.Init(meta)
-	c.Set("responses_upstream_attempted", true)
-	resp, err := doOpenaiResponseRequest(c, meta, adaptor, originRequestBody)
+	resp, err := adaptor.DoRequest(c, meta, bytes.NewBuffer(originRequestBody))
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed_to_send_request", http.StatusBadGateway)
 	}
@@ -119,11 +118,8 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		usageMetadata, openaiErr = doNativeOpenaiResponse(c, resp, meta)
 	}
 
-	if openaiErr != nil && usageMetadata == nil {
+	if openaiErr != nil {
 		return openaiErr
-	}
-	if usageMetadata == nil {
-		usageMetadata = &openai.ResponseUsage{}
 	}
 
 	actualQuota, _ := CalculateResponseQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
@@ -156,13 +152,9 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		cacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 
-	if openaiErr != nil {
-		ctx = dbmodel.WithFailedResponseConsumption(ctx)
-		c.Set("responses_output_error", openaiErr.Error.Code)
-	}
-	go recordOpenaiResponseConsumption(context.WithoutCancel(ctx), userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 
-	return openaiErr
+	return nil
 }
 
 // recordOpenaiResponseConsumption 记录 OpenAI Response API 消费日志
@@ -193,10 +185,6 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	adminInfo := extractAdminInfoFromContext(c)
 	// 构建 other 字段，包含 adminInfo 和 usageDetails
 	other := buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo, usageDetails)
-	if constraint, active := dbmodel.GetResponsesConstraint(ctx); active {
-		details, _ := json.Marshal(map[string]interface{}{"provider": constraint.Provider, "usage_estimated": c.GetBool("responses_usage_estimated"), "output_error": c.GetString("responses_output_error")})
-		other += ";responsesState:" + string(details)
-	}
 	// 追加模型重定向信息
 	originModel := c.GetString("original_model")
 	modelMapping := c.GetStringMapString("model_mapping")
@@ -413,9 +401,6 @@ func CalculateResponseQuotaFromUsageMetadata(usageMetadata *openai.ResponseUsage
 // 支持多种格式：{"error":{"message":"..."}} 或 {"message":"..."} 或纯文本
 
 func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *openai.ResponseUsage, err *model.ErrorWithStatusCode) {
-	if resp == nil || resp.Body == nil {
-		return nil, openai.ErrorWrapper(fmt.Errorf("上游未返回响应"), "empty_response", 502)
-	}
 	defer util.CloseResponseBodyGracefully(resp)
 
 	// 读取响应体
@@ -444,20 +429,12 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	// 解析 openai response 原生响应
 	var openaiResponse openai.OpenaiResaponseResponse
 	if unmarshalErr := json.Unmarshal(responseBody, &openaiResponse); unmarshalErr != nil {
-		return nil, responsesOutputError(unmarshalErr)
-	}
-	if openaiResponse.Usage == nil {
-		openaiResponse.Usage = &openai.ResponseUsage{InputTokens: meta.PromptTokens, TotalTokens: meta.PromptTokens}
-		c.Set("responses_usage_estimated", true)
-	}
-	if registerErr := service.RegisterResponseOutput(c, responseBody); registerErr != nil {
-		return openaiResponse.Usage, responsesOutputError(registerErr)
+		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
 	util.IOCopyBytesGracefully(c, resp, responseBody)
+	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
-	if _, active := dbmodel.GetResponsesConstraint(c.Request.Context()); !active {
-		dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
-	}
+	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
 
 	return openaiResponse.Usage, nil
@@ -465,8 +442,187 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 
 // doNativeOpenaiResponseStream 处理 openai response 流式响应
 // claude 流式响应格式为 SSE，每行以 "data: " 开头，后跟 JSON 对象
-func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (*openai.ResponseUsage, *model.ErrorWithStatusCode) {
-	return streamResponsesEvents(c, resp, meta)
+func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *openai.ResponseUsage, err *model.ErrorWithStatusCode) {
+	defer util.CloseResponseBodyGracefully(resp)
+
+	// 检查响应状态码 - 如果不是200，读取错误信息并返回
+	if resp.StatusCode != http.StatusOK {
+		responseBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, openai.ErrorWrapper(readErr, "read_error_response_failed", http.StatusInternalServerError)
+		}
+		// 获取系统内部的 requestID
+		requestID := c.GetHeader("X-Request-ID")
+		message, errType := parseUpstreamErrorMessage(responseBody, requestID)
+		return nil, &model.ErrorWithStatusCode{
+			Error: model.Error{
+				Message: message,
+				Type:    errType,
+				Code:    fmt.Sprintf("status_%d", resp.StatusCode),
+			},
+			StatusCode: resp.StatusCode,
+		}
+	}
+
+	// 缓冲流的前几个事件，检测流内错误（如 insufficient_quota）
+	// 如果检测到错误，直接返回让上层重试逻辑通过 RetryKeywords 判断是否重试
+	buffered, streamErr := bufferStreamPrefix(resp.Body)
+	if streamErr != nil {
+		logger.Warnf(c.Request.Context(), "stream prefix error detected: %s", streamErr.Error.Message)
+		return nil, streamErr
+	}
+	// 重组 resp.Body：已缓冲的字节 + 剩余流，保留原始 body 的 Close 能力
+	if len(buffered) > 0 {
+		originalBody := resp.Body
+		resp.Body = &combinedReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(buffered), originalBody),
+			Closer: originalBody,
+		}
+	}
+
+	// 用于保存最后的 UsageMetadata 和文本内容
+	var lastUsageMetadata = &openai.ResponseUsage{}
+	var openaiErr *model.ErrorWithStatusCode
+	var fullText strings.Builder // 累积完整文本
+	webSearchToolCallCount := 0
+	audit.WrapUpstreamBody(c, resp)
+	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
+		var streamResponse openai.OpenaiResponseStreamResponse
+		err := json.Unmarshal([]byte(data), &streamResponse)
+		if err != nil {
+			openaiErr = openai.ErrorWrapper(err, "unmarshal_response_failed", http.StatusInternalServerError)
+			return false
+		}
+		helper.OpenaiResponseChunkData(c, streamResponse, data)
+		switch streamResponse.Type {
+		case "response.completed":
+			if streamResponse.Response != nil {
+				if streamResponse.Response.Usage != nil {
+					lastUsageMetadata = streamResponse.Response.Usage
+				}
+
+				// 缓存 response_id 到 Redis
+				dbmodel.CacheResponseIdToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache Stream")
+				c.Set("x_response_id", streamResponse.Response.ID)
+
+				if len(streamResponse.Response.Output) > 0 {
+					for _, output := range streamResponse.Response.Output {
+						if output.Type == "image_generation_call" {
+							c.Set("image_generation_call", true)
+							c.Set("image_generation_call_quality", output.Quality)
+							c.Set("image_generation_call_size", output.Size)
+						}
+					}
+				}
+			}
+		case "response.output_text.delta":
+			// 处理输出文本
+			fullText.WriteString(streamResponse.Delta)
+		case "response.output_item.done":
+			// 函数调用处理
+			if streamResponse.Item != nil {
+				switch streamResponse.Item.Type {
+				case "web_search_call":
+					webSearchToolCallCount++
+					c.Set("web_search_tool_call_count", webSearchToolCallCount)
+				}
+			}
+		}
+		return true
+	})
+	if lastUsageMetadata.OutputTokens == 0 {
+		// 计算输出文本的 token 数量
+		tempStr := fullText.String()
+		if len(tempStr) > 0 {
+			// 非正常结束，使用输出文本的 token 数量
+			completionTokens := openai.CountTokenText(tempStr, meta.ActualModelName)
+			lastUsageMetadata.OutputTokens = completionTokens
+			lastUsageMetadata.TotalTokens = lastUsageMetadata.InputTokens + lastUsageMetadata.OutputTokens
+		}
+	}
+	//特殊情况预估输入token 用于补全输入token
+
+	if lastUsageMetadata.InputTokens == 0 && lastUsageMetadata.OutputTokens != 0 {
+	}
+
+	if openaiErr != nil {
+		return lastUsageMetadata, openaiErr
+	}
+
+	return lastUsageMetadata, nil
+}
+
+// combinedReadCloser 包装 MultiReader 并委托 Close 给原始 body
+type combinedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// bufferStreamPrefix 同步读取 SSE 流的前几个事件，检测流内错误。
+// 如果发现错误事件（如 insufficient_quota），返回 ErrorWithStatusCode 以触发上层重试。
+// 如果流正常，返回已缓冲的字节用于 MultiReader 重组。
+// 注意：此函数同步阻塞，依赖上游在合理时间内发送前几个事件（由 HTTP transport 超时保证）。
+func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.ErrorWithStatusCode) {
+	var buf bytes.Buffer
+	scanner := bufio.NewScanner(io.TeeReader(body, &buf))
+	scanner.Buffer(make([]byte, 4*1024), 64*1024)
+
+	var currentEventType string
+	var dataEventCount int
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 空行表示 SSE 消息边界，重置事件类型
+		if line == "" {
+			currentEventType = ""
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		dataEventCount++
+		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+
+		if currentEventType == "error" {
+			if parsed := parseStreamErrorEvent(dataStr); parsed != nil {
+				return buf.Bytes(), &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: parsed.Error.Message,
+						Type:    parsed.Error.Type,
+						Code:    parsed.Error.Code,
+					},
+					StatusCode: http.StatusTooManyRequests,
+				}
+			}
+		}
+
+		if currentEventType == "response.failed" {
+			if parsed := parseResponseFailedEvent(dataStr); parsed != nil {
+				return buf.Bytes(), &model.ErrorWithStatusCode{
+					Error: model.Error{
+						Message: parsed.Response.Error.Message,
+						Type:    parsed.Response.Error.Code,
+						Code:    parsed.Response.Error.Code,
+					},
+					StatusCode: http.StatusTooManyRequests,
+				}
+			}
+		}
+
+		if isContentProducingEvent(currentEventType) || dataEventCount >= 5 {
+			break
+		}
+	}
+
+	return buf.Bytes(), nil
 }
 
 // streamErrorData 用于解析 SSE error 事件的 JSON
@@ -510,4 +666,18 @@ func parseResponseFailedEvent(data string) *responseFailedData {
 		return &ev
 	}
 	return nil
+}
+
+func isContentProducingEvent(eventType string) bool {
+	switch eventType {
+	case "response.output_text.delta",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.content_part.delta",
+		"response.audio.delta",
+		"response.file_search_call.searching",
+		"response.mcp_call.executing":
+		return true
+	}
+	return false
 }

@@ -181,7 +181,6 @@ const (
 )
 
 type ChannelConfig struct {
-	Provider          string `json:"provider,omitempty"`
 	Region            string `json:"region,omitempty"`
 	SK                string `json:"sk,omitempty"`
 	AK                string `json:"ak,omitempty"`
@@ -608,11 +607,6 @@ func (channel *Channel) Update() error {
 	// 这样可以避免零值覆盖数据库中的现有数据
 	err = DB.Model(channel).Updates(channel).Error
 	if err != nil {
-		return err
-	}
-
-	// config 空字符串也必须持久化，表示清空配置并恢复默认 Provider。
-	if err = DB.Model(channel).Update("config", channel.Config).Error; err != nil {
 		return err
 	}
 

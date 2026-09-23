@@ -39,6 +39,26 @@
 - **验证**: `go build ./... && go vet ./...` 通过；相关包单元/中间件/httptest 及 `-race` 用例通过。真实 OpenAI/Azure 跨资源互通联调、负载/容量、滚动升级尚未执行。
 - **关联计划**: `docs/plans/2026-09-21-provider-state-binding-review.md`
 
+## 2026-09-23
+
+### feat(claude): Claude 缓存倍率支持前端配置，优先级 配置 > 默认
+
+- **分支**: `feat/claude-cache-ratio-config`
+- **类型**: feat（计费配置）
+- **涉及文件**: `common/model-ratio.go`、`model/option.go`、`controller/pricing.go`、`relay/controller/claude.go`
+- **说明**: 将 `relay/controller/claude.go` 中写死的缓存倍率常量（5m=1.25、1h=2.0、read=0.1）改为可在定价页面配置，取值优先级 前端配置 > 默认常量。`common/model-ratio.go` 新增独立的 `ClaudeCacheCreation5m/1hRatio` map 及 JSON/Update/AddNewMissing 辅助函数，并新增 `GetClaudeCacheReadRatio`（未命中固定回退 0.1，刻意不 fallback 到 `GetCompletionRatio`，否则 `claude-` 前缀会按 3~5 倍误计缓存读）、`GetClaudeCacheCreation5m/1hRatio`。两个新 map 独立于 OpenAI 的 `CacheWriteRatio`，不影响其它模型。`model/option.go` 接入 InitOptionMap/updateOptionMap/loadOptionsFromDatabase 支持持久化与热加载；`controller/pricing.go` 单个/批量更新接口新增 `claude_cache_5m/1h_ratio` 字段（>0 校验），列表回显对齐 Claude 缓存读展示口径；`relay/controller/claude.go` 移除常量，计费与 billingDetails 统一走 common 取值函数。前端改动在 ezlinkai-web 仓库（`pricingPage.tsx`，仅 Claude 模型显示、价格↔倍率联动）。
+- **关联计划**: `docs/plans/2026-09-23-claude-cache-ratio-config.md`
+
+### revert(responses): 紧急回滚 Provider 状态绑定，止血 /v1/responses 大面积 503
+
+- **分支**: `main`
+- **类型**: revert（生产止血）
+- **涉及文件**: `git revert -m 1 413abc23` 撤销该 merge 引入的全部 28 个文件改动（含 `service/responses_state*.go`、`middleware/responses_binding.go`、`model/responses_binding.go`、`model/channel_provider.go`、`relay/controller/responses_stream.go`、`relay/controller/azure_responses.go` 等，及对 `opeai_response.go`、`distributor.go`、`controller/relay.go`、`model/cache.go` 的回退）
+- **说明**: 上线 Provider 状态绑定后，生产（多副本 + 有 Redis）`/v1/responses` 大面积报 503「状态索引暂时不可用」，同用户同渠道成功/失败交替反复。根因为 `responses_binding` 中间件对每个请求强制状态索引校验且 fail-closed、无开关，状态查不到/查失败即拒绝请求。整体 revert 止血，退回无 Provider 约束的旧路由行为。**代价**：Azure 加密历史修复（`a308b5a0`）一并回退；后续重合并需先 revert the revert。根因深挖与重做见关联计划。
+- **关联计划**: `docs/plans/2026-09-23-revert-responses-state-binding.md`
+
+## 2026-09-22
+
 ### feat(flux-video): flux-3-video 提交响应对齐 BFL 原生 usage 形状
 
 - **分支**: `flux-video`
