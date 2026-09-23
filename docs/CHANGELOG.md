@@ -8,6 +8,14 @@
 
 ## 2026-09-23
 
+### feat(claude): Claude 缓存倍率支持前端配置，优先级 配置 > 默认
+
+- **分支**: `feat/claude-cache-ratio-config`
+- **类型**: feat（计费配置）
+- **涉及文件**: `common/model-ratio.go`、`model/option.go`、`controller/pricing.go`、`relay/controller/claude.go`
+- **说明**: 将 `relay/controller/claude.go` 中写死的缓存倍率常量（5m=1.25、1h=2.0、read=0.1）改为可在定价页面配置，取值优先级 前端配置 > 默认常量。`common/model-ratio.go` 新增独立的 `ClaudeCacheCreation5m/1hRatio` map 及 JSON/Update/AddNewMissing 辅助函数，并新增 `GetClaudeCacheReadRatio`（未命中固定回退 0.1，刻意不 fallback 到 `GetCompletionRatio`，否则 `claude-` 前缀会按 3~5 倍误计缓存读）、`GetClaudeCacheCreation5m/1hRatio`。两个新 map 独立于 OpenAI 的 `CacheWriteRatio`，不影响其它模型。`model/option.go` 接入 InitOptionMap/updateOptionMap/loadOptionsFromDatabase 支持持久化与热加载；`controller/pricing.go` 单个/批量更新接口新增 `claude_cache_5m/1h_ratio` 字段（>0 校验），列表回显对齐 Claude 缓存读展示口径；`relay/controller/claude.go` 移除常量，计费与 billingDetails 统一走 common 取值函数。前端改动在 ezlinkai-web 仓库（`pricingPage.tsx`，仅 Claude 模型显示、价格↔倍率联动）。
+- **关联计划**: `docs/plans/2026-09-23-claude-cache-ratio-config.md`
+
 ### revert(responses): 紧急回滚 Provider 状态绑定，止血 /v1/responses 大面积 503
 
 - **分支**: `main`
