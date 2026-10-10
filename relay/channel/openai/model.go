@@ -83,6 +83,7 @@ type UsageOrResponseText struct {
 }
 
 type SlimTextResponse struct {
+	ServiceTier string               `json:"service_tier,omitempty"`
 	Id          string               `json:"id"` // response ID (chatcmpl-xxx 或 cmpl-xxx)
 	Choices     []TextResponseChoice `json:"choices"`
 	model.Usage `json:"usage"`
@@ -145,20 +146,22 @@ type ChatCompletionsStreamResponseChoice struct {
 }
 
 type ChatCompletionsStreamResponse struct {
-	Id      string                                `json:"id"`
-	Object  string                                `json:"object"`
-	Created int64                                 `json:"created"`
-	Model   string                                `json:"model"`
-	Choices []ChatCompletionsStreamResponseChoice `json:"choices"`
-	Usage   *model.Usage                          `json:"usage"`
+	ServiceTier string                                `json:"service_tier,omitempty"`
+	Id          string                                `json:"id"`
+	Object      string                                `json:"object"`
+	Created     int64                                 `json:"created"`
+	Model       string                                `json:"model"`
+	Choices     []ChatCompletionsStreamResponseChoice `json:"choices"`
+	Usage       *model.Usage                          `json:"usage"`
 }
 
 type CompletionsStreamResponse struct {
-	Id      string `json:"id"`      // response ID (cmpl-xxx)
-	Object  string `json:"object"`  // 对象类型
-	Created int64  `json:"created"` // 时间戳
-	Model   string `json:"model"`   // 模型名称
-	Choices []struct {
+	ServiceTier string `json:"service_tier,omitempty"`
+	Id          string `json:"id"`      // response ID (cmpl-xxx)
+	Object      string `json:"object"`  // 对象类型
+	Created     int64  `json:"created"` // 时间戳
+	Model       string `json:"model"`   // 模型名称
+	Choices     []struct {
 		Text         string `json:"text"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -207,33 +210,34 @@ type SoraVideoResponse struct {
 // OpeanaiResaponseReques OpenAI Responses API 请求体
 // docs: https://platform.openai.com/docs/api-reference/responses/create
 type OpeanaiResaponseRequest struct {
-	Background        bool           `json:"background,omitempty"`          // 是否后台运行
-	Conversation      interface{}    `json:"conversation,omitempty"`        // 对话上下文
-	FrequencyPenalty  float64        `json:"frequency_penalty,omitempty"`   // 频率惩罚
-	Include           []string       `json:"include,omitempty"`             // 包含的字段
-	Input             interface{}    `json:"input,omitempty"`               // 输入内容（可以是字符串或消息数组）
-	Instructions      string         `json:"instructions,omitempty"`        // 系统指令
-	LogitBias         map[string]int `json:"logit_bias,omitempty"`          // Logit 偏置
-	MaxOutputTokens   int            `json:"max_output_tokens,omitempty"`   // 最大输出 token 数
-	MaxToolCalls      int            `json:"max_tool_calls,omitempty"`      // 最大工具调用次数
-	Metadata          interface{}    `json:"metadata,omitempty"`            // 元数据
-	Modalities        []string       `json:"modalities,omitempty"`          // 模态（text, audio）
-	Model             string         `json:"model,omitempty"`               // 模型名称
-	ParallelToolCalls bool           `json:"parallel_tool_calls,omitempty"` // 是否并行调用工具
-	PresencePenalty   float64        `json:"presence_penalty,omitempty"`    // 存在惩罚
-	PreviousResponseID string        `json:"previous_response_id,omitempty"` // 上一次响应 ID（用于续写 / compact）
-	Reasoning         interface{}    `json:"reasoning,omitempty"`           // 推理配置
-	ResponseFormat    interface{}    `json:"response_format,omitempty"`     // 响应格式
-	Seed              int            `json:"seed,omitempty"`                // 随机种子
-	Stop              interface{}    `json:"stop,omitempty"`                // 停止序列
-	Store             bool           `json:"store,omitempty"`               // 是否存储
-	Stream            bool           `json:"stream,omitempty"`              // 是否流式返回
-	StreamOptions     interface{}    `json:"stream_options,omitempty"`      // 流式选项
-	Temperature       float64        `json:"temperature,omitempty"`         // 温度参数
-	ToolChoice        interface{}    `json:"tool_choice,omitempty"`         // 工具选择策略
-	Tools             []interface{}  `json:"tools,omitempty"`               // 可用工具列表
-	TopP              float64        `json:"top_p,omitempty"`               // Top-p 采样参数
-	User              string         `json:"user,omitempty"`                // 用户标识
+	Background         bool           `json:"background,omitempty"`           // 是否后台运行
+	Conversation       interface{}    `json:"conversation,omitempty"`         // 对话上下文
+	FrequencyPenalty   float64        `json:"frequency_penalty,omitempty"`    // 频率惩罚
+	Include            []string       `json:"include,omitempty"`              // 包含的字段
+	Input              interface{}    `json:"input,omitempty"`                // 输入内容（可以是字符串或消息数组）
+	Instructions       string         `json:"instructions,omitempty"`         // 系统指令
+	LogitBias          map[string]int `json:"logit_bias,omitempty"`           // Logit 偏置
+	MaxOutputTokens    int            `json:"max_output_tokens,omitempty"`    // 最大输出 token 数
+	MaxToolCalls       int            `json:"max_tool_calls,omitempty"`       // 最大工具调用次数
+	Metadata           interface{}    `json:"metadata,omitempty"`             // 元数据
+	Modalities         []string       `json:"modalities,omitempty"`           // 模态（text, audio）
+	Model              string         `json:"model,omitempty"`                // 模型名称
+	ParallelToolCalls  bool           `json:"parallel_tool_calls,omitempty"`  // 是否并行调用工具
+	PresencePenalty    float64        `json:"presence_penalty,omitempty"`     // 存在惩罚
+	PreviousResponseID string         `json:"previous_response_id,omitempty"` // 上一次响应 ID（用于续写 / compact）
+	Reasoning          interface{}    `json:"reasoning,omitempty"`            // 推理配置
+	ResponseFormat     interface{}    `json:"response_format,omitempty"`      // 响应格式
+	Seed               int            `json:"seed,omitempty"`                 // 随机种子
+	ServiceTier        string         `json:"service_tier,omitempty"`         // 服务档位
+	Stop               interface{}    `json:"stop,omitempty"`                 // 停止序列
+	Store              bool           `json:"store,omitempty"`                // 是否存储
+	Stream             bool           `json:"stream,omitempty"`               // 是否流式返回
+	StreamOptions      interface{}    `json:"stream_options,omitempty"`       // 流式选项
+	Temperature        float64        `json:"temperature,omitempty"`          // 温度参数
+	ToolChoice         interface{}    `json:"tool_choice,omitempty"`          // 工具选择策略
+	Tools              []interface{}  `json:"tools,omitempty"`                // 可用工具列表
+	TopP               float64        `json:"top_p,omitempty"`                // Top-p 采样参数
+	User               string         `json:"user,omitempty"`                 // 用户标识
 
 	// Audio 相关字段
 	Audio *AudioConfig `json:"audio,omitempty"` // 音频配置
@@ -248,6 +252,7 @@ type AudioConfig struct {
 // OpeanaiResaponseResponse OpenAI Responses API 响应对象
 // docs: https://platform.openai.com/docs/api-reference/responses/object
 type OpenaiResaponseResponse struct {
+	ServiceTier       string                 `json:"service_tier,omitempty"`
 	ID                string                 `json:"id"`                           // 响应的唯一标识符
 	Object            string                 `json:"object"`                       // 对象类型，值为 "response"
 	Status            string                 `json:"status"`                       // 响应状态 (in_progress, completed, failed, cancelled, expired, incomplete)

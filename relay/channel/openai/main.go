@@ -19,6 +19,7 @@ import (
 )
 
 func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.ErrorWithStatusCode, string, *model.Usage) {
+	c.Set(ResponseServiceTierContextKey, "")
 	responseText := ""
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -76,6 +77,11 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						continue // just ignore the error
 					}
 
+					// 档位可能先于 usage 返回，后续缺失该字段的 chunk 不应清空它。
+					if streamResponse.ServiceTier != "" {
+						c.Set(ResponseServiceTierContextKey, streamResponse.ServiceTier)
+					}
+
 					// 提取 Chat Completions 的 response ID 并缓存
 					if streamResponse.Id != "" && responseId == "" {
 						responseId = streamResponse.Id
@@ -112,6 +118,10 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 					if err != nil {
 						logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
 						continue
+					}
+
+					if streamResponse.ServiceTier != "" {
+						c.Set(ResponseServiceTierContextKey, streamResponse.ServiceTier)
 					}
 
 					// 提取 Completions 的 response ID 并缓存
@@ -193,6 +203,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 			StatusCode: resp.StatusCode,
 		}, nil
 	}
+	c.Set(ResponseServiceTierContextKey, textResponse.ServiceTier)
 	// Reset response body
 	resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
 

@@ -38,6 +38,7 @@ type GeneralOpenAIRequest struct {
 	PresencePenalty     float64           `json:"presence_penalty,omitempty"`
 	ResponseFormat      *ResponseFormat   `json:"response_format,omitempty"`
 	Seed                float64           `json:"seed,omitempty"`
+	ServiceTier         string            `json:"service_tier,omitempty"`
 	Stream              bool              `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions    `json:"stream_options,omitempty"`     // 新增字段
 	SearchParameters    *SearchParameters `json:"search_parameters,omitempty"`  // 搜索参数

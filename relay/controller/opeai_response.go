@@ -181,6 +181,9 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 
 	// 提取用量详情并格式化为统一格式
 	usageDetails := extractOpenaiReseponseNativeUsageDetails(usageMetadata)
+	if usageDetails != nil {
+		usageDetails.ServiceTier = c.GetString(openai.ResponseServiceTierContextKey)
+	}
 	// 提取渠道历史信息 (adminInfo)
 	adminInfo := extractAdminInfoFromContext(c)
 	// 构建 other 字段，包含 adminInfo 和 usageDetails
@@ -240,12 +243,13 @@ func buildOpenaiResponseOtherInfoWithUsageDetails(adminInfo string, usageDetails
 
 // OpenaiReseponseUsageDetails 用于存储从 Openai Response Usage 提取的详细使用信息
 type OpenaiReseponseUsageDetails struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	TotalTokens              int `json:"total_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	ReasoningTokens          int `json:"reasoning_tokens"`
+	ServiceTier              string `json:"service_tier,omitempty"`
+	InputTokens              int    `json:"input_tokens"`
+	OutputTokens             int    `json:"output_tokens"`
+	TotalTokens              int    `json:"total_tokens"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	ReasoningTokens          int    `json:"reasoning_tokens"`
 }
 
 // extractOpenaiResponseNativeUsageDetails 从 Openai Response Usage 提取详细的使用信息（用于 native 接口）
@@ -436,6 +440,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	// 缓存 response_id 到 Redis
 	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
 	c.Set("x_response_id", openaiResponse.ID)
+	c.Set(openai.ResponseServiceTierContextKey, openaiResponse.ServiceTier)
 
 	return openaiResponse.Usage, nil
 }
@@ -444,6 +449,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 // claude 流式响应格式为 SSE，每行以 "data: " 开头，后跟 JSON 对象
 func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usageMetadata *openai.ResponseUsage, err *model.ErrorWithStatusCode) {
 	defer util.CloseResponseBodyGracefully(resp)
+	c.Set(openai.ResponseServiceTierContextKey, "")
 
 	// 检查响应状态码 - 如果不是200，读取错误信息并返回
 	if resp.StatusCode != http.StatusOK {
@@ -494,6 +500,9 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 			return false
 		}
 		helper.OpenaiResponseChunkData(c, streamResponse, data)
+		if streamResponse.Response != nil && streamResponse.Response.ServiceTier != "" {
+			c.Set(openai.ResponseServiceTierContextKey, streamResponse.Response.ServiceTier)
+		}
 		switch streamResponse.Type {
 		case "response.completed":
 			if streamResponse.Response != nil {
