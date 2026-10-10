@@ -144,14 +144,15 @@ func buildGeminiUsageMap(totalTokens, inputTokens, outputTokens int, details Gem
 
 // UsageDetailsForLog Usage 详情结构体，用于序列化到日志 other 字段
 type UsageDetailsForLog struct {
-	InputText                int `json:"input_text"`
-	InputImage               int `json:"input_image"`
-	OutputText               int `json:"output_text"`
-	OutputImage              int `json:"output_image"`
-	OutputReasoning          int `json:"output_reasoning"`
-	CachedTokens             int `json:"cached_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	ServiceTier              string `json:"service_tier,omitempty"`
+	InputText                int    `json:"input_text"`
+	InputImage               int    `json:"input_image"`
+	OutputText               int    `json:"output_text"`
+	OutputImage              int    `json:"output_image"`
+	OutputReasoning          int    `json:"output_reasoning"`
+	CachedTokens             int    `json:"cached_tokens,omitempty"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // GPTImageUsageDetailsForLog gpt-image-* usage 明细，写入 logs.other（仅四个字段）

@@ -354,6 +354,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		otherInfo = appendUsageDetailsToOther(otherInfo, UsageDetailsForLog{
+			ServiceTier:              c.GetString(openai.ResponseServiceTierContextKey),
 			InputText:                usage.PromptTokensDetails.TextTokens,
 			InputImage:               usage.PromptTokensDetails.ImageTokens,
 			OutputText:               usage.CompletionTokensDetails.TextTokens,

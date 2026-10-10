@@ -24,6 +24,8 @@ import (
 func RelayTextHelper(c *gin.Context) *model.ErrorWithStatusCode {
 	ctx := c.Request.Context()
 	startTime := time.Now()
+	// 重试可能切换渠道，清除上一次响应的档位。
+	c.Set(openai.ResponseServiceTierContextKey, "")
 
 	// 记录请求开始时间用于首字延迟计算（应该在最开始记录）
 	c.Set("request_start_time", startTime)
