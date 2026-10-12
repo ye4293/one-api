@@ -122,7 +122,14 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openaiErr
 	}
 
-	actualQuota, _ := CalculateResponseQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
+	overrides := lookupOpenAIPriceOverrides(modelName, c.GetString(openai.ResponseServiceTierContextKey), openAIResponsePricing)
+	var actualQuota int64
+	var prices openAITokenPrices
+	if overrides.any() {
+		actualQuota, _, prices = calculateOpenaiResponseQuotaWithOverrides(usageMetadata, modelName, groupRatio, overrides)
+	} else {
+		actualQuota, _ = CalculateResponseQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
+	}
 
 	// 记录消费日志
 	duration := time.Since(startTime).Seconds()
@@ -152,13 +159,22 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		cacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 
-	go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	if overrides.any() {
+		go recordOpenaiResponseConsumptionWithPrices(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio, &prices)
+	} else {
+		go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+	}
 
 	return nil
 }
 
 // recordOpenaiResponseConsumption 记录 OpenAI Response API 消费日志
 func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64) {
+	recordOpenaiResponseConsumptionWithPrices(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, quota, requestPath, duration, isStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio, nil)
+}
+
+// prices 仅在档位命中时传入，保证异步日志使用计算时的倍率；原分支保留查价时机。
+func recordOpenaiResponseConsumptionWithPrices(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64, prices *openAITokenPrices) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
 		logger.Error(ctx,
@@ -195,22 +211,38 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 		other = appendModelMappingInfo(other, originModel, mappedModel)
 	}
 	// 追加计费详情
+	var completionRatio float64
+	if prices != nil {
+		modelRatio, completionRatio = prices.modelRatio, prices.completionRatio
+	} else {
+		completionRatio = common.GetCompletionRatio(modelName)
+	}
 	billingDetails := map[string]interface{}{
 		"billing_type":     "token",
 		"model_ratio":      modelRatio,
-		"completion_ratio": common.GetCompletionRatio(modelName),
+		"completion_ratio": completionRatio,
 		"group_ratio":      groupRatio,
 	}
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
 	if cachedTokens > 0 {
 		billingDetails["cached_tokens"] = cachedTokens
-		billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
-		billingDetails["cache_read_ratio"] = common.GetCacheRatio(modelName)
+		if prices != nil {
+			billingDetails["cache_ratio"] = prices.cacheRatio
+			billingDetails["cache_read_ratio"] = prices.cacheRatio
+		} else {
+			billingDetails["cache_ratio"] = common.GetCacheRatio(modelName)
+			billingDetails["cache_read_ratio"] = common.GetCacheRatio(modelName)
+		}
 	}
 	if cacheWriteTokens > 0 {
 		billingDetails["cache_write_tokens"] = cacheWriteTokens
-		billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(modelName)
-		billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(modelName)
+		if prices != nil {
+			billingDetails["cache_write_ratio"] = prices.cacheWriteRatio
+			billingDetails["cache_creation_ratio"] = prices.cacheWriteRatio
+		} else {
+			billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(modelName)
+			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(modelName)
+		}
 	}
 	other = appendBillingDetails(ctx, other, billingDetails)
 	other = util.AppendRetryHistoryOther(c, other, duration)
@@ -323,12 +355,17 @@ type OpenaiResponseTokenCost struct {
 //
 //	总配额 = (各部分之和) / 1000000 × 2 × groupRatio × QuotaPerUnit
 func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, modelName string, groupRatio float64) (int64, OpenaiResponseTokenCost) {
+	quota, cost, _ := calculateOpenaiResponseQuotaWithOverrides(usageMetadata, modelName, groupRatio, openAIPriceOverrides{})
+	return quota, cost
+}
+
+func calculateOpenaiResponseQuotaWithOverrides(usageMetadata *openai.ResponseUsage, modelName string, groupRatio float64, overrides openAIPriceOverrides) (int64, OpenaiResponseTokenCost, openAITokenPrices) {
 	cost := OpenaiResponseTokenCost{
 		ModelName: modelName,
 	}
 
 	if usageMetadata == nil {
-		return 0, cost
+		return 0, cost, openAITokenPrices{}
 	}
 
 	// 提取 token 数量
@@ -346,11 +383,11 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	}
 
 	// ========== 获取各类型的倍率 ==========
-	modelRatio := common.GetModelRatio(modelName)
-	completionRatio := common.GetCompletionRatio(modelName)
-	cacheRatio := common.GetCacheRatio(modelName)
-	cacheWriteRatio := common.GetCacheWriteRatio(modelName)
-	// long-context 分层定价：输入×2，输出×1.5（gpt-5.6 系列）
+	modelRatio := overrides.modelRatio.resolve(modelName, common.GetModelRatio)
+	completionRatio := overrides.completionRatio.resolve(modelName, common.GetCompletionRatio)
+	cacheRatio := overrides.cacheRatio.resolve(modelName, common.GetCacheRatio)
+	cacheWriteRatio := overrides.cacheWriteRatio.resolve(modelName, common.GetCacheWriteRatio)
+	// 阈值按基础模型判断，系数作用于本次选出的价格。
 	longMults := common.GetLongContextMultipliers(modelName, cost.InputTextTokens)
 
 	// 打印倍率信息
@@ -391,7 +428,7 @@ func CalculateOpenaiResponseQuotaByRatio(usageMetadata *openai.ResponseUsage, mo
 	// 计算最终配额
 	quota := int64((inputTextQuota + cacheQuota + cacheWriteQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 
-	return quota, cost
+	return quota, cost, openAITokenPrices{modelRatio, completionRatio, cacheRatio, cacheWriteRatio}
 }
 
 // CalculateResponseQuotaFromUsageMetadata 根据 UsageMetadata 计算配额

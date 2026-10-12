@@ -2,6 +2,8 @@ package common
 
 import (
 	"encoding/json"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/songquanpeng/one-api/common/logger"
@@ -748,15 +750,24 @@ func GetClaudeCacheCreation1hRatio(name string) float64 {
 	return 2.0
 }
 
-// GetLongContextMultipliers 返回 long-context 分层计费倍率。
-// gpt-5.6 系列：输入（含缓存读取/写入）×2，输出×1.5（官方定价）
-// 对未注册 long-context 的模型，两个倍率均为 1.0。
+var gptLongContextVersionPattern = regexp.MustCompile(`^gpt-([1-9][0-9]*)(?:\.[0-9]+)?(?:$|-)`)
+
+// GetLongContextMultipliers 优先使用基础模型的精确阈值；GPT-6+ 默认阈值为 272000。
+// 总输入超过阈值后，输入（含缓存）×2、输出×1.5；其他模型保持 1 倍。
 func GetLongContextMultipliers(name string, inputTokens int) LongContextMultipliers {
 	var multipliers LongContextMultipliers
 	multipliers.InputMultiplier = 1.0
 	multipliers.OutputMultiplier = 1.0
 
-	if threshold, ok := LongContextThreshold[name]; ok && inputTokens > threshold {
+	threshold, ok := LongContextThreshold[name]
+	if !ok {
+		if match := gptLongContextVersionPattern.FindStringSubmatch(name); match != nil {
+			if major, err := strconv.Atoi(match[1]); err == nil && major >= 6 {
+				threshold, ok = 272000, true
+			}
+		}
+	}
+	if ok && inputTokens > threshold {
 		multipliers.InputMultiplier = 2.0
 		multipliers.OutputMultiplier = 1.5
 	}
