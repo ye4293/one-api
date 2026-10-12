@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-12
+
+### feat(openai): 按响应档位结算并扩展 GPT-6+ 长上下文计费
+
+- **分支**: `codex/openai-service-tier`
+- **类型**: feat（档位计费）
+- **涉及文件**: `common/model-ratio.go`、`relay/controller/openai_pricing.go`、`relay/controller/helper.go`、`relay/controller/opeai_response.go` 及对应回归测试、设计/实施文档和本地验证记录。
+- **说明**: Chat/Completions 和 Responses 按上游实际返回的 `service_tier` 精确查询 `模型_档位`，逐项回退基础模型，保留原计费公式、折扣与扣费流程；命中时日志沿用实际计算倍率。GPT-6 及后续主版本在没有精确阈值时使用 `272000`，总输入严格超过阈值后整次输入/缓存 ×2、输出 ×1.5，包括默认或缺失档位的请求。
+- **验证**: 相关包测试、专项 race、`go build ./...`、`go vet ./...` 和 diff 检查通过；全量测试仍有在改动前基线复现的存量断言失败，以及 DNS/本地监听权限限制，未完成真实上游或生产验收。
+- **已知限制**: 部分档位倍率缺失时，管理价格接口的回退与结算不同；仅配置输出或缓存倍率的档位也可能不显示。经本次审查确认暂不修复；显式配置档位输入、输出及缓存读取倍率可规避已复现的 token 价格展示差异。
+- **关联计划**: `docs/plans/2026-10-10-openai-service-tier-pricing-design.md`、`docs/plans/2026-10-11-openai-service-tier-pricing-implementation.md`
+
 ## 2026-09-23
 
 ### feat(claude): Claude 缓存倍率支持前端配置，优先级 配置 > 默认

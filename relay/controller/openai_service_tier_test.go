@@ -198,6 +198,7 @@ func TestOpenAIServiceTierUsageLogs(t *testing.T) {
 
 // 是否记录取决于响应处理器，而非模型名称或请求中的 service_tier。
 func TestServiceTierOtherModelUsageLogs(t *testing.T) {
+	setupOpenAIPriceMaps(t)
 	db := setupServiceTierLogDB(t)
 	for _, tc := range []struct {
 		name    string
@@ -211,6 +212,9 @@ func TestServiceTierOtherModelUsageLogs(t *testing.T) {
 		{"xai_independent", "grok-4", &xai.Adaptor{}, false},
 		{"minimax_independent", "MiniMax-M2", &minimax.Adaptor{}, false},
 	} {
+		setOpenAITestPrice(tc.model, 1, 3, 0.1, 1.25)
+		setOpenAITestPrice(tc.model+"_priority", 2, 4, 0.2, 1.5)
+		common.ModelPrice[tc.model] = -1
 		for _, stream := range []bool{false, true} {
 			mode := "normal"
 			if stream {
@@ -239,6 +243,13 @@ func TestServiceTierOtherModelUsageLogs(t *testing.T) {
 					var log dbmodel.Log
 					if err := db.Last(&log).Error; err != nil {
 						t.Fatal(err)
+					}
+					wantQuota := 25
+					if tc.records && tier == "priority" {
+						wantQuota = 60
+					}
+					if log.Quota != wantQuota {
+						t.Fatalf("quota=%d, want %d", log.Quota, wantQuota)
 					}
 					var details map[string]any
 					for _, part := range strings.Split(log.Other, ";") {

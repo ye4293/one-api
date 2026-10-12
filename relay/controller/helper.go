@@ -259,12 +259,20 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
-	// long-context 分层定价：输入（含缓存读取/写入）×2，输出×1.5（gpt-5.6 系列）
-	// 对未注册 long-context 的模型，两个倍率均为 1.0。
+	overrides := lookupOpenAIPriceOverrides(billingModelName, c.GetString(openai.ResponseServiceTierContextKey), openAIChatPricing)
+	if overrides.modelRatio.set {
+		modelRatio = overrides.modelRatio.value
+		ratio = modelRatio * groupRatio
+	}
+	// 阈值按基础模型判断，系数作用于本次选出的价格。
 	longMults := common.GetLongContextMultipliers(billingModelName, promptTokens)
 	// 预先获取计费参数，避免后续重复调用
-	modelPrice := common.GetModelPrice(billingModelName, false)
-	completionRatio := common.GetCompletionRatio(billingModelName)
+	modelPrice := overrides.modelPrice.value
+	if !overrides.modelPrice.set {
+		modelPrice = common.GetModelPrice(billingModelName, false)
+	}
+	completionRatio := overrides.completionRatio.resolve(billingModelName, common.GetCompletionRatio)
+	var cacheRatio, cacheWriteRatio float64
 	// groupRatio 此处已是"融合后的组合折扣" = 等级折扣 × 渠道折扣 × 用户渠道折扣
 	// 直接从 meta 取三个分量，用于日志/账单分项展示（比用除法反推更稳定）。
 	tierRatio := common.GetGroupRatio(meta.Group)
@@ -276,8 +284,8 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		// 使用基于token的倍率计费
 		if cachedTokens > 0 || cacheWriteTokens > 0 {
 			// 有缓存读取或写入：从输入 token 中扣除缓存读取与写入部分，各按对应倍率计费
-			cacheRatio := common.GetCacheRatio(billingModelName)
-			cacheWriteRatio := common.GetCacheWriteRatio(billingModelName)
+			cacheRatio = overrides.cacheRatio.resolve(billingModelName, common.GetCacheRatio)
+			cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
 			nonCachedPromptTokens := promptTokens - cachedTokens - cacheWriteTokens
 			if nonCachedPromptTokens < 0 {
 				nonCachedPromptTokens = 0
@@ -344,13 +352,29 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		// 追加缓存 token 信息
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
-			billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
-			billingDetails["cache_read_ratio"] = common.GetCacheRatio(billingModelName)
+			if overrides.any() {
+				if modelPrice != -1 {
+					cacheRatio = overrides.cacheRatio.resolve(billingModelName, common.GetCacheRatio)
+				}
+				billingDetails["cache_ratio"] = cacheRatio
+				billingDetails["cache_read_ratio"] = cacheRatio
+			} else {
+				billingDetails["cache_ratio"] = common.GetCacheRatio(billingModelName)
+				billingDetails["cache_read_ratio"] = common.GetCacheRatio(billingModelName)
+			}
 		}
 		if cacheWriteTokens > 0 {
 			billingDetails["cache_write_tokens"] = cacheWriteTokens
-			billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(billingModelName)
-			billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
+			if overrides.any() {
+				if modelPrice != -1 {
+					cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
+				}
+				billingDetails["cache_write_ratio"] = cacheWriteRatio
+				billingDetails["cache_creation_ratio"] = cacheWriteRatio
+			} else {
+				billingDetails["cache_write_ratio"] = common.GetCacheWriteRatio(billingModelName)
+				billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
+			}
 		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
 		otherInfo = appendUsageDetailsToOther(otherInfo, UsageDetailsForLog{
