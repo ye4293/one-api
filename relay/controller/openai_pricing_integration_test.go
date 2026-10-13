@@ -57,6 +57,16 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 				{"stream_zero_usage", "fast", "priority", false, false, false, 1, 0, 0},
 				{"stream_malformed", "fast", "priority", false, false, false, 1, 0, 0},
 				{"stream_error_retry", "fast", "", false, false, true, 1, 1145, 1145},
+				{"automatic_priority", "fast", "priority", false, false, false, 1, 2290, 2290},
+				{"automatic_fast", "priority", "fast", false, false, false, 1, 2290, 2290},
+				{"automatic_flex", "ultrafast", "flex", false, false, false, 1, 573, 572},
+				{"automatic_ultrafast", "ultrafast", "ultrafast", false, false, false, 1, 6870, 6870},
+				{"automatic_default", "ultrafast", "default", false, false, false, 1, 1145, 1145},
+				{"automatic_missing", "ultrafast", "", false, false, false, 1, 1145, 1145},
+				{"automatic_last_default", "ultrafast", "default", false, true, false, 1, 1145, 1145},
+				{"automatic_retry_missing", "ultrafast", "", false, false, true, 1, 1145, 1145},
+				{"automatic_discount", "fast", "priority", false, false, false, 0.5, 1145, 1145},
+				{"automatic_mapping", "fast", "priority", true, false, false, 1, 4580, 2290},
 			} {
 				if strings.HasPrefix(tc.name, "stream_") && !stream {
 					continue
@@ -67,26 +77,43 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/stream=%t/%s", endpoint, stream, tc.name), func(t *testing.T) {
 					// synctest 等待本请求派生的 goroutine，避免关库/恢复 map 时结算尚未结束。
 					synctest.Test(t, func(t *testing.T) {
+						billingModel, mappedModel := pricingTestModel, "mapped_tier_test"
+						automatic := strings.HasPrefix(tc.name, "automatic_")
+						if automatic {
+							billingModel, mappedModel = defaultTierTestModel, "gpt-tier-mapped-test"
+						}
 						setupOpenAIPriceMaps(t)
 						db := setupServiceTierLogDB(t)
-						setOpenAITestPrice(pricingTestModel+"_priority", 2, 4, 0.2, 1.5)
-						setOpenAITestPrice(pricingTestModel+"_ultrafast", 2, 4, 0.2, 1.5)
-						setOpenAITestPrice(pricingTestModel+"_fast", 2, 3, 0.1, 1.25)
-						setOpenAITestPrice(pricingTestModel+"_flex", 0.5, 2, 0.1, 1.25)
-						setOpenAITestPrice(pricingTestModel+"_default", 99, 99, 99, 99)
-						setOpenAITestPrice(pricingTestModel+"_Standard", 2, 4, 0.2, 1.5)
-						setOpenAITestPrice(pricingTestModel+"_auto", 2, 4, 0.2, 1.5)
-						setOpenAITestPrice("mapped_tier_test", 1, 3, 0.1, 1.25)
-						setOpenAITestPrice("mapped_tier_test_priority", 0.5, 2, 0.1, 1.25)
+						setOpenAITestPrice(billingModel, 1, 3, 0.1, 1.25)
+						setOpenAITestPrice(billingModel+"_priority", 2, 4, 0.2, 1.5)
+						setOpenAITestPrice(billingModel+"_ultrafast", 2, 4, 0.2, 1.5)
+						setOpenAITestPrice(billingModel+"_fast", 2, 3, 0.1, 1.25)
+						setOpenAITestPrice(billingModel+"_flex", 0.5, 2, 0.1, 1.25)
+						setOpenAITestPrice(billingModel+"_default", 99, 99, 99, 99)
+						setOpenAITestPrice(billingModel+"_Standard", 2, 4, 0.2, 1.5)
+						setOpenAITestPrice(billingModel+"_auto", 2, 4, 0.2, 1.5)
+						setOpenAITestPrice(mappedModel, 1, 3, 0.1, 1.25)
+						setOpenAITestPrice(mappedModel+"_priority", 0.5, 2, 0.1, 1.25)
+						if automatic {
+							setOpenAITestPrice(mappedModel, 2, 3, 0.1, 1.25)
+							for _, prices := range []map[string]float64{common.ModelRatio, common.CompletionRatio, common.CacheRatio, common.CacheWriteRatio, common.ModelPrice} {
+								for _, name := range []string{billingModel, mappedModel} {
+									for _, tier := range []string{"priority", "fast", "flex", "ultrafast"} {
+										delete(prices, name+"_"+tier)
+									}
+								}
+							}
+						}
+
 						switch tc.name {
 						case "mapping_long_actual":
-							common.LongContextThreshold["mapped_tier_test"] = 999
+							common.LongContextThreshold[mappedModel] = 999
 						case "mapping_long_original":
-							common.LongContextThreshold[pricingTestModel] = 999
+							common.LongContextThreshold[billingModel] = 999
 						}
 						writer := &serviceTierRecorder{ResponseRecorder: httptest.NewRecorder(), closed: make(chan bool)}
 						c, _ := gin.CreateTestContext(writer)
-						body := fmt.Sprintf(`{"model":%q,"service_tier":%q,"stream":%t,"messages":[{"role":"user","content":"test"}],"prompt":"test","input":"test","max_tokens":1}`, pricingTestModel, tc.requestTier, stream)
+						body := fmt.Sprintf(`{"model":%q,"service_tier":%q,"stream":%t,"messages":[{"role":"user","content":"test"}],"prompt":"test","input":"test","max_tokens":1}`, billingModel, tc.requestTier, stream)
 						setRequest := func() {
 							c.Request = httptest.NewRequest("POST", endpoint, strings.NewReader(body))
 							c.Request.Header.Set("Content-Type", "application/json")
@@ -98,7 +125,7 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 						c.Set("channel", common.ChannelTypeOpenAI)
 						c.Set("group", "default")
 						c.Set("token_name", "test")
-						c.Set("original_model", pricingTestModel)
+						c.Set("original_model", billingModel)
 						c.Set("base_url", "http://tier-test.invalid")
 						c.Set("channel_discount", tc.group)
 						if tc.name == "combined_discount" {
@@ -106,7 +133,7 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 							c.Set("user_channel_ratio", 0.5)
 						}
 						if tc.mapped {
-							c.Set("model_mapping", map[string]string{pricingTestModel: "mapped_tier_test"})
+							c.Set("model_mapping", map[string]string{billingModel: mappedModel})
 						}
 						c.Set(openai.ResponseServiceTierContextKey, "stale_tier")
 						oldClient, oldPing := util.HTTPClient, config.PingIntervalEnabled
@@ -120,9 +147,9 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 							if err := json.NewDecoder(req.Body).Decode(&sent); err != nil {
 								return nil, err
 							}
-							model := pricingTestModel
+							model := billingModel
 							if tc.mapped {
-								model = "mapped_tier_test"
+								model = mappedModel
 							}
 							if sent["model"] != model || sent["service_tier"] != tc.requestTier {
 								return nil, fmt.Errorf("unexpected upstream body: %v", sent)
@@ -236,6 +263,23 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 							if tc.name == "combined_discount" {
 								want = 2
 							}
+							if automatic {
+								want = 4
+								switch tc.responseTier {
+								case "priority", "fast":
+									want = 8
+								case "flex":
+									want = 2
+								case "ultrafast":
+									want = 24
+								}
+								if tc.mapped {
+									want *= 2
+								}
+								if tc.group == 0.5 {
+									want /= 2
+								}
+							}
 							if tc.name == "stream_malformed" {
 								want = 2 // 缺失有效输出时只保留输入估算。
 							}
@@ -258,10 +302,29 @@ func TestOpenAITierPricingIntegration(t *testing.T) {
 						if wantLogs == 0 {
 							return
 						}
-						if log.ModelName != pricingTestModel {
+						if log.ModelName != billingModel {
 							t.Fatal(log.ModelName)
 						}
 						billing := readPricingDetails(t, log, "billingDetails")
+						if automatic {
+							multiplier := float64(0)
+							switch tc.responseTier {
+							case "priority", "fast":
+								multiplier = 2
+							case "flex":
+								multiplier = 0.5
+							case "ultrafast":
+								multiplier = 6
+							}
+							if multiplier > 0 {
+								if billing["service_tier_price_source"] != "default_multiplier" || billing["service_tier_multiplier"] != multiplier {
+									t.Fatal(billing)
+								}
+							} else if billing["service_tier_price_source"] != "base" {
+								t.Fatal(billing)
+							}
+						}
+
 						if tc.name == "combined_discount" {
 							for k, want := range map[string]float64{"group_ratio": 0.2, "tier_ratio": 0.8, "channel_discount": 0.5, "user_channel_ratio": 0.5} {
 								if billing[k] != want {

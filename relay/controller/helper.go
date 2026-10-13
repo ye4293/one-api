@@ -259,7 +259,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	if billingModelName == "" {
 		billingModelName = textRequest.Model
 	}
-	overrides := lookupOpenAIPriceOverrides(billingModelName, c.GetString(openai.ResponseServiceTierContextKey), openAIChatPricing)
+	overrides := selectOpenAIPrices(billingModelName, c.GetString(openai.ResponseServiceTierContextKey), openAIChatPricing, meta)
 	if overrides.modelRatio.set {
 		modelRatio = overrides.modelRatio.value
 		ratio = modelRatio * groupRatio
@@ -270,6 +270,15 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	modelPrice := overrides.modelPrice.value
 	if !overrides.modelPrice.set {
 		modelPrice = common.GetModelPrice(billingModelName, false)
+	}
+	if overrides.defaultMultiplier > 0 {
+		if modelPrice != -1 {
+			modelPrice *= overrides.defaultMultiplier
+		} else {
+			// 沿用请求阶段取得的输入倍率；输出和缓存的相对倍率不重复乘算。
+			modelRatio *= overrides.defaultMultiplier
+			ratio = modelRatio * groupRatio
+		}
 	}
 	completionRatio := overrides.completionRatio.resolve(billingModelName, common.GetCompletionRatio)
 	var cacheRatio, cacheWriteRatio float64
@@ -336,6 +345,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			"channel_discount":   meta.ChannelDiscount,
 			"user_channel_ratio": meta.UserChannelRatio,
 		}
+		overrides.pricingInfo().appendBillingDetails(billingDetails)
 		// 多 Key 渠道：记录本次实际使用的 Key 索引
 		if meta.IsMultiKey && meta.KeyIndex != nil {
 			billingDetails["is_multi_key"] = true
@@ -352,7 +362,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		// 追加缓存 token 信息
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
-			if overrides.any() {
+			if overrides.applies() {
 				if modelPrice != -1 {
 					cacheRatio = overrides.cacheRatio.resolve(billingModelName, common.GetCacheRatio)
 				}
@@ -365,7 +375,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		}
 		if cacheWriteTokens > 0 {
 			billingDetails["cache_write_tokens"] = cacheWriteTokens
-			if overrides.any() {
+			if overrides.applies() {
 				if modelPrice != -1 {
 					cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
 				}
