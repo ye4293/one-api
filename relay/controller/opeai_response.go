@@ -122,10 +122,10 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		return openaiErr
 	}
 
-	overrides := lookupOpenAIPriceOverrides(modelName, c.GetString(openai.ResponseServiceTierContextKey), openAIResponsePricing)
+	overrides := selectOpenAIPrices(modelName, c.GetString(openai.ResponseServiceTierContextKey), openAIResponsePricing, meta)
 	var actualQuota int64
 	var prices openAITokenPrices
-	if overrides.any() {
+	if overrides.applies() {
 		actualQuota, _, prices = calculateOpenaiResponseQuotaWithOverrides(usageMetadata, modelName, groupRatio, overrides)
 	} else {
 		actualQuota, _ = CalculateResponseQuotaFromUsageMetadata(usageMetadata, modelName, groupRatio)
@@ -159,7 +159,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 		cacheWriteTokens = usageMetadata.InputTokensDetails.CacheWriteTokens
 	}
 
-	if overrides.any() {
+	if overrides.applies() {
 		go recordOpenaiResponseConsumptionWithPrices(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio, &prices)
 	} else {
 		go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
@@ -173,7 +173,7 @@ func recordOpenaiResponseConsumption(ctx context.Context, userId, channelId, tok
 	recordOpenaiResponseConsumptionWithPrices(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, quota, requestPath, duration, isStream, c, usageMetadata, firstWordLatency, groupRatio, modelRatio, nil)
 }
 
-// prices 仅在档位命中时传入，保证异步日志使用计算时的倍率；原分支保留查价时机。
+// prices 在显式档位配置或自动倍率生效时传入，保证异步日志使用计算时的参数。
 func recordOpenaiResponseConsumptionWithPrices(ctx context.Context, userId, channelId, tokenId int, modelName, tokenName string, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens int, quota int64, requestPath string, duration float64, isStream bool, c *gin.Context, usageMetadata *openai.ResponseUsage, firstWordLatency float64, groupRatio float64, modelRatio float64, prices *openAITokenPrices) {
 	err := dbmodel.PostConsumeTokenQuota(tokenId, quota)
 	if err != nil {
@@ -212,8 +212,10 @@ func recordOpenaiResponseConsumptionWithPrices(ctx context.Context, userId, chan
 	}
 	// 追加计费详情
 	var completionRatio float64
+	tierPricing := openAIPriceOverrides{}.pricingInfo()
 	if prices != nil {
 		modelRatio, completionRatio = prices.modelRatio, prices.completionRatio
+		tierPricing = prices.tierPricing
 	} else {
 		completionRatio = common.GetCompletionRatio(modelName)
 	}
@@ -223,6 +225,7 @@ func recordOpenaiResponseConsumptionWithPrices(ctx context.Context, userId, chan
 		"completion_ratio": completionRatio,
 		"group_ratio":      groupRatio,
 	}
+	tierPricing.appendBillingDetails(billingDetails)
 	billingDetails = enrichBillingDetailsFromContext(c, billingDetails)
 	if cachedTokens > 0 {
 		billingDetails["cached_tokens"] = cachedTokens
@@ -384,6 +387,9 @@ func calculateOpenaiResponseQuotaWithOverrides(usageMetadata *openai.ResponseUsa
 
 	// ========== 获取各类型的倍率 ==========
 	modelRatio := overrides.modelRatio.resolve(modelName, common.GetModelRatio)
+	if overrides.defaultMultiplier > 0 {
+		modelRatio *= overrides.defaultMultiplier
+	}
 	completionRatio := overrides.completionRatio.resolve(modelName, common.GetCompletionRatio)
 	cacheRatio := overrides.cacheRatio.resolve(modelName, common.GetCacheRatio)
 	cacheWriteRatio := overrides.cacheWriteRatio.resolve(modelName, common.GetCacheWriteRatio)
@@ -428,7 +434,11 @@ func calculateOpenaiResponseQuotaWithOverrides(usageMetadata *openai.ResponseUsa
 	// 计算最终配额
 	quota := int64((inputTextQuota + cacheQuota + cacheWriteQuota + outputTextQuota + imageGenerationCallQuota + webSearchToolCallQuota) / 1000000 * 2 * groupRatio * config.QuotaPerUnit)
 
-	return quota, cost, openAITokenPrices{modelRatio, completionRatio, cacheRatio, cacheWriteRatio}
+	return quota, cost, openAITokenPrices{
+		modelRatio: modelRatio, completionRatio: completionRatio,
+		cacheRatio: cacheRatio, cacheWriteRatio: cacheWriteRatio,
+		tierPricing: overrides.pricingInfo(),
+	}
 }
 
 // CalculateResponseQuotaFromUsageMetadata 根据 UsageMetadata 计算配额
