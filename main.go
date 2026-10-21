@@ -283,6 +283,8 @@ func run() error {
 	}
 	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	requestStatistics := model.InitRequestStatistics(stopCtx)
+	defer requestStatistics.Close()
 
 	httpServer := &http.Server{
 		Addr:    ":" + port,
