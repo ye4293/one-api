@@ -1,5 +1,5 @@
 -- 已存在 request_stats_minute 的 MySQL 8 数据库升级；新库使用完整 schema 文件。
--- 先暂停报表查询和全部 Worker，再执行。不是 AutoMigrate，不触碰 logs。
+-- 先通过网关等入口暂停对外报表查询，并关闭全部 Worker，再执行。不是 AutoMigrate，不触碰 logs。
 -- username 与 logs 的历史快照精确匹配，不以当前 users.username 回填历史。
 ALTER TABLE request_stats_minute
     ADD COLUMN username VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin
