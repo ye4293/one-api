@@ -10,7 +10,7 @@ import (
 
 func GetGroups(c *gin.Context) {
 	groupNames := make([]string, 0)
-	for groupName := range common.GroupRatio {
+	for groupName := range common.GroupRatioSnapshot() {
 		groupNames = append(groupNames, groupName)
 	}
 

@@ -2,12 +2,58 @@ package common
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/songquanpeng/one-api/common/logger"
 )
+
+// pricingMu 统一保护价格和分组配置。业务代码必须通过访问函数读取或修改，
+// 遍历使用副本；不能仅在配置同步侧加锁而让请求继续直接访问全局 map。
+var pricingMu sync.RWMutex
+
+func lookupPricingValue(values *map[string]float64, name string) (float64, bool) {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	value, ok := (*values)[name]
+	return value, ok
+}
+
+func marshalPricingMap(values *map[string]float64) ([]byte, error) {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	return json.Marshal(*values)
+}
+
+func replacePricingMap(values *map[string]float64, jsonStr string) error {
+	// 解析成功后才发布完整配置，避免请求读到空表，或解析失败破坏旧配置。
+	var next map[string]float64
+	if err := json.Unmarshal([]byte(jsonStr), &next); err != nil {
+		return err
+	}
+	pricingMu.Lock()
+	*values = next
+	pricingMu.Unlock()
+	return nil
+}
+
+func setPricingValue(values *map[string]float64, name string, value float64) {
+	pricingMu.Lock()
+	defer pricingMu.Unlock()
+	if *values == nil {
+		*values = make(map[string]float64)
+	}
+	(*values)[name] = value
+}
+
+func snapshotPricingMap(values *map[string]float64) map[string]float64 {
+	pricingMu.RLock()
+	defer pricingMu.RUnlock()
+	return maps.Clone(*values)
+}
 
 const (
 	USD2RMB = 7
@@ -456,7 +502,7 @@ func AddNewMissingAudioOutputRatio(oldRatio string) string {
 }
 
 func ModelRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(ModelRatio)
+	jsonBytes, err := marshalPricingMap(&ModelRatio)
 	if err != nil {
 		logger.SysError("error marshalling model ratio: " + err.Error())
 	}
@@ -464,8 +510,7 @@ func ModelRatio2JSONString() string {
 }
 
 func UpdateModelRatioByJSONString(jsonStr string) error {
-	ModelRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ModelRatio)
+	return replacePricingMap(&ModelRatio, jsonStr)
 }
 
 func GetModelRatio(name string) float64 {
@@ -475,7 +520,7 @@ func GetModelRatio(name string) float64 {
 	if strings.HasPrefix(name, "command-") && strings.HasSuffix(name, "-internet") {
 		name = strings.TrimSuffix(name, "-internet")
 	}
-	ratio, ok := ModelRatio[name]
+	ratio, ok := lookupPricingValue(&ModelRatio, name)
 	if !ok {
 		ratio, ok = DefaultModelPrice[name]
 	}
@@ -486,7 +531,7 @@ func GetModelRatio(name string) float64 {
 }
 
 func CompletionRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(CompletionRatio)
+	jsonBytes, err := marshalPricingMap(&CompletionRatio)
 	if err != nil {
 		logger.SysError("error marshalling completion ratio: " + err.Error())
 	}
@@ -494,12 +539,11 @@ func CompletionRatio2JSONString() string {
 }
 
 func UpdateCompletionRatioByJSONString(jsonStr string) error {
-	CompletionRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &CompletionRatio)
+	return replacePricingMap(&CompletionRatio, jsonStr)
 }
 
 func AudioInputRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(AudioInputRatio)
+	jsonBytes, err := marshalPricingMap(&AudioInputRatio)
 	if err != nil {
 		logger.SysError("error marshalling audio input ratio: " + err.Error())
 	}
@@ -507,12 +551,11 @@ func AudioInputRatio2JSONString() string {
 }
 
 func UpdateAudioInputRatioByJSONString(jsonStr string) error {
-	AudioInputRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &AudioInputRatio)
+	return replacePricingMap(&AudioInputRatio, jsonStr)
 }
 
 func AudioOutputRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(AudioOutputRatio)
+	jsonBytes, err := marshalPricingMap(&AudioOutputRatio)
 	if err != nil {
 		logger.SysError("error marshalling audio output ratio: " + err.Error())
 	}
@@ -520,12 +563,11 @@ func AudioOutputRatio2JSONString() string {
 }
 
 func UpdateAudioOutputRatioByJSONString(jsonStr string) error {
-	AudioOutputRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &AudioOutputRatio)
+	return replacePricingMap(&AudioOutputRatio, jsonStr)
 }
 
 func ImageInputRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(ImageInputRatio)
+	jsonBytes, err := marshalPricingMap(&ImageInputRatio)
 	if err != nil {
 		logger.SysError("error marshalling image input ratio: " + err.Error())
 	}
@@ -533,12 +575,11 @@ func ImageInputRatio2JSONString() string {
 }
 
 func UpdateImageInputRatioByJSONString(jsonStr string) error {
-	ImageInputRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ImageInputRatio)
+	return replacePricingMap(&ImageInputRatio, jsonStr)
 }
 
 func ImageOutputRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(ImageOutputRatio)
+	jsonBytes, err := marshalPricingMap(&ImageOutputRatio)
 	if err != nil {
 		logger.SysError("error marshalling image output ratio: " + err.Error())
 	}
@@ -546,8 +587,7 @@ func ImageOutputRatio2JSONString() string {
 }
 
 func UpdateImageOutputRatioByJSONString(jsonStr string) error {
-	ImageOutputRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ImageOutputRatio)
+	return replacePricingMap(&ImageOutputRatio, jsonStr)
 }
 
 func AddNewMissingImageInputRatio(oldRatio string) string {
@@ -591,7 +631,7 @@ func AddNewMissingImageOutputRatio(oldRatio string) string {
 }
 
 func CacheRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(CacheRatio)
+	jsonBytes, err := marshalPricingMap(&CacheRatio)
 	if err != nil {
 		logger.SysError("error marshalling cache ratio: " + err.Error())
 	}
@@ -599,8 +639,7 @@ func CacheRatio2JSONString() string {
 }
 
 func UpdateCacheRatioByJSONString(jsonStr string) error {
-	CacheRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &CacheRatio)
+	return replacePricingMap(&CacheRatio, jsonStr)
 }
 
 func AddNewMissingCacheRatio(oldRatio string) string {
@@ -624,7 +663,7 @@ func AddNewMissingCacheRatio(oldRatio string) string {
 }
 
 func ClaudeCacheCreation5mRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(ClaudeCacheCreation5mRatio)
+	jsonBytes, err := marshalPricingMap(&ClaudeCacheCreation5mRatio)
 	if err != nil {
 		logger.SysError("error marshalling claude cache 5m ratio: " + err.Error())
 	}
@@ -632,8 +671,7 @@ func ClaudeCacheCreation5mRatio2JSONString() string {
 }
 
 func UpdateClaudeCacheCreation5mRatioByJSONString(jsonStr string) error {
-	ClaudeCacheCreation5mRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ClaudeCacheCreation5mRatio)
+	return replacePricingMap(&ClaudeCacheCreation5mRatio, jsonStr)
 }
 
 func AddNewMissingClaudeCacheCreation5mRatio(oldRatio string) string {
@@ -657,7 +695,7 @@ func AddNewMissingClaudeCacheCreation5mRatio(oldRatio string) string {
 }
 
 func ClaudeCacheCreation1hRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(ClaudeCacheCreation1hRatio)
+	jsonBytes, err := marshalPricingMap(&ClaudeCacheCreation1hRatio)
 	if err != nil {
 		logger.SysError("error marshalling claude cache 1h ratio: " + err.Error())
 	}
@@ -665,8 +703,7 @@ func ClaudeCacheCreation1hRatio2JSONString() string {
 }
 
 func UpdateClaudeCacheCreation1hRatioByJSONString(jsonStr string) error {
-	ClaudeCacheCreation1hRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ClaudeCacheCreation1hRatio)
+	return replacePricingMap(&ClaudeCacheCreation1hRatio, jsonStr)
 }
 
 func AddNewMissingClaudeCacheCreation1hRatio(oldRatio string) string {
@@ -692,7 +729,7 @@ func AddNewMissingClaudeCacheCreation1hRatio(oldRatio string) string {
 // GetCacheRatio 获取缓存token倍率
 // 如果找到了缓存倍率就直接使用，如果没找到就默认使用文字补全的倍率（CompletionRatio）
 func GetCacheRatio(name string) float64 {
-	if ratio, ok := CacheRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&CacheRatio, name); ok {
 		return ratio
 	}
 	if ratio, ok := DefaultCacheRatio[name]; ok {
@@ -706,7 +743,7 @@ func GetCacheRatio(name string) float64 {
 // 未显式配置的模型 fallback 返回 1.25（OpenAI/Anthropic 通用写入口径）。
 // 由于只有上游返回 cache_write_tokens > 0 时才会用到该值，fallback 对存量模型无副作用。
 func GetCacheWriteRatio(name string) float64 {
-	if ratio, ok := CacheWriteRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&CacheWriteRatio, name); ok {
 		return ratio
 	}
 	return 1.25
@@ -717,7 +754,7 @@ func GetCacheWriteRatio(name string) float64 {
 // 刻意不 fallback 到 GetCompletionRatio —— 后者对 "claude-" 前缀返回 3~5，
 // 会把缓存读按 3~5 倍误计费。优先级：CacheRatio 配置 > DefaultCacheRatio > 0.1。
 func GetClaudeCacheReadRatio(name string) float64 {
-	if ratio, ok := CacheRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&CacheRatio, name); ok {
 		return ratio
 	}
 	if ratio, ok := DefaultCacheRatio[name]; ok {
@@ -729,7 +766,7 @@ func GetClaudeCacheReadRatio(name string) float64 {
 // GetClaudeCacheCreation5mRatio 获取 Claude 5 分钟缓存创建倍率。
 // 优先级：前端配置 > 默认 map > 常量 1.25。
 func GetClaudeCacheCreation5mRatio(name string) float64 {
-	if ratio, ok := ClaudeCacheCreation5mRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&ClaudeCacheCreation5mRatio, name); ok {
 		return ratio
 	}
 	if ratio, ok := DefaultClaudeCacheCreation5mRatio[name]; ok {
@@ -741,7 +778,7 @@ func GetClaudeCacheCreation5mRatio(name string) float64 {
 // GetClaudeCacheCreation1hRatio 获取 Claude 1 小时缓存创建倍率。
 // 优先级：前端配置 > 默认 map > 常量 2.0。
 func GetClaudeCacheCreation1hRatio(name string) float64 {
-	if ratio, ok := ClaudeCacheCreation1hRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&ClaudeCacheCreation1hRatio, name); ok {
 		return ratio
 	}
 	if ratio, ok := DefaultClaudeCacheCreation1hRatio[name]; ok {
@@ -775,7 +812,7 @@ func GetLongContextMultipliers(name string, inputTokens int) LongContextMultipli
 }
 
 func GetCompletionRatio(name string) float64 {
-	if ratio, ok := CompletionRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&CompletionRatio, name); ok {
 		return ratio
 	}
 	if ratio, ok := DefaultCompletionRatio[name]; ok {
@@ -915,7 +952,7 @@ var DefaultModelTypeRatio = map[string]float64{
 }
 
 func ModelPrice2JSONString() string {
-	jsonBytes, err := json.Marshal(ModelPrice)
+	jsonBytes, err := marshalPricingMap(&ModelPrice)
 	if err != nil {
 		logger.SysError("error marshalling model price: " + err.Error())
 	}
@@ -923,15 +960,14 @@ func ModelPrice2JSONString() string {
 }
 
 func UpdateModelPriceByJSONString(jsonStr string) error {
-	ModelPrice = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &ModelPrice)
+	return replacePricingMap(&ModelPrice, jsonStr)
 }
 
 func GetModelPrice(name string, printErr bool) float64 {
 	if strings.HasPrefix(name, "gpt-4-gizmo") {
 		name = "gpt-4-gizmo-*"
 	}
-	price, ok := ModelPrice[name]
+	price, ok := lookupPricingValue(&ModelPrice, name)
 	if !ok {
 		if printErr {
 			logger.SysError("model price not found: " + name)
@@ -944,7 +980,7 @@ func GetModelPrice(name string, printErr bool) float64 {
 // GetAudioInputRatio 获取音频输入token倍率
 // 如果找不到对应模型的音频输入倍率，返回 1.0（与基础输入倍率相同）
 func GetAudioInputRatio(name string) float64 {
-	if ratio, ok := AudioInputRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&AudioInputRatio, name); ok {
 		return ratio
 	}
 	// 找不到时返回 1.0，表示音频输入与文本输入价格相同
@@ -954,7 +990,7 @@ func GetAudioInputRatio(name string) float64 {
 // GetAudioOutputRatio 获取音频输出token倍率
 // 如果找不到对应模型的音频输出倍率，返回文字输出倍率（CompletionRatio）
 func GetAudioOutputRatio(name string) float64 {
-	if ratio, ok := AudioOutputRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&AudioOutputRatio, name); ok {
 		return ratio
 	}
 	// 找不到时返回文字输出倍率
@@ -964,7 +1000,7 @@ func GetAudioOutputRatio(name string) float64 {
 // GetImageInputRatio 获取图片输入token倍率
 // 如果找不到对应模型的图片输入倍率，返回 1.0（与基础输入倍率相同）
 func GetImageInputRatio(name string) float64 {
-	if ratio, ok := ImageInputRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&ImageInputRatio, name); ok {
 		return ratio
 	}
 	// 找不到时返回 1.0，表示图片输入与文本输入价格相同
@@ -974,9 +1010,78 @@ func GetImageInputRatio(name string) float64 {
 // GetImageOutputRatio 获取图片输出token倍率
 // 如果找不到对应模型的图片输出倍率，返回文字输出倍率（CompletionRatio）
 func GetImageOutputRatio(name string) float64 {
-	if ratio, ok := ImageOutputRatio[name]; ok {
+	if ratio, ok := lookupPricingValue(&ImageOutputRatio, name); ok {
 		return ratio
 	}
 	// 找不到时返回文字输出倍率
 	return GetCompletionRatio(name)
+}
+
+// 以下入口不返回可变的全局引用，避免调用方绕过并发保护。
+func SetModelRatio(name string, value float64) {
+	setPricingValue(&ModelRatio, name, value)
+}
+
+func SetCompletionRatio(name string, value float64) {
+	setPricingValue(&CompletionRatio, name, value)
+}
+
+func SetAudioInputRatio(name string, value float64) {
+	setPricingValue(&AudioInputRatio, name, value)
+}
+
+func SetAudioOutputRatio(name string, value float64) {
+	setPricingValue(&AudioOutputRatio, name, value)
+}
+
+func SetImageInputRatio(name string, value float64) {
+	setPricingValue(&ImageInputRatio, name, value)
+}
+
+func SetImageOutputRatio(name string, value float64) {
+	setPricingValue(&ImageOutputRatio, name, value)
+}
+
+func SetCacheRatio(name string, value float64) {
+	setPricingValue(&CacheRatio, name, value)
+}
+
+func SetClaudeCacheCreation5mRatio(name string, value float64) {
+	setPricingValue(&ClaudeCacheCreation5mRatio, name, value)
+}
+
+func SetClaudeCacheCreation1hRatio(name string, value float64) {
+	setPricingValue(&ClaudeCacheCreation1hRatio, name, value)
+}
+
+func SetModelPrice(name string, value float64) {
+	setPricingValue(&ModelPrice, name, value)
+}
+
+func LookupModelRatio(name string) (float64, bool) {
+	return lookupPricingValue(&ModelRatio, name)
+}
+
+func LookupCompletionRatio(name string) (float64, bool) {
+	return lookupPricingValue(&CompletionRatio, name)
+}
+
+func LookupCacheRatio(name string) (float64, bool) {
+	return lookupPricingValue(&CacheRatio, name)
+}
+
+func LookupCacheWriteRatio(name string) (float64, bool) {
+	return lookupPricingValue(&CacheWriteRatio, name)
+}
+
+func LookupModelPrice(name string) (float64, bool) {
+	return lookupPricingValue(&ModelPrice, name)
+}
+
+func ModelRatioSnapshot() map[string]float64 {
+	return snapshotPricingMap(&ModelRatio)
+}
+
+func ModelPriceSnapshot() map[string]float64 {
+	return snapshotPricingMap(&ModelPrice)
 }

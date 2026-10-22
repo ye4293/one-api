@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-22
+
+### fix(pricing): 修复价格配置热更新与请求并发访问导致的进程崩溃
+
+- **分支**: `main`
+- **类型**: fix（价格配置并发安全）
+- **涉及文件**: `common/model-ratio.go`、`common/group-ratio.go`、`controller/pricing.go`、`controller/group_config.go`、`controller/group.go`、`controller/model_plaza.go`、`controller/channel_upstream_probe.go`、`model/group_config.go`、`relay/channel/openai/token.go`、`relay/channel/kling/billing.go`、`relay/controller/openai_pricing.go`，以及三处并发回归测试、`CLAUDE.md` 和计划文档。
+- **说明**: 后台刷新价格时先发布空 map 再反序列化，请求或管理端同时访问可触发 `concurrent map read and map write`，使进程退出。为价格和分组配置统一增加读写保护，JSON 解析成功后替换完整配置，解析失败保留旧值；管理端修改、精确查价、序列化及列表遍历均改用受保护入口。显式零值、缺失项回退和计费公式保持原语义。
+- **验证**: 原始崩溃脚本修复后退出码为 0；新增 11 组配置的并发刷新、单项修改与非法 JSON 回归，覆盖副本隔离、分组删除、价格展示和 OpenAI 档位零值。相关专项 `go test -race`、`go build ./...`、`go vet ./...` 通过。全量测试的 JPEG 解码、用量禁用、Flux upscale、Anthropic beta、Kling 模型解析失败均在修改前隔离基线复现，失败条目一致。
+- **边界**: 已确认代码缺陷并修复；线上 2026-10-22 重启紧随配置同步，但原生崩溃堆栈已轮转，事故归因仍未完全闭环。本次仅本地修复，不涉及生产部署、启动耗时优化或日志采集改造。
+- **关联计划**: `docs/plans/2026-10-22-pricing-map-concurrency.md`
+
 ## 2026-10-19
 
 ### fix(dynamic-priority): 429 实时反馈参与分档与溢出选路

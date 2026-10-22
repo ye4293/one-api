@@ -116,10 +116,10 @@ func GetUnsetRatioModels(c *gin.Context) {
 
 	// 获取已配置倍率的模型
 	configuredModels := make(map[string]bool)
-	for modelName := range common.ModelRatio {
+	for modelName := range common.ModelRatioSnapshot() {
 		configuredModels[modelName] = true
 	}
-	for modelName := range common.ModelPrice {
+	for modelName := range common.ModelPriceSnapshot() {
 		configuredModels[modelName] = true
 	}
 
@@ -200,7 +200,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新模型倍率
 	if req.ModelRatio != nil {
-		common.ModelRatio[req.ModelName] = *req.ModelRatio
+		common.SetModelRatio(req.ModelName, *req.ModelRatio)
 		// 保存到数据库
 		err := model.UpdateOption("ModelRatio", common.ModelRatio2JSONString())
 		if err != nil {
@@ -214,7 +214,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新补全倍率
 	if req.CompletionRatio != nil {
-		common.CompletionRatio[req.ModelName] = *req.CompletionRatio
+		common.SetCompletionRatio(req.ModelName, *req.CompletionRatio)
 		err := model.UpdateOption("CompletionRatio", common.CompletionRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -227,7 +227,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新按次计费价格
 	if req.FixedPrice != nil {
-		common.ModelPrice[req.ModelName] = *req.FixedPrice
+		common.SetModelPrice(req.ModelName, *req.FixedPrice)
 		err := model.UpdateOption("PerCallPricing", common.ModelPrice2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -240,7 +240,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新图片输入倍率
 	if req.ImageInputRatio != nil {
-		common.ImageInputRatio[req.ModelName] = *req.ImageInputRatio
+		common.SetImageInputRatio(req.ModelName, *req.ImageInputRatio)
 		err := model.UpdateOption("ImageInputRatio", common.ImageInputRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -253,7 +253,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新图片输出倍率
 	if req.ImageOutputRatio != nil {
-		common.ImageOutputRatio[req.ModelName] = *req.ImageOutputRatio
+		common.SetImageOutputRatio(req.ModelName, *req.ImageOutputRatio)
 		err := model.UpdateOption("ImageOutputRatio", common.ImageOutputRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -266,7 +266,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新音频输入倍率
 	if req.AudioInputRatio != nil {
-		common.AudioInputRatio[req.ModelName] = *req.AudioInputRatio
+		common.SetAudioInputRatio(req.ModelName, *req.AudioInputRatio)
 		err := model.UpdateOption("AudioInputRatio", common.AudioInputRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -279,7 +279,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新音频输出倍率
 	if req.AudioOutputRatio != nil {
-		common.AudioOutputRatio[req.ModelName] = *req.AudioOutputRatio
+		common.SetAudioOutputRatio(req.ModelName, *req.AudioOutputRatio)
 		err := model.UpdateOption("AudioOutputRatio", common.AudioOutputRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -292,7 +292,7 @@ func UpdateModelRatio(c *gin.Context) {
 
 	// 更新缓存倍率
 	if req.CacheRatio != nil {
-		common.CacheRatio[req.ModelName] = *req.CacheRatio
+		common.SetCacheRatio(req.ModelName, *req.CacheRatio)
 		err := model.UpdateOption("CacheRatio", common.CacheRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -312,7 +312,7 @@ func UpdateModelRatio(c *gin.Context) {
 			})
 			return
 		}
-		common.ClaudeCacheCreation5mRatio[req.ModelName] = *req.ClaudeCache5mRatio
+		common.SetClaudeCacheCreation5mRatio(req.ModelName, *req.ClaudeCache5mRatio)
 		err := model.UpdateOption("ClaudeCacheCreation5mRatio", common.ClaudeCacheCreation5mRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -332,7 +332,7 @@ func UpdateModelRatio(c *gin.Context) {
 			})
 			return
 		}
-		common.ClaudeCacheCreation1hRatio[req.ModelName] = *req.ClaudeCache1hRatio
+		common.SetClaudeCacheCreation1hRatio(req.ModelName, *req.ClaudeCache1hRatio)
 		err := model.UpdateOption("ClaudeCacheCreation1hRatio", common.ClaudeCacheCreation1hRatio2JSONString())
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
@@ -388,43 +388,43 @@ func BatchUpdateModelRatio(c *gin.Context) {
 
 	for _, m := range req.Models {
 		if m.ModelRatio != nil {
-			common.ModelRatio[m.ModelName] = *m.ModelRatio
+			common.SetModelRatio(m.ModelName, *m.ModelRatio)
 			modelRatioUpdated = true
 		}
 		if m.CompletionRatio != nil {
-			common.CompletionRatio[m.ModelName] = *m.CompletionRatio
+			common.SetCompletionRatio(m.ModelName, *m.CompletionRatio)
 			completionRatioUpdated = true
 		}
 		if m.FixedPrice != nil {
-			common.ModelPrice[m.ModelName] = *m.FixedPrice
+			common.SetModelPrice(m.ModelName, *m.FixedPrice)
 			fixedPriceUpdated = true
 		}
 		if m.ImageInputRatio != nil {
-			common.ImageInputRatio[m.ModelName] = *m.ImageInputRatio
+			common.SetImageInputRatio(m.ModelName, *m.ImageInputRatio)
 			imageInputRatioUpdated = true
 		}
 		if m.ImageOutputRatio != nil {
-			common.ImageOutputRatio[m.ModelName] = *m.ImageOutputRatio
+			common.SetImageOutputRatio(m.ModelName, *m.ImageOutputRatio)
 			imageOutputRatioUpdated = true
 		}
 		if m.AudioInputRatio != nil {
-			common.AudioInputRatio[m.ModelName] = *m.AudioInputRatio
+			common.SetAudioInputRatio(m.ModelName, *m.AudioInputRatio)
 			audioInputRatioUpdated = true
 		}
 		if m.AudioOutputRatio != nil {
-			common.AudioOutputRatio[m.ModelName] = *m.AudioOutputRatio
+			common.SetAudioOutputRatio(m.ModelName, *m.AudioOutputRatio)
 			audioOutputRatioUpdated = true
 		}
 		if m.CacheRatio != nil {
-			common.CacheRatio[m.ModelName] = *m.CacheRatio
+			common.SetCacheRatio(m.ModelName, *m.CacheRatio)
 			cacheRatioUpdated = true
 		}
 		if m.ClaudeCache5mRatio != nil && *m.ClaudeCache5mRatio > 0 {
-			common.ClaudeCacheCreation5mRatio[m.ModelName] = *m.ClaudeCache5mRatio
+			common.SetClaudeCacheCreation5mRatio(m.ModelName, *m.ClaudeCache5mRatio)
 			claudeCache5mRatioUpdated = true
 		}
 		if m.ClaudeCache1hRatio != nil && *m.ClaudeCache1hRatio > 0 {
-			common.ClaudeCacheCreation1hRatio[m.ModelName] = *m.ClaudeCache1hRatio
+			common.SetClaudeCacheCreation1hRatio(m.ModelName, *m.ClaudeCache1hRatio)
 			claudeCache1hRatioUpdated = true
 		}
 	}
@@ -561,7 +561,7 @@ func getAllModelPrices() []ModelPriceInfo {
 
 	// 处理按倍率计费的模型
 	processedModels := make(map[string]bool)
-	for modelName, ratio := range common.ModelRatio {
+	for modelName, ratio := range common.ModelRatioSnapshot() {
 		processedModels[modelName] = true
 
 		// 计算输入价格 ($/1M tokens)
@@ -600,7 +600,7 @@ func getAllModelPrices() []ModelPriceInfo {
 	}
 
 	// 处理按次计费的模型
-	for modelName, price := range common.ModelPrice {
+	for modelName, price := range common.ModelPriceSnapshot() {
 		if processedModels[modelName] {
 			// 如果已经在倍率模型中处理过，更新固定价格
 			for i, p := range prices {

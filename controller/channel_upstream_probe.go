@@ -907,7 +907,7 @@ func calcProbeQuota(modelName string, promptTokens, completionTokens int) (int64
 		quota = 1
 	}
 	note := fmt.Sprintf("模型倍率=%.2f 补全倍率=%.2f", modelRatio, completionRatio)
-	if _, known := common.ModelRatio[modelName]; !known {
+	if _, known := common.LookupModelRatio(modelName); !known {
 		note += "（倍率表无此模型，按默认值计）"
 	}
 	return quota, note

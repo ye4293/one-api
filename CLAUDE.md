@@ -102,6 +102,10 @@ git worktree remove /tmp/dev-test    # 用完清理
 3. **影响范围**：是否影响现有功能、是否需要数据迁移
 4. **验证方式**：如何确认改动正确
 
+## 价格配置并发访问
+
+价格与分组 map 的生产访问必须使用 common 的 getter、`Lookup*`、`Set*`、`DeleteGroupRatio` 或 `*Snapshot` 入口，禁止直接索引、赋值和遍历全局 map。定时配置同步仅在写入侧加锁无法保护请求侧读取，会触发不可恢复的 `concurrent map read and map write` 并使进程退出。JSON 必须先解析到局部 map，再持锁替换；解析失败保留旧配置。价格锁不得跨数据库操作持有，避免与 `OptionMapRWMutex` 形成锁顺序问题。
+
 ## 上游 Usage / Prompt Cache 结论
 
 OpenAI Responses 对应字段为：`input_tokens`（输入总量 `P`）、`input_tokens_details.cached_tokens`（缓存读 `R`）、`input_tokens_details.cache_write_tokens`（缓存写 `W`）、`output_tokens`（输出 `C`）。Chat Completions 的同义字段分别是 `prompt_tokens`、`prompt_tokens_details.cached_tokens`、`prompt_tokens_details.cache_write_tokens`、`completion_tokens`。

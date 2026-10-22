@@ -52,7 +52,7 @@ func InitGroupConfigs(db *gorm.DB) error {
 		return nil
 	}
 	order := 0
-	for key, ratio := range common.GroupRatio {
+	for key, ratio := range common.GroupRatioSnapshot() {
 		config := GroupConfig{
 			GroupKey:    key,
 			DisplayName: key,

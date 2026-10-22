@@ -297,7 +297,7 @@ func buildPriceMap() map[string]*ModelPriceInfo {
 
 	basePricePerK := 0.002
 
-	for modelName, ratio := range common.ModelRatio {
+	for modelName, ratio := range common.ModelRatioSnapshot() {
 		completionRatio := common.GetCompletionRatio(modelName)
 		inputPricePerM := ratio * basePricePerK * 1000
 		outputPricePerM := inputPricePerM * completionRatio
@@ -313,7 +313,7 @@ func buildPriceMap() map[string]*ModelPriceInfo {
 		}
 	}
 
-	for modelName, price := range common.ModelPrice {
+	for modelName, price := range common.ModelPriceSnapshot() {
 		if existing, ok := result[modelName]; ok {
 			existing.FixedPrice = price
 			existing.PriceType = "fixed"
