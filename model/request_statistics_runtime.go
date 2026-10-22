@@ -204,6 +204,8 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 		r, query = s.success, s.querySuccess
 	case "models":
 		r, query = s.models, s.queryModels
+	case "dashboard_models":
+		r, query = s.models, s.queryDashboardModels
 	case "failures":
 		r, query = s.failures, s.queryFailures
 	default:
@@ -217,7 +219,9 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 		Version  int
 		Retained int64
 	}{q, RequestStatsMetricVersion, statsRetainedFrom(0, time.Now())})
-	return r.load(ctx, string(keyBytes), q.ActorID, q.Kind != "failures", func(ctx context.Context) ([]byte, error) {
+	// 当前小时图表每次刷新读取已提交的最新分钟；仍合并相同的在途请求。
+	cache := q.Kind != "failures" && q.Kind != "dashboard_models"
+	return r.load(ctx, string(keyBytes), q.ActorID, cache, q.Kind != "failures", func(ctx context.Context) ([]byte, error) {
 		data, err := query(ctx, q)
 		if err != nil {
 			return nil, err
@@ -231,7 +235,7 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 }
 
 // 合并仅限同一身份、同一规范参数；等待者与数据库执行都受有界预算约束。
-func (r *statsResource) load(ctx context.Context, key string, actor int, cache bool, load func(context.Context) ([]byte, error)) ([]byte, error) {
+func (r *statsResource) load(ctx context.Context, key string, actor int, cache, coalesce bool, load func(context.Context) ([]byte, error)) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -249,7 +253,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 		return nil, statsError(429, "当前用户的统计请求过多")
 	}
 	f := r.flights[key]
-	if !cache || (f != nil && f.epoch != r.epoch) {
+	if !coalesce || (f != nil && f.epoch != r.epoch) {
 		f = nil
 	}
 	if f == nil {
@@ -263,7 +267,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 		f = &statsFlight{done: make(chan struct{}), cancel: cancel, epoch: r.epoch}
 		r.active[f] = struct{}{}
 		r.wg.Add(1)
-		if cache {
+		if coalesce {
 			r.flights[key] = f
 		}
 		go func(f *statsFlight) {
@@ -275,7 +279,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 			cancel()
 			r.mu.Lock()
 			f.body, f.err = body, err
-			if cache && r.flights[key] == f {
+			if coalesce && r.flights[key] == f {
 				delete(r.flights, key)
 			}
 			if cache && err == nil && f.waiters > 0 && f.epoch == r.epoch && !r.closed {
