@@ -1,12 +1,37 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/model"
 )
+
+// 时间范围和用户范围由服务端决定，不接受客户端覆盖用户 ID 或角色。
+func GetDashboardModelUsage(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+	now := time.Now().Unix()
+	q := model.RequestStatsQuery{
+		Kind: "dashboard_models", ActorID: c.GetInt("id"),
+		Admin: c.GetInt("role") >= common.RoleAdminUser,
+		Start: now/3600*3600 - 23*3600, End: now / 60 * 60, Interval: 3600,
+	}
+	if q.ActorID <= 0 {
+		writeRequestStatistics(c, ctx, q, requestStatsError(401, "请先登录"))
+		return
+	}
+	if !q.Admin {
+		id := int64(q.ActorID)
+		q.Filters.UserID = &id
+	}
+	writeRequestStatistics(c, ctx, q, nil)
+}
 
 type DashboardData struct {
 	CurrentQuota int64                   `json:"current_quota"`
