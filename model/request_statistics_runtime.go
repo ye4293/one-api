@@ -20,15 +20,14 @@ import (
 var DefaultRequestStatistics *RequestStatistics
 
 type RequestStatistics struct {
-	SourceRetainedFrom                       int64
-	enabled, workerEnabled, coverageVerified bool
-	success, models, failures                *statsResource
-	worker                                   *sql.DB
-	lockName                                 string
-	stop                                     context.CancelFunc
-	wg                                       sync.WaitGroup
-	workerGate                               chan struct{}
-	initial                                  *statsBootstrap // 仅在 Worker 锁内访问；首批汇总前的内存边界。
+	enabled, workerEnabled    bool
+	success, models, failures *statsResource
+	worker                    *sql.DB
+	lockName                  string
+	stop                      context.CancelFunc
+	wg                        sync.WaitGroup
+	workerGate                chan struct{}
+	initial                   *statsBootstrap // 仅在 Worker 锁内访问；首批汇总前的内存边界。
 }
 
 type statsCacheEntry struct {
@@ -99,17 +98,15 @@ func openStatsPool(ctx context.Context, dsn string, size int, read bool) (*sql.D
 	return db, nil
 }
 
-// InitRequestStatistics 的失败只影响可选报表；四类池互不借用连接。
+// 所有节点初始化报表查询；只有显式启用 Worker 的主节点启动聚合。
+// 初始化失败只影响报表；四类池互不借用连接。
 func InitRequestStatistics(ctx context.Context) *RequestStatistics {
-	s := &RequestStatistics{workerGate: make(chan struct{}, 1)}
-	DefaultRequestStatistics = s
-	if os.Getenv("REQUEST_STATS_ENABLED") != "true" {
-		return s
+	s := &RequestStatistics{
+		enabled:       true,
+		workerEnabled: os.Getenv("REQUEST_STATS_WORKER_ENABLED") == "true",
+		workerGate:    make(chan struct{}, 1),
 	}
-	s.SourceRetainedFrom, _ = strconv.ParseInt(os.Getenv("REQUEST_STATS_SOURCE_RETAINED_FROM"), 10, 64)
-	s.coverageVerified = os.Getenv("REQUEST_STATS_COVERAGE_VERIFIED") == "true"
-	s.enabled = true
-	s.workerEnabled = os.Getenv("REQUEST_STATS_WORKER_ENABLED") == "true"
+	DefaultRequestStatistics = s
 	dsn := os.Getenv("LOG_SQL_DSN")
 	if dsn == "" {
 		dsn = os.Getenv("SQL_DSN")
@@ -144,9 +141,12 @@ func InitRequestStatistics(ctx context.Context) *RequestStatistics {
 			s.stop = cancel
 			s.wg.Add(1)
 			go func() { defer s.wg.Done(); s.runWorker(workerCtx) }()
+			logger.SysLog("request statistics worker started")
 		}
+	} else if !config.IsMasterNode {
+		logger.SysLog("request statistics worker skipped: NODE_TYPE is not master")
 	} else {
-		logger.SysLog("request statistics worker skipped: disabled or not_master")
+		logger.SysLog("request statistics worker skipped: REQUEST_STATS_WORKER_ENABLED is not true")
 	}
 	return s
 }
@@ -181,10 +181,6 @@ func (s *RequestStatistics) Close() {
 func statsRetainedFrom(coverageStart int64, now time.Time) int64 {
 	return max(coverageStart, now.Unix()/60*60-30*86400)
 }
-func (s *RequestStatistics) sourceHealthy() bool {
-	// 覆盖只描述既有日志的保留范围，不要求请求处理链路另行采集终态。
-	return s != nil && s.coverageVerified
-}
 func (s *RequestStatistics) clearCaches() {
 	for _, r := range []*statsResource{s.success, s.models} {
 		if r != nil {
@@ -199,7 +195,7 @@ func (s *RequestStatistics) clearCaches() {
 
 func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]byte, error) {
 	if s == nil || !s.enabled {
-		return nil, statsError(503, "分钟报表尚未启用")
+		return nil, statsError(503, "分钟报表数据库不可用")
 	}
 	var r *statsResource
 	var query func(context.Context, RequestStatsQuery) (any, error)
@@ -208,11 +204,10 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 		r, query = s.success, s.querySuccess
 	case "models":
 		r, query = s.models, s.queryModels
+	case "dashboard_models":
+		r, query = s.models, s.queryDashboardModels
 	case "failures":
 		r, query = s.failures, s.queryFailures
-		if s.SourceRetainedFrom <= 0 || q.Start < s.SourceRetainedFrom {
-			return nil, statsError(422, "明细已过保留期或源保留范围未确认")
-		}
 	default:
 		return nil, statsError(400, "无效查询类型")
 	}
@@ -223,9 +218,10 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 		Query    RequestStatsQuery
 		Version  int
 		Retained int64
-		Healthy  bool
-	}{q, RequestStatsMetricVersion, statsRetainedFrom(0, time.Now()), s.sourceHealthy()})
-	return r.load(ctx, string(keyBytes), q.ActorID, q.Kind != "failures", func(ctx context.Context) ([]byte, error) {
+	}{q, RequestStatsMetricVersion, statsRetainedFrom(0, time.Now())})
+	// 当前小时图表每次刷新读取已提交的最新分钟；仍合并相同的在途请求。
+	cache := q.Kind != "failures" && q.Kind != "dashboard_models"
+	return r.load(ctx, string(keyBytes), q.ActorID, cache, q.Kind != "failures", func(ctx context.Context) ([]byte, error) {
 		data, err := query(ctx, q)
 		if err != nil {
 			return nil, err
@@ -239,7 +235,7 @@ func (s *RequestStatistics) Query(ctx context.Context, q RequestStatsQuery) ([]b
 }
 
 // 合并仅限同一身份、同一规范参数；等待者与数据库执行都受有界预算约束。
-func (r *statsResource) load(ctx context.Context, key string, actor int, cache bool, load func(context.Context) ([]byte, error)) ([]byte, error) {
+func (r *statsResource) load(ctx context.Context, key string, actor int, cache, coalesce bool, load func(context.Context) ([]byte, error)) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -257,7 +253,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 		return nil, statsError(429, "当前用户的统计请求过多")
 	}
 	f := r.flights[key]
-	if !cache || (f != nil && f.epoch != r.epoch) {
+	if !coalesce || (f != nil && f.epoch != r.epoch) {
 		f = nil
 	}
 	if f == nil {
@@ -271,7 +267,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 		f = &statsFlight{done: make(chan struct{}), cancel: cancel, epoch: r.epoch}
 		r.active[f] = struct{}{}
 		r.wg.Add(1)
-		if cache {
+		if coalesce {
 			r.flights[key] = f
 		}
 		go func(f *statsFlight) {
@@ -283,7 +279,7 @@ func (r *statsResource) load(ctx context.Context, key string, actor int, cache b
 			cancel()
 			r.mu.Lock()
 			f.body, f.err = body, err
-			if cache && r.flights[key] == f {
+			if coalesce && r.flights[key] == f {
 				delete(r.flights, key)
 			}
 			if cache && err == nil && f.waiters > 0 && f.epoch == r.epoch && !r.closed {

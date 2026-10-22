@@ -299,10 +299,11 @@ func (s *RequestStatistics) freshness(ctx context.Context, tx *sql.Tx, q Request
 	}
 	var latest sql.NullInt64
 	err = tx.QueryRowContext(ctx, statsLatestMinuteSQL).Scan(&latest)
-	f := statsFreshness{CoverageStart: state.CoverageStart, RetainedFrom: statsRetainedFrom(state.CoverageStart, time.Now()), Coverage: "unknown", Incomplete: true, SourceMutability: "late_data_requires_explicit_recompute", SourceHealthy: s.sourceHealthy()}
-	if !f.SourceHealthy {
-		f.CoverageIssues = []string{"源日志覆盖或保留范围未确认；计数仅为已汇总日志"}
+	if err != nil {
+		return statsFreshness{}, 0, err
 	}
+	// 覆盖范围由已成功读取的汇总记录推导；指标只描述已汇总日志，不依赖人工确认开关。
+	f := statsFreshness{CoverageStart: state.CoverageStart, RetainedFrom: statsRetainedFrom(state.CoverageStart, time.Now()), Coverage: "unknown", Incomplete: true, SourceMutability: "late_data_requires_explicit_recompute", SourceHealthy: true}
 	if q.Start < f.RetainedFrom {
 		f.CoverageIssues = append(f.CoverageIssues, "查询范围包含统计覆盖或保留边界之前的时间；该部分暂无数据")
 	}

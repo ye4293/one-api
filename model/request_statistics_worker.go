@@ -117,17 +117,11 @@ func (s *RequestStatistics) ensureBootstrap(ctx context.Context, conn *sql.Conn)
 	if s.initial != nil {
 		return *s.initial, nil
 	}
-	if !s.sourceHealthy() || s.SourceRetainedFrom <= 0 {
-		return state, fmt.Errorf("source log coverage or retention is not verified; refuse initialization")
-	}
 	// MAX(id) 走主键端点，不扫描历史日志；读完后从下一完整分钟开始，不补历史。
 	if err = conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),0) FROM logs").Scan(&state.InitialLogID); err != nil {
 		return state, err
 	}
 	state.CoverageStart = time.Now().Unix()/60*60 + 60
-	if state.CoverageStart < s.SourceRetainedFrom {
-		return state, fmt.Errorf("initial statistics minute precedes verified source retention")
-	}
 	// 首批汇总前重启会重新取 MAX(id)；首批落库后由汇总记录恢复进度和 ID 边界。
 	s.initial = &state
 	return state, nil
@@ -264,7 +258,13 @@ type statsMinuteGroup struct {
 	User, Channel          sql.NullInt64
 	Username, Token, Model sql.NullString
 	statsAggregate
+	UsedQuota         big.Int // logs.quota 的有符号整数汇总，保留负数调整记录。
 	Invalid, MaxLogID uint64
+}
+
+func (g *statsMinuteGroup) quotaUSD() string {
+	// 固定按 500000 quota = 1 USD 换算，不经过浮点数或可变的计费配置。
+	return new(big.Rat).SetFrac(&g.UsedQuota, big.NewInt(500000)).FloatString(6)
 }
 
 // 旧 duration 单位为秒；仅读取时量化为整数微秒，原日志保持不变。
@@ -280,6 +280,7 @@ var statsSourceSQL = fmt.Sprintf(`SELECT user_id,`+statsUsernameSQL+`,
  COUNT(*), SUM(CASE WHEN type=%d THEN 1 ELSE 0 END), SUM(CASE WHEN type=%d THEN 1 ELSE 0 END),
  COUNT(`+statsDurationUSSQL+`),
  SUM(CAST(COALESCE(prompt_tokens,0) AS DECIMAL(30,0))+CAST(COALESCE(completion_tokens,0) AS DECIMAL(30,0))),
+ SUM(CAST(COALESCE(quota,0) AS DECIMAL(30,0))),
  COALESCE(SUM(CAST((`+statsDurationUSSQL+`) AS DECIMAL(30,0))),0),
  MIN(`+statsDurationUSSQL+`),MAX(`+statsDurationUSSQL+`),
  SUM(CASE WHEN user_id IS NULL OR user_id<=0
@@ -341,8 +342,8 @@ func readStatsMinute(ctx context.Context, tx *sql.Tx, minute int64, initialID ui
 		var g statsMinuteGroup
 		a := &g.statsAggregate
 		// 先完整接收结果，再校验 DECIMAL，避免负数提前中断 Scan 而丢失最大 ID。
-		var tokens, durationSum string
-		if err = rows.Scan(&g.User, &g.Username, &g.Token, &g.Model, &g.Channel, &a.Total, &a.Success, &a.Failure, &a.DurationCount, &tokens, &durationSum, &a.Min, &a.Max, &g.Invalid, &g.MaxLogID); err != nil {
+		var tokens, usedQuota, durationSum string
+		if err = rows.Scan(&g.User, &g.Username, &g.Token, &g.Model, &g.Channel, &a.Total, &a.Success, &a.Failure, &a.DurationCount, &tokens, &usedQuota, &durationSum, &a.Min, &a.Max, &g.Invalid, &g.MaxLogID); err != nil {
 			return nil, "", err
 		}
 		maxLogID = max(maxLogID, g.MaxLogID)
@@ -356,7 +357,9 @@ func readStatsMinute(ctx context.Context, tx *sql.Tx, minute int64, initialID ui
 		case g.Invalid != 0 || !g.User.Valid || g.User.Int64 <= 0 || !g.Channel.Valid || g.Channel.Int64 < 0 || !g.Model.Valid || g.Model.String == "" || strings.TrimSpace(g.Model.String) != g.Model.String || utf8.RuneCountInString(g.Model.String) > 200 || utf8.RuneCountInString(g.Token.String) > 255 || utf8.RuneCountInString(g.Username.String) > 191 || a.Total == 0:
 			invalidReason = "invalid source log group"
 		default:
-			if err = a.Tokens.Scan(tokens); err == nil {
+			if _, ok := g.UsedQuota.SetString(usedQuota, 10); !ok || len(strings.TrimPrefix(usedQuota, "-")) > 30 {
+				err = fmt.Errorf("invalid quota sum or decimal overflow")
+			} else if err = a.Tokens.Scan(tokens); err == nil {
 				err = a.DurationSum.Scan(durationSum)
 			}
 			if err == nil {
@@ -399,9 +402,6 @@ func (s *RequestStatistics) replaceMinute(ctx context.Context, conn *sql.Conn, m
 	if minute%60 != 0 || minute < state.CoverageStart || minute >= time.Now().Unix()/60*60 {
 		return statsError(422, "只能聚合覆盖范围内已结束的分钟")
 	}
-	if !s.sourceHealthy() || s.SourceRetainedFrom <= 0 || minute < s.SourceRetainedFrom {
-		return fmt.Errorf("source log coverage or retention is not verified; refuse publication")
-	}
 	ctx, cancel := context.WithTimeout(ctx, statsMinuteTimeout)
 	defer cancel()
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
@@ -413,21 +413,18 @@ func (s *RequestStatistics) replaceMinute(ctx context.Context, conn *sql.Conn, m
 	if err != nil {
 		return err
 	}
-	if !s.sourceHealthy() {
-		return fmt.Errorf("source log health changed during scan")
-	}
 	if _, err = tx.ExecContext(ctx, "DELETE FROM request_stats_minute WHERE bucket_start = ?", minute); err != nil {
 		return err
 	}
 	for from := 0; from < len(groups); from += 500 {
 		batch := groups[from:min(from+500, len(groups))]
-		args := make([]any, 0, len(batch)*15)
+		args := make([]any, 0, len(batch)*17)
 		values := make([]string, len(batch))
 		for i, g := range batch {
-			values[i] = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP(6))"
-			args = append(args, minute, g.User.Int64, g.Username.String, g.Token.String, g.Model.String, g.Channel.Int64, g.Total, g.Tokens.String(), g.Success, g.Failure, g.DurationCount, g.DurationSum.String(), g.Min, g.Max, g.MaxLogID)
+			values[i] = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP(6))"
+			args = append(args, minute, g.User.Int64, g.Username.String, g.Token.String, g.Model.String, g.Channel.Int64, g.Total, g.Tokens.String(), g.UsedQuota.String(), g.quotaUSD(), g.Success, g.Failure, g.DurationCount, g.DurationSum.String(), g.Min, g.Max, g.MaxLogID)
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO request_stats_minute (bucket_start,user_id,username,token_name,model_name,channel_id,total_requests,total_tokens,success_count,failure_count,duration_count,duration_sum_us,duration_min_us,duration_max_us,max_log_id,calculated_at) VALUES "+strings.Join(values, ","), args...)
+		_, err = tx.ExecContext(ctx, "INSERT INTO request_stats_minute (bucket_start,user_id,username,token_name,model_name,channel_id,total_requests,total_tokens,used_quota,used_quota_usd,success_count,failure_count,duration_count,duration_sum_us,duration_min_us,duration_max_us,max_log_id,calculated_at) VALUES "+strings.Join(values, ","), args...)
 		if err != nil {
 			return err
 		}

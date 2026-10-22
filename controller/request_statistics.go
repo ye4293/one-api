@@ -228,6 +228,10 @@ func serveRequestStats(c *gin.Context, models bool) {
 	if err == nil {
 		q, err = normalizeRequestStats(in, models, c.GetInt("id"), c.GetInt("role"), time.Now())
 	}
+	writeRequestStatistics(c, ctx, q, err)
+}
+
+func writeRequestStatistics(c *gin.Context, ctx context.Context, q model.RequestStatsQuery, err error) {
 	var body []byte
 	if err == nil {
 		body, err = model.DefaultRequestStatistics.Query(ctx, q)
