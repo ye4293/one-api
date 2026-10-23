@@ -78,7 +78,7 @@ func relayHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode {
 }
 
 func Relay(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
 
 	// 记录整个请求的开始时间，用于计算总耗时和首字时长
@@ -200,7 +200,7 @@ func Relay(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastChannel == nil {
+			if lastChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -920,7 +920,7 @@ func relayMidjourney(c *gin.Context, relayMode int) *midjourney.MidjourneyRespon
 }
 
 func RelayMidjourney(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	relayMode := c.GetInt("relay_mode")
 
 	var MjErr *midjourney.MidjourneyResponseWithStatusCode
@@ -967,7 +967,7 @@ func RelayMidjourney(c *gin.Context) {
 			currentAttempt := retryTimes - i + 1
 			channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 			if err != nil {
-				if lastMjChannel == nil {
+				if lastMjChannel == nil || isAzureRetry(ctx) {
 					logger.Errorf(ctx, "No channels available after cycling: %v (excludedChannels: %v)", err, failedChannelIds)
 					break
 				}
@@ -1081,7 +1081,7 @@ func RelayNotFound(c *gin.Context) {
 }
 
 func RelayVideoGenerate(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -1130,7 +1130,7 @@ func RelayVideoGenerate(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastVideoChannel == nil {
+			if lastVideoChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1372,7 +1372,7 @@ func RelayOcr(c *gin.Context) {
 }
 
 func RelayRecraft(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -1422,7 +1422,7 @@ func RelayRecraft(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastRecraftChannel == nil {
+			if lastRecraftChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1749,7 +1749,7 @@ func relayRecraftHelper(c *gin.Context) *model.ErrorWithStatusCode {
 }
 
 func RelayImageGenerateAsync(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -1794,7 +1794,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastImageChannel == nil {
+			if lastImageChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1879,7 +1879,7 @@ func RelayImageResult(c *gin.Context) {
 }
 
 func RelayRunway(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -1952,7 +1952,7 @@ func RelayRunway(c *gin.Context) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastRunwayChannel == nil {
+			if lastRunwayChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
@@ -2186,7 +2186,7 @@ func RelayXaiVideoResult(c *gin.Context) {
 }
 
 func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -2240,7 +2240,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastChannel == nil {
+			if lastChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "[xAI Video] no channel available after cycling on retry %d/%d", currentAttempt, retryTimes)
 				break
 			}
@@ -2389,7 +2389,7 @@ func recordXaiVideoFailedLog(ctx context.Context, c *gin.Context, endpoint strin
 }
 
 func RelaySoraCharacter(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -2435,7 +2435,7 @@ func RelaySoraCharacter(c *gin.Context) {
 	for i := retryTimes; i > 0; i-- {
 		logger.Infof(ctx, "RelaySoraCharacter retry attempt %d/%d", retryTimes-i+1, retryTimes)
 
-		channel, _, err := dbmodel.CacheGetRandomSatisfiedChannel(ctx, group, modelName, 0, "", failedChannelIds)
+		channel, err := selectRetryChannelOnce(ctx, group, modelName, failedChannelIds)
 		if err != nil {
 			logger.Errorf(ctx, "CacheGetRandomSatisfiedChannel failed on retry %d/%d: %v", retryTimes-i+1, retryTimes, err)
 			break
@@ -2570,7 +2570,7 @@ func RelaySoraCharacterGet(c *gin.Context) {
 }
 
 func RelaySoraVideo(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 	requestID := c.GetHeader("X-Request-ID")
 	c.Set("X-Request-ID", requestID)
 
@@ -2641,7 +2641,7 @@ func RelaySoraVideo(c *gin.Context) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastSoraChannel == nil {
+			if lastSoraChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
@@ -2953,7 +2953,7 @@ func relayGeminiHelper(c *gin.Context, relayMode int) *model.ErrorWithStatusCode
 	return nil
 }
 func RelayGemini(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 
 	// 记录整个请求的开始时间，用于计算总耗时和首字时长
 	totalStartTime := time.Now()
@@ -3022,7 +3022,7 @@ func RelayGemini(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastGeminiChannel == nil {
+			if lastGeminiChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -3117,7 +3117,7 @@ func RelayGemini(c *gin.Context) {
 	}
 }
 func RelayClaude(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 
 	// 记录整个请求的开始时间，用于计算总耗时和首字时长
 	totalStartTime := time.Now()
@@ -3186,7 +3186,7 @@ func RelayClaude(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastClaudeChannel == nil {
+			if lastClaudeChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -3283,7 +3283,7 @@ func RelayClaude(c *gin.Context) {
 	}
 }
 func RelayResponse(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := newRetryContext(c)
 
 	// 记录整个请求的开始时间，用于计算总耗时和首字时长
 	totalStartTime := time.Now()
@@ -3353,7 +3353,7 @@ func RelayResponse(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastResponseChannel == nil {
+			if lastResponseChannel == nil || isAzureRetry(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}

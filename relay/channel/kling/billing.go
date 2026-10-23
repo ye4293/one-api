@@ -20,7 +20,7 @@ func CalculateQuota(params map[string]interface{}, requestType string) int64 {
 	}
 
 	// 获取基础价格
-	baseRatio, exists := common.ModelRatio[modelName]
+	baseRatio, exists := common.LookupModelRatio(modelName)
 	if !exists {
 		// 如果模型不存在，使用默认价格
 		baseRatio = 50.0

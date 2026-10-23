@@ -68,7 +68,7 @@ func selectOpenAIPrices(model, responseTier string, entry openAIPricingEntry, me
 		return p
 	}
 	// 不把未知模型 getter 的通用兜底值当成已配置的标准价。
-	base, configured := common.ModelRatio[model]
+	base, configured := common.LookupModelRatio(model)
 	if !configured {
 		base, configured = common.DefaultModelPrice[model]
 	}
@@ -89,12 +89,12 @@ func lookupOpenAIPriceOverrides(model, responseTier string, entry openAIPricingE
 		return p
 	}
 	key := model + "_" + responseTier
-	p.modelRatio.value, p.modelRatio.set = common.ModelRatio[key]
-	p.completionRatio.value, p.completionRatio.set = common.CompletionRatio[key]
-	p.cacheRatio.value, p.cacheRatio.set = common.CacheRatio[key]
-	p.cacheWriteRatio.value, p.cacheWriteRatio.set = common.CacheWriteRatio[key]
+	p.modelRatio.value, p.modelRatio.set = common.LookupModelRatio(key)
+	p.completionRatio.value, p.completionRatio.set = common.LookupCompletionRatio(key)
+	p.cacheRatio.value, p.cacheRatio.set = common.LookupCacheRatio(key)
+	p.cacheWriteRatio.value, p.cacheWriteRatio.set = common.LookupCacheWriteRatio(key)
 	if entry == openAIChatPricing {
-		p.modelPrice.value, p.modelPrice.set = common.ModelPrice[key]
+		p.modelPrice.value, p.modelPrice.set = common.LookupModelPrice(key)
 	}
 	return p
 }

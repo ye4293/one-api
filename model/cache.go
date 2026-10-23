@@ -562,18 +562,46 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 	return nil, -1, errors.New("unable to select a channel based on weight")
 }
 
+// dynamicPriorityChannel 保留落库评分，实时排序使用衰减后的分数。
+type dynamicPriorityChannel struct {
+	Channel
+	Dp             int64   `gorm:"column:dp"`
+	EffectiveScore float64 `gorm:"-"`
+}
+
+// effectiveDynamicPriority 沿用档内的 429 指数衰减规则。
+// 未评分渠道的基准为 1；健康的已评分渠道仍优先，持续限流后可让位于未知渠道。
+func effectiveDynamicPriority(dp int64, rateLimits int) float64 {
+	score := math.Max(1, float64(dp))
+	if rateLimits > 0 {
+		score *= math.Pow(0.7, float64(rateLimits))
+	}
+	return score
+}
+
+// rankDynamicPriorityChannels 在分档前应用实时反馈，避免被限流的高分档锁住流量。
+func rankDynamicPriorityChannels(rows []dynamicPriorityChannel, rateLimits map[int]int) {
+	for i := range rows {
+		rows[i].EffectiveScore = effectiveDynamicPriority(rows[i].Dp, rateLimits[rows[i].Id])
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].EffectiveScore != rows[j].EffectiveScore {
+			return rows[i].EffectiveScore > rows[j].EffectiveScore
+		}
+		// 实时分相等时维持已有质量信号优先，其余沿用 SQL 的稳定顺序。
+		return rows[i].Dp > 0 && rows[j].Dp <= 0
+	})
+}
+
 // selectByDynamicPriority 动态优先级选渠道（DynamicPriorityEnabled 时使用）。
 //
-// 排序逻辑（修法 A + 探索位）：
-//  1. 主键：有评分（dp>0）永远排在未评分（dp=0）之前 —— 修法 A，防止 static priority=100
-//     兜底把评分低但真实的渠道挤到未评分之后。
-//  2. 有评分池内按 dp DESC 排序，取 top X%（DynamicPriorityTopThreshold）作为主档。
-//  3. 未评分池内按 created_time DESC 排序（TTL 内的新加渠道优先），
-//     前 K 个（DynamicPriorityExploreSlots）作为探索位塞进 top 档。
-//  4. 档内按 weight 加权随机。
+// 排序逻辑：
+//  1. 读取所有候选的模型级 429 计数，用 dp × 0.7^N 作为实时分；未评分基准为 1。
+//  2. 按实时分取 top X% 主档并保留并列；无评分池只在已评分持续拥塞时承接主流量。
+//  3. 首选可加入 TTL 内未评分探索位，概率探索覆盖存量渠道，二者均避开近期 429。
+//  4. 档内按归一化 weight × 实时分加权随机。
 //
-// skipPriorityLevels（重试链）：线性跳过 skip 个 scored 渠道；重试时（skip>0）
-// 关闭探索位，避免继续冒险；scored 全部跳完后从 unscored 池兜底。
+// skipPriorityLevels 线性跳过实时排名靠前的候选；重试通常用 excludeIds 排除已失败渠道。
 //
 // exploreRRLocalCounter 是概率化探索的**本地降级** round-robin 游标 ——
 // Redis 不可用时使用（Redis 可用时用共享 counter 保证多节点游标同步）。
@@ -598,10 +626,6 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	// NULL 排在数值之前，让老 NULL 渠道错误地被拉到 unscored 池最前抢占探索位。
 	// SELECT 里的别名 dp 已经 COALESCE 过（供 Go 层拆池用），但 ORDER BY 表达式
 	// 独立求值，不复用 SELECT 别名的 COALESCE，必须每处显式写。
-	type channelWithDp struct {
-		Channel
-		Dp int64 `gorm:"column:dp"`
-	}
 	orderClause := fmt.Sprintf(
 		"(CASE WHEN COALESCE(abilities.dynamic_priority, 0) > 0 THEN 1 ELSE 0 END) DESC, "+
 			"COALESCE(abilities.dynamic_priority, 0) DESC, "+
@@ -619,7 +643,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	if len(excludeIds) > 0 {
 		q = q.Where("channels.id NOT IN ?", excludeIds)
 	}
-	var rows []channelWithDp
+	var rows []dynamicPriorityChannel
 	if err := q.Find(&rows).Error; err != nil {
 		return nil, -1, fmt.Errorf("dynamic priority: fetch channels: %w", err)
 	}
@@ -627,7 +651,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	// 能力过滤（如 count_tokens）：在排序结果上原地过滤，保留 dp 相对顺序。
 	// 不能下推 SQL —— LoadConfig 解析 JSON，DB 做不了。
 	if capabilityFilter != nil {
-		filtered := make([]channelWithDp, 0, len(rows))
+		filtered := make([]dynamicPriorityChannel, 0, len(rows))
 		for i := range rows {
 			cfg, err := rows[i].Channel.LoadConfig()
 			if err != nil {
@@ -644,13 +668,21 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		return nil, -1, errors.New("no channels available (dynamic priority)")
 	}
 
-	// 拆池：rows 已按 dp>0 优先排序，前 N 个 dp>0 的是 scored，其余 dp=0 是 unscored。
-	scoredEnd := 0
-	for scoredEnd < len(rows) && rows[scoredEnd].Dp > 0 {
-		scoredEnd++
+	// 一次 pipeline 读取全部候选的反馈。必须在分档前完成，否则档外渠道无法承接溢出。
+	channelIDs := make([]int, len(rows))
+	for i := range rows {
+		channelIDs[i] = rows[i].Id
 	}
-	scored := rows[:scoredEnd]
-	unscored := rows[scoredEnd:]
+	rateLimits := metrics.GetRecentRateLimits(ctx, channelIDs, model)
+	rankDynamicPriorityChannels(rows, rateLimits)
+
+	// 独立保存未评分池，供首选探索使用；实时排名不再强制已评分永远优先。
+	unscored := make([]dynamicPriorityChannel, 0, len(rows))
+	for _, row := range rows {
+		if row.Dp <= 0 {
+			unscored = append(unscored, row)
+		}
+	}
 
 	thresholdPct := config.DynamicPriorityTopThreshold
 	if thresholdPct <= 0 {
@@ -664,33 +696,34 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		skip = 0
 	}
 
-	// 主档：从 scored 里跳 skip 后取 top X%
-	var mainTier []channelWithDp
-	if skip < len(scored) {
-		pool := scored[skip:]
-		topCount := len(pool) * thresholdPct / 100
-		if topCount < 1 {
-			topCount = 1
-		}
-		if topCount > len(pool) {
-			topCount = len(pool)
-		}
-		// 保留 dp 同分并列：向后扫，把与 pool[topCount-1].Dp 相等的渠道也纳入 mainTier。
-		// 场景：Beta-Binomial 平滑后大量渠道会同分（如 8 个 dp=25），若硬切 top X%
-		// 会把并列第一切开，让 SQL ORDER BY 里的 created_time DESC 决出胜负，导致
-		// 老 VIP 渠道（weight=100）被挤出 top 档，只能靠重试链兜底 —— 生产观察到
-		// 14417 (dp=25, weight=100) 只拿 17% 流量，理论应有 58.8%。同分并列全部保留后，
-		// 加权公式（normW × dp）会自然让 VIP 拿到应有的比例。
-		boundaryDp := pool[topCount-1].Dp
-		for i := topCount; i < len(pool); i++ {
-			if pool[i].Dp == boundaryDp {
-				topCount++
-			} else {
-				break
-			}
-		}
-		mainTier = pool[:topCount]
+	if skip >= len(rows) {
+		return nil, -1, errors.New("no channels available (dynamic priority, retry exhausted)")
 	}
+	pool := rows[skip:]
+	// 保留正常情况下按已评分数量计算 top X% 的语义，避免无评分数量改变主档大小。
+	scoredCount := 0
+	for _, row := range pool {
+		if row.Dp > 0 {
+			scoredCount++
+		}
+	}
+	poolSize := scoredCount
+	if poolSize == 0 {
+		poolSize = len(pool)
+	}
+	topCount := poolSize * thresholdPct / 100
+	if topCount < 1 {
+		topCount = 1
+	}
+	// 有评分时保留实时分并列；持续限流使已评分整体低于 1 时，健康未知渠道可公平承接。
+	if scoredCount > 0 {
+		boundaryScore := pool[topCount-1].EffectiveScore
+		boundaryScored := pool[topCount-1].Dp > 0
+		for topCount < len(pool) && pool[topCount].EffectiveScore == boundaryScore && (pool[topCount].Dp > 0) == boundaryScored {
+			topCount++
+		}
+	}
+	mainTier := pool[:topCount]
 
 	// 探索位：仅**真正的首选**（无累计失败渠道）时加 K 个 unscored 探索位；重试关闭。
 	//
@@ -705,9 +738,13 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	//
 	// 语义：一个渠道 24h 内没被拿到过评分（新加/或历史评分被清零），值得优待；
 	// 24h+ 还没评上分的，说明该模型没流量或渠道长期无请求，硬塞给它流量意义不大。
-	freshUnscored := make([]channelWithDp, 0, len(unscored))
+	mainTierIDs := make(map[int]bool, len(mainTier))
+	for _, row := range mainTier {
+		mainTierIDs[row.Id] = true
+	}
+	freshUnscored := make([]dynamicPriorityChannel, 0, len(unscored))
 	for i := range unscored {
-		if unscored[i].CreatedTime > ttlThreshold {
+		if unscored[i].CreatedTime > ttlThreshold && rateLimits[unscored[i].Id] == 0 && !mainTierIDs[unscored[i].Id] {
 			freshUnscored = append(freshUnscored, unscored[i])
 		}
 	}
@@ -723,7 +760,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	}
 	exploreTier := freshUnscored[:exploreCount]
 
-	tier := make([]channelWithDp, 0, len(mainTier)+len(exploreTier))
+	tier := make([]dynamicPriorityChannel, 0, len(mainTier)+len(exploreTier))
 	tier = append(tier, mainTier...)
 	tier = append(tier, exploreTier...)
 
@@ -745,10 +782,16 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 	//     即新渠道在前 —— 用户希望"新加渠道优先探索"）
 	//
 	// 只在真正首选（无 excludeIds、skip=0）触发；重试路径关闭。
-	// 副作用：绕过 429 秒级降权 —— 但只有 5% 概率、且是"故意采样"，可接受。
+	// 探索只采样未出现近期 429 的渠道，防止绕过实时反馈。
+	explorePool := make([]dynamicPriorityChannel, 0, len(unscored))
+	for _, row := range unscored {
+		if rateLimits[row.Id] == 0 {
+			explorePool = append(explorePool, row)
+		}
+	}
 	if len(excludeIds) == 0 && skip == 0 &&
 		config.DynamicPriorityExploreRatio > 0 &&
-		len(unscored) > 0 &&
+		len(explorePool) > 0 &&
 		rand.Intn(100) < config.DynamicPriorityExploreRatio {
 		var seq int64
 		if common.RedisEnabled && common.RDB != nil {
@@ -767,52 +810,12 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		} else {
 			seq = exploreRRLocalCounter.Add(1)
 		}
-		idx := int((seq - 1) % int64(len(unscored)))
-		picked := unscored[idx]
-		logger.Infof(ctx, "dynamic priority: probabilistic exploration selected channel #%d (model=%s, rank=%d/%d, seq=%d)", picked.Id, model, idx, len(unscored), seq)
+		idx := int((seq - 1) % int64(len(explorePool)))
+		picked := explorePool[idx]
+		logger.Infof(ctx, "dynamic priority: probabilistic exploration selected channel #%d (model=%s, rank=%d/%d, seq=%d)", picked.Id, model, idx, len(explorePool), seq)
 		ch := picked.Channel
 		return &ch, -1, nil
 	}
-
-	// 兜底：重试把 scored 池全部跳完（skip >= len(scored)）时主档为空，
-	// 改从 unscored 池按剩余 skip 偏移取档；unscored 也没有则报错。
-	if len(tier) == 0 {
-		if len(unscored) == 0 {
-			return nil, -1, errors.New("no channels available (dynamic priority, retry exhausted)")
-		}
-		offsetInUnscored := skip - len(scored)
-		if offsetInUnscored < 0 {
-			offsetInUnscored = 0
-		}
-		if offsetInUnscored >= len(unscored) {
-			offsetInUnscored = len(unscored) - 1
-		}
-		pool := unscored[offsetInUnscored:]
-		topCount := len(pool) * thresholdPct / 100
-		if topCount < 1 {
-			topCount = 1
-		}
-		if topCount > len(pool) {
-			topCount = len(pool)
-		}
-		// 注意：这里 pool 是 unscored，dp 全为 0，**不能**做同分并列扩展 ——
-		// 若扩展会把整个 unscored 池全塞进 tier，破坏 "top X% 兜底" 的原语义。
-		// mainTier 分支的同分扩展只在 scored 池（dp>0）有意义。
-		tier = pool[:topCount]
-	}
-
-	// 429 即时反馈层：读 tier 内每个渠道最近 60s 的 429 计数。
-	// 一次 Redis pipeline，命中阈值的渠道在下面权重计算里降到 1（几乎不选，
-	// 但保留在池中，60s 后自动恢复）。这是评分周期外的秒级降权机制，
-	// 解决"高分渠道被打爆但评分未更新"造成的间歇性 429。
-	//
-	// 按 (channel, model) 维度查询：与 RecordRateLimit 写入维度对齐，避免
-	// "A model 触发 429 但 B model 选渠道时误降权"。
-	tierChannelIds := make([]int, len(tier))
-	for i, t := range tier {
-		tierChannelIds[i] = t.Id
-	}
-	rateLimits := metrics.GetRecentRateLimits(ctx, tierChannelIds, model)
 
 	// 档内加权随机：normalize(weight) × dp × 429 惩罚
 	//
@@ -846,8 +849,6 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		}
 	}
 
-	const rateLimitPenaltyBase = 0.7 // 429 惩罚基数：每次 429 权重乘以 0.7
-
 	totalWeight := 0
 	weights := make([]int, len(tier))
 	for i, t := range tier {
@@ -862,15 +863,7 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 			normW = 1 + 9*float64(baseW-minW)/float64(maxW-minW)
 		}
 
-		wFloat := normW
-		if t.Dp > 0 {
-			wFloat = normW * float64(t.Dp)
-		}
-
-		// 429 惩罚
-		if rl, ok := rateLimits[t.Id]; ok && rl > 0 {
-			wFloat = wFloat * math.Pow(rateLimitPenaltyBase, float64(rl))
-		}
+		wFloat := normW * t.EffectiveScore
 
 		w := int(wFloat + 0.5) // 四舍五入
 		if w < 1 {

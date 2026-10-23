@@ -64,7 +64,7 @@ func CreateGroupConfigHandler(c *gin.Context) {
 	}
 
 	// 同步更新 common.GroupRatio
-	common.GroupRatio[config.GroupKey] = config.Discount
+	common.SetGroupRatio(config.GroupKey, config.Discount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -109,7 +109,7 @@ func UpdateGroupConfigHandler(c *gin.Context) {
 	}
 
 	// 同步更新 common.GroupRatio
-	common.GroupRatio[config.GroupKey] = config.Discount
+	common.SetGroupRatio(config.GroupKey, config.Discount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -148,7 +148,7 @@ func DeleteGroupConfigHandler(c *gin.Context) {
 	}
 
 	// 同步删除 common.GroupRatio 中的条目
-	delete(common.GroupRatio, config.GroupKey)
+	common.DeleteGroupRatio(config.GroupKey)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

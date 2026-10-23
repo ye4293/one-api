@@ -1019,6 +1019,9 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 					if lastUsageMetadata.ThoughtsTokenCount > 0 {
 						usage.CompletionTokensDetails.ReasoningTokens = lastUsageMetadata.ThoughtsTokenCount
 					}
+					if lastUsageMetadata.CachedContentTokenCount > 0 {
+						usage.PromptTokensDetails.CachedTokens = lastUsageMetadata.CachedContentTokenCount
+					}
 
 					for _, detail := range lastUsageMetadata.PromptTokensDetails {
 						switch detail.Modality {
@@ -1154,6 +1157,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if geminiResponse.UsageMetadata != nil {
 		if geminiResponse.UsageMetadata.ThoughtsTokenCount > 0 {
 			usage.CompletionTokensDetails.ReasoningTokens = geminiResponse.UsageMetadata.ThoughtsTokenCount
+		}
+		if geminiResponse.UsageMetadata.CachedContentTokenCount > 0 {
+			usage.PromptTokensDetails.CachedTokens = geminiResponse.UsageMetadata.CachedContentTokenCount
 		}
 		for _, detail := range geminiResponse.UsageMetadata.PromptTokensDetails {
 			switch detail.Modality {

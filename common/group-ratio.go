@@ -1,10 +1,6 @@
 package common
 
-import (
-	"encoding/json"
-
-	"github.com/songquanpeng/one-api/common/logger"
-)
+import "github.com/songquanpeng/one-api/common/logger"
 
 var GroupRatio = map[string]float64{
 	"Lv1": 1,
@@ -16,7 +12,7 @@ var GroupRatio = map[string]float64{
 }
 
 func GroupRatio2JSONString() string {
-	jsonBytes, err := json.Marshal(GroupRatio)
+	jsonBytes, err := marshalPricingMap(&GroupRatio)
 	if err != nil {
 		logger.SysError("error marshalling model ratio: " + err.Error())
 	}
@@ -24,15 +20,28 @@ func GroupRatio2JSONString() string {
 }
 
 func UpdateGroupRatioByJSONString(jsonStr string) error {
-	GroupRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &GroupRatio)
+	return replacePricingMap(&GroupRatio, jsonStr)
 }
 
 func GetGroupRatio(name string) float64 {
-	ratio, ok := GroupRatio[name]
+	ratio, ok := lookupPricingValue(&GroupRatio, name)
 	if !ok {
 		logger.SysError("group ratio not found: " + name)
 		return 1
 	}
 	return ratio
+}
+
+func SetGroupRatio(name string, value float64) {
+	setPricingValue(&GroupRatio, name, value)
+}
+
+func DeleteGroupRatio(name string) {
+	pricingMu.Lock()
+	delete(GroupRatio, name)
+	pricingMu.Unlock()
+}
+
+func GroupRatioSnapshot() map[string]float64 {
+	return snapshotPricingMap(&GroupRatio)
 }
