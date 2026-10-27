@@ -432,7 +432,9 @@ const ChannelsTable = () => {
   };
 
   const testChannel = async (record, model) => {
-    const res = await API.get(`/api/channel/test/${record.id}?model=${model}`);
+    const res = await API.get(`/api/channel/test/${record.id}`, {
+      params: model ? { model } : undefined,
+    });
     const { success, message, time } = res.data;
     if (success) {
       record.response_time = time * 1000;

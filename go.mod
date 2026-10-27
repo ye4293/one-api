@@ -5,6 +5,7 @@ go 1.25.0
 
 require (
 	github.com/Calcium-Ion/go-epay v0.0.4
+	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/aws/aws-sdk-go-v2/service/athena v1.58.4
 	github.com/aws/aws-sdk-go-v2/service/bedrock v1.66.4
 	github.com/aws/aws-sdk-go-v2/service/firehose v1.44.0
@@ -45,6 +46,7 @@ require (
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 )
 
 require (

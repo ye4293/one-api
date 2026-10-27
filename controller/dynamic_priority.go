@@ -73,6 +73,68 @@ func StartDynamicPriorityTask() {
 const dynamicPriorityCalcLockKey = "dynamic_priority:calc:lock"
 const dynamicPriorityCalcLockTTL = 5 * time.Minute
 
+// updateTestDynamicPriority 将手动测试结果纳入真实窗口，立即计算目标渠道该模型的评分。
+// 其他渠道仅提供相对评分的参考，不落库；目标的所有分组同步更新，不改变启用状态。
+func updateTestDynamicPriority(ctx context.Context, observation metrics.AbilityMetric) (int64, error) {
+	if !common.RedisEnabled || common.RDB == nil {
+		return 0, fmt.Errorf("Redis 未启用，无法记录评分样本")
+	}
+	var abilities []model.Ability
+	if err := model.DB.WithContext(ctx).
+		Where("model = ? AND (enabled = ? OR channel_id = ?)", observation.Model, true, observation.ChannelId).
+		Find(&abilities).Error; err != nil {
+		return 0, fmt.Errorf("读取模型渠道失败：%w", err)
+	}
+	candidates := make([]abilityCandidate, 0, len(abilities))
+	channelIDs := make([]int, 0, len(abilities))
+	targetFound := false
+	for _, ability := range abilities {
+		candidates = append(candidates, abilityCandidate{ChannelId: ability.ChannelId, Model: ability.Model, Group: ability.Group})
+		channelIDs = append(channelIDs, ability.ChannelId)
+		targetFound = targetFound || ability.ChannelId == observation.ChannelId
+	}
+	if !targetFound {
+		return 0, fmt.Errorf("该渠道尚未配置此模型的分发能力")
+	}
+	if err := metrics.RecordAbilityMetric(ctx, observation); err != nil {
+		return 0, fmt.Errorf("记录评分样本失败：%w", err)
+	}
+	var prices []struct {
+		Id        int
+		UnitPrice float64
+	}
+	if err := model.DB.WithContext(ctx).Table("channels").Select("id, unit_price").Where("id IN ?", channelIDs).Find(&prices).Error; err != nil {
+		return 0, fmt.Errorf("读取渠道单价失败：%w", err)
+	}
+	priceCache := make(map[int]float64, len(prices))
+	for _, price := range prices {
+		priceCache[price.Id] = price.UnitPrice
+	}
+	window := time.Duration(config.DynamicPriorityWindowMinutes) * time.Minute
+	if window <= 0 {
+		window = 10 * time.Minute
+	}
+	stats, _ := buildStatsForModel(ctx, observation.Model, candidates, window, priceCache)
+	weights := dynamicprio.Weights{
+		Success: config.DynamicPriorityWeightSuccess,
+		Latency: config.DynamicPriorityWeightLatency,
+		Price:   config.DynamicPriorityWeightPrice,
+	}
+	for _, score := range dynamicprio.ScoreChannels(stats, weights) {
+		if score.ChannelId != observation.ChannelId || !score.HasData {
+			continue
+		}
+		priority := int64(score.Score)
+		if err := model.DB.WithContext(ctx).Model(&model.Ability{}).
+			Where("channel_id = ? AND model = ?", observation.ChannelId, observation.Model).
+			Update("dynamic_priority", priority).Error; err != nil {
+			return 0, fmt.Errorf("保存动态优先级失败：%w", err)
+		}
+		return priority, nil
+	}
+	return 0, fmt.Errorf("未读取到本次测试的评分样本")
+}
+
 // runDynamicPriorityCalcOnce 执行一轮评分计算。
 func runDynamicPriorityCalcOnce() {
 	// 定时任务无请求 ctx；用 Background 只是给底层 log 接口一个非 nil ctx，
