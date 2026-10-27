@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-10-27
+
+### fix(models): 对外模型目录返回用户分组下实际可用的渠道模型
+
+- **分支**: `fix/dynamic-model-discovery`
+- **类型**: fix（模型发现）
+- **涉及文件**: `controller/model.go`、`model/ability.go`、`router/model_discovery_test.go`、`docs/plans/2026-10-27-dynamic-model-discovery.md`。
+- **说明**: `/v1/models` 原先仅返回适配器静态目录，遗漏渠道中新配置的 Gemini、Argon 和自定义别名。改为按鉴权用户分组查询启用渠道及能力，过滤禁用/孤立/空能力并去重排序；单模型详情使用相同目录，保留已知模型元数据。查询失败返回 500，响应设置 `private, no-store`，后台编辑器的内置推荐目录保持原有行为。
+- **验证**: 使用原始源码 overlay 复现三组回归失败；修复后 `go test ./router -run '^TestModelDiscovery' -count=1`、`go build ./...`、`go vet ./...` 通过。测试经过生产路由与 TokenAuth，覆盖新模型、映射别名、分组隔离、禁用状态、动态增删、空数组、元数据、无效鉴权及数据库故障。
+- **边界**: 无数据库迁移；本次为本地代码修复，线上部署后生效。Gemini 兼容入口仍由 linkinfra 已有的 404 回退机制转向 `/v1/models`。
+- **关联计划**: `docs/plans/2026-10-27-dynamic-model-discovery.md`
+
 ## 2026-10-22
 
 ### fix(pricing): 修复价格配置热更新与请求并发访问导致的进程崩溃

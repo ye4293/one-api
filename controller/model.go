@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/helper"
@@ -134,27 +136,81 @@ func DashboardListModels(c *gin.Context) {
 }
 
 func ListModels(c *gin.Context) {
+	models, err := availableModelsForUser(c)
+	if err != nil {
+		modelListError(c, err)
+		return
+	}
 	c.JSON(200, gin.H{
 		"object": "list",
-		"data":   openAIModels,
+		"data":   models,
+	})
+}
+
+// availableModelsForUser 使用实际渠道能力决定可见性，静态目录仅提供已知模型的元数据。
+func availableModelsForUser(c *gin.Context) ([]OpenAIModels, error) {
+	c.Header("Cache-Control", "private, no-store")
+	group, err := dbmodel.GetUserGroup(c.GetInt("id"))
+	if err != nil {
+		return nil, err
+	}
+	if group == "" {
+		return nil, fmt.Errorf("user has no model group")
+	}
+	names, err := dbmodel.GetEnabledModelsForGroup(group)
+	if err != nil {
+		return nil, err
+	}
+	models := make([]OpenAIModels, 0, len(names))
+	for _, name := range names {
+		item, ok := openAIModelsMap[name]
+		if !ok {
+			item = OpenAIModels{
+				Id:         name,
+				Object:     "model",
+				Created:    1626777600,
+				OwnedBy:    "custom",
+				Permission: []OpenAIModelPermission{},
+				Root:       name,
+			}
+		}
+		models = append(models, item)
+	}
+	return models, nil
+}
+
+func modelListError(c *gin.Context, err error) {
+	logger.Error(c.Request.Context(), "failed to load available models: "+err.Error())
+	c.JSON(http.StatusInternalServerError, gin.H{
+		"error": relaymodel.Error{
+			Message: "Unable to load available models. Please try again later.",
+			Type:    "api_error",
+			Code:    "model_list_unavailable",
+		},
 	})
 }
 
 func RetrieveModel(c *gin.Context) {
+	models, err := availableModelsForUser(c)
+	if err != nil {
+		modelListError(c, err)
+		return
+	}
 	modelId := c.Param("model")
-	if model, ok := openAIModelsMap[modelId]; ok {
-		c.JSON(200, model)
-	} else {
-		Error := relaymodel.Error{
+	for _, item := range models {
+		if item.Id == modelId {
+			c.JSON(http.StatusOK, item)
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"error": relaymodel.Error{
 			Message: fmt.Sprintf("The model '%s' does not exist", modelId),
 			Type:    "invalid_request_error",
 			Param:   "model",
 			Code:    "model_not_found",
-		}
-		c.JSON(200, gin.H{
-			"error": Error,
-		})
-	}
+		},
+	})
 }
 
 type ChannelOption struct {
