@@ -15,7 +15,8 @@
 - **涉及文件**: `controller/model.go`、`model/ability.go`、`router/model_discovery_test.go`、`docs/plans/2026-10-27-dynamic-model-discovery.md`。
 - **说明**: `/v1/models` 原先仅返回适配器静态目录，遗漏渠道中新配置的 Gemini、Argon 和自定义别名。改为按鉴权用户分组查询启用渠道及能力，过滤禁用/孤立/空能力并去重排序；单模型详情使用相同目录，保留已知模型元数据。查询失败返回 500，响应设置 `private, no-store`，后台编辑器的内置推荐目录保持原有行为。
 - **验证**: 使用原始源码 overlay 复现三组回归失败；修复后 `go test ./router -run '^TestModelDiscovery' -count=1`、`go build ./...`、`go vet ./...` 通过。测试经过生产路由与 TokenAuth，覆盖新模型、映射别名、分组隔离、禁用状态、动态增删、空数组、元数据、无效鉴权及数据库故障。
-- **边界**: 无数据库迁移；本次为本地代码修复，线上部署后生效。Gemini 兼容入口仍由 linkinfra 已有的 404 回退机制转向 `/v1/models`。
+- **完整测试**: 已执行 `go test ./...`，`model`、`middleware`、`router` 等包通过。6 项既有失败为 `TestDecode`、`TestEvaluateUsageBasedChannelDisable_SingleChannelTriggered`、`TestEvaluateUsageBasedChannelDisable_MixedChannels`、`TestFluxVideoUpscaleLifecycle`、`TestFilterBetaFlags`、`TestGetModelNameFromRequest`；用修改前 `789a61d` 的源码 overlay 复跑 4 个失败包，失败项完全一致，与本次改动无关。
+- **边界**: 无数据库迁移；线上部署新镜像后生效。Gemini 兼容入口仍由 linkinfra 已有的 404 回退机制转向 `/v1/models`。用户已授权测试后创建 tag 并推送 GitHub，沿用 `alphaas-MMDDHHmm` 命名及仓库现有镜像构建流程。
 - **关联计划**: `docs/plans/2026-10-27-dynamic-model-discovery.md`
 
 ## 2026-10-22
