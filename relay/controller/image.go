@@ -153,6 +153,9 @@ type UsageDetailsForLog struct {
 	CachedTokens             int    `json:"cached_tokens,omitempty"`
 	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
 	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	// OpenAI 复用 CacheCreationInputTokens 记录 30m，仅新增 12h 和总量。
+	CacheCreation12hTokens   *int64 `json:"cache_creation_12h_tokens,omitempty"`
+	CacheCreationTotalTokens *int64 `json:"cache_creation_total_tokens,omitempty"`
 }
 
 // GPTImageUsageDetailsForLog gpt-image-* usage 明细，写入 logs.other（仅四个字段）

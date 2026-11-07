@@ -29,6 +29,12 @@ type WebSearchOptions struct {
 }
 
 type GeneralOpenAIRequest struct {
+	// 缓存控制参数仅透传客户端提供的 JSON，保留扩展字段、显式空值和数字精度。
+	// 未提供时省略；不在网关补默认模式、时长或预热设置。
+	PromptCacheOptions   json.RawMessage `json:"prompt_cache_options,omitempty"`
+	PromptCacheKey       json.RawMessage `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
+
 	Messages            []Message         `json:"messages,omitempty"`
 	Model               string            `json:"model,omitempty"`
 	FrequencyPenalty    float64           `json:"frequency_penalty,omitempty"`

@@ -30,6 +30,8 @@ func (p openAIPriceOverride) resolve(model string, fallback func(string) float64
 
 type openAIPriceOverrides struct {
 	modelRatio, completionRatio, cacheRatio, cacheWriteRatio, modelPrice openAIPriceOverride
+	// 新缓存配置只作用于创建费用，不计入 any/applies，不能关闭原自动档位倍率。
+	cacheWrite30mOverride, cacheWrite12hOverride openAIPriceOverride
 	// 仅在该入口完全没有档位配置时启用；0 表示不使用默认倍率。
 	defaultMultiplier float64
 }
@@ -40,6 +42,10 @@ func (p openAIPriceOverrides) any() bool {
 
 func (p openAIPriceOverrides) applies() bool {
 	return p.any() || p.defaultMultiplier > 0
+}
+
+func (p openAIPriceOverrides) hasCacheWritePrices() bool {
+	return p.cacheWrite30mOverride.set || p.cacheWrite12hOverride.set
 }
 
 // 平台默认计费策略；显式档位配置仍按响应原值查找，fast/priority 不互相回退。
@@ -93,6 +99,8 @@ func lookupOpenAIPriceOverrides(model, responseTier string, entry openAIPricingE
 	p.completionRatio.value, p.completionRatio.set = common.LookupCompletionRatio(key)
 	p.cacheRatio.value, p.cacheRatio.set = common.LookupCacheRatio(key)
 	p.cacheWriteRatio.value, p.cacheWriteRatio.set = common.LookupCacheWriteRatio(key)
+	p.cacheWrite30mOverride.value, p.cacheWrite30mOverride.set = common.LookupOpenAICacheWrite30mRatio(key)
+	p.cacheWrite12hOverride.value, p.cacheWrite12hOverride.set = common.LookupCacheWrite12hRatio(key)
 	if entry == openAIChatPricing {
 		p.modelPrice.value, p.modelPrice.set = common.LookupModelPrice(key)
 	}
@@ -124,5 +132,7 @@ func (p openAITierPricingInfo) appendBillingDetails(details map[string]interface
 // 保存本次已用于计算的倍率及来源，供异步消费日志复用。
 type openAITokenPrices struct {
 	modelRatio, completionRatio, cacheRatio, cacheWriteRatio float64
-	tierPricing                                              openAITierPricingInfo
+	// 仅有效缓存分项保存 12h 倍率；nil 区分未使用分项，指针保留零价。
+	cacheWrite12hRatio *float64
+	tierPricing        openAITierPricingInfo
 }

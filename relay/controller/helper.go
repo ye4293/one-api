@@ -254,6 +254,17 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	completionTokens := usage.CompletionTokens
 	cachedTokens := usage.PromptTokensDetails.CachedTokens
 	cacheWriteTokens := usage.PromptTokensDetails.CacheWriteTokens
+	isOpenAI := meta.APIType == constant.APITypeOpenAI
+	var cacheWriteUsage util.OpenAICacheWriteUsage
+	if isOpenAI {
+		var cacheErr error
+		cacheWriteUsage, cacheErr = util.SplitOpenAICacheWriteTokens(promptTokens, usage.PromptTokensDetails)
+		if cacheErr != nil {
+			detailsJSON, _ := json.Marshal(usage.PromptTokensDetails)
+			logger.Errorf(ctx, "openai_cache_creation_invalid channel=%d model=%s request_id=%s response_id=%s details=%s error=%+v", meta.ChannelId, meta.BillingModelName(), c.GetString("X-Request-ID"), c.GetString("x_response_id"), detailsJSON, cacheErr)
+		}
+		cacheWriteTokens = int(cacheWriteUsage.Total)
+	}
 
 	billingModelName := meta.BillingModelName()
 	if billingModelName == "" {
@@ -282,6 +293,10 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 	}
 	completionRatio := overrides.completionRatio.resolve(billingModelName, common.GetCompletionRatio)
 	var cacheRatio, cacheWriteRatio float64
+	var cacheWrite12hRatio float64
+	if isOpenAI {
+		cacheWriteRatio, cacheWrite12hRatio = resolveOpenAICacheWritePrices(billingModelName, overrides)
+	}
 	// groupRatio 此处已是"融合后的组合折扣" = 等级折扣 × 渠道折扣 × 用户渠道折扣
 	// 直接从 meta 取三个分量，用于日志/账单分项展示（比用除法反推更稳定）。
 	tierRatio := common.GetGroupRatio(meta.Group)
@@ -294,7 +309,9 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		if cachedTokens > 0 || cacheWriteTokens > 0 {
 			// 有缓存读取或写入：从输入 token 中扣除缓存读取与写入部分，各按对应倍率计费
 			cacheRatio = overrides.cacheRatio.resolve(billingModelName, common.GetCacheRatio)
-			cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
+			if !isOpenAI {
+				cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
+			}
 			nonCachedPromptTokens := promptTokens - cachedTokens - cacheWriteTokens
 			if nonCachedPromptTokens < 0 {
 				nonCachedPromptTokens = 0
@@ -302,7 +319,16 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			// 输入（含缓存）× longInputMultiplier
 			inputQuota := float64(nonCachedPromptTokens) * modelRatio * longMults.InputMultiplier * groupRatio
 			cacheQuota := float64(cachedTokens) * modelRatio * cacheRatio * longMults.InputMultiplier * groupRatio
-			cacheWriteQuota := float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier * groupRatio
+			var cacheWriteQuota float64
+			if cacheWriteUsage.HasBreakdown() {
+				// 两档直接使用响应分项；总创建量已从输入扣除，不重复计费。
+				cache30mQuota := float64(cacheWriteUsage.Short) * modelRatio * cacheWriteRatio * longMults.InputMultiplier * groupRatio
+				cache12hQuota := float64(cacheWriteUsage.LongTokens()) * modelRatio * cacheWrite12hRatio * longMults.InputMultiplier * groupRatio
+				cacheWriteQuota = cache30mQuota + cache12hQuota
+			} else {
+				// 无完整有效明细时保留原总量计费，不能把总量或差值当作 30m 用量。
+				cacheWriteQuota = float64(cacheWriteTokens) * modelRatio * cacheWriteRatio * longMults.InputMultiplier * groupRatio
+			}
 			// 输出× longOutputMultiplier
 			outputQuota := float64(completionTokens) * modelRatio * completionRatio * longMults.OutputMultiplier * groupRatio
 			quota = int64(math.Ceil(inputQuota + cacheQuota + cacheWriteQuota + outputQuota))
@@ -362,7 +388,7 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		// 追加缓存 token 信息
 		if cachedTokens > 0 {
 			billingDetails["cached_tokens"] = cachedTokens
-			if overrides.applies() {
+			if overrides.applies() || (isOpenAI && modelPrice == -1 && cacheWriteUsage.HasBreakdown()) {
 				if modelPrice != -1 {
 					cacheRatio = overrides.cacheRatio.resolve(billingModelName, common.GetCacheRatio)
 				}
@@ -375,7 +401,10 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 		}
 		if cacheWriteTokens > 0 {
 			billingDetails["cache_write_tokens"] = cacheWriteTokens
-			if overrides.applies() {
+			if isOpenAI {
+				billingDetails["cache_write_ratio"] = cacheWriteRatio
+				billingDetails["cache_creation_ratio"] = cacheWriteRatio
+			} else if overrides.applies() {
 				if modelPrice != -1 {
 					cacheWriteRatio = overrides.cacheWriteRatio.resolve(billingModelName, common.GetCacheWriteRatio)
 				}
@@ -386,8 +415,13 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 				billingDetails["cache_creation_ratio"] = common.GetCacheWriteRatio(billingModelName)
 			}
 		}
+		if modelPrice == -1 && cacheWriteUsage.HasBreakdown() {
+			// 记录实际参与分项计费的两档倍率；旧别名仍保持 30m/总量回退语义。
+			billingDetails["cache_write_30m_ratio"] = cacheWriteRatio
+			billingDetails["cache_write_12h_ratio"] = cacheWrite12hRatio
+		}
 		otherInfo = appendBillingDetails(ctx, otherInfo, billingDetails)
-		otherInfo = appendUsageDetailsToOther(otherInfo, UsageDetailsForLog{
+		usageDetails := UsageDetailsForLog{
 			ServiceTier:              c.GetString(openai.ResponseServiceTierContextKey),
 			InputText:                usage.PromptTokensDetails.TextTokens,
 			InputImage:               usage.PromptTokensDetails.ImageTokens,
@@ -397,7 +431,17 @@ func postConsumeQuota(ctx context.Context, c *gin.Context, usage *relaymodel.Usa
 			CachedTokens:             cachedTokens,
 			CacheReadInputTokens:     cachedTokens,
 			CacheCreationInputTokens: cacheWriteTokens,
-		})
+		}
+		if isOpenAI && (cacheWriteUsage.Total > 0 || cacheWriteUsage.HasBreakdown()) {
+			// 旧创建字段沿用 30m 口径；无有效分项时，原总量按 30m 记录。
+			if cacheWriteUsage.HasBreakdown() {
+				usageDetails.CacheCreationInputTokens = int(cacheWriteUsage.Short)
+			}
+			longTokens := cacheWriteUsage.LongTokens()
+			usageDetails.CacheCreation12hTokens = &longTokens
+			usageDetails.CacheCreationTotalTokens = &cacheWriteUsage.Total
+		}
+		otherInfo = appendUsageDetailsToOther(otherInfo, usageDetails)
 		// 把重试历史（如有）也拼进 other，供管理员展开查看
 		otherInfo = util.AppendRetryHistoryOther(c, otherInfo, duration)
 		// 把流式结束状态（如有）拼进 other
@@ -519,7 +563,15 @@ func appendModelMappingInfo(other string, originModel string, actualModel string
 }
 
 func appendUsageDetailsToOther(other string, details UsageDetailsForLog) string {
-	detailsBytes, err := json.Marshal(details)
+	var payload interface{} = details
+	if details.CacheCreationTotalTokens != nil {
+		// OpenAI 分项中的 30m 明确为 0 时也保留；其他日志沿用原 omitempty。
+		payload = struct {
+			UsageDetailsForLog
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		}{details, details.CacheCreationInputTokens}
+	}
+	detailsBytes, err := json.Marshal(payload)
 	if err != nil {
 		return other
 	}

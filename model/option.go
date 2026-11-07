@@ -109,6 +109,8 @@ func InitOptionMap() {
 	config.OptionMap["ImageInputRatio"] = common.ImageInputRatio2JSONString()
 	config.OptionMap["ImageOutputRatio"] = common.ImageOutputRatio2JSONString()
 	config.OptionMap["CacheRatio"] = common.CacheRatio2JSONString()
+	config.OptionMap["CacheWriteRatio"] = common.CacheWriteRatio2JSONString()
+	config.OptionMap["CacheWrite12hRatio"] = common.CacheWrite12hRatio2JSONString()
 	config.OptionMap["ClaudeCacheCreation5mRatio"] = common.ClaudeCacheCreation5mRatio2JSONString()
 	config.OptionMap["ClaudeCacheCreation1hRatio"] = common.ClaudeCacheCreation1hRatio2JSONString()
 	config.OptionMap["PerCallPricing"] = common.ModelPrice2JSONString()
@@ -195,6 +197,12 @@ func InitOptionMap() {
 func loadOptionsFromDatabase() {
 	options, _ := AllOption()
 	for _, option := range options {
+		if isCacheWritePriceOption(option.Key) {
+			if err := refreshCacheWriteOption(option.Key); err != nil {
+				logger.SysError("failed to refresh cache price option=" + option.Key + " error=" + err.Error())
+			}
+			continue
+		}
 		if option.Key == "ModelRatio" {
 			option.Value = common.AddNewMissingRatio(option.Value)
 		}
@@ -250,6 +258,12 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
+	if isCacheWritePriceOption(key) {
+		if err := common.ValidateCacheWriteRatioJSON(value); err != nil {
+			return err
+		}
+		return persistCacheWriteOption(key, func(string) (string, error) { return value, nil })
+	}
 	// Save to database first
 	option := Option{
 		Key: key,
@@ -279,6 +293,12 @@ func setPositiveIntOption(target *int, value string) {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	// 定时加载同样先校验，失败时保留页面和计费正在使用的配置。
+	if key == "CacheWriteRatio" || key == "CacheWrite12hRatio" {
+		if err := common.ValidateCacheWriteRatioJSON(value); err != nil {
+			return err
+		}
+	}
 	config.OptionMapRWMutex.Lock()
 	defer config.OptionMapRWMutex.Unlock()
 	config.OptionMap[key] = value
@@ -418,6 +438,10 @@ func updateOptionMap(key string, value string) (err error) {
 		err = common.UpdateImageOutputRatioByJSONString(value)
 	case "CacheRatio":
 		err = common.UpdateCacheRatioByJSONString(value)
+	case "CacheWriteRatio":
+		err = common.UpdateCacheWriteRatioByJSONString(value)
+	case "CacheWrite12hRatio":
+		err = common.UpdateCacheWrite12hRatioByJSONString(value)
 	case "ClaudeCacheCreation5mRatio":
 		err = common.UpdateClaudeCacheCreation5mRatioByJSONString(value)
 	case "ClaudeCacheCreation1hRatio":
