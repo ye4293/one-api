@@ -457,6 +457,18 @@ func EnableModelOnChannel(channelId int, modelName string) error {
 	})
 }
 
+// GetEnabledModelsForGroup 返回当前分组实际可用的模型，不依赖适配器静态目录。
+func GetEnabledModelsForGroup(group string) ([]string, error) {
+	models := make([]string, 0)
+	err := DB.Model(&Ability{}).
+		Joins("JOIN channels ON channels.id = abilities.channel_id").
+		Where(clause.Eq{Column: clause.Column{Table: "abilities", Name: "group"}, Value: group}).
+		Where("abilities.enabled = ? AND abilities.auto_disabled = ? AND channels.status = ?", true, false, common.ChannelStatusEnabled).
+		Where("TRIM(abilities.model) <> ?", "").
+		Distinct("abilities.model").Order("abilities.model").Pluck("abilities.model", &models).Error
+	return models, err
+}
+
 func FindEnabledModelsByGroup(group string) ([]string, error) {
 	var models []string
 

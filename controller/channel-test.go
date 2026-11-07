@@ -21,6 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/message"
+	"github.com/songquanpeng/one-api/common/metrics"
 	"github.com/songquanpeng/one-api/middleware"
 	"github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/monitor"
@@ -187,7 +188,10 @@ func testChannelViaResponses(channel *model.Channel, modelName, testKey string) 
 		return err, nil
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return readErr, nil
+	}
 	duration := time.Since(tik).Seconds()
 
 	if resp.StatusCode != http.StatusOK {
@@ -205,6 +209,7 @@ func testChannelViaResponses(channel *model.Channel, modelName, testKey string) 
 	var parsed openai.OpenaiResaponseResponse
 	if jsonErr := json.Unmarshal(body, &parsed); jsonErr != nil {
 		logger.SysError(fmt.Sprintf("failed to parse /v1/responses body for channel #%d: %v", channel.Id, jsonErr))
+		return fmt.Errorf("解析测试响应失败：%w", jsonErr), nil
 	}
 	if parsed.Usage != nil {
 		cachedTokens := 0
@@ -261,7 +266,7 @@ func recordChannelTestConsumeLog(channel *model.Channel, modelName string, promp
 
 	title := fmt.Sprintf("渠道测试: %s", channel.Name)
 	model.RecordConsumeLogWithOtherAndRequestID(
-		context.Background(),
+		metrics.WithoutAbilityMetric(context.Background()),
 		1, // userId=1 表示系统测试，不关联真实用户
 		channel.Id,
 		promptTokens,
@@ -283,6 +288,16 @@ func recordChannelTestConsumeLog(channel *model.Channel, modelName string, promp
 }
 
 func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool) (err error, openaiErr *relaymodel.Error, actualModel string, keyIndex int) {
+	var observation metrics.AbilityMetric
+	err, openaiErr, actualModel, keyIndex = testChannelWithObservation(channel, specifiedModel, auto_enable, &observation)
+	if err == nil && observation.ChannelId != 0 {
+		metrics.RecordAbilityMetric(context.Background(), observation)
+	}
+	return
+}
+
+// testChannelWithObservation 只为实际发出的测试请求采样；模型名保留映射前名称。
+func testChannelWithObservation(channel *model.Channel, specifiedModel string, auto_enable bool, observation *metrics.AbilityMetric) (err error, openaiErr *relaymodel.Error, actualModel string, keyIndex int) {
 	keyIndex = -1
 	// 不支持的渠道类型：图像/视频/音频等，无法用 /v1/chat/completions 测试
 	if auto_enable && isUnsupportedTestChannel(channel.Type) {
@@ -293,6 +308,20 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 		return fmt.Errorf("channel type %s is not supported by chat-completions test, skipped", channelTypeName), nil, specifiedModel, keyIndex
 	}
 	testStart := time.Now()
+	requestAttempted := false
+	defer func() {
+		if observation == nil || !requestAttempted {
+			return
+		}
+		*observation = metrics.AbilityMetric{
+			ChannelId: channel.Id,
+			Model:     actualModel,
+			Success:   err == nil,
+		}
+		if err == nil {
+			observation.Duration = time.Since(testStart).Seconds()
+		}
+	}()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = &http.Request{
@@ -335,7 +364,14 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 	var modelName string
 	if specifiedModel != "" {
 		// 如果指定了模型，检查渠道是否支持该模型
-		if strings.Contains(channel.Models, specifiedModel) {
+		modelSupported := false
+		for _, candidate := range strings.Split(channel.Models, ",") {
+			if strings.TrimSpace(candidate) == specifiedModel {
+				modelSupported = true
+				break
+			}
+		}
+		if modelSupported {
 			modelName = specifiedModel
 		} else {
 			return fmt.Errorf("specified model '%s' is not supported by this channel", specifiedModel), nil, specifiedModel, keyIndex
@@ -364,6 +400,7 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 	}
 	// Codex 系列模型仅支持 /v1/responses 端点，单独走直连测试
 	if isCodexModel(modelName) {
+		requestAttempted = true
 		err, openaiErr = testChannelViaResponses(channel, modelName, testKey)
 		return err, openaiErr, modelName, keyIndex
 	}
@@ -382,6 +419,7 @@ func testChannel(channel *model.Channel, specifiedModel string, auto_enable bool
 	}
 	requestBody := bytes.NewBuffer(jsonData)
 	c.Request.Body = io.NopCloser(requestBody)
+	requestAttempted = true
 	resp, err := adaptor.DoRequest(c, meta, requestBody)
 	if err != nil {
 		return err, nil, modelName, keyIndex
@@ -438,6 +476,9 @@ func TestChannel(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&requestBody)
 	specifiedModel := strings.TrimSpace(requestBody.Model)
+	if specifiedModel == "" {
+		specifiedModel = strings.TrimSpace(c.Query("model"))
+	}
 
 	channel, err := model.GetChannelById(id, true)
 	if err != nil {
@@ -449,10 +490,12 @@ func TestChannel(c *gin.Context) {
 	}
 
 	tik := time.Now()
-	err, _, actualModel, usedKeyIndex := testChannel(channel, specifiedModel, false)
+	var observation metrics.AbilityMetric
+	err, _, actualModel, usedKeyIndex := testChannelWithObservation(channel, specifiedModel, false, &observation)
 	tok := time.Now()
 	milliseconds := tok.Sub(tik).Milliseconds()
-	go channel.UpdateResponseTime(milliseconds)
+	// 先保存测试耗时，再执行评分写入，避免 SQLite 下异步写入竞争。
+	channel.UpdateResponseTime(milliseconds)
 	consumedTime := float64(milliseconds) / 1000.0
 
 	// 构建详细的测试结果信息
@@ -469,6 +512,31 @@ func TestChannel(c *gin.Context) {
 		testResult["is_multi_key"] = true
 		testResult["used_key_index"] = usedKeyIndex
 		testResult["total_keys"] = channel.MultiKeyInfo.KeyCount
+	}
+
+	// 评分错误独立返回，不能把上游测试成功改成测试失败。
+	if specifiedModel != "" && config.DynamicPriorityEnabled && observation.ChannelId != 0 {
+		testResult["dynamic_priority_updated"] = false
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		priority, scoreErr := updateTestDynamicPriority(ctx, observation)
+		if scoreErr != nil {
+			testResult["dynamic_priority_message"] = "动态优先级未更新：" + scoreErr.Error()
+			logger.Warnf(ctx, "channel test dynamic priority failed: channel=%d model=%s err=%v", channel.Id, actualModel, scoreErr)
+		} else {
+			testResult["dynamic_priority"] = priority
+			testResult["dynamic_priority_updated"] = true
+			testResult["dynamic_priority_message"] = fmt.Sprintf("动态优先级已更新为 %d", priority)
+			if !config.DynamicPriorityApplyEnabled {
+				testResult["dynamic_priority_message"] = fmt.Sprintf("动态优先级已更新为 %d（尚未启用动态分发）", priority)
+			}
+		}
+	} else if observation.Success && observation.ChannelId != 0 {
+		metrics.RecordAbilityMetric(c.Request.Context(), observation)
+	}
+	if specifiedModel != "" && !config.DynamicPriorityEnabled && observation.ChannelId != 0 {
+		testResult["dynamic_priority_updated"] = false
+		testResult["dynamic_priority_message"] = "未启用动态优先级计算，本次测试未更新评分"
 	}
 
 	if err != nil {
@@ -524,6 +592,9 @@ func TestChannel(c *gin.Context) {
 				channel.Id, channel.Name, actualModel, consumedTime))
 	}
 
+	if message, ok := testResult["dynamic_priority_message"].(string); ok {
+		testResult["message"] = fmt.Sprintf("%s；%s", testResult["message"], message)
+	}
 	c.JSON(http.StatusOK, testResult)
 }
 
@@ -658,9 +729,9 @@ func TestChannels(c *gin.Context) {
 
 	// filter 模式参数解析
 	var (
-		keyword       string
-		channelType   *int
-		statusList    []int
+		keyword        string
+		channelType    *int
+		statusList     []int
 		specifiedModel string
 	)
 	if scope == "filter" {

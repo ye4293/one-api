@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,11 +10,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
+	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
 )
 
 // ModelPriceInfo 模型价格信息
 type ModelPriceInfo struct {
+	// 可视化 GPT 缓存创建价格使用计费 getter 返回的有效倍率，指针保留显式零。
+	CacheWrite30mRatio *float64 `json:"cache_write_30m_ratio,omitempty"`
+	CacheWrite12hRatio *float64 `json:"cache_write_12h_ratio,omitempty"`
+
 	ModelName          string  `json:"model_name"`
 	ModelRatio         float64 `json:"model_ratio"`
 	CompletionRatio    float64 `json:"completion_ratio"`
@@ -177,6 +183,8 @@ func GetUnsetRatioModels(c *gin.Context) {
 // UpdateModelRatio 更新单个模型的倍率
 func UpdateModelRatio(c *gin.Context) {
 	var req struct {
+		CacheWrite30mRatio *float64 `json:"cache_write_30m_ratio"`
+		CacheWrite12hRatio *float64 `json:"cache_write_12h_ratio"`
 		ModelName          string   `json:"model_name" binding:"required"`
 		ModelRatio         *float64 `json:"model_ratio"`
 		CompletionRatio    *float64 `json:"completion_ratio"`
@@ -196,6 +204,15 @@ func UpdateModelRatio(c *gin.Context) {
 			"message": "无效的参数: " + err.Error(),
 		})
 		return
+	}
+
+	// 两档新价格先整体校验，避免非法缓存倍率导致其他价格已被修改。
+	for _, ratio := range []*float64{req.CacheWrite30mRatio, req.CacheWrite12hRatio} {
+		if ratio != nil && (strings.TrimSpace(req.ModelName) == "" || *ratio < 0 || math.IsNaN(*ratio) || math.IsInf(*ratio, 0)) {
+			logger.Errorf(c.Request.Context(), "openai_cache_price_invalid model=%q ratio=%g", req.ModelName, *ratio)
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "缓存创建倍率必须为非负有限数字，模型名不能为空"})
+			return
+		}
 	}
 
 	// 更新模型倍率
@@ -339,6 +356,23 @@ func UpdateModelRatio(c *gin.Context) {
 				"success": false,
 				"message": "保存 Claude 1 小时缓存倍率失败: " + err.Error(),
 			})
+			return
+		}
+	}
+
+	for _, item := range []struct {
+		key   string
+		ratio *float64
+	}{
+		{"CacheWriteRatio", req.CacheWrite30mRatio},
+		{"CacheWrite12hRatio", req.CacheWrite12hRatio},
+	} {
+		if item.ratio == nil {
+			continue
+		}
+		if err := saveModelCacheWriteRatio(req.ModelName, item.key, *item.ratio); err != nil {
+			logger.Errorf(c.Request.Context(), "openai_cache_price_save_failed model=%s option=%s ratio=%g error=%+v", req.ModelName, item.key, *item.ratio, err)
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "保存缓存创建倍率失败: " + err.Error()})
 			return
 		}
 	}
@@ -625,7 +659,42 @@ func getAllModelPrices() []ModelPriceInfo {
 		}
 	}
 
+	for i := range prices {
+		name := strings.ToLower(prices[i].ModelName)
+		if strings.HasPrefix(name, "gpt-") || strings.HasPrefix(name, "chatgpt-") {
+			short, long := modelCacheWriteRatiosForDisplay(prices[i].ModelName)
+			prices[i].CacheWrite30mRatio, prices[i].CacheWrite12hRatio = &short, &long
+		}
+	}
 	return prices
+}
+
+// modelCacheWriteRatiosForDisplay 与档位计费继承规则一致：未配置档位项时回退基础模型。
+func modelCacheWriteRatiosForDisplay(name string) (float64, float64) {
+	base := name
+	for _, tier := range []string{"priority", "fast", "ultrafast", "flex"} {
+		if modelName, ok := strings.CutSuffix(name, "_"+tier); ok {
+			base = modelName
+			break
+		}
+	}
+	short, configured := common.LookupOpenAICacheWrite30mRatio(name)
+	if !configured {
+		short, configured = common.LookupCacheWriteRatio(name)
+	}
+	if !configured {
+		short = common.GetOpenAICacheWrite30mRatio(base)
+	}
+	long, configured := common.LookupCacheWrite12hRatio(name)
+	if !configured {
+		long = common.GetCacheWrite12hRatio(base)
+	}
+	return short, long
+}
+
+// saveModelCacheWriteRatio 基于数据库中的最新配置合并，提交成功后发布运行时价格。
+func saveModelCacheWriteRatio(modelName, key string, ratio float64) error {
+	return model.UpdateModelCacheWriteRatio(key, modelName, ratio)
 }
 
 // getUsedModelsFromChannels 从所有渠道中获取使用的模型

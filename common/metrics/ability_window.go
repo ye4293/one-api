@@ -75,12 +75,23 @@ var metricProcessTag = func() string {
 	return fmt.Sprintf("%d_%d", os.Getpid(), time.Now().UnixNano())
 }()
 
+type skipAbilityMetricKey struct{}
+
+// WithoutAbilityMetric 供已在调用层采样的测试日志使用，避免消费日志再次写入样本。
+func WithoutAbilityMetric(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipAbilityMetricKey{}, true)
+}
+
 // RecordAbilityMetric 把一次请求结果写入 Redis 滑动窗口。
 // Redis 未启用时静默返回，调用方无需判空。
 // ctx 用于 log 关联 request-id（异常路径），调用方一般传 gin.Context 或请求 ctx。
-func RecordAbilityMetric(ctx context.Context, m AbilityMetric) {
+// 写入失败返回错误，手动测试可据此单独反馈评分状态，普通调用仍可忽略返回值。
+func RecordAbilityMetric(ctx context.Context, m AbilityMetric) error {
 	if !common.RedisEnabled || common.RDB == nil || m.ChannelId == 0 || m.Model == "" {
-		return
+		return nil
+	}
+	if skip, _ := ctx.Value(skipAbilityMetricKey{}).(bool); skip {
+		return nil
 	}
 
 	ts := m.OccurredAt
@@ -119,7 +130,9 @@ func RecordAbilityMetric(ctx context.Context, m AbilityMetric) {
 	pipe.Expire(ctx, key, abilityMetricKeyTTL())
 	if _, err := pipe.Exec(ctx); err != nil {
 		logger.Error(ctx, "ability metric ZAdd/Expire error: "+err.Error())
+		return err
 	}
+	return nil
 }
 
 func abilityMetricKeyTTL() time.Duration {
