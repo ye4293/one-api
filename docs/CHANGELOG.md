@@ -6,6 +6,17 @@
 
 ---
 
+## 2026-11-10
+
+### fix(gemini): 流式 tool call 输出补齐 index 字段
+
+- **分支**: `fix/stream-tool-call-index`
+- **类型**: fix（OpenAI 兼容流式响应）
+- **涉及文件**: `relay/model/tool.go`、`relay/channel/gemini/main.go`、`relay/channel/gemini/stream_tool_call_test.go`、`docs/plans/2026-11-10-stream-tool-call-index.md`
+- **说明**: Gemini 流式 tool call 转 OpenAI chunk 时只输出了外层 `choices[].index`，内层 `choices[].delta.tool_calls[].index` 缺失，导致 OpenAI Java SDK 严格解析报 `index is not set`。为通用 tool call 增加可选 `index` 字段，并仅在 Gemini 流式 tool call 输出时写入序号，非流式响应保持原形状。
+- **验证**: 新增回归测试覆盖结构体与 JSON 输出中的 `tool_calls[0].index`；已执行 `go test ./relay/channel/gemini ./relay/model ./relay/channel/openai`、`go build ./... && go vet ./...` 通过。全量 `go test ./...` 仍有既有失败：JPEG 解码、usage-based disable、Flux upscale、Anthropic beta、Kling 模型解析。
+- **关联计划**: `docs/plans/2026-11-10-stream-tool-call-index.md`
+
 ## 2026-10-27
 
 ### fix(models): 对外模型目录返回用户分组下实际可用的渠道模型

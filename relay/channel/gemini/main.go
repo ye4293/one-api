@@ -814,10 +814,12 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName str
 				if err != nil {
 					argsJSON = []byte("{}")
 				}
+				toolCallIndex := funcCallIdx
 
 				tool := model.Tool{
-					Id:   fmt.Sprintf("function-call-%d", helper.GetTimestamp()+int64(funcCallIdx)),
-					Type: "function",
+					Index: &toolCallIndex,
+					Id:    fmt.Sprintf("function-call-%d", helper.GetTimestamp()+int64(funcCallIdx)),
+					Type:  "function",
 					Function: model.Function{
 						Name:      part.FunctionCall.Name,
 						Arguments: string(argsJSON),
