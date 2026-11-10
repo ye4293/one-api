@@ -11,6 +11,7 @@ type ExtraContent struct {
 }
 
 type Tool struct {
+	Index        *int          `json:"index,omitempty"` // stream response tool call index; omitted for non-stream messages
 	Id           string        `json:"id,omitempty"`
 	Type         string        `json:"type,omitempty"` // when splicing claude tools stream messages, it is empty
 	Function     Function      `json:"function"`
