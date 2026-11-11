@@ -65,6 +65,20 @@ func Distribute() func(c *gin.Context) {
 		// 先统一解析模型名和设置 relay_mode（参考 new-api 的设计）
 		// 这样不管是否指定特定渠道，都会正确解析请求
 		modelRequest, shouldSelectChannel := getModelRequest(c)
+		responseID, correlationErr := captureResponseCorrelation(c)
+		if correlationErr != nil {
+			abortResponseCorrelation(c, http.StatusBadRequest, correlationErr.Error(), modelRequest.Model)
+			return
+		}
+		if responseID != "" {
+			origin, lookupErr := model.LookupResponseOrigin(responseID)
+			if lookupErr != nil {
+				abortResponseCorrelation(c, http.StatusConflict, "Previous response origin is unavailable; start a new conversation", modelRequest.Model)
+				return
+			}
+			c.Request = c.Request.WithContext(model.WithResponseOrigin(c.Request.Context(), origin))
+			c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), origin.ResponseID))
+		}
 
 		// 检查是否指定了特定渠道
 		channelId, ok := c.Get("specific_channel_id")
@@ -90,20 +104,6 @@ func Distribute() func(c *gin.Context) {
 				if modelRequest.Model == "" {
 					abortWithMessage(c, http.StatusBadRequest, "Model name is required")
 					return
-				}
-				// 路径 A：X-Response-ID 存在 → 内部走 GetResponseIdRegionFromRedis（原有逻辑）
-				responseID := c.GetHeader("X-Response-ID")
-				// /v1/responses 路径支持通过 body 中的 previous_response_id 路由到正确渠道；
-				// 无 previous_response_id 时回退提取 input[] 尾部 encrypted_content 项 id（无状态回放场景）
-				if responseID == "" && strings.HasSuffix(c.FullPath(), "/responses") {
-					responseID = modelRequest.PreviousResponseID
-					if responseID == "" {
-						responseID = extractResponsesCorrelationID(c)
-					}
-				}
-				// /v1/chat/completions 路径：messages[] 尾部含加密推理的 assistant 消息 id（chatcmpl-xxx）
-				if responseID == "" && strings.HasSuffix(c.FullPath(), "/chat/completions") {
-					responseID = extractChatCorrelationID(c)
 				}
 
 				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
@@ -149,12 +149,7 @@ func Distribute() func(c *gin.Context) {
 				// 路径 A/C：亲和未命中或 X-Response-ID 存在，走正常随机选渠
 				if channel == nil {
 					var cachedKeyIndex int
-					if service.IsGeminiModel(modelRequest.Model) && responseID != "" {
-						channel, cachedKeyIndex, responseIDAffinityHit = model.CacheGetSatisfiedChannelByResponseID(c.Request.Context(), userGroup, modelRequest.Model, responseID, nil)
-						// The affinity lookup is complete. Do not repeat it during fallback
-						// and mistake a randomly selected channel for an affinity hit.
-						responseID = ""
-					}
+
 					if channel == nil {
 						channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, responseID)
 					}
@@ -164,6 +159,7 @@ func Distribute() func(c *gin.Context) {
 					if err != nil {
 						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 						if channel != nil {
+
 							logger.Error(c.Request.Context(), fmt.Sprintf("Channel does not exist：%d", channel.Id))
 							message = "Database consistency has been violated, please contact the administrator"
 						}
@@ -176,7 +172,11 @@ func Distribute() func(c *gin.Context) {
 						// 不补的话 503 请求根本进不了 llm_requests_total（详见 metrics.CtxModelKey 注释）。
 						c.Set(metrics.CtxRelayFailedKey, metrics.ReasonNoChannel)
 						c.Set(metrics.CtxModelKey, modelRequest.Model)
-						abortWithMessage(c, http.StatusServiceUnavailable, message)
+						if _, hasOrigin := model.ResponseOriginFromContext(c.Request.Context()); hasOrigin {
+							abortResponseCorrelation(c, http.StatusServiceUnavailable, message, modelRequest.Model)
+						} else {
+							abortWithMessage(c, http.StatusServiceUnavailable, message)
+						}
 						return
 					}
 				}
@@ -191,9 +191,24 @@ func Distribute() func(c *gin.Context) {
 		c.Set("model", requestModel)
 
 		if channel != nil {
+
+			if origin, hasOrigin := model.ResponseOriginFromContext(c.Request.Context()); hasOrigin {
+				responseIDAffinityHit = channel.Id == origin.ChannelID
+				if channel.Type != origin.ChannelType || (channel.Id != origin.ChannelID && !model.ChannelMatchesResponseOrigin(channel, origin)) {
+					abortResponseCorrelation(c, http.StatusConflict, "Selected channel conflicts with previous response origin", requestModel)
+					return
+				}
+				if channel.Id == origin.ChannelID && origin.KeyIndex >= 0 {
+					if _, keyErr := channel.GetKeyByIndex(origin.KeyIndex); keyErr != nil {
+						abortResponseCorrelation(c, http.StatusConflict, "Previous response key is unavailable", requestModel)
+						return
+					}
+					c.Set("cached_key_index", origin.KeyIndex)
+				}
+			}
 			// Only the original Response-ID channel takes precedence over signatures.
 			// Regional replacements still need to restore and check the signature source.
-			if !responseIDAffinityHit {
+			if !responseIDAffinityHit || responseID != "" {
 				if affinityErr := service.PrepareGeminiResourceAffinity(c, requestModel); affinityErr != nil {
 					abortWithMessage(c, affinityErr.StatusCode, affinityErr.Message)
 					return

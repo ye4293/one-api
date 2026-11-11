@@ -94,6 +94,7 @@ func recordFinalErrorLog(
 		totalDuration,
 		otherInfo,
 		requestID,
+		c.GetString("x_response_id"),
 	)
 
 	logger.Infof(ctx, "Recorded final error log: requestID=%s, userId=%d, model=%s, attempts=%d, finalChannel=%d, totalDuration=%.3fs, error=%s",

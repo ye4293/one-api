@@ -555,6 +555,11 @@ func getRetryKeywords() []string {
 }
 
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
+	// A published response cannot be replaced by another upstream attempt.
+	if c.Writer != nil && c.Writer.Written() {
+		return false
+	}
+
 	// 如果指定了特定渠道，不允许重试
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
@@ -3816,11 +3821,11 @@ func getAwsModelIdForCountTokens(requestModel string) string {
 	return requestModel
 }
 
-// recordRelayAffinity 在请求成功后将 (X-Response-ID → channelID) 写入 Redis 亲和缓存
+// recordRelayAffinity 仅登记当前新响应，入站 X-Response-ID 的父映射保持不变。
 // 仅对 openai/gemini 模型生效（Claude 由 relay/cache/claude.go 按 prompt cache TTL 写入）。
 // Redis 不可用时静默忽略，不影响主流程。
 func recordRelayAffinity(c *gin.Context, channelID int) {
-	responseID := c.GetHeader("X-Response-ID")
+	responseID := c.GetString("x_response_id")
 	if responseID == "" {
 		return
 	}
@@ -3835,6 +3840,13 @@ func recordRelayAffinity(c *gin.Context, channelID int) {
 		return
 	}
 
-	keyIndex := c.GetInt("key_index")
-	dbmodel.CacheResponseIdToChannel(responseID, channelID, keyIndex, "ChannelAffinity")
+	if value, ok := c.Get(dbmodel.CurrentResponseOriginKey); ok {
+		if origin, ok := value.(dbmodel.ResponseOrigin); ok {
+			_ = dbmodel.CacheResponseOrigin(responseID, origin)
+			return
+		}
+	}
+	// Legacy adapters without a response-time snapshot cannot safely reconstruct
+	// actual provenance after a failed write. Leave the ID unknown rather than
+	// poisoning the immutable cache with a configured-region guess.
 }

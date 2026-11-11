@@ -532,13 +532,19 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &openaiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
+	origin := dbmodel.RelayResponseOrigin(c, resp, openaiResponse.ID)
+	dbmodel.CaptureCurrentResponseOrigin(c, origin)
+	ids := make([]string, 0, len(openaiResponse.Output))
+	for _, item := range openaiResponse.Output {
+		ids = append(ids, item.ID)
+	}
+	if err := dbmodel.RegisterResponseOrigin(origin, ids...); err != nil {
+		logger.Warnf(c.Request.Context(), "response origin registration failed: %v", err)
+	}
+	c.Set("x_response_id", openaiResponse.ID)
 	util.IOCopyBytesGracefully(c, resp, responseBody)
 	service.RecordGeminiResponseSignatures(c, responseBody)
-	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
-	// 缓存 response_id 到 Redis（含区域：x-ms-region 响应头优先，渠道 config.region 回退）
-	dbmodel.CacheResponseIdWithRegionToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"),
-		dbmodel.ResolveRelayRegion(c, resp), "OpenAI Response Cache")
-	c.Set("x_response_id", openaiResponse.ID)
+
 	c.Set(openai.ResponseServiceTierContextKey, openaiResponse.ServiceTier)
 
 	return openaiResponse.Usage, nil
@@ -572,6 +578,20 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	// 缓冲流的前几个事件，检测流内错误（如 insufficient_quota）
 	// 如果检测到错误，直接返回让上层重试逻辑通过 RetryKeywords 判断是否重试
 	buffered, streamErr := bufferStreamPrefix(resp.Body)
+	// The prefix may contain a generated ID even when no response is published.
+	prefixScanner := bufio.NewScanner(bytes.NewReader(buffered))
+	prefixScanner.Buffer(make([]byte, helper.InitialScannerBufferSize), helper.MaxScannerBufferSize)
+	for prefixScanner.Scan() {
+		line := prefixScanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event openai.OpenaiResponseStreamResponse
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) == nil && event.Response != nil && event.Response.ID != "" {
+			c.Set("x_response_id", event.Response.ID)
+			dbmodel.CaptureCurrentResponseOrigin(c, dbmodel.RelayResponseOrigin(c, resp, event.Response.ID))
+		}
+	}
 	if streamErr != nil {
 		logger.Warnf(c.Request.Context(), "stream prefix error detected: %s", streamErr.Error.Message)
 		return nil, streamErr
@@ -591,9 +611,11 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	var fullText strings.Builder // 累积完整文本
 	webSearchToolCallCount := 0
 	sawTerminalEvent := false
-	responseIdCached := false // 首个带 response.id 的事件是否已写 Redis（区域亲和竞态修复）
+	responseIdCached := false
+	responseID := ""
+	origin := dbmodel.RelayResponseOrigin(c, resp, "")
 	audit.WrapUpstreamBody(c, resp)
-	helper.StreamScannerHandlerWithEvent(c, resp, meta, func(eventType, data string) bool {
+	helper.StreamScannerHandlerOwnedWithEvent(c, resp, meta, func(eventType, data string) bool {
 		var streamResponse openai.OpenaiResponseStreamResponse
 		err := json.Unmarshal([]byte(data), &streamResponse)
 		if err != nil {
@@ -603,20 +625,35 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 		if streamResponse.Type == "" {
 			streamResponse.Type = eventType
 		}
-		helper.OpenaiResponseChunkData(c, streamResponse, data)
-		service.RecordGeminiResponseSignatures(c, []byte(data))
 		if streamResponse.Response != nil && streamResponse.Response.ServiceTier != "" {
 			c.Set(openai.ResponseServiceTierContextKey, streamResponse.Response.ServiceTier)
 		}
-		// 区域亲和：首个事件（response.created 等）就带完整 response.id，此时上游已 200、
-		// 渠道已定，立即写 Redis——修复"下一轮请求先到、映射尚未写入"的竞态。
-		// 失败仅影响后续轮次退回随机选渠，不影响本请求。
-		if streamResponse.Response != nil && streamResponse.Response.ID != "" && !responseIdCached {
-			responseIdCached = true
-			dbmodel.CacheResponseIdWithRegionToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"),
-				dbmodel.ResolveRelayRegion(c, resp), "OpenAI Response Cache Stream")
-			c.Set("x_response_id", streamResponse.Response.ID)
+		if streamResponse.Response != nil && streamResponse.Response.ID != "" {
+			responseID = streamResponse.Response.ID
+			origin.ResponseID = responseID
+			c.Set("x_response_id", responseID)
+			dbmodel.CaptureCurrentResponseOrigin(c, origin)
 		}
+		ids := []string{}
+		if streamResponse.Response != nil {
+			for _, item := range streamResponse.Response.Output {
+				ids = append(ids, item.ID)
+			}
+		}
+		if streamResponse.Item != nil && streamResponse.Item.ID != "" {
+			ids = append(ids, streamResponse.Item.ID)
+		}
+		if responseID != "" && (!responseIdCached || len(ids) > 0 || streamResponse.Type == "response.completed") {
+			if err := dbmodel.RegisterResponseOrigin(origin, ids...); err != nil {
+				responseIdCached = false
+				logger.Warnf(c.Request.Context(), "stream origin registration failed: %v", err)
+			} else {
+				responseIdCached = true
+			}
+		}
+		helper.OpenaiResponseChunkData(c, streamResponse, data)
+		service.RecordGeminiResponseSignatures(c, []byte(data))
+
 		switch streamResponse.Type {
 		case "error", "response.failed":
 			openaiErr = parseResponseStreamError(data, streamResponse.Type)
@@ -628,13 +665,6 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 				if streamResponse.Response.Usage != nil {
 					lastUsageMetadata = streamResponse.Response.Usage
 				}
-
-				// 缓存 response_id 到 Redis（兜底：正常情况下首个事件已写过，此处确保完成时仍写入）
-				if streamResponse.Response.ID != "" && !responseIdCached {
-					dbmodel.CacheResponseIdWithRegionToChannel(streamResponse.Response.ID, c.GetInt("channel_id"), c.GetInt("key_index"),
-						dbmodel.ResolveRelayRegion(c, resp), "OpenAI Response Cache Stream")
-				}
-				c.Set("x_response_id", streamResponse.Response.ID)
 
 				if len(streamResponse.Response.Output) > 0 {
 					for _, output := range streamResponse.Response.Output {

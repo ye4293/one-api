@@ -91,6 +91,7 @@ func RecordConsumeLogWithOther(ctx context.Context, userId int, channelId int, p
 }
 
 func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, channelId int, promptTokens int, completionTokens int, modelName string, tokenName string, quota int64, content string, duration float64, title string, httpReferer string, isStream bool, firstWordLatency float64, other string, xRequestID string, cachedTokens int, xResponseID string) {
+	other = AppendResponseCorrelationOther(ctx, other)
 	var requestIP string
 	if v := ctx.Value(logger.RequestIPKey); v != nil {
 		requestIP, _ = v.(string)
@@ -217,7 +218,12 @@ func RecordConsumeLogWithOtherAndRequestID(ctx context.Context, userId int, chan
 
 // RecordErrorLogWithRequestID 记录错误日志（Type 为 LogTypeError）
 // 用于记录重试失败、请求错误等情况，方便后续筛选查看
-func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int, modelName string, tokenName string, content string, duration float64, other string, xRequestID string) {
+func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int, modelName string, tokenName string, content string, duration float64, other string, xRequestID string, responseIDs ...string) {
+	other = AppendResponseCorrelationOther(ctx, other)
+	responseID := ""
+	if len(responseIDs) > 0 {
+		responseID = responseIDs[0]
+	}
 	var requestIP string
 	if v := ctx.Value(logger.RequestIPKey); v != nil {
 		requestIP, _ = v.(string)
@@ -234,17 +240,18 @@ func RecordErrorLogWithRequestID(ctx context.Context, userId int, channelId int,
 	}
 
 	log := &Log{
-		UserId:     userId,
-		Username:   GetUsernameById(userId),
-		CreatedAt:  helper.GetTimestamp(),
-		Type:       LogTypeError,
-		Content:    content,
-		TokenName:  tokenName,
-		ModelName:  modelName,
-		ChannelId:  channelId,
-		Duration:   duration,
-		Other:      other,
-		XRequestID: xRequestID,
+		UserId:      userId,
+		Username:    GetUsernameById(userId),
+		CreatedAt:   helper.GetTimestamp(),
+		Type:        LogTypeError,
+		Content:     content,
+		TokenName:   tokenName,
+		ModelName:   modelName,
+		ChannelId:   channelId,
+		Duration:    duration,
+		Other:       other,
+		XRequestID:  xRequestID,
+		XResponseID: responseID,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {

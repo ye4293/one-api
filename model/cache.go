@@ -381,71 +381,15 @@ func getSortedSatisfiedChannelPriorities(group string, model string, groupCol st
 // for the original cached channel; a regional replacement must not bypass Gemini
 // signature checks. A miss returns nil, -1, false without random selection.
 func CacheGetSatisfiedChannelByResponseID(ctx context.Context, group, model, responseID string, excludeIds []int) (*Channel, int, bool) {
-	if responseID != "" {
-		// 从 Redis 中获取缓存的 channel ID 和 Key 索引（含 region 三段格式，兼容旧两段格式）
-		cachedChannelID, cachedKeyIndex, cachedRegion := GetResponseIdRegionFromRedis(responseID)
-		if cachedChannelID > 0 {
-			channelID := cachedChannelID
-			if isExcludedChannel(channelID, excludeIds) {
-				logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
-			} else {
-				// 尝试获取该 channel
-				channel, getErr := CacheGetChannel(channelID)
-				if getErr == nil && channel != nil {
-					// 验证该 channel 是否满足条件（group、model、状态）
-					if channel.Status == common.ChannelStatusEnabled {
-						// 检查 group 是否匹配
-						channelGroups := strings.Split(channel.Group, ",")
-						groupMatched := false
-						for _, cg := range channelGroups {
-							if strings.TrimSpace(cg) == group {
-								groupMatched = true
-								break
-							}
-						}
-
-						// 检查 model 是否匹配
-						channelModels := strings.Split(channel.Models, ",")
-						modelMatched := false
-						for _, cm := range channelModels {
-							if strings.TrimSpace(cm) == model {
-								modelMatched = true
-								break
-							}
-						}
-
-						// 如果都匹配，直接返回该 channel
-						if groupMatched && modelMatched {
-							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d, region: %s) for responseID: %s, group: %s, model: %s",
-								channelID, cachedKeyIndex, cachedRegion, responseID, group, model))
-							return channel, cachedKeyIndex, true
-						} else {
-							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
-								channelID, groupMatched, modelMatched))
-						}
-					} else {
-						logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
-							channelID, channel.Status))
-					}
-				} else {
-					logger.Info(ctx, fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
-						channelID, getErr))
-				}
-			}
-
-			// 渠道失效但记录了区域：同区域兜底（不算原渠道命中，调用方仍需校验签名来源）
-			if cachedRegion != "" && ResponsesAffinityEnabled {
-				if ch, idx := selectChannelByRegion(ctx, cachedRegion, group, model, excludeIds); ch != nil {
-					logger.Info(ctx, fmt.Sprintf("[ResponsesAffinity] 原渠道失效，同区域兜底命中 渠道=%d 区域=%s responseID=%s",
-						ch.Id, cachedRegion, responseID))
-					return ch, idx, false
-				}
-				logger.Info(ctx, fmt.Sprintf("[ResponsesAffinity] 同区域无可用渠道，退回正常选渠 区域=%s responseID=%s",
-					cachedRegion, responseID))
-			}
-		}
+	origin, err := LookupResponseOrigin(responseID)
+	if err != nil {
+		return nil, -1, false
 	}
-	return nil, -1, false
+	ch, idx, err := SelectChannelForResponseOrigin(ctx, group, model, origin, excludeIds)
+	if err != nil {
+		return nil, -1, false
+	}
+	return ch, idx, ch.Id == origin.ChannelID
 }
 
 func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
@@ -461,10 +405,15 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
 		excludeIds = excludeChannelIds[0]
 	}
-	if skipPriorityLevels == 0 {
-		if channel, keyIndex, _ := CacheGetSatisfiedChannelByResponseID(ctx, group, model, responseID, excludeIds); channel != nil {
-			return channel, keyIndex, nil
+	if responseID != "" {
+		origin, err := LookupResponseOrigin(responseID)
+		if err != nil {
+			return nil, -1, err
 		}
+		return SelectChannelForResponseOrigin(ctx, group, model, origin, excludeIds)
+	}
+	if origin, ok := ResponseOriginFromContext(ctx); ok {
+		return SelectChannelForResponseOrigin(ctx, group, model, origin, excludeIds)
 	}
 
 	// 动态优先级分支：完全替代静态 priority 体系。
@@ -1132,16 +1081,11 @@ func GetClaudeCacheIdFromRedis(id string) (string, int, error) {
 		return "", -1, err
 	}
 
-	// 解析缓存值：格式为 "channelId" 或 "channelId:keyIndex"
-	parts := strings.SplitN(value, ":", 2)
-	channelID := parts[0]
-	keyIndex := -1
-	if len(parts) == 2 {
-		if idx, parseErr := strconv.Atoi(parts[1]); parseErr == nil {
-			keyIndex = idx
-		}
+	info := ParseResponseIdCacheValue(value)
+	if info.ChannelID <= 0 {
+		return "", -1, ErrResponseOriginUnknown
 	}
-	return channelID, keyIndex, nil
+	return strconv.Itoa(info.ChannelID), info.KeyIndex, nil
 }
 
 // CacheResponseIdToChannel 缓存 response_id 到 channel_id 的映射（通用辅助函数）
