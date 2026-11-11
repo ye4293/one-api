@@ -130,3 +130,10 @@ func captureResponseCorrelation(c *gin.Context) (string, error) {
 	}
 	return id, nil
 }
+
+func abortResponseCorrelation(c *gin.Context, status int, message, modelName string) {
+	if model.LOG_DB != nil && model.DB != nil {
+		model.RecordErrorLogWithRequestID(c.Request.Context(), c.GetInt("id"), c.GetInt("channel_id"), modelName, c.GetString("token_name"), message, 0, "", c.GetHeader("X-Request-ID"), c.GetString("x_response_id"))
+	}
+	abortWithMessage(c, status, message)
+}

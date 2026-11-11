@@ -101,3 +101,22 @@ func TestResponseOriginRetryUsesRecordedActualRegion(t *testing.T) {
 		t.Fatalf("retry ignored recorded parent region: actual=eastus config=%s selected=%s channel=%d", cfg.Region, retryCfg.Region, retry.Id)
 	}
 }
+func TestResponseOriginParentMappingSurvivesSuccessfulChat(t *testing.T) {
+	setupRetryPolicyDB(t, false)
+	auditRedis(t)
+	if err := dbmodel.SetResponseIdRegionToRedis("resp_A", 1, 0, "eastus", 1440); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Request.Header.Set("X-Response-ID", "resp_A")
+	c.Set("original_model", "gpt-5")
+	c.Set("key_index", 0)
+	c.Set("x_response_id", "resp_B")
+	c.Set("channel", common.ChannelTypeAzure)
+	recordRelayAffinity(c, 2)
+	channel, _, region := dbmodel.GetResponseIdRegionFromRedis("resp_A")
+	if channel != 1 || region != "eastus" {
+		t.Fatalf("parent overwritten: %d:%s", channel, region)
+	}
+}

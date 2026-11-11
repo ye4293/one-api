@@ -44,10 +44,10 @@
 
 **Files:** model/log.go、controller/log.go、controller/retry_log.go、middleware/response_correlation.go、relay/controller/helper.go、relay/controller/opeai_response.go、controller/relay.go；新增日志写入/查询测试。
 
-**Interfaces:** Log.PreviousResponseID（JSON/DB previous_response_id）；Log.XResponseID 继续表示本次顶层 id。请求进入时携带规范上一轮 ID；消费与错误写入入口读取该上下文，错误入口显式接收已生成当前 ID。
+**Interfaces:** Log 表结构不变；Other.responseCorrelation 保存 previous_response_id 和来源信息；Log.XResponseID 继续表示本次顶层 id。请求进入时携带规范上一轮 ID；消费与错误写入入口读取该上下文，错误入口显式接收已生成当前 ID。
 
-- [ ] 写并运行失败测试：Responses A→B 和 Chat Header A→B 在实际 logs 记录中同时保留两个 ID；流式失败保留已生成 ID；父 ID 查询可定位对应日志。
-- [ ] 扩展日志列、迁移和查询；更新成功、最终失败及提前拒绝的日志调用，保持既有调用兼容。
+- [ ] 写并运行失败测试：Responses A→B 和 Chat Header A→B 在实际 logs 记录中同时保留两个 ID；流式失败保留已生成 ID；从 Other 取父 ID，再按 existing x_response_id 查询对应日志。
+- [ ] 复用 Other 存关联 metadata，保留 existing x_response_id 查询，不修改表结构或添加 DDL；更新成功、最终失败及提前拒绝的日志调用，保持既有调用兼容。
 - [ ] 删除成功请求对入站父 ID 的改绑；写失败测试证明子请求成功后原映射的区域、类型、渠道不变。
 - [ ] Run: go test ./model ./controller ./middleware ./relay/controller -run 'Response|Correlation|Log|Retry' -count=1。Expected: 相关测试通过。
 - [ ] Run: go build ./... && go vet ./...。Expected: exit 0；提交日志与父映射修复。

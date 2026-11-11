@@ -32,6 +32,7 @@ func newRetryContext(c *gin.Context) context.Context {
 		if origin.ChannelType == common.ChannelTypeAzure {
 			ctx = context.WithValue(ctx, azureRetryRegionKey{}, origin.Region)
 		}
+		c.Request = c.Request.WithContext(ctx)
 		return ctx
 	}
 	value, _ := c.Get("Config")
@@ -44,6 +45,7 @@ func newRetryContext(c *gin.Context) context.Context {
 	if channelType == common.ChannelTypeAzure {
 		ctx = context.WithValue(ctx, azureRetryRegionKey{}, strings.TrimSpace(cfg.Region))
 	}
+	c.Request = c.Request.WithContext(ctx)
 	return ctx
 }
 

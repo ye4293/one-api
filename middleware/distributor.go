@@ -67,13 +67,13 @@ func Distribute() func(c *gin.Context) {
 		modelRequest, shouldSelectChannel := getModelRequest(c)
 		responseID, correlationErr := captureResponseCorrelation(c)
 		if correlationErr != nil {
-			abortWithMessage(c, http.StatusBadRequest, correlationErr.Error())
+			abortResponseCorrelation(c, http.StatusBadRequest, correlationErr.Error(), modelRequest.Model)
 			return
 		}
 		if responseID != "" {
 			origin, lookupErr := model.LookupResponseOrigin(responseID)
 			if lookupErr != nil {
-				abortWithMessage(c, http.StatusConflict, "Previous response origin is unavailable; start a new conversation")
+				abortResponseCorrelation(c, http.StatusConflict, "Previous response origin is unavailable; start a new conversation", modelRequest.Model)
 				return
 			}
 			c.Request = c.Request.WithContext(model.WithResponseOrigin(c.Request.Context(), origin))
@@ -160,16 +160,6 @@ func Distribute() func(c *gin.Context) {
 						message := fmt.Sprintf("There are no channels available for model %s under the current group %s", modelRequest.Model, userGroup)
 						if channel != nil {
 
-							if origin, hasOrigin := model.ResponseOriginFromContext(c.Request.Context()); hasOrigin {
-								responseIDAffinityHit = channel.Id == origin.ChannelID
-								if channel.Type != origin.ChannelType || (channel.Id != origin.ChannelID && !model.ChannelMatchesResponseOrigin(channel, origin)) {
-									abortWithMessage(c, http.StatusConflict, "Selected channel conflicts with previous response origin")
-									return
-								}
-								if channel.Id == origin.ChannelID && origin.KeyIndex >= 0 {
-									c.Set("cached_key_index", origin.KeyIndex)
-								}
-							}
 							logger.Error(c.Request.Context(), fmt.Sprintf("Channel does not exist：%d", channel.Id))
 							message = "Database consistency has been violated, please contact the administrator"
 						}
@@ -197,6 +187,21 @@ func Distribute() func(c *gin.Context) {
 		c.Set("model", requestModel)
 
 		if channel != nil {
+
+			if origin, hasOrigin := model.ResponseOriginFromContext(c.Request.Context()); hasOrigin {
+				responseIDAffinityHit = channel.Id == origin.ChannelID
+				if channel.Type != origin.ChannelType || (channel.Id != origin.ChannelID && !model.ChannelMatchesResponseOrigin(channel, origin)) {
+					abortResponseCorrelation(c, http.StatusConflict, "Selected channel conflicts with previous response origin", requestModel)
+					return
+				}
+				if channel.Id == origin.ChannelID && origin.KeyIndex >= 0 {
+					if _, keyErr := channel.GetKeyByIndex(origin.KeyIndex); keyErr != nil {
+						abortResponseCorrelation(c, http.StatusConflict, "Previous response key is unavailable", requestModel)
+						return
+					}
+					c.Set("cached_key_index", origin.KeyIndex)
+				}
+			}
 			// Only the original Response-ID channel takes precedence over signatures.
 			// Regional replacements still need to restore and check the signature source.
 			if !responseIDAffinityHit || responseID != "" {

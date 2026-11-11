@@ -26,7 +26,7 @@
 - /v1/chat/completions：入站 X-Response-ID 作为 previous_response_id 记录，当前顶层 id 继续存 x_response_id。
 - 无状态回放：条目 ID 用于查来源，日志里的 previous_response_id 优先记录该来源的顶层响应 ID；旧条目映射未携带顶层 ID 时保留实际关联 ID，不凭前缀改造 ID。
 - 成功和失败日志都记录上一轮 ID。流式已经生成当前响应 ID 后失败时保留当前 ID；完全没有生成响应则当前 ID 为空。
-- 新日志列使用 GORM 现有迁移机制并提供查询过滤；不将请求 Header 的旧 ID 填进当前响应 ID 字段。
+- 日志表结构不变：本轮顶层 ID 使用 XResponseID，其余信息保存到 Other 的 responseCorrelation JSON 段，包含 previous_response_id、origin_region、origin_channel_type、origin_channel_id、origin_key_index。通过现有 x_response_id 索引逐条回溯，不新增全表 Other 搜索。
 
 ## 来源未知与配置边界（方案中的行为选择）
 
