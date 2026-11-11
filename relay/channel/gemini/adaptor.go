@@ -164,7 +164,7 @@ func (a *Adaptor) DoRequest(c *gin.Context, meta *util.RelayMeta, requestBody io
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (usage *model.Usage, err *model.ErrorWithStatusCode) {
 	if meta.IsStream {
 		var responseText string
-		err, responseText = StreamHandler(c, resp, meta.ActualModelName)
+		err, responseText = StreamHandler(c, resp, meta)
 		usage = openai.ResponseText2Usage(responseText, meta.ActualModelName, meta.PromptTokens)
 	} else {
 		err, usage = Handler(c, resp, meta.PromptTokens, meta.ActualModelName)

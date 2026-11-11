@@ -371,7 +371,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, meta *util.Rel
 	// Vertex AI 返回的响应格式与 Gemini 相同
 	if meta.IsStream {
 		var responseText string
-		err, responseText = gemini.StreamHandler(c, resp, meta.ActualModelName)
+		err, responseText = gemini.StreamHandler(c, resp, meta)
 		usage = openai.ResponseText2Usage(responseText, meta.ActualModelName, meta.PromptTokens)
 	} else {
 		err, usage = gemini.Handler(c, resp, meta.PromptTokens, meta.ActualModelName)

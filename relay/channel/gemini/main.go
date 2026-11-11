@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/relay/util"
 	"github.com/songquanpeng/one-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -880,7 +880,10 @@ func streamResponseGeminiChat2OpenAI(geminiResponse *ChatResponse, modelName str
 	}
 }
 
-func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*model.ErrorWithStatusCode, string) {
+func StreamHandler(c *gin.Context, resp *http.Response, meta *util.RelayMeta) (*model.ErrorWithStatusCode, string) {
+	c.Set("x_response_id", "")
+	modelName := meta.ActualModelName
+	meta.StreamStatus = util.NewStreamStatus()
 	responseText := ""
 
 	// 获取请求开始时间用于计算首字延迟
@@ -908,43 +911,45 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 		}
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		if atEOF && len(data) == 0 {
-			return 0, nil, nil
-		}
-		if i := strings.Index(string(data), "\n"); i >= 0 {
-			return i + 1, data[0:i], nil
-		}
-		if atEOF {
-			return len(data), data, nil
-		}
-		return 0, nil, nil
-	})
-	dataChan := make(chan string)
-	stopChan := make(chan bool)
-	go func() {
-		for scanner.Scan() {
-			data := scanner.Text()
-			data = strings.TrimSpace(data)
-			if !strings.HasPrefix(data, "data: ") {
-				continue
-			}
-			data = strings.TrimPrefix(data, "data: ")
-			data = strings.TrimSuffix(data, "\"")
-			dataChan <- data
-		}
-		stopChan <- true
-	}()
+	scanCtx, cancelScan := context.WithCancel(c.Request.Context())
+	defer cancelScan()
+	defer resp.Body.Close()
+	events := scanGeminiStream(scanCtx, resp.Body)
 	common.SetEventStreamHeaders(c)
-	c.Stream(func(w io.Writer) bool {
+	disconnected := c.Stream(func(w io.Writer) bool {
 		select {
-		case data := <-dataChan:
+		case <-scanCtx.Done():
+			meta.StreamStatus.SetEndReason(util.StreamEndReasonClientGone, scanCtx.Err())
+			return false
+		case event, ok := <-events:
+			if !ok || event.data == "[DONE]" {
+				reason := util.StreamEndReasonEOF
+				if ok {
+					reason = util.StreamEndReasonDone
+				}
+				meta.StreamStatus.SetEndReason(reason, nil)
+				c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
+				return false
+			}
+			if event.err != nil {
+				logger.Errorf(c.Request.Context(), "Gemini stream scan failed channel=%d model=%s response_id=%s: %v", meta.ChannelId, modelName, responseID, event.err)
+				meta.StreamStatus.RecordError(event.err.Error())
+				meta.StreamStatus.SetEndReason(util.StreamEndReasonScannerErr, event.err)
+				// Preserve partial usage and its response ID in the consume log.
+				// Returning a relay error here would retry an already-started stream.
+				return false
+			}
+			data := event.data
 			var geminiResponse ChatResponse
 			err := json.Unmarshal([]byte(data), &geminiResponse)
 			if err != nil {
 				logger.Error(c.Request.Context(), "error unmarshalling stream response: "+err.Error())
+				meta.StreamStatus.RecordError(err.Error())
 				return true
+			}
+			if geminiResponse.ResponseId != "" {
+				c.Set("x_response_id", geminiResponse.ResponseId)
+				responseID = geminiResponse.ResponseId
 			}
 
 			// 检查是否有内容阻止原因
@@ -975,6 +980,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 				jsonResponse, _ := json.Marshal(errorResponse)
 				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
 				logger.Info(c.Request.Context(), fmt.Sprintf("Gemini stream blocked: %s", geminiResponse.PromptFeedback.BlockReason))
+				meta.StreamStatus.SetEndReason(util.StreamEndReasonHandlerStop, nil)
 				return false
 			}
 
@@ -982,11 +988,6 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			if geminiResponse.UsageMetadata != nil {
 				lastUsageMetadata = geminiResponse.UsageMetadata
 			}
-			if geminiResponse.ResponseId != "" {
-				c.Set("x_response_id", geminiResponse.ResponseId)
-				responseID = geminiResponse.ResponseId
-			}
-
 			response := streamResponseGeminiChat2OpenAI(&geminiResponse, modelName)
 			if response == nil {
 				return true
@@ -1079,14 +1080,11 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			cacheResponseID()
 			service.RecordGeminiResponseSignatures(c, []byte(data))
 			return true
-		case <-stopChan:
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			return false
 		}
 	})
-	err := resp.Body.Close()
-	if err != nil {
-		return openai.ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), ""
+	cancelScan()
+	if disconnected {
+		meta.StreamStatus.SetEndReason(util.StreamEndReasonClientGone, nil)
 	}
 
 	// 计算首字延迟并存储到 context 中
@@ -1102,6 +1100,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 }
 
 func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName string) (*model.ErrorWithStatusCode, *model.Usage) {
+	c.Set("x_response_id", "")
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return openai.ErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError), nil
@@ -1115,6 +1114,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return openai.ErrorWrapper(err, "unmarshal_response_body_failed", http.StatusInternalServerError), nil
 	}
+	c.Set("x_response_id", geminiResponse.ResponseId)
 	// 检查是否有内容阻止原因
 	if geminiResponse.PromptFeedback.BlockReason != "" {
 		return &model.ErrorWithStatusCode{
@@ -1142,10 +1142,6 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(&geminiResponse)
 	fullTextResponse.Model = modelName
-	if geminiResponse.ResponseId != "" {
-		c.Set("x_response_id", geminiResponse.ResponseId)
-	}
-
 	// 计算 completion tokens
 	baseCompletionTokens := openai.CountTokenText(geminiResponse.GetActualContent(), modelName)
 	completionTokens := baseCompletionTokens

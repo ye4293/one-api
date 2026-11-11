@@ -457,16 +457,10 @@ func consumeImageQuota(params *imageConsumeParams) {
 	otherInfo = appendModelMappingInfo(otherInfo, params.meta.OriginModelName, params.meta.ActualModelName)
 	otherInfo = util.AppendRetryHistoryOther(params.c, otherInfo, duration)
 
-	if otherInfo != "" {
-		model.RecordConsumeLogWithOtherAndRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
-			params.promptTokens, params.completionTokens, logModelName, tokenName,
-			params.actualQuota, params.logContent, duration, title, referer, false, 0.0,
-			otherInfo, xRequestID, 0, "")
-	} else {
-		model.RecordConsumeLogWithRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
-			params.promptTokens, params.completionTokens, logModelName, tokenName,
-			params.actualQuota, params.logContent, duration, title, referer, false, 0.0, xRequestID)
-	}
+	model.RecordConsumeLogWithOtherAndRequestID(params.ctx, params.meta.UserId, params.meta.ChannelId,
+		params.promptTokens, params.completionTokens, logModelName, tokenName,
+		params.actualQuota, params.logContent, duration, title, referer, false, 0.0,
+		otherInfo, xRequestID, 0, params.c.GetString("x_response_id"))
 	model.UpdateUserUsedQuotaAndRequestCount(params.meta.UserId, params.actualQuota)
 	channelId := params.c.GetInt("channel_id")
 	model.UpdateChannelUsedQuota(channelId, params.actualQuota)
@@ -476,6 +470,7 @@ func consumeImageQuota(params *imageConsumeParams) {
 }
 
 func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatusCode {
+	c.Set("x_response_id", "") // A retry must not reuse the previous upstream response ID.
 
 	startTime := time.Now()
 	ctx := c.Request.Context()
@@ -1490,45 +1485,14 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 			return openai.ErrorWrapper(errorMsg, errorCode, statusCode)
 		}
 
-		var geminiResponse struct {
-			Candidates []struct {
-				Content struct {
-					Parts []struct {
-						InlineData *gemini.InlineData `json:"inlineData,omitempty"`
-						Text       string             `json:"text,omitempty"`
-					} `json:"parts,omitempty"`
-					Role string `json:"role,omitempty"`
-				} `json:"content,omitempty"`
-				FinishReason  string `json:"finishReason,omitempty"`
-				FinishMessage string `json:"finishMessage,omitempty"`
-				Index         int    `json:"index,omitempty"`
-			} `json:"candidates,omitempty"`
-			PromptFeedback *struct {
-				BlockReason        string `json:"blockReason,omitempty"`
-				BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
-			} `json:"promptFeedback,omitempty"`
-			ModelVersion  string `json:"modelVersion,omitempty"`
-			UsageMetadata struct {
-				PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-				CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-				TotalTokenCount      int `json:"totalTokenCount,omitempty"`
-				ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
-				PromptTokensDetails  []struct {
-					Modality   string `json:"modality"`
-					TokenCount int    `json:"tokenCount"`
-				} `json:"promptTokensDetails,omitempty"`
-				CandidatesTokensDetails []struct {
-					Modality   string `json:"modality"`
-					TokenCount int    `json:"tokenCount"`
-				} `json:"candidatesTokensDetails,omitempty"`
-			} `json:"usageMetadata,omitempty"`
-		}
+		var geminiResponse geminiImageResponse
 
 		err = json.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
 			util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 			return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 		}
+		c.Set("x_response_id", geminiResponse.ResponseId)
 
 		// 检查 promptFeedback 是否有阻止原因
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
@@ -1930,7 +1894,7 @@ func RelayImageHelper(c *gin.Context, relayMode int) *relaymodel.ErrorWithStatus
 		}
 
 		// 对于 Gemini JSON 请求，在这里直接处理配额消费和日志记录
-		_ = handleGeminiTokenConsumption(c, ctx, meta, imageRequest, &geminiResponse, quota, preConsumedQuota, startTime)
+		_ = handleGeminiTokenConsumption(c, ctx, meta, &geminiResponse, preConsumedQuota, startTime)
 	} else if meta.ChannelType == 40 && imageRequest.Stream {
 		// 豆包图片流式响应（SSE）→ 标准 JSON
 		logger.Debugf(ctx, "Doubao image stream raw response (len=%d):\n%s", len(responseBody), string(responseBody))
@@ -3955,45 +3919,14 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 	}
 
 	// 解析 Gemini 成功响应
-	var geminiResponse struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					InlineData *gemini.InlineData `json:"inlineData,omitempty"`
-					Text       string             `json:"text,omitempty"`
-				} `json:"parts,omitempty"`
-				Role string `json:"role,omitempty"`
-			} `json:"content,omitempty"`
-			FinishReason  string `json:"finishReason,omitempty"`
-			FinishMessage string `json:"finishMessage,omitempty"`
-			Index         int    `json:"index,omitempty"`
-		} `json:"candidates,omitempty"`
-		PromptFeedback *struct {
-			BlockReason        string `json:"blockReason,omitempty"`
-			BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
-		} `json:"promptFeedback,omitempty"`
-		ModelVersion  string `json:"modelVersion,omitempty"`
-		UsageMetadata struct {
-			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
-			ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
-			PromptTokensDetails  []struct {
-				Modality   string `json:"modality"`
-				TokenCount int    `json:"tokenCount"`
-			} `json:"promptTokensDetails,omitempty"`
-			CandidatesTokensDetails []struct {
-				Modality   string `json:"modality"`
-				TokenCount int    `json:"tokenCount"`
-			} `json:"candidatesTokensDetails,omitempty"`
-		} `json:"usageMetadata,omitempty"`
-	}
+	var geminiResponse geminiImageResponse
 
 	err = json.Unmarshal(responseBody, &geminiResponse)
 	if err != nil {
 		util.ReturnPreConsumedQuota(ctx, preConsumedQuota, meta.TokenId)
 		return openai.ErrorWrapper(err, "unmarshal_gemini_response_failed", http.StatusInternalServerError)
 	}
+	c.Set("x_response_id", geminiResponse.ResponseId)
 
 	// 检查 promptFeedback 是否有阻止原因
 	if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != "" {
@@ -4419,73 +4352,27 @@ func handleGeminiResponse(c *gin.Context, ctx context.Context, resp *http.Respon
 }
 
 // handleGeminiTokenConsumption 处理 Gemini JSON 请求的 token 消费和日志记录
-func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, imageRequest *relaymodel.ImageRequest, geminiResponse interface{}, quota int64, preConsumedQuota int64, startTime time.Time) error {
+func handleGeminiTokenConsumption(c *gin.Context, ctx context.Context, meta *util.RelayMeta, geminiResponse *geminiImageResponse, preConsumedQuota int64, startTime time.Time) error {
 	// 检查是否已经记录过（通过检查是否已经设置了响应状态码）
 	if c.Writer.Status() == http.StatusBadRequest {
 		return nil
 	}
 
-	// 从 geminiResponse 中提取 token 信息
-	var promptTokens, completionTokens int
-	var usageDetails *GeminiUsageDetails
-
-	// 使用类型断言来获取 UsageMetadata
-	if respStruct, ok := geminiResponse.(*struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					InlineData *gemini.InlineData `json:"inlineData,omitempty"`
-					Text       string             `json:"text,omitempty"`
-				} `json:"parts,omitempty"`
-				Role string `json:"role,omitempty"`
-			} `json:"content,omitempty"`
-			FinishReason  string `json:"finishReason,omitempty"`
-			FinishMessage string `json:"finishMessage,omitempty"`
-			Index         int    `json:"index,omitempty"`
-		} `json:"candidates,omitempty"`
-		PromptFeedback *struct {
-			BlockReason        string `json:"blockReason,omitempty"`
-			BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
-		} `json:"promptFeedback,omitempty"`
-		ModelVersion  string `json:"modelVersion,omitempty"`
-		UsageMetadata struct {
-			PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-			CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-			TotalTokenCount      int `json:"totalTokenCount,omitempty"`
-			ThoughtsTokenCount   int `json:"thoughtsTokenCount,omitempty"`
-			PromptTokensDetails  []struct {
-				Modality   string `json:"modality"`
-				TokenCount int    `json:"tokenCount"`
-			} `json:"promptTokensDetails,omitempty"`
-			CandidatesTokensDetails []struct {
-				Modality   string `json:"modality"`
-				TokenCount int    `json:"tokenCount"`
-			} `json:"candidatesTokensDetails,omitempty"`
-		} `json:"usageMetadata,omitempty"`
-	}); ok {
-		if respStruct.UsageMetadata.TotalTokenCount == 0 {
-			return nil
-		}
-
-		promptTokens = respStruct.UsageMetadata.PromptTokenCount
-		completionTokens = respStruct.UsageMetadata.CandidatesTokenCount
-
-		details := extractGeminiUsageDetails(
-			respStruct.UsageMetadata.PromptTokensDetails,
-			respStruct.UsageMetadata.CandidatesTokensDetails,
-			respStruct.UsageMetadata.ThoughtsTokenCount,
-		)
-		usageDetails = &details
-	} else {
+	if geminiResponse == nil || geminiResponse.UsageMetadata.TotalTokenCount == 0 {
 		return nil
 	}
+	promptTokens := geminiResponse.UsageMetadata.PromptTokenCount
+	completionTokens := geminiResponse.UsageMetadata.CandidatesTokenCount
+	details := extractGeminiUsageDetails(
+		geminiResponse.UsageMetadata.PromptTokensDetails,
+		geminiResponse.UsageMetadata.CandidatesTokensDetails,
+		geminiResponse.UsageMetadata.ThoughtsTokenCount,
+	)
+	usageDetails := &details
 
 	// 使用精确计费机制
 	groupRatio := meta.CombinedGroupRatio()
-	thinkingTokens := 0
-	if usageDetails != nil {
-		thinkingTokens = usageDetails.ReasoningTokens
-	}
+	thinkingTokens := usageDetails.ReasoningTokens
 
 	actualQuota := calculateGeminiImageQuota(meta.OriginModelName, groupRatio, usageDetails, promptTokens, completionTokens, thinkingTokens)
 
