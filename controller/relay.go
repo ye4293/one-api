@@ -3330,6 +3330,12 @@ func RelayResponse(c *gin.Context) {
 
 	group := c.GetString("group")
 	lastResponseChannel := getLastRetryFallbackChannel(originalChannelId)
+	// SSE 已写出后只能记录失败并结束，禁止拼接另一渠道的流或追加 JSON 错误。
+	// 前缀检测失败时 Writer 尚未写出，仍走下面的正常跨渠道重试。
+	if c.Writer.Written() {
+		recordFinalErrorLog(ctx, c, relayError, retryAttempts, channelHistory, service.GetAffinityLogTag(c))
+		return
+	}
 	retryTimes := config.RetryTimes
 	if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 		logger.Errorf(ctx, "claude relay error happen, status code is %d, won't retry in this case", relayError.StatusCode)
@@ -3411,6 +3417,11 @@ func RelayResponse(c *gin.Context) {
 			Status:      relayError.StatusCode,
 		})
 		util.PublishFailedRetryHistory(c, retryAttempts)
+		if c.Writer.Written() {
+			go processChannelRelayError(helper.DetachCancel(ctx), userId, channelId, channelName, keyIndex, relayError, originalModel)
+			recordFinalErrorLog(ctx, c, relayError, retryAttempts, channelHistory, service.GetAffinityLogTag(c))
+			return
+		}
 
 		if !shouldRetry(c, relayError.StatusCode, relayError.Error.Message) {
 			logger.Warnf(ctx, "Retry stopped: status %d is not retryable, stopping further retries", relayError.StatusCode)

@@ -28,6 +28,17 @@ const (
 )
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayMeta, dataHandler func(data string) bool) {
+	if dataHandler == nil {
+		return
+	}
+	StreamScannerHandlerWithEvent(c, resp, info, func(_ string, data string) bool {
+		return dataHandler(data)
+	})
+}
+
+// StreamScannerHandlerWithEvent 保留 SSE event 名称，供 JSON 未携带 type 的流使用。
+// 旧入口继续仅传递 data，保持其他渠道的调用接口和行为。
+func StreamScannerHandlerWithEvent(c *gin.Context, resp *http.Response, info *util.RelayMeta, dataHandler func(event, data string) bool) {
 
 	if resp == nil || dataHandler == nil || info == nil {
 		return
@@ -202,6 +213,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 			}
 		}()
 
+		var eventType string
 		for scanner.Scan() {
 			// 检查是否需要停止
 			select {
@@ -219,6 +231,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 			if config.DebugEnabled {
 				println(data)
 			}
+			if data == "" {
+				eventType = ""
+				continue
+			}
+			if strings.HasPrefix(data, "event:") {
+				eventType = strings.TrimSpace(strings.TrimPrefix(data, "event:"))
+				continue
+			}
 
 			if len(data) < 6 {
 				continue
@@ -234,10 +254,11 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *util.RelayM
 
 				// 使用超时机制防止写操作阻塞
 				done := make(chan bool, 1)
+				currentEventType := eventType
 				go func() {
 					writeMutex.Lock()
 					defer writeMutex.Unlock()
-					done <- dataHandler(data)
+					done <- dataHandler(currentEventType, data)
 				}()
 
 				select {

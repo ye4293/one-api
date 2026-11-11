@@ -15,6 +15,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/config"
+	commonhelper "github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/logger"
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
@@ -158,9 +159,9 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	}
 
 	if overrides.applies() || overrides.hasCacheWritePrices() || prices.cacheWrite12hRatio != nil {
-		go recordOpenaiResponseConsumptionWithPrices(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio, &prices)
+		go recordOpenaiResponseConsumptionWithPrices(commonhelper.DetachCancel(ctx), userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio, &prices)
 	} else {
-		go recordOpenaiResponseConsumption(ctx, userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
+		go recordOpenaiResponseConsumption(commonhelper.DetachCancel(ctx), userId, channelId, tokenId, modelName, tokenName, promptTokens, completionTokens, totalTokens, cachedTokens, cacheWriteTokens, actualQuota, c.Request.RequestURI, duration, meta.IsStream, c.Copy(), usageMetadata, firstWordLatency, groupRatio, modelRatio)
 	}
 
 	return nil
@@ -589,14 +590,18 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	var openaiErr *model.ErrorWithStatusCode
 	var fullText strings.Builder // 累积完整文本
 	webSearchToolCallCount := 0
+	sawTerminalEvent := false
 	responseIdCached := false // 首个带 response.id 的事件是否已写 Redis（区域亲和竞态修复）
 	audit.WrapUpstreamBody(c, resp)
-	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
+	helper.StreamScannerHandlerWithEvent(c, resp, meta, func(eventType, data string) bool {
 		var streamResponse openai.OpenaiResponseStreamResponse
 		err := json.Unmarshal([]byte(data), &streamResponse)
 		if err != nil {
 			openaiErr = openai.ErrorWrapper(err, "unmarshal_response_failed", http.StatusInternalServerError)
 			return false
+		}
+		if streamResponse.Type == "" {
+			streamResponse.Type = eventType
 		}
 		helper.OpenaiResponseChunkData(c, streamResponse, data)
 		service.RecordGeminiResponseSignatures(c, []byte(data))
@@ -613,7 +618,12 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 			c.Set("x_response_id", streamResponse.Response.ID)
 		}
 		switch streamResponse.Type {
-		case "response.completed":
+		case "error", "response.failed":
+			openaiErr = parseResponseStreamError(data, streamResponse.Type)
+			meta.StreamStatus.RecordError(openaiErr.Message)
+			return false
+		case "response.completed", "response.incomplete":
+			sawTerminalEvent = true
 			if streamResponse.Response != nil {
 				if streamResponse.Response.Usage != nil {
 					lastUsageMetadata = streamResponse.Response.Usage
@@ -651,6 +661,18 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 		}
 		return true
 	})
+	if openaiErr != nil {
+		return lastUsageMetadata, openaiErr
+	}
+	if meta.StreamStatus.HasErrors() {
+		return lastUsageMetadata, openai.ErrorWrapper(fmt.Errorf("%s", meta.StreamStatus.Summary()), "stream_read_failed", http.StatusBadGateway)
+	}
+	if !sawTerminalEvent {
+		openaiErr = openai.ErrorWrapper(fmt.Errorf("upstream response stream ended before completion: %s", meta.StreamStatus.Summary()), "stream_incomplete", http.StatusBadGateway)
+		meta.StreamStatus.RecordError(openaiErr.Message)
+		logger.Warn(c.Request.Context(), openaiErr.Message)
+		return lastUsageMetadata, openaiErr
+	}
 	if lastUsageMetadata.OutputTokens == 0 {
 		// 计算输出文本的 token 数量
 		tempStr := fullText.String()
@@ -664,10 +686,6 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	//特殊情况预估输入token 用于补全输入token
 
 	if lastUsageMetadata.InputTokens == 0 && lastUsageMetadata.OutputTokens != 0 {
-	}
-
-	if openaiErr != nil {
-		return lastUsageMetadata, openaiErr
 	}
 
 	return lastUsageMetadata, nil
@@ -686,7 +704,9 @@ type combinedReadCloser struct {
 func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.ErrorWithStatusCode) {
 	var buf bytes.Buffer
 	scanner := bufio.NewScanner(io.TeeReader(body, &buf))
-	scanner.Buffer(make([]byte, 4*1024), 64*1024)
+	// response.created/in_progress 会回显全部工具定义，合法事件可超过 64 KiB。
+	// 与后续流扫描使用同一上限，且任何读取错误都必须进入失败路径。
+	scanner.Buffer(make([]byte, helper.InitialScannerBufferSize), helper.MaxScannerBufferSize)
 
 	var currentEventType string
 	var dataEventCount int
@@ -711,82 +731,64 @@ func bufferStreamPrefix(body io.Reader) (bufferedData []byte, streamErr *model.E
 
 		dataEventCount++
 		dataStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-
-		if currentEventType == "error" {
-			if parsed := parseStreamErrorEvent(dataStr); parsed != nil {
-				return buf.Bytes(), &model.ErrorWithStatusCode{
-					Error: model.Error{
-						Message: parsed.Error.Message,
-						Type:    parsed.Error.Type,
-						Code:    parsed.Error.Code,
-					},
-					StatusCode: http.StatusTooManyRequests,
-				}
+		eventType := currentEventType
+		if eventType == "" {
+			var event struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal([]byte(dataStr), &event) == nil {
+				eventType = event.Type
 			}
 		}
-
-		if currentEventType == "response.failed" {
-			if parsed := parseResponseFailedEvent(dataStr); parsed != nil {
-				return buf.Bytes(), &model.ErrorWithStatusCode{
-					Error: model.Error{
-						Message: parsed.Response.Error.Message,
-						Type:    parsed.Response.Error.Code,
-						Code:    parsed.Response.Error.Code,
-					},
-					StatusCode: http.StatusTooManyRequests,
-				}
-			}
+		if streamErr := parseResponseStreamError(dataStr, eventType); streamErr != nil {
+			return buf.Bytes(), streamErr
 		}
 
-		if isContentProducingEvent(currentEventType) || dataEventCount >= 5 {
+		if isContentProducingEvent(eventType) || dataEventCount >= 5 {
 			break
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return buf.Bytes(), openai.ErrorWrapper(err, "stream_prefix_read_failed", http.StatusBadGateway)
 	}
 
 	return buf.Bytes(), nil
 }
 
-// streamErrorData 用于解析 SSE error 事件的 JSON
-type streamErrorData struct {
-	Type  string `json:"type"`
-	Error struct {
-		Type    string `json:"type"`
-		Code    string `json:"code"`
+// 前缀与后续流共用错误解析，保留上游错误字段，兼容嵌套和扁平 error。
+func parseResponseStreamError(data, eventType string) *model.ErrorWithStatusCode {
+	if eventType != "error" && eventType != "response.failed" {
+		return nil
+	}
+	var event struct {
+		Error    *model.Error `json:"error"`
+		Response *struct {
+			Error *model.Error `json:"error"`
+		} `json:"response"`
 		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// responseFailedData 用于解析 response.failed 事件
-type responseFailedData struct {
-	Type     string `json:"type"`
-	Response struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	} `json:"response"`
-}
-
-func parseStreamErrorEvent(data string) *streamErrorData {
-	var ev streamErrorData
-	if err := json.Unmarshal([]byte(data), &ev); err != nil {
-		return nil
+		Code    any    `json:"code"`
+		Param   string `json:"param"`
 	}
-	if ev.Error.Message != "" {
-		return &ev
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return openai.ErrorWrapper(err, "unmarshal_stream_error_failed", http.StatusBadGateway)
 	}
-	return nil
-}
-
-func parseResponseFailedEvent(data string) *responseFailedData {
-	var ev responseFailedData
-	if err := json.Unmarshal([]byte(data), &ev); err != nil {
-		return nil
+	upstreamErr := event.Error
+	if eventType == "response.failed" && event.Response != nil {
+		upstreamErr = event.Response.Error
 	}
-	if ev.Response.Error.Message != "" {
-		return &ev
+	if upstreamErr == nil {
+		upstreamErr = &model.Error{Message: event.Message, Code: event.Code, Param: event.Param}
 	}
-	return nil
+	if upstreamErr.Message == "" {
+		upstreamErr.Message = "upstream response stream failed"
+	}
+	if upstreamErr.Type == "" {
+		upstreamErr.Type, _ = upstreamErr.Code.(string)
+		if upstreamErr.Type == "" {
+			upstreamErr.Type = "upstream_error"
+		}
+	}
+	return &model.ErrorWithStatusCode{Error: *upstreamErr, StatusCode: http.StatusTooManyRequests}
 }
 
 func isContentProducingEvent(eventType string) bool {
