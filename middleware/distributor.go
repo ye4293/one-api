@@ -60,6 +60,7 @@ func Distribute() func(c *gin.Context) {
 
 		var channel *model.Channel
 		var err error
+		responseIDAffinityHit := false
 
 		// 先统一解析模型名和设置 relay_mode（参考 new-api 的设计）
 		// 这样不管是否指定特定渠道，都会正确解析请求
@@ -140,7 +141,16 @@ func Distribute() func(c *gin.Context) {
 				// 路径 A/C：亲和未命中或 X-Response-ID 存在，走正常随机选渠
 				if channel == nil {
 					var cachedKeyIndex int
-					channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, responseID)
+					if service.IsGeminiModel(modelRequest.Model) && responseID != "" {
+						channel, cachedKeyIndex = model.CacheGetSatisfiedChannelByResponseID(c.Request.Context(), userGroup, modelRequest.Model, responseID, nil)
+						responseIDAffinityHit = channel != nil
+						// The affinity lookup is complete. Do not repeat it during fallback
+						// and mistake a randomly selected channel for an affinity hit.
+						responseID = ""
+					}
+					if channel == nil {
+						channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, responseID)
+					}
 					if cachedKeyIndex >= 0 {
 						c.Set("cached_key_index", cachedKeyIndex)
 					}
@@ -174,6 +184,20 @@ func Distribute() func(c *gin.Context) {
 		c.Set("model", requestModel)
 
 		if channel != nil {
+			// A valid Response-ID affinity channel takes precedence over signatures.
+			// Only restore the signature source when no such channel was found.
+			if !responseIDAffinityHit {
+				if affinityErr := service.PrepareGeminiResourceAffinity(c, requestModel); affinityErr != nil {
+					abortWithMessage(c, affinityErr.StatusCode, affinityErr.Message)
+					return
+				}
+			}
+			var affinityErr *service.GeminiAffinityError
+			channel, affinityErr = enforceGeminiResourceAffinity(c, channel, requestModel, userGroup)
+			if affinityErr != nil {
+				abortWithMessage(c, affinityErr.StatusCode, affinityErr.Message)
+				return
+			}
 			SetupContextForSelectedChannel(c, channel, requestModel)
 		}
 		c.Next()

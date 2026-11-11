@@ -200,7 +200,7 @@ func Relay(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastChannel == nil || isAzureRetry(ctx) {
+			if lastChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -953,7 +953,7 @@ func RelayMidjourney(c *gin.Context) {
 			currentAttempt := retryTimes - i + 1
 			channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 			if err != nil {
-				if lastMjChannel == nil || isAzureRetry(ctx) {
+				if lastMjChannel == nil || retryRequiresAvailableChannel(ctx) {
 					logger.Errorf(ctx, "No channels available after cycling: %v (excludedChannels: %v)", err, failedChannelIds)
 					break
 				}
@@ -1116,7 +1116,7 @@ func RelayVideoGenerate(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastVideoChannel == nil || isAzureRetry(ctx) {
+			if lastVideoChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1408,7 +1408,7 @@ func RelayRecraft(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastRecraftChannel == nil || isAzureRetry(ctx) {
+			if lastRecraftChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1780,7 +1780,7 @@ func RelayImageGenerateAsync(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastImageChannel == nil || isAzureRetry(ctx) {
+			if lastImageChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -1938,7 +1938,7 @@ func RelayRunway(c *gin.Context) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastRunwayChannel == nil || isAzureRetry(ctx) {
+			if lastRunwayChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
@@ -2226,7 +2226,7 @@ func relayXaiVideoWithRetry(c *gin.Context, endpoint string) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastChannel == nil || isAzureRetry(ctx) {
+			if lastChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "[xAI Video] no channel available after cycling on retry %d/%d", currentAttempt, retryTimes)
 				break
 			}
@@ -2627,7 +2627,7 @@ func RelaySoraVideo(c *gin.Context) {
 
 		channel, err := selectRetryChannel(ctx, group, modelName, &failedChannelIds)
 		if err != nil {
-			if lastSoraChannel == nil || isAzureRetry(ctx) {
+			if lastSoraChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling on retry %d/%d: %v", currentAttempt, retryTimes, err)
 				break
 			}
@@ -3008,7 +3008,7 @@ func RelayGemini(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastGeminiChannel == nil || isAzureRetry(ctx) {
+			if lastGeminiChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -3172,7 +3172,7 @@ func RelayClaude(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastClaudeChannel == nil || isAzureRetry(ctx) {
+			if lastClaudeChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}
@@ -3339,7 +3339,7 @@ func RelayResponse(c *gin.Context) {
 		currentAttempt := retryTimes - i + 1
 		channel, err := selectRetryChannel(ctx, group, originalModel, &failedChannelIds)
 		if err != nil {
-			if lastResponseChannel == nil || isAzureRetry(ctx) {
+			if lastResponseChannel == nil || retryRequiresAvailableChannel(ctx) {
 				logger.Errorf(ctx, "No channels available after cycling: %v", err)
 				break
 			}

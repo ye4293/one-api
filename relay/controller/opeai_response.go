@@ -21,6 +21,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/songquanpeng/one-api/service"
 )
 
 // ensureGeminiContentsRole 确保 Gemini 请求体中的 contents 数组中每个元素都有 role 字段
@@ -529,6 +530,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
 	util.IOCopyBytesGracefully(c, resp, responseBody)
+	service.RecordGeminiResponseSignatures(c, responseBody)
 	logger.Info(c.Request.Context(), fmt.Sprintf("OpenAI Response : %v", openaiResponse))
 	// 缓存 response_id 到 Redis
 	dbmodel.CacheResponseIdToChannel(openaiResponse.ID, c.GetInt("channel_id"), c.GetInt("key_index"), "OpenAI Response Cache")
@@ -593,6 +595,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 			return false
 		}
 		helper.OpenaiResponseChunkData(c, streamResponse, data)
+		service.RecordGeminiResponseSignatures(c, []byte(data))
 		if streamResponse.Response != nil && streamResponse.Response.ServiceTier != "" {
 			c.Set(openai.ResponseServiceTierContextKey, streamResponse.Response.ServiceTier)
 		}

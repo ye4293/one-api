@@ -15,9 +15,11 @@ import (
 	"github.com/songquanpeng/one-api/common/helper"
 	"github.com/songquanpeng/one-api/common/image"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel/openai"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -898,6 +900,13 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 
 	var firstWordTime *time.Time
 	var lastUsageMetadata *UsageMetadata
+	var responseID, cachedResponseID string
+	cacheResponseID := func() {
+		if responseID != "" && responseID != cachedResponseID {
+			dbmodel.CacheResponseIdToChannelAsync(responseID, c.GetInt("channel_id"), c.GetInt("key_index"), "Gemini Chat Stream Cache")
+			cachedResponseID = responseID
+		}
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
@@ -975,6 +984,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 			}
 			if geminiResponse.ResponseId != "" {
 				c.Set("x_response_id", geminiResponse.ResponseId)
+				responseID = geminiResponse.ResponseId
 			}
 
 			response := streamResponseGeminiChat2OpenAI(&geminiResponse, modelName)
@@ -1001,6 +1011,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 					return true
 				}
 				c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+				cacheResponseID()
+				service.RecordGeminiResponseSignatures(c, []byte(data))
 
 				// 然后发送带有 usage 信息的最后一个 chunk（choices 为空）
 				if lastUsageMetadata != nil {
@@ -1064,6 +1076,8 @@ func StreamHandler(c *gin.Context, resp *http.Response, modelName string) (*mode
 				return true
 			}
 			c.Render(-1, common.CustomEvent{Data: "data: " + string(jsonResponse)})
+			cacheResponseID()
+			service.RecordGeminiResponseSignatures(c, []byte(data))
 			return true
 		case <-stopChan:
 			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
@@ -1190,6 +1204,8 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if _, err = c.Writer.Write(jsonResponse); err != nil {
 		return openai.ErrorWrapper(err, "write_response_body_failed", http.StatusInternalServerError), nil
 	}
+	dbmodel.CacheResponseIdToChannelAsync(geminiResponse.ResponseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Gemini Chat Cache")
+	service.RecordGeminiResponseSignatures(c, responseBody)
 	return nil, &usage
 }
 

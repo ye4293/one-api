@@ -376,21 +376,11 @@ func getSortedSatisfiedChannelPriorities(group string, model string, groupCol st
 	return priorities, nil
 }
 
-func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
-	groupCol := "`group`"
-	trueVal := "1"
-	if common.UsingPostgreSQL {
-		groupCol = `"group"`
-		trueVal = "true"
-	}
-
-	// 解析排除的渠道ID列表
-	var excludeIds []int
-	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
-		excludeIds = excludeChannelIds[0]
-	}
-	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
-	if skipPriorityLevels == 0 && responseID != "" {
+// CacheGetSatisfiedChannelByResponseID only resolves a usable affinity channel.
+// A nil channel means a miss, including stale mappings and cache failures. A hit
+// can still have keyIndex=-1 when the cached value predates multi-key support.
+func CacheGetSatisfiedChannelByResponseID(ctx context.Context, group, model, responseID string, excludeIds []int) (*Channel, int) {
+	if responseID != "" {
 		// 从 Redis 中获取缓存的 channel ID 和 Key 索引
 		cachedChannelID, cachedKeyIndex, err := GetClaudeCacheIdFromRedis(responseID)
 		if err == nil && cachedChannelID != "" {
@@ -429,7 +419,7 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 							if groupMatched && modelMatched {
 								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d) for responseID: %s, group: %s, model: %s",
 									channelID, cachedKeyIndex, responseID, group, model))
-								return channel, cachedKeyIndex, nil
+								return channel, cachedKeyIndex
 							} else {
 								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
 									channelID, groupMatched, modelMatched))
@@ -444,6 +434,27 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 					}
 				}
 			}
+		}
+	}
+	return nil, -1
+}
+
+func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model string, skipPriorityLevels int, responseID string, excludeChannelIds ...[]int) (*Channel, int, error) {
+	groupCol := "`group`"
+	trueVal := "1"
+	if common.UsingPostgreSQL {
+		groupCol = `"group"`
+		trueVal = "true"
+	}
+
+	// 解析排除的渠道ID列表
+	var excludeIds []int
+	if len(excludeChannelIds) > 0 && len(excludeChannelIds[0]) > 0 {
+		excludeIds = excludeChannelIds[0]
+	}
+	if skipPriorityLevels == 0 {
+		if channel, keyIndex := CacheGetSatisfiedChannelByResponseID(ctx, group, model, responseID, excludeIds); channel != nil {
+			return channel, keyIndex, nil
 		}
 	}
 
@@ -608,8 +619,8 @@ func rankDynamicPriorityChannels(rows []dynamicPriorityChannel, rateLimits map[i
 // atomic 保证并发递增。
 var exploreRRLocalCounter atomic.Int64
 
-// capabilityFilter 非 nil 时用于 count_tokens 等能力筛选，在分档前先过滤。
-func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVal string, skipPriorityLevels int, excludeIds []int, capabilityFilter ChannelCapabilityFilter) (*Channel, int, error) {
+// channelFilter 非 nil 时用于能力或类型筛选，在分档前先过滤。
+func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVal string, skipPriorityLevels int, excludeIds []int, channelFilter func(*Channel) bool) (*Channel, int, error) {
 	// 新加渠道享受探索位优待的 TTL 阈值（Unix 秒）
 	ttlHours := config.DynamicPriorityExplorationTTLHours
 	if ttlHours <= 0 {
@@ -648,16 +659,11 @@ func selectByDynamicPriority(ctx context.Context, group, model, groupCol, trueVa
 		return nil, -1, fmt.Errorf("dynamic priority: fetch channels: %w", err)
 	}
 
-	// 能力过滤（如 count_tokens）：在排序结果上原地过滤，保留 dp 相对顺序。
-	// 不能下推 SQL —— LoadConfig 解析 JSON，DB 做不了。
-	if capabilityFilter != nil {
+	// 在排序结果上过滤，保留 dp 相对顺序。仅能力过滤需要解析配置。
+	if channelFilter != nil {
 		filtered := make([]dynamicPriorityChannel, 0, len(rows))
 		for i := range rows {
-			cfg, err := rows[i].Channel.LoadConfig()
-			if err != nil {
-				continue
-			}
-			if capabilityFilter(&rows[i].Channel, cfg) {
+			if channelFilter(&rows[i].Channel) {
 				filtered = append(filtered, rows[i])
 			}
 		}
@@ -911,6 +917,22 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 	responseID string,
 	excludeChannelIds ...[]int,
 ) (*Channel, error) {
+	return cacheGetRandomSatisfiedChannelWithFilter(ctx, group, model, func(channel *Channel) bool {
+		cfg, err := channel.LoadConfig()
+		return err == nil && capabilityFilter(channel, cfg)
+	}, skipPriorityLevels, excludeChannelIds...)
+}
+
+// CacheGetRandomSatisfiedChannelByType does not require a valid Config: the
+// original routing path tolerates parse errors and uses the partial/default config.
+// Keep capability checks (Azure region, count_tokens) strict in their own wrapper.
+func CacheGetRandomSatisfiedChannelByType(ctx context.Context, group, model string, channelType int, excludeChannelIds ...[]int) (*Channel, error) {
+	return cacheGetRandomSatisfiedChannelWithFilter(ctx, group, model, func(channel *Channel) bool {
+		return channel.Type == channelType
+	}, 0, excludeChannelIds...)
+}
+
+func cacheGetRandomSatisfiedChannelWithFilter(ctx context.Context, group, model string, channelFilter func(*Channel) bool, skipPriorityLevels int, excludeChannelIds ...[]int) (*Channel, error) {
 	groupCol := "`group`"
 	trueVal := "1"
 	if common.UsingPostgreSQL {
@@ -926,7 +948,7 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 
 	// 动态优先级分支：与主选渠道逻辑保持一致，按 dynamic_priority DESC 排序后做能力过滤。
 	if config.DynamicPriorityApplyEnabled {
-		ch, _, err := selectByDynamicPriority(ctx, group, model, groupCol, trueVal, skipPriorityLevels, excludeIds, capabilityFilter)
+		ch, _, err := selectByDynamicPriority(ctx, group, model, groupCol, trueVal, skipPriorityLevels, excludeIds, channelFilter)
 		return ch, err
 	}
 
@@ -967,11 +989,7 @@ func CacheGetRandomSatisfiedChannelWithCapability(
 		// 应用能力过滤器
 		var filteredChannels []Channel
 		for _, channel := range channels {
-			cfg, err := channel.LoadConfig()
-			if err != nil {
-				continue
-			}
-			if capabilityFilter(&channel, cfg) {
+			if channelFilter(&channel) {
 				filteredChannels = append(filteredChannels, channel)
 			}
 		}
@@ -1087,37 +1105,7 @@ func SetClaudeCacheIdToRedis(id string, channel string, expire int64, keyIndex i
 	if !common.RedisEnabled {
 		return errors.New("redis disabled")
 	}
-	if channel == "" {
-		return errors.New("empty channel")
-	}
-	if id == "" {
-		return errors.New("empty id")
-	}
-	if expire <= 0 {
-		return errors.New("invalid expire time")
-	}
-
-	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
-	cacheLength := fmt.Sprintf(common.CacheClaudeLength, id)
-	expireDuration := time.Duration(expire) * time.Minute
-
-	// 缓存值格式：channelId 或 channelId:keyIndex（多Key渠道）
-	cacheValue := channel
-	if keyIndex >= 0 {
-		cacheValue = fmt.Sprintf("%s:%d", channel, keyIndex)
-	}
-
-	// 原子性设置两个 key，使用 Pipeline 提高性能并保证一致性
-	pipe := common.RDB.Pipeline()
-	pipe.Set(context.Background(), cacheKey, cacheValue, expireDuration)
-	pipe.Set(context.Background(), cacheLength, expire, expireDuration)
-
-	_, err := pipe.Exec(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to set claude cache to redis: %w", err)
-	}
-
-	return nil
+	return setResponseIDToRedis(context.Background(), common.RDB, id, channel, expire, keyIndex)
 }
 
 // GetClaudeCacheIdFromRedis 从 Redis 获取缓存的渠道ID和Key索引

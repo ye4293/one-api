@@ -26,6 +26,7 @@ import (
 	"github.com/songquanpeng/one-api/relay/helper"
 	"github.com/songquanpeng/one-api/relay/model"
 	"github.com/songquanpeng/one-api/relay/util"
+	"github.com/songquanpeng/one-api/service"
 )
 
 // urlDownloadTask 表示一个URL下载任务
@@ -858,8 +859,12 @@ func doNativeGeminiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 	if unmarshalErr := json.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
+	defer service.RecordGeminiResponseSignatures(c, responseBody)
 	if geminiResponse.ResponseId != "" {
 		c.Set("x_response_id", geminiResponse.ResponseId)
+		if len(geminiResponse.Candidates) > 0 && geminiResponse.PromptFeedback.BlockReason == "" {
+			defer dbmodel.CacheResponseIdToChannelAsync(geminiResponse.ResponseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Gemini Native Cache")
+		}
 	}
 	//如果没有处理过inlineData中的URL格式图片，则直接返回
 	if c.GetBool("gemini_inline_data_url_processed") == false {
@@ -908,6 +913,7 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 
 	var imageCount int
 	var SendResponseCount int
+	var cachedResponseID string
 	responseText := strings.Builder{}
 
 	helper.StreamScannerHandler(c, resp, meta, func(data string) bool {
@@ -945,6 +951,12 @@ func doNativeGeminiStreamResponse(c *gin.Context, resp *http.Response, meta *uti
 		err = helper.StringData(c, data)
 		if err != nil {
 			logger.Error(c, err.Error())
+		} else {
+			if geminiResponse.ResponseId != "" && geminiResponse.ResponseId != cachedResponseID && geminiResponse.PromptFeedback.BlockReason == "" {
+				dbmodel.CacheResponseIdToChannelAsync(geminiResponse.ResponseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Gemini Native Stream Cache")
+				cachedResponseID = geminiResponse.ResponseId
+			}
+			service.RecordGeminiResponseSignatures(c, []byte(data))
 		}
 		SendResponseCount++
 		return true

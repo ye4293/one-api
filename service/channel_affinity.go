@@ -345,6 +345,16 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	logger.Infof(c.Request.Context(), "[Affinity] 已写入缓存 key=%s -> 渠道=%d keyIndex=%d ttl=%d秒", cacheKey, channelID, keyIndex, ttl)
 }
 
+// ResetChannelAffinityAfterChannelChange clears state tied to a discarded preferred
+// channel. Keep the cache key and TTL so a successful replacement can be recorded.
+func ResetChannelAffinityAfterChannelChange(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.Set(ginKeyAffinitySkipRetry, false)
+	c.Set("cached_key_index", -1)
+}
+
 // ShouldSkipRetryAfterChannelAffinityFailure 亲和渠道失败时是否禁止重试。
 // 返回 true 时，调用方应同时调用 ClearChannelAffinityContext 防止 post-Next 写入失败渠道。
 func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {

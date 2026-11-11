@@ -16,6 +16,7 @@ import (
 	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/constant"
 	"github.com/songquanpeng/one-api/relay/model"
+	"github.com/songquanpeng/one-api/service"
 )
 
 func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.ErrorWithStatusCode, string, *model.Usage) {
@@ -164,6 +165,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 			// some implementations may add \r at the end of data
 			data = strings.TrimSuffix(data, "\r")
 			c.Render(-1, common.CustomEvent{Data: data})
+			service.RecordGeminiResponseSignatures(c, []byte(strings.TrimPrefix(data, "data: ")))
 			return true
 		case <-stopChan:
 			return false
@@ -219,6 +221,7 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	if err != nil {
 		return ErrorWrapper(err, "copy_response_body_failed", http.StatusInternalServerError), nil
 	}
+	service.RecordGeminiResponseSignatures(c, responseBody)
 	err = resp.Body.Close()
 	if err != nil {
 		return ErrorWrapper(err, "close_response_body_failed", http.StatusInternalServerError), nil
