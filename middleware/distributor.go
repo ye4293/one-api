@@ -91,11 +91,19 @@ func Distribute() func(c *gin.Context) {
 					abortWithMessage(c, http.StatusBadRequest, "Model name is required")
 					return
 				}
-				// 路径 A：X-Response-ID 存在 → 内部走 GetClaudeCacheIdFromRedis（原有逻辑）
+				// 路径 A：X-Response-ID 存在 → 内部走 GetResponseIdRegionFromRedis（原有逻辑）
 				responseID := c.GetHeader("X-Response-ID")
-				// /v1/responses 路径支持通过 body 中的 previous_response_id 路由到正确渠道
+				// /v1/responses 路径支持通过 body 中的 previous_response_id 路由到正确渠道；
+				// 无 previous_response_id 时回退提取 input[] 尾部 encrypted_content 项 id（无状态回放场景）
 				if responseID == "" && strings.HasSuffix(c.FullPath(), "/responses") {
 					responseID = modelRequest.PreviousResponseID
+					if responseID == "" {
+						responseID = extractResponsesCorrelationID(c)
+					}
+				}
+				// /v1/chat/completions 路径：messages[] 尾部含加密推理的 assistant 消息 id（chatcmpl-xxx）
+				if responseID == "" && strings.HasSuffix(c.FullPath(), "/chat/completions") {
+					responseID = extractChatCorrelationID(c)
 				}
 
 				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
@@ -142,8 +150,7 @@ func Distribute() func(c *gin.Context) {
 				if channel == nil {
 					var cachedKeyIndex int
 					if service.IsGeminiModel(modelRequest.Model) && responseID != "" {
-						channel, cachedKeyIndex = model.CacheGetSatisfiedChannelByResponseID(c.Request.Context(), userGroup, modelRequest.Model, responseID, nil)
-						responseIDAffinityHit = channel != nil
+						channel, cachedKeyIndex, responseIDAffinityHit = model.CacheGetSatisfiedChannelByResponseID(c.Request.Context(), userGroup, modelRequest.Model, responseID, nil)
 						// The affinity lookup is complete. Do not repeat it during fallback
 						// and mistake a randomly selected channel for an affinity hit.
 						responseID = ""
@@ -184,8 +191,8 @@ func Distribute() func(c *gin.Context) {
 		c.Set("model", requestModel)
 
 		if channel != nil {
-			// A valid Response-ID affinity channel takes precedence over signatures.
-			// Only restore the signature source when no such channel was found.
+			// Only the original Response-ID channel takes precedence over signatures.
+			// Regional replacements still need to restore and check the signature source.
 			if !responseIDAffinityHit {
 				if affinityErr := service.PrepareGeminiResourceAffinity(c, requestModel); affinityErr != nil {
 					abortWithMessage(c, affinityErr.StatusCode, affinityErr.Message)

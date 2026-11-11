@@ -88,13 +88,14 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						responseId = streamResponse.Id
 						c.Set("x_response_id", responseId)
 					}
-					// 在收到第一个非空内容时缓存（确保响应正常）
+					// 在收到第一个非空内容时缓存（确保响应正常）；带区域信息供后续轮次同区域路由
 					if responseId != "" && !idCached {
 						for _, choice := range streamResponse.Choices {
 							content := conv.AsString(choice.Delta.Content)
 							if content != "" {
 								// 第一次有内容输出时缓存 ID
-								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Chat Completions Stream Cache")
+								dbmodel.CacheResponseIdWithRegionToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"),
+									dbmodel.ResolveRelayRegion(c, resp), "Chat Completions Stream Cache")
 								idCached = true
 								break // 已缓存，跳出循环
 							}
@@ -130,12 +131,13 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 						responseId = streamResponse.Id
 						c.Set("x_response_id", responseId)
 					}
-					// 在收到第一个非空文本时缓存（确保响应正常）
+					// 在收到第一个非空文本时缓存（确保响应正常）；带区域信息供后续轮次同区域路由
 					if responseId != "" && !idCached {
 						for _, choice := range streamResponse.Choices {
 							if choice.Text != "" {
 								// 第一次有内容输出时缓存 ID
-								dbmodel.CacheResponseIdToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"), "Text Completions Stream Cache")
+								dbmodel.CacheResponseIdWithRegionToChannel(responseId, c.GetInt("channel_id"), c.GetInt("key_index"),
+									dbmodel.ResolveRelayRegion(c, resp), "Text Completions Stream Cache")
 								idCached = true
 								break // 已缓存，跳出循环
 							}
@@ -239,8 +241,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 		}
 	}
 
-	// 缓存 response_id 到 Redis
-	dbmodel.CacheResponseIdToChannel(textResponse.Id, c.GetInt("channel_id"), c.GetInt("key_index"), "Text Completions Cache")
+	// 缓存 response_id 到 Redis（带区域信息供后续轮次同区域路由）
+	dbmodel.CacheResponseIdWithRegionToChannel(textResponse.Id, c.GetInt("channel_id"), c.GetInt("key_index"),
+		dbmodel.ResolveRelayRegion(c, resp), "Text Completions Cache")
 	c.Set("x_response_id", textResponse.Id)
 
 	return nil, &textResponse.Usage
