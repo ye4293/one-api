@@ -391,58 +391,66 @@ func CacheGetRandomSatisfiedChannel(ctx context.Context, group string, model str
 	}
 	// 如果不使用优先级且提供了 responseID，尝试从缓存中获取 channel
 	if skipPriorityLevels == 0 && responseID != "" {
-		// 从 Redis 中获取缓存的 channel ID 和 Key 索引
-		cachedChannelID, cachedKeyIndex, err := GetClaudeCacheIdFromRedis(responseID)
-		if err == nil && cachedChannelID != "" {
-			// 将 channel ID 字符串转换为整数
-			channelID, parseErr := strconv.Atoi(cachedChannelID)
-			if parseErr == nil {
-				if isExcludedChannel(channelID, excludeIds) {
-					logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
-				} else {
-					// 尝试获取该 channel
-					channel, getErr := CacheGetChannel(channelID)
-					if getErr == nil && channel != nil {
-						// 验证该 channel 是否满足条件（group、model、状态）
-						if channel.Status == common.ChannelStatusEnabled {
-							// 检查 group 是否匹配
-							channelGroups := strings.Split(channel.Group, ",")
-							groupMatched := false
-							for _, cg := range channelGroups {
-								if strings.TrimSpace(cg) == group {
-									groupMatched = true
-									break
-								}
+		// 从 Redis 中获取缓存的 channel ID 和 Key 索引（含 region 三段格式，兼容旧两段格式）
+		cachedChannelID, cachedKeyIndex, cachedRegion := GetResponseIdRegionFromRedis(responseID)
+		if cachedChannelID > 0 {
+			channelID := cachedChannelID
+			if isExcludedChannel(channelID, excludeIds) {
+				logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is excluded, will select new channel", channelID))
+			} else {
+				// 尝试获取该 channel
+				channel, getErr := CacheGetChannel(channelID)
+				if getErr == nil && channel != nil {
+					// 验证该 channel 是否满足条件（group、model、状态）
+					if channel.Status == common.ChannelStatusEnabled {
+						// 检查 group 是否匹配
+						channelGroups := strings.Split(channel.Group, ",")
+						groupMatched := false
+						for _, cg := range channelGroups {
+							if strings.TrimSpace(cg) == group {
+								groupMatched = true
+								break
 							}
+						}
 
-							// 检查 model 是否匹配
-							channelModels := strings.Split(channel.Models, ",")
-							modelMatched := false
-							for _, cm := range channelModels {
-								if strings.TrimSpace(cm) == model {
-									modelMatched = true
-									break
-								}
+						// 检查 model 是否匹配
+						channelModels := strings.Split(channel.Models, ",")
+						modelMatched := false
+						for _, cm := range channelModels {
+							if strings.TrimSpace(cm) == model {
+								modelMatched = true
+								break
 							}
+						}
 
-							// 如果都匹配，直接返回该 channel
-							if groupMatched && modelMatched {
-								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d) for responseID: %s, group: %s, model: %s",
-									channelID, cachedKeyIndex, responseID, group, model))
-								return channel, cachedKeyIndex, nil
-							} else {
-								logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
-									channelID, groupMatched, modelMatched))
-							}
+						// 如果都匹配，直接返回该 channel
+						if groupMatched && modelMatched {
+							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Using cached channel %d (keyIndex: %d, region: %s) for responseID: %s, group: %s, model: %s",
+								channelID, cachedKeyIndex, cachedRegion, responseID, group, model))
+							return channel, cachedKeyIndex, nil
 						} else {
-							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
-								channelID, channel.Status))
+							logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d not suitable (group match: %v, model match: %v), will select new channel",
+								channelID, groupMatched, modelMatched))
 						}
 					} else {
-						logger.Info(ctx, fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
-							channelID, getErr))
+						logger.Info(ctx, fmt.Sprintf("[Claude Cache] Cached channel %d is not enabled (status: %d), will select new channel",
+							channelID, channel.Status))
 					}
+				} else {
+					logger.Info(ctx, fmt.Sprintf("[Claude Cache] Failed to get channel %d from cache: %v, will select new channel",
+						channelID, getErr))
 				}
+			}
+
+			// 渠道失效但记录了区域：同区域兜底（fail-open，兜不到就走下方正常随机选渠）
+			if cachedRegion != "" && ResponsesAffinityEnabled {
+				if ch, idx := selectChannelByRegion(ctx, cachedRegion, group, model, excludeIds); ch != nil {
+					logger.Info(ctx, fmt.Sprintf("[ResponsesAffinity] 原渠道失效，同区域兜底命中 渠道=%d 区域=%s responseID=%s",
+						ch.Id, cachedRegion, responseID))
+					return ch, idx, nil
+				}
+				logger.Info(ctx, fmt.Sprintf("[ResponsesAffinity] 同区域无可用渠道，退回正常选渠 区域=%s responseID=%s",
+					cachedRegion, responseID))
 			}
 		}
 	}
