@@ -82,7 +82,7 @@ func SelectChannelForResponseOrigin(ctx context.Context, group, model string, or
 	if !isExcludedChannel(origin.ChannelID, excluded) {
 		ch, err := CacheGetChannel(origin.ChannelID)
 		if err == nil && ch != nil && ch.Type == origin.ChannelType && ch.Status == common.ChannelStatusEnabled &&
-			containsResponseValue(ch.Group, group) && containsResponseValue(ch.Models, model) {
+			containsResponseValue(ch.Group, group) && containsResponseValue(ch.Models, model) && responseAbilityEnabled(ch.Id, group, model) {
 			if origin.KeyIndex >= 0 {
 				if _, err := ch.GetKeyByIndex(origin.KeyIndex); err == nil {
 					return ch, origin.KeyIndex, nil
@@ -112,4 +112,17 @@ func containsResponseValue(list, value string) bool {
 		}
 	}
 	return false
+}
+
+func responseAbilityEnabled(channelID int, group, model string) bool {
+	if DB == nil {
+		return false
+	}
+	var count int64
+	groupColumn := "`group`"
+	if common.UsingPostgreSQL {
+		groupColumn = `"group"`
+	}
+	err := DB.Model(&Ability{}).Where("channel_id = ? AND model = ? AND enabled = ?", channelID, model, true).Where(groupColumn+" = ?", group).Count(&count).Error
+	return err == nil && count > 0
 }

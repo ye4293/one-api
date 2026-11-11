@@ -120,3 +120,17 @@ func TestResponseOriginParentMappingSurvivesSuccessfulChat(t *testing.T) {
 		t.Fatalf("parent overwritten: %d:%s", channel, region)
 	}
 }
+func TestResponseOriginSkipsDisabledAbility(t *testing.T) {
+	setupRetryPolicyDB(t, false)
+	auditRedis(t)
+	seedRetryChannel(t, 1, common.ChannelTypeAzure, `{"region":"eastus"}`, 100)
+	seedRetryChannel(t, 2, common.ChannelTypeAzure, `{"region":"eastus"}`, 10)
+	dbmodel.DB.Model(&dbmodel.Ability{}).Where("channel_id = ?", 1).Update("enabled", false)
+	if err := dbmodel.SetResponseIdRegionToRedis("resp_A", 1, 0, "eastus", 1440); err != nil {
+		t.Fatal(err)
+	}
+	ch, _, err := dbmodel.CacheGetRandomSatisfiedChannel(context.Background(), "default", "test-model", 0, "resp_A")
+	if err != nil || ch == nil || ch.Id != 2 {
+		t.Fatalf("must skip disabled model ability: channel=%+v err=%v", ch, err)
+	}
+}
