@@ -56,11 +56,11 @@ func selectChannelByRegion(ctx context.Context, region string, group string, mod
 		return nil, -1
 	}
 
-	// 内存过滤同区域渠道
+	// 与 Azure 重试保持一致，区域名称忽略大小写。
 	var matched []*Channel
 	for i := range channels {
 		ch := &channels[i]
-		if GetAzureChannelRegion(ch) == region {
+		if strings.EqualFold(GetAzureChannelRegion(ch), region) {
 			matched = append(matched, ch)
 		}
 	}
