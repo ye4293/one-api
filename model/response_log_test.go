@@ -42,7 +42,7 @@ func TestResponseLogKeepsParentAndCurrentIDs(t *testing.T) {
 }
 func TestResponseLogOtherPreservesExistingMetadata(t *testing.T) {
 	setupResponseLogDB(t)
-	ctx := WithResponseOrigin(WithPreviousResponseID(context.Background(), "resp_A"), ResponseOrigin{ChannelID: 7, ChannelType: common.ChannelTypeAzure, KeyIndex: 2, Region: "eastus"})
+	ctx := WithResponseOrigin(WithPreviousResponseID(context.Background(), "resp_A"), ResponseOrigin{ResponseID: "resp_A", ChannelID: 7, ChannelType: common.ChannelTypeAzure, KeyIndex: 2, Region: "eastus"})
 	for _, other := range []string{`{"usageDetails":{"input_tokens":2}}`, `adminInfo:[7];usageDetails:{"input_tokens":2}`} {
 		RecordConsumeLogWithOtherAndRequestID(ctx, 1, 8, 1, 1, "gpt-test", "token", 1, "ok", 1, "", "", false, 0, other, "req_B", 0, "resp_B")
 		var got Log

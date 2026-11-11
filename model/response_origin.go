@@ -3,8 +3,10 @@ package model
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/songquanpeng/one-api/common"
 )
 
@@ -15,6 +17,8 @@ type previousResponseContextKey struct{}
 type ResponseOrigin = ResponseIdRegionInfo
 
 var ErrResponseOriginUnknown = errors.New("response origin is unavailable")
+var ErrResponseOriginNotFound = errors.New("response origin was not found")
+var ErrResponseOriginUnavailable = errors.New("response origin store is unavailable")
 var ErrResponseOriginConflict = errors.New("response origin conflicts with existing provenance")
 
 func WithResponseOrigin(ctx context.Context, origin ResponseOrigin) context.Context {
@@ -34,12 +38,18 @@ func PreviousResponseIDFromContext(ctx context.Context) string {
 
 // LookupResponseOrigin upgrades legacy metadata only from its original channel.
 func LookupResponseOrigin(id string) (ResponseOrigin, error) {
-	if !common.RedisEnabled || common.RDB == nil || id == "" {
+	if id == "" {
 		return ResponseOrigin{}, ErrResponseOriginUnknown
 	}
+	if !common.RedisEnabled || common.RDB == nil {
+		return ResponseOrigin{}, ErrResponseOriginUnavailable
+	}
 	value, err := common.RedisGet(fmtResponseCacheKey(id))
+	if errors.Is(err, redis.Nil) {
+		return ResponseOrigin{}, ErrResponseOriginNotFound
+	}
 	if err != nil {
-		return ResponseOrigin{}, ErrResponseOriginUnknown
+		return ResponseOrigin{}, fmt.Errorf("%w: %w", ErrResponseOriginUnavailable, err)
 	}
 	origin := ParseResponseIdCacheValue(value)
 	if origin.ChannelID <= 0 {

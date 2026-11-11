@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -72,12 +73,24 @@ func Distribute() func(c *gin.Context) {
 		}
 		if responseID != "" {
 			origin, lookupErr := model.LookupResponseOrigin(responseID)
-			if lookupErr != nil {
+			switch {
+			case lookupErr == nil:
+				c.Request = c.Request.WithContext(model.WithResponseOrigin(c.Request.Context(), origin))
+				c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), origin.ResponseID))
+			case errors.Is(lookupErr, model.ErrResponseOriginNotFound) && canReplayResponsesWithoutOrigin(c):
+				logger.Warnf(c.Request.Context(), "Response origin not found; forwarding encrypted reasoning replay for upstream verification: id=%s", responseID)
+				// Keep the historical ID in the correlation context and original body.
+				// Clear only the selection hint to avoid repeating the failed lookup.
+				responseID = ""
+			case errors.Is(lookupErr, model.ErrResponseOriginUnavailable):
+				logger.Warnf(c.Request.Context(), "Response origin lookup failed: id=%s err=%v", responseID, lookupErr)
+				abortResponseCorrelation(c, http.StatusServiceUnavailable, "Previous response origin lookup is temporarily unavailable; retry later", modelRequest.Model)
+				return
+			default:
+				logger.Warnf(c.Request.Context(), "Response origin cannot be resolved: id=%s err=%v", responseID, lookupErr)
 				abortResponseCorrelation(c, http.StatusConflict, "Previous response origin is unavailable; start a new conversation", modelRequest.Model)
 				return
 			}
-			c.Request = c.Request.WithContext(model.WithResponseOrigin(c.Request.Context(), origin))
-			c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), origin.ResponseID))
 		}
 
 		// 检查是否指定了特定渠道

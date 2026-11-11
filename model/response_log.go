@@ -15,7 +15,9 @@ func AppendResponseCorrelationOther(ctx context.Context, other string) string {
 		return other
 	}
 	metadata := map[string]any{"previous_response_id": parent}
-	if known {
+	// newRetryContext also uses an ID-less origin as this request's retry
+	// constraint. It must not be reported as provenance for an unknown parent.
+	if known && (parent == "" || origin.ResponseID != "") {
 		metadata["origin_region"] = origin.Region
 		metadata["origin_channel_type"] = origin.ChannelType
 		metadata["origin_channel_id"] = origin.ChannelID

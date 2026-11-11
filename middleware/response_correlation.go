@@ -2,13 +2,13 @@ package middleware
 
 import (
 	"fmt"
-	"github.com/songquanpeng/one-api/model"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
 	"github.com/songquanpeng/one-api/common"
+	"github.com/songquanpeng/one-api/model"
 )
 
 // extractResponsesCorrelationID 提取 responses 请求的关联键（区域亲和 / 渠道钉扎用）。
@@ -129,6 +129,70 @@ func captureResponseCorrelation(c *gin.Context) (string, error) {
 		c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), id))
 	}
 	return id, nil
+}
+
+// canReplayResponsesWithoutOrigin permits a narrow, self-carried input shape to
+// reach upstream verification on a confirmed cache miss. It does not establish
+// that the client's history is complete, or remove any part of that history.
+// Server references and opaque compaction state still require a known origin.
+func canReplayResponsesWithoutOrigin(c *gin.Context) bool {
+	if strings.TrimRight(c.Request.URL.Path, "/") != "/v1/responses" {
+		return false
+	}
+	body, err := common.GetRequestBody(c)
+	if err != nil || !gjson.ValidBytes(body) {
+		return false
+	}
+	request := gjson.ParseBytes(body)
+	if strings.TrimSpace(request.Get("previous_response_id").String()) != "" ||
+		request.Get("conversation").Exists() {
+		return false
+	}
+	input := request.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	hasMessage, hasEncryptedReasoning := false, false
+	for _, item := range input.Array() {
+		if !item.IsObject() {
+			return false
+		}
+		itemType := item.Get("type").String()
+		if itemType != "reasoning" && item.Get("encrypted_content").Exists() {
+			return false
+		}
+		switch itemType {
+		case "", "message":
+			role, content := item.Get("role").String(), item.Get("content")
+			if (role != "user" && role != "assistant" && role != "system" && role != "developer") ||
+				(!content.IsArray() && content.Type != gjson.String) ||
+				(content.IsArray() && len(content.Array()) == 0) || strings.TrimSpace(content.String()) == "" {
+				return false
+			}
+			hasMessage = true
+		case "reasoning":
+			if encrypted := item.Get("encrypted_content"); encrypted.Type == gjson.String && encrypted.String() != "" {
+				hasEncryptedReasoning = true
+			} else if !item.Get("summary").IsArray() {
+				return false
+			}
+		case "function_call":
+			if item.Get("call_id").String() == "" || item.Get("name").String() == "" || !item.Get("arguments").Exists() {
+				return false
+			}
+		case "custom_tool_call":
+			if item.Get("call_id").String() == "" || item.Get("name").String() == "" || item.Get("input").Type != gjson.String {
+				return false
+			}
+		case "function_call_output", "custom_tool_call_output":
+			if item.Get("call_id").String() == "" || !item.Get("output").Exists() {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return hasMessage && hasEncryptedReasoning
 }
 
 func abortResponseCorrelation(c *gin.Context, status int, message, modelName string) {
