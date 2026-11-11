@@ -172,7 +172,11 @@ func Distribute() func(c *gin.Context) {
 						// 不补的话 503 请求根本进不了 llm_requests_total（详见 metrics.CtxModelKey 注释）。
 						c.Set(metrics.CtxRelayFailedKey, metrics.ReasonNoChannel)
 						c.Set(metrics.CtxModelKey, modelRequest.Model)
-						abortWithMessage(c, http.StatusServiceUnavailable, message)
+						if _, hasOrigin := model.ResponseOriginFromContext(c.Request.Context()); hasOrigin {
+							abortResponseCorrelation(c, http.StatusServiceUnavailable, message, modelRequest.Model)
+						} else {
+							abortWithMessage(c, http.StatusServiceUnavailable, message)
+						}
 						return
 					}
 				}

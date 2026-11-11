@@ -2,14 +2,18 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	dbmodel "github.com/songquanpeng/one-api/model"
+	"github.com/songquanpeng/one-api/relay/channel/openai"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -134,3 +138,60 @@ func TestResponseOriginSkipsDisabledAbility(t *testing.T) {
 		t.Fatalf("must skip disabled model ability: channel=%+v err=%v", ch, err)
 	}
 }
+func TestResponseOriginPublishedStreamCannotRetry(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Write([]byte("data: {\"id\":\"chatcmpl-A\"}\n\n"))
+	if shouldRetry(c, 502, "unexpected EOF") {
+		t.Fatal("cannot retry an already published stream")
+	}
+}
+
+type recoveredOriginWriter struct {
+	gin.ResponseWriter
+	recover func()
+}
+
+func (w *recoveredOriginWriter) Write(b []byte) (int, error) {
+	w.recover()
+	return w.ResponseWriter.Write(b)
+}
+func TestResponseOriginRecoveryUsesActualSnapshot(t *testing.T) {
+	setupRetryPolicyDB(t, false)
+	auditRedis(t)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	c.Set("channel_id", 7)
+	c.Set("channel", common.ChannelTypeAzure)
+	c.Set("key_index", 0)
+	c.Set("original_model", "gpt-test")
+	c.Set("Config", dbmodel.ChannelConfig{Region: "westus"})
+	common.RDB.AddHook(&recoveringOriginHook{})
+	c.Writer = &recoveredOriginWriter{ResponseWriter: c.Writer, recover: func() {}}
+	body := `{"id":"chatcmpl-A","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"X-Ms-Region": []string{"eastus"}}, Body: io.NopCloser(strings.NewReader(body))}
+	if err, _ := openai.Handler(c, resp, 1, "gpt-test"); err != nil {
+		t.Fatal(err)
+	}
+	recordRelayAffinity(c, 7)
+	got, err := dbmodel.LookupResponseOrigin("chatcmpl-A")
+	if err != nil || got.Region != "eastus" {
+		t.Fatalf("wrong recovered region: %+v %v", got, err)
+	}
+}
+
+type recoveringOriginHook struct{ failed bool }
+
+func (h *recoveringOriginHook) BeforeProcess(ctx context.Context, cmd redis.Cmder) (context.Context, error) {
+	if cmd.Name() == "set" && !h.failed {
+		h.failed = true
+		return ctx, errors.New("initial write failed")
+	}
+	return ctx, nil
+}
+func (h *recoveringOriginHook) AfterProcess(context.Context, redis.Cmder) error { return nil }
+func (h *recoveringOriginHook) BeforeProcessPipeline(ctx context.Context, _ []redis.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+func (h *recoveringOriginHook) AfterProcessPipeline(context.Context, []redis.Cmder) error { return nil }

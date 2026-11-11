@@ -36,6 +36,7 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 	common.SetEventStreamHeaders(c)
 	err := common.ScanSSEOwned(c.Request.Context(), resp.Body, timeout, 0, func(data string) bool {
 		if data == "[DONE]" {
+			dbmodel.CaptureCurrentResponseOrigin(c, origin)
 			if responseID != "" && !cached {
 				if err := dbmodel.RegisterResponseOrigin(origin); err != nil {
 					logger.Warnf(c.Request.Context(), "chat origin registration failed: %v", err)
@@ -136,7 +137,9 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 	// Reset response body
 	resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
 
-	if err := dbmodel.RegisterResponseOrigin(dbmodel.RelayResponseOrigin(c, resp, textResponse.Id)); err != nil {
+	currentOrigin := dbmodel.RelayResponseOrigin(c, resp, textResponse.Id)
+	dbmodel.CaptureCurrentResponseOrigin(c, currentOrigin)
+	if err := dbmodel.RegisterResponseOrigin(currentOrigin); err != nil {
 		logger.Warnf(c.Request.Context(), "chat origin registration failed: %v", err)
 	}
 	c.Set("x_response_id", textResponse.Id)

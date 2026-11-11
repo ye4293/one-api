@@ -120,3 +120,12 @@ func TestResponseOriginCompletedEventRetriesFailedRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestResponseOriginPrefixFailureCapturesGeneratedID(t *testing.T) {
+	c, _ := originRegistrationContext(t)
+	body := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_B\"}}\n\nevent: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_B\",\"error\":{\"code\":\"insufficient_quota\",\"message\":\"quota\"}}}\n\n"
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"X-Ms-Region": []string{"eastus"}}, Body: io.NopCloser(strings.NewReader(body))}
+	_, err := doNativeOpenaiResponseStream(c, resp, &util.RelayMeta{})
+	if err == nil || c.GetString("x_response_id") != "resp_B" {
+		t.Fatalf("generated ID lost on prefix failure: id=%q err=%v", c.GetString("x_response_id"), err)
+	}
+}

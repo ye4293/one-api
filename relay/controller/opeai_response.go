@@ -532,6 +532,7 @@ func doNativeOpenaiResponse(c *gin.Context, resp *http.Response, meta *util.Rela
 		return nil, openai.ErrorWrapper(unmarshalErr, "unmarshal_response_failed", http.StatusInternalServerError)
 	}
 	origin := dbmodel.RelayResponseOrigin(c, resp, openaiResponse.ID)
+	dbmodel.CaptureCurrentResponseOrigin(c, origin)
 	ids := make([]string, 0, len(openaiResponse.Output))
 	for _, item := range openaiResponse.Output {
 		ids = append(ids, item.ID)
@@ -576,6 +577,19 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 	// 缓冲流的前几个事件，检测流内错误（如 insufficient_quota）
 	// 如果检测到错误，直接返回让上层重试逻辑通过 RetryKeywords 判断是否重试
 	buffered, streamErr := bufferStreamPrefix(resp.Body)
+	// The prefix may contain a generated ID even when no response is published.
+	prefixScanner := bufio.NewScanner(bytes.NewReader(buffered))
+	for prefixScanner.Scan() {
+		line := prefixScanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event openai.OpenaiResponseStreamResponse
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) == nil && event.Response != nil && event.Response.ID != "" {
+			c.Set("x_response_id", event.Response.ID)
+			dbmodel.CaptureCurrentResponseOrigin(c, dbmodel.RelayResponseOrigin(c, resp, event.Response.ID))
+		}
+	}
 	if streamErr != nil {
 		logger.Warnf(c.Request.Context(), "stream prefix error detected: %s", streamErr.Error.Message)
 		return nil, streamErr
@@ -612,6 +626,7 @@ func doNativeOpenaiResponseStream(c *gin.Context, resp *http.Response, meta *uti
 			responseID = streamResponse.Response.ID
 			origin.ResponseID = responseID
 			c.Set("x_response_id", responseID)
+			dbmodel.CaptureCurrentResponseOrigin(c, origin)
 		}
 		ids := []string{}
 		if streamResponse.Response != nil {

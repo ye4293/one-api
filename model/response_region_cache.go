@@ -44,6 +44,9 @@ func fmtResponseCacheKey(id string) string         { return fmt.Sprintf(common.C
 func normalizeResponseRegion(region string) string { return strings.ToLower(sanitizeRegion(region)) }
 
 func CacheResponseOrigin(id string, origin ResponseOrigin) error {
+	if !ResponsesAffinityEnabled {
+		return nil
+	}
 	if origin.ChannelType <= 0 {
 		return ErrResponseOriginUnknown
 	}

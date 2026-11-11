@@ -555,6 +555,11 @@ func getRetryKeywords() []string {
 }
 
 func shouldRetry(c *gin.Context, statusCode int, message string) bool {
+	// A published response cannot be replaced by another upstream attempt.
+	if c.Writer != nil && c.Writer.Written() {
+		return false
+	}
+
 	// 如果指定了特定渠道，不允许重试
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
@@ -3824,14 +3829,13 @@ func recordRelayAffinity(c *gin.Context, channelID int) {
 		return
 	}
 
-	keyIndex := c.GetInt("key_index")
-	region := ""
-	if cfg, ok := c.Get("Config"); ok {
-		if parsed, valid := cfg.(dbmodel.ChannelConfig); valid {
-			region = parsed.Region
+	if value, ok := c.Get(dbmodel.CurrentResponseOriginKey); ok {
+		if origin, ok := value.(dbmodel.ResponseOrigin); ok {
+			_ = dbmodel.CacheResponseOrigin(responseID, origin)
+			return
 		}
 	}
-	// Handlers register actual x-ms-region before publishing the new ID. Never
-	// overwrite that snapshot with a later config-only write.
-	_ = dbmodel.CacheResponseOrigin(responseID, dbmodel.ResponseOrigin{ResponseID: responseID, ChannelID: channelID, KeyIndex: keyIndex, ChannelType: c.GetInt("channel"), Region: region})
+	// Legacy adapters without a response-time snapshot cannot safely reconstruct
+	// actual provenance after a failed write. Leave the ID unknown rather than
+	// poisoning the immutable cache with a configured-region guess.
 }

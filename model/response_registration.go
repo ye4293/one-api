@@ -39,3 +39,9 @@ func RegisterResponseOrigin(origin ResponseOrigin, itemIDs ...string) error {
 	}
 	return firstErr
 }
+
+const CurrentResponseOriginKey = "current_response_origin"
+
+func CaptureCurrentResponseOrigin(c *gin.Context, origin ResponseOrigin) {
+	c.Set(CurrentResponseOriginKey, origin)
+}

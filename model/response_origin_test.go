@@ -75,3 +75,15 @@ func TestResponseOriginLegacyAndMissingKeyIndex(t *testing.T) {
 		t.Fatalf("region lost: %+v %v", got, err)
 	}
 }
+func TestResponseOriginRegistrationRespectsDisabledFlag(t *testing.T) {
+	r := setupResponseOriginRedis(t)
+	old := ResponsesAffinityEnabled
+	ResponsesAffinityEnabled = false
+	t.Cleanup(func() { ResponsesAffinityEnabled = old })
+	if err := RegisterResponseOrigin(ResponseOrigin{ResponseID: "resp_off", ChannelID: 7, ChannelType: common.ChannelTypeAzure, KeyIndex: 0, Region: "eastus"}); err != nil {
+		t.Fatal(err)
+	}
+	if r.Exists(fmtResponseCacheKey("resp_off")) {
+		t.Fatal("disabled affinity must not register origins")
+	}
+}
