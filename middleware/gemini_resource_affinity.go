@@ -22,6 +22,10 @@ func enforceGeminiResourceAffinity(c *gin.Context, channel *model.Channel, model
 		return channel, nil
 	}
 	channelType, pinned := service.GeminiResourceType(c.Request.Context())
+	if origin, known := model.ResponseOriginFromContext(c.Request.Context()); known && pinned && channelType != origin.ChannelType {
+		return nil, &service.GeminiAffinityError{StatusCode: http.StatusConflict, Message: "Gemini signature type conflicts with previous response origin"}
+	}
+
 	if !pinned {
 		c.Request = c.Request.WithContext(service.WithGeminiResourceType(c.Request.Context(), channel.Type))
 		return channel, nil

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,14 +21,16 @@ import (
 // region 为第三段（可选），用于 Azure 等加密内容绑定资源区域时做同区域兜底。
 // 旧缓存值兼容：只有 channelId 或 channelId:keyIndex 两段时 region 为空。
 type ResponseIdRegionInfo struct {
-	ChannelID int
-	KeyIndex  int // -1 表示未记录
-	Region    string
+	ChannelID   int    `json:"channel_id"`
+	KeyIndex    int    `json:"key_index"`
+	Region      string `json:"region"`
+	ChannelType int    `json:"channel_type"`
+	ResponseID  string `json:"response_id"`
+	Version     int    `json:"version"`
 }
 
 // ResponsesAffinityEnabled responses 区域亲和总开关。
-// 默认开启：本特性 fail-open（查询失败/未命中仅退回随机选渠，不拒绝请求），
-// 关闭后写入路径短路，行为回到改动前。
+// 控制来源登记；携带历史引用时仍须能确认来源，否则返回明确错误。
 var ResponsesAffinityEnabled = env.Bool("RESPONSES_AFFINITY_ENABLED", true)
 
 // ResponsesAffinityTTLMinutes response_id -> 渠道/区域 映射的 Redis TTL（分钟）。
@@ -37,43 +40,66 @@ var ResponsesAffinityTTLMinutes = env.Int("RESPONSES_AFFINITY_TTL_MINUTES", 1440
 // SetResponseIdRegionToRedis 写入 response_id -> channelId:keyIndex:region 映射。
 // 与 SetClaudeCacheIdToRedis 同 key（cache_response_id_%s），值格式向后兼容。
 // region 为空时退化为两段格式，与旧写入完全一致。
-func SetResponseIdRegionToRedis(id string, channelId int, keyIndex int, region string, expireMinutes int64) error {
-	if !common.RedisEnabled {
-		return errors.New("redis disabled")
-	}
-	if id == "" {
-		return errors.New("empty id")
-	}
-	if channelId <= 0 {
-		return errors.New("invalid channel id")
-	}
-	if expireMinutes <= 0 {
-		expireMinutes = 1440
-	}
+func fmtResponseCacheKey(id string) string         { return fmt.Sprintf(common.CacheClaudeRsID, id) }
+func normalizeResponseRegion(region string) string { return strings.ToLower(sanitizeRegion(region)) }
 
-	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
-	// 缓存值格式：channelId / channelId:keyIndex / channelId:keyIndex:region
-	cacheValue := fmt.Sprintf("%d", channelId)
-	if keyIndex >= 0 {
-		cacheValue = fmt.Sprintf("%s:%d", cacheValue, keyIndex)
+func CacheResponseOrigin(id string, origin ResponseOrigin) error {
+	if origin.ChannelType <= 0 {
+		return ErrResponseOriginUnknown
 	}
-	if region != "" {
-		cacheValue = fmt.Sprintf("%s:%s", cacheValue, region)
+	return cacheResponseOriginWithTTL(id, origin, int64(ResponsesAffinityTTLMinutes))
+}
+func cacheResponseOriginWithTTL(id string, origin ResponseOrigin, minutes int64) error {
+	if !common.RedisEnabled || common.RDB == nil {
+		return errors.New("redis unavailable")
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if id == "" || origin.ChannelID <= 0 {
+		return errors.New("invalid response origin")
+	}
+	if minutes <= 0 {
+		minutes = 1440
+	}
+	origin.Version = 2
+	origin.Region = normalizeResponseRegion(origin.Region)
+	if origin.ResponseID == "" {
+		origin.ResponseID = id
+	}
+	raw, err := json.Marshal(origin)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := common.RDB.Set(ctx, cacheKey, cacheValue, time.Duration(expireMinutes)*time.Minute).Err(); err != nil {
-		return fmt.Errorf("failed to set response id mapping: %w", err)
+	inserted, err := common.RDB.SetNX(ctx, fmtResponseCacheKey(id), raw, time.Duration(minutes)*time.Minute).Result()
+	if err != nil || inserted {
+		return err
 	}
-	// 命中续期由写入承担：活跃会话每轮都会写新 id，无需额外 EXPIRE。
+	existing, err := common.RDB.Get(ctx, fmtResponseCacheKey(id)).Result()
+	if err != nil {
+		return err
+	}
+	prior := ParseResponseIdCacheValue(existing)
+	if prior.ChannelID != origin.ChannelID || prior.KeyIndex != origin.KeyIndex ||
+		(prior.ChannelType > 0 && prior.ChannelType != origin.ChannelType) ||
+		(prior.Region != "" && !strings.EqualFold(prior.Region, origin.Region)) {
+		return ErrResponseOriginConflict
+	}
 	return nil
+}
+func SetResponseIdRegionToRedis(id string, channelId int, keyIndex int, region string, expireMinutes int64) error {
+	origin := ResponseOrigin{ChannelID: channelId, KeyIndex: keyIndex, Region: region, ResponseID: id}
+	if DB != nil {
+		if ch, err := CacheGetChannel(channelId); err == nil && ch != nil {
+			origin.ChannelType = ch.Type
+		}
+	}
+	return cacheResponseOriginWithTTL(id, origin, expireMinutes)
 }
 
 // GetResponseIdRegionFromRedis 读取 response_id 映射（含 region 三段解析）。
 // 返回 channelId、keyIndex、region；解析失败或 key 不存在时返回 0, -1, ""。
 func GetResponseIdRegionFromRedis(id string) (int, int, string) {
-	if !common.RedisEnabled || id == "" {
+	if !common.RedisEnabled || common.RDB == nil || id == "" {
 		return 0, -1, ""
 	}
 	cacheKey := fmt.Sprintf(common.CacheClaudeRsID, id)
@@ -95,6 +121,13 @@ func GetResponseIdRegionFromRedis(id string) (int, int, string) {
 func ParseResponseIdCacheValue(value string) ResponseIdRegionInfo {
 	info := ResponseIdRegionInfo{ChannelID: 0, KeyIndex: -1, Region: ""}
 	if value == "" {
+		return info
+	}
+	if strings.HasPrefix(strings.TrimSpace(value), "{") {
+		if err := json.Unmarshal([]byte(value), &info); err != nil {
+			return ResponseIdRegionInfo{KeyIndex: -1}
+		}
+		info.Region = normalizeResponseRegion(info.Region)
 		return info
 	}
 	parts := strings.SplitN(value, ":", 3)

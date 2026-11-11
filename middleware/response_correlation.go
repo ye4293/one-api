@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"fmt"
+	"github.com/songquanpeng/one-api/model"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -98,4 +100,33 @@ func extractChatCorrelationID(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+// captureResponseCorrelation keeps the parent separate from the ID returned by this request.
+func captureResponseCorrelation(c *gin.Context) (string, error) {
+	header := strings.TrimSpace(c.GetHeader("X-Response-ID"))
+	path := strings.TrimRight(c.Request.URL.Path, "/")
+	id := header
+	if path == "/v1/responses" || path == "/v1/responses/compact" {
+		body, err := common.GetRequestBody(c)
+		if err != nil {
+			return "", err
+		}
+		parent := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+		if parent != "" {
+			c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), parent))
+			if header != "" && header != parent {
+				return "", fmt.Errorf("X-Response-ID conflicts with previous_response_id")
+			}
+			id = parent
+		} else if id == "" {
+			id = extractResponsesCorrelationID(c)
+		}
+	} else if path == "/v1/chat/completions" && id == "" {
+		id = extractChatCorrelationID(c)
+	}
+	if id != "" {
+		c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), id))
+	}
+	return id, nil
 }
