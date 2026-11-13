@@ -77,8 +77,9 @@ func Distribute() func(c *gin.Context) {
 			case lookupErr == nil:
 				c.Request = c.Request.WithContext(model.WithResponseOrigin(c.Request.Context(), origin))
 				c.Request = c.Request.WithContext(model.WithPreviousResponseID(c.Request.Context(), origin.ResponseID))
-			case errors.Is(lookupErr, model.ErrResponseOriginNotFound) && canReplayResponsesWithoutOrigin(c):
-				logger.Warnf(c.Request.Context(), "Response origin not found; forwarding encrypted reasoning replay for upstream verification: id=%s", responseID)
+			case canForwardResponsesWithoutOrigin(c):
+				c.Request = c.Request.WithContext(model.WithResponseOriginFallback(c.Request.Context(), lookupErr))
+				logger.Warnf(c.Request.Context(), "Response origin unresolved; forwarding request for upstream verification: id=%s reason=%s err=%v", responseID, model.ResponseOriginFallbackReason(c.Request.Context()), lookupErr)
 				// Keep the historical ID in the correlation context and original body.
 				// Clear only the selection hint to avoid repeating the failed lookup.
 				responseID = ""
@@ -119,8 +120,9 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 
-				// 路径 B：X-Response-ID 不存在 → 规则亲和预查
-				if responseID == "" {
+				// 来源回退直接走能力校验的随机选渠，避免规则亲和绕过模型禁用或抑制重试。
+				// 普通无来源请求仍使用规则亲和预查。
+				if responseID == "" && model.ResponseOriginFallbackReason(c.Request.Context()) == "" {
 					if preferredID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, userGroup); found {
 						preferred, getErr := model.CacheGetChannelCopy(preferredID)
 						if getErr == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
@@ -164,7 +166,9 @@ func Distribute() func(c *gin.Context) {
 					var cachedKeyIndex int
 
 					if channel == nil {
-						channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, responseID)
+						// Use the origin snapshot (or fallback decision) captured above.
+						// A second lookup could fail or disagree after Redis recovery.
+						channel, cachedKeyIndex, err = model.CacheGetRandomSatisfiedChannel(c.Request.Context(), userGroup, modelRequest.Model, 0, "")
 					}
 					if cachedKeyIndex >= 0 {
 						c.Set("cached_key_index", cachedKeyIndex)

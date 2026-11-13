@@ -12,6 +12,7 @@ import (
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/audit"
 	"github.com/songquanpeng/one-api/common/logger"
+	dbmodel "github.com/songquanpeng/one-api/model"
 	"github.com/songquanpeng/one-api/relay/channel"
 	"github.com/songquanpeng/one-api/relay/util"
 )
@@ -20,7 +21,10 @@ import (
 func doOpenaiResponseRequest(c *gin.Context, meta *util.RelayMeta, adaptor channel.Adaptor, body []byte) (*http.Response, error) {
 	resp, err := adaptor.DoRequest(c, meta, bytes.NewReader(body))
 	if err != nil || resp == nil || resp.Body == nil || meta.ChannelType != common.ChannelTypeAzure ||
-		strings.TrimRight(c.Request.URL.Path, "/") != "/v1/responses" || resp.StatusCode != http.StatusBadRequest {
+		strings.TrimRight(c.Request.URL.Path, "/") != "/v1/responses" || resp.StatusCode != http.StatusBadRequest ||
+		dbmodel.ResponseOriginFallbackReason(c.Request.Context()) != "" {
+		// Unknown-origin continuations must retain their complete history and
+		// expose upstream rejection instead of succeeding with stripped state.
 		return resp, err
 	}
 

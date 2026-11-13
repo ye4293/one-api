@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -108,6 +109,8 @@ func TestResponseOriginMissToolReplay(t *testing.T) {
 	for _, tc := range []struct{ name, items string }{
 		{"function", `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell","arguments":"{}"},{"type":"function_call_output","call_id":"call_1","output":"done"}`},
 		{"custom", `{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"apply_patch","input":"patch text"},{"type":"custom_tool_call_output","call_id":"call_1","output":"done"}`},
+		{"additional tools", `{"type":"additional_tools","id":"at_1","role":"developer","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`},
+		{"agent message", `{"type":"agent_message","id":"amsg_1","author":"worker","recipient":"root","content":"Earlier result"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := strings.Replace(originReplayBody, `"input":[`, `"input":[`+tc.items+`,`, 1)
@@ -128,7 +131,7 @@ func TestResponseOriginMissToolReplay(t *testing.T) {
 	}
 }
 
-func TestResponseOriginMissHardReferences(t *testing.T) {
+func TestResponseOriginMissDelegatesHistoryValidation(t *testing.T) {
 	for _, tc := range []struct{ name, path, body, header string }{
 		{"previous response", "/v1/responses", strings.Replace(originReplayBody, `"store":false`, `"previous_response_id":"resp_old"`, 1), ""},
 		{"stored conversation", "/v1/responses", strings.Replace(originReplayBody, `"store":false`, `"conversation":"conv_old"`, 1), ""},
@@ -141,39 +144,70 @@ func TestResponseOriginMissHardReferences(t *testing.T) {
 		{"reasoning reference", "/v1/responses", strings.Replace(originReplayBody, `"input":[`, `"input":[{"type":"reasoning","id":"rs_ref"},`, 1), ""},
 		{"custom tool reference", "/v1/responses", strings.Replace(originReplayBody, `"input":[`, `"input":[{"type":"custom_tool_call","id":"ctc_ref","call_id":"call_1","name":"apply_patch"},`, 1), ""},
 		{"compact endpoint", "/v1/responses/compact", originReplayBody, ""},
-		{"chat endpoint", "/v1/chat/completions", `{"model":"test-model","messages":[{"role":"assistant","id":"rs_old","reasoning":{"encrypted_content":"opaque"}}]}`, ""},
 		{"header only", "/v1/responses", `{"model":"test-model","input":"continue"}`, "resp_old"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			router, _ := setupOriginMissRouter(t, func(c *gin.Context) { t.Fatal("unrecoverable reference reached relay") })
-			w := serveOriginRequest(router, tc.path, tc.body, tc.header)
-			if w.Code != http.StatusConflict {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			calls := 0
+			const upstreamError = `{"error":{"code":"invalid_history","message":"Upstream rejected the supplied history"}}`
+			router, _ := setupOriginMissRouter(t, func(c *gin.Context) {
+				calls++
+				body, err := common.GetRequestBody(c)
+				if err != nil || string(body) != tc.body || c.GetHeader("X-Response-ID") != tc.header {
+					t.Fatalf("history changed: body=%s header=%q err=%v", body, c.GetHeader("X-Response-ID"), err)
+				}
+				c.Data(http.StatusBadRequest, "application/json", []byte(upstreamError))
+			})
+			for i := 0; i < 3; i++ {
+				w := serveOriginRequest(router, tc.path, tc.body, tc.header)
+				if w.Code != http.StatusBadRequest || w.Body.String() != upstreamError {
+					t.Fatalf("attempt=%d status=%d body=%s", i, w.Code, w.Body.String())
+				}
+			}
+			if calls != 3 {
+				t.Fatalf("only %d continuation attempts reached upstream validation", calls)
 			}
 		})
 	}
 }
 
 func TestResponseOriginBackendFailure(t *testing.T) {
-	for _, failure := range []string{"read error", "disabled", "disabled without client"} {
+	for _, failure := range []string{"read error", "connection closed", "disabled", "disabled without client"} {
 		t.Run(failure, func(t *testing.T) {
-			router, server := setupOriginMissRouter(t, func(c *gin.Context) { t.Fatal("backend failure must not bypass origin") })
-			server.Set("cache_response_id_rs_old", `{"channel_id":1,"channel_type":3,"key_index":0,"region":"eastus","response_id":"resp_old"}`)
+			calls := 0
+			router, server := setupOriginMissRouter(t, func(c *gin.Context) {
+				calls++
+				body, err := common.GetRequestBody(c)
+				if err != nil || string(body) != originReplayBody || c.GetInt("channel_id") != 1 {
+					t.Fatalf("fallback changed body or selected no channel: channel=%d body=%s err=%v", c.GetInt("channel_id"), body, err)
+				}
+				other := dbmodel.AppendResponseCorrelationOther(newRetryContext(c), "")
+				if !strings.Contains(other, `"origin_lookup_status":"unavailable"`) || !strings.Contains(other, `"previous_response_id":"rs_old"`) || strings.Contains(other, `"origin_channel_id"`) {
+					t.Fatalf("fallback provenance lost or fabricated: %s", other)
+				}
+				c.Status(http.StatusOK)
+			})
+			const raw = `{"channel_id":1,"channel_type":3,"key_index":0,"region":"eastus","response_id":"resp_old"}`
+			server.Set("cache_response_id_rs_old", raw)
+			server.SetTTL("cache_response_id_rs_old", time.Hour)
 			switch failure {
 			case "read error":
 				server.SetError("LOADING origin store unavailable")
+			case "connection closed":
+				common.RDB.Close()
 			case "disabled":
 				common.RedisEnabled = false
 			case "disabled without client":
 				common.RedisEnabled = false // user-group lookup also uses this client
 				common.RDB = nil
 			}
-			w := serveOriginRequest(router, "/v1/responses", originReplayBody, "")
-			if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "start a new conversation") {
-				t.Fatalf("transient backend failure misreported: status=%d body=%s", w.Code, w.Body.String())
+			for i := 0; i < 3; i++ {
+				w := serveOriginRequest(router, "/v1/responses", originReplayBody, "")
+				if w.Code != http.StatusOK {
+					t.Fatalf("backend failure blocked continuation: status=%d body=%s", w.Code, w.Body.String())
+				}
 			}
-			if !server.Exists("cache_response_id_rs_old") {
-				t.Fatal("backend error deleted historical mapping")
+			if got, _ := server.Get("cache_response_id_rs_old"); calls != 3 || got != raw || server.TTL("cache_response_id_rs_old") != time.Hour {
+				t.Fatalf("backend error changed historical mapping or skipped relay: calls=%d mapping=%s", calls, got)
 			}
 		})
 	}
@@ -183,10 +217,20 @@ func TestResponseOriginMissKnownMapping(t *testing.T) {
 	for _, state := range []string{"available", "disabled", "invalid"} {
 		t.Run(state, func(t *testing.T) {
 			calls := 0
+			wantChannel := 1
+			if state == "invalid" {
+				wantChannel = 2
+			}
 			router, server := setupOriginMissRouter(t, func(c *gin.Context) {
 				calls++
-				if c.GetInt("channel_id") != 1 {
-					t.Fatal("known origin routed across regions")
+				if c.GetInt("channel_id") != wantChannel {
+					t.Fatalf("selected channel=%d want=%d", c.GetInt("channel_id"), wantChannel)
+				}
+				if state == "invalid" {
+					other := dbmodel.AppendResponseCorrelationOther(newRetryContext(c), "")
+					if !strings.Contains(other, `"origin_lookup_status":"invalid"`) || strings.Contains(other, `"origin_channel_id"`) {
+						t.Fatalf("invalid source was treated as known: %s", other)
+					}
 				}
 				c.Status(http.StatusOK)
 			})
@@ -199,7 +243,7 @@ func TestResponseOriginMissKnownMapping(t *testing.T) {
 				}
 				want = http.StatusServiceUnavailable
 			} else if state == "invalid" {
-				raw, want = `{"channel_id":0}`, http.StatusConflict
+				raw = `{"channel_id":0}`
 			}
 			server.Set("cache_response_id_rs_old", raw)
 			w := serveOriginRequest(router, "/v1/responses", originReplayBody, "")

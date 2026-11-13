@@ -104,8 +104,7 @@ func RelayOpenaiResponseNative(c *gin.Context) *model.ErrorWithStatusCode {
 	//先写死透传
 
 	adaptor.Init(meta)
-	// Azure 400 invalid_encrypted_content 时先在同渠道做一次"剥离加密历史"降级重试，
-	// 兜住区域亲和缓存失效（TTL 过期/Redis 清空/渠道切换）后的跨区域回放场景。
+	// 来源回退请求始终保留完整历史；其它请求沿用 Azure 密文错误的同渠道降级逻辑。
 	resp, err := doOpenaiResponseRequest(c, meta, adaptor, originRequestBody)
 	if err != nil {
 		return openai.ErrorWrapper(err, "failed_to_send_request", http.StatusBadGateway)

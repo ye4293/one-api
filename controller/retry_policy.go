@@ -21,7 +21,7 @@ func isAzureRetry(ctx context.Context) bool {
 // newRetryContext 保留入口为带签名请求设置的 Gemini 类型，以及已有 Azure 区域约束。
 func newRetryContext(c *gin.Context) context.Context {
 	ctx := c.Request.Context()
-	if _, exists := dbmodel.ResponseOriginFromContext(ctx); !exists {
+	if _, exists := dbmodel.ResponseOriginFromContext(ctx); !exists && dbmodel.ResponseOriginFallbackReason(ctx) == "" {
 		if id := c.GetHeader("X-Response-ID"); id != "" {
 			if origin, err := dbmodel.LookupResponseOrigin(id); err == nil {
 				ctx = dbmodel.WithResponseOrigin(ctx, origin)

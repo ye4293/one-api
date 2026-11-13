@@ -12,6 +12,7 @@ import (
 
 type responseOriginContextKey struct{}
 type previousResponseContextKey struct{}
+type responseOriginFallbackContextKey struct{}
 
 // ResponseOrigin is the immutable provenance of a response or replayable item.
 type ResponseOrigin = ResponseIdRegionInfo
@@ -34,6 +35,28 @@ func WithPreviousResponseID(ctx context.Context, id string) context.Context {
 func PreviousResponseIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(previousResponseContextKey{}).(string)
 	return id
+}
+
+// WithResponseOriginFallback records the decision for this request, so retry
+// cannot rediscover a different parent source if the store recovers mid-request.
+// Keep only the error class; backend error details belong in the runtime log.
+func WithResponseOriginFallback(ctx context.Context, lookupErr error) context.Context {
+	if lookupErr == nil {
+		return ctx
+	}
+	reason := "invalid"
+	switch {
+	case errors.Is(lookupErr, ErrResponseOriginNotFound):
+		reason = "not_found"
+	case errors.Is(lookupErr, ErrResponseOriginUnavailable):
+		reason = "unavailable"
+	}
+	return context.WithValue(ctx, responseOriginFallbackContextKey{}, reason)
+}
+
+func ResponseOriginFallbackReason(ctx context.Context) string {
+	reason, _ := ctx.Value(responseOriginFallbackContextKey{}).(string)
+	return reason
 }
 
 // LookupResponseOrigin upgrades legacy metadata only from its original channel.

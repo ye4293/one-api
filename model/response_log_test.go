@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/config"
 	"strings"
@@ -53,5 +54,33 @@ func TestResponseLogOtherPreservesExistingMetadata(t *testing.T) {
 	}
 	if LOG_DB.Migrator().HasColumn(&Log{}, "previous_response_id") {
 		t.Fatal("must not change logs schema")
+	}
+}
+
+func TestResponseLogFallbackKeepsLookupFailureAndParent(t *testing.T) {
+	setupResponseLogDB(t)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"not_found", ErrResponseOriginNotFound},
+		{"unavailable", fmt.Errorf("private backend detail: %w", ErrResponseOriginUnavailable)},
+		{"invalid", ErrResponseOriginUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithResponseOriginFallback(WithPreviousResponseID(context.Background(), "rs_old"), tc.err)
+			// The selected channel's retry snapshot is not the unknown parent's source.
+			ctx = WithResponseOrigin(ctx, ResponseOrigin{ChannelID: 8, ChannelType: common.ChannelTypeAzure, Region: "eastus"})
+			for _, other := range []string{`{"usageDetails":{"input_tokens":2}}`, `adminInfo:[8];usageDetails:{"input_tokens":2}`} {
+				RecordConsumeLogWithOtherAndRequestID(ctx, 1, 8, 2, 1, "gpt-test", "token", 1, "ok", 1, "", "", false, 0, other, "req_new", 0, "resp_new")
+				var got Log
+				if err := LOG_DB.Last(&got).Error; err != nil {
+					t.Fatal(err)
+				}
+				if got.XResponseID != "resp_new" || !strings.Contains(got.Other, `"previous_response_id":"rs_old"`) || !strings.Contains(got.Other, `"origin_lookup_status":"`+tc.name+`"`) || !strings.Contains(got.Other, `"input_tokens":2`) || strings.Contains(got.Other, `"origin_channel_id"`) || strings.Contains(got.Other, "private backend detail") {
+					t.Fatalf("fallback metadata lost or leaked: %+v", got)
+				}
+			}
+		})
 	}
 }

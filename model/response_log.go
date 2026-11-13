@@ -11,10 +11,14 @@ import (
 func AppendResponseCorrelationOther(ctx context.Context, other string) string {
 	parent := PreviousResponseIDFromContext(ctx)
 	origin, known := ResponseOriginFromContext(ctx)
-	if parent == "" && !known {
+	fallback := ResponseOriginFallbackReason(ctx)
+	if parent == "" && !known && fallback == "" {
 		return other
 	}
 	metadata := map[string]any{"previous_response_id": parent}
+	if fallback != "" {
+		metadata["origin_lookup_status"] = fallback
+	}
 	// newRetryContext also uses an ID-less origin as this request's retry
 	// constraint. It must not be reported as provenance for an unknown parent.
 	if known && (parent == "" || origin.ResponseID != "") {
